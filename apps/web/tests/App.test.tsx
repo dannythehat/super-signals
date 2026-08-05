@@ -26,7 +26,9 @@ describe('App', () => {
 
     expect(screen.getByRole('heading', { name: 'Super Signals' })).toBeInTheDocument();
     expect(await screen.findByText('API connected')).toBeInTheDocument();
-    expect(screen.getByText('Demo foundation only. No live trading is enabled.')).toBeInTheDocument();
+    expect(
+      screen.getByText('Demo foundation only. No live trading is enabled.'),
+    ).toBeInTheDocument();
   });
 
   it('shows a safe unavailable state when the API cannot be reached', async () => {
