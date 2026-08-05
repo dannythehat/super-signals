@@ -1,0 +1,71 @@
+# Dependencies
+node_modules/
+.pnpm-store/
+.npm/
+.yarn/
+
+# Frontend build output
+dist/
+build/
+.next/
+.vite/
+coverage/
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.venv/
+venv/
+env/
+ENV/
+*.egg-info/
+
+# Environment and secrets
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+secrets/
+
+# Telegram session material
+*.session
+*.session-journal
+*.session-shm
+*.session-wal
+
+# Local databases and state
+*.db
+*.sqlite
+*.sqlite3
+local-data/
+
+# Logs and runtime files
+*.log
+logs/
+*.pid
+*.pid.lock
+
+# Operating systems
+.DS_Store
+Thumbs.db
+
+# IDEs
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Test and temporary files
+.tmp/
+tmp/
+temp/
+.cache/
