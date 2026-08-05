@@ -1,58 +1,14 @@
-name: Deploy Cloudflare Pages
+name: Cloudflare Pages deployment note
 
 on:
-  push:
-    branches:
-      - main
-      - "feature/**"
-  pull_request:
-    branches:
-      - main
+  workflow_dispatch:
 
 permissions:
   contents: read
 
-concurrency:
-  group: cloudflare-pages-${{ github.ref }}
-  cancel-in-progress: true
-
 jobs:
-  deploy:
+  information:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
-    env:
-      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN || secrets.CLOUDFLARE_TOKEN || secrets.CLOUDFLARE_SECRET || secrets.CF_API_TOKEN }}
-      CLOUDFLARE_ACCOUNT_ID: a517d133ccec0093de719211a6694951
-      CLOUDFLARE_PROJECT_NAME: super-signals
-      VITE_API_BASE_URL: /api
-      VITE_DEPLOYMENT_ENV: ${{ github.ref == 'refs/heads/main' && 'production' || 'preview' }}
-
     steps:
-      - name: Check out repository
-        uses: actions/checkout@v4
-
-      - name: Set up Node
-        uses: actions/setup-node@v4
-        with:
-          node-version: 22
-
-      - name: Confirm Cloudflare token is available
-        run: |
-          if [ -z "$CLOUDFLARE_API_TOKEN" ]; then
-            echo "Cloudflare API token is missing."
-            exit 1
-          fi
-
-      - name: Install dependencies
-        run: npm install
-
-      - name: Build web app
-        run: npm run build:web
-
-      - name: Deploy to Cloudflare Pages
-        run: |
-          branch="${GITHUB_HEAD_REF:-${GITHUB_REF_NAME}}"
-          npx --yes wrangler@4 pages deploy apps/web/dist \
-            --project-name "$CLOUDFLARE_PROJECT_NAME" \
-            --branch "$branch" \
-            --commit-hash "$GITHUB_SHA"
+      - name: Deployment method
+        run: echo "Cloudflare Pages previews and production deploys are handled by the connected GitHub integration."
