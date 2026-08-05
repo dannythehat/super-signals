@@ -26,24 +26,51 @@ Super Signals combines approved Telegram signal sources into one controlled syst
 - Mobile dashboard, signal timeline, performance and notifications
 - Append-only audit history and broker reconciliation
 
-The complete functional rules are maintained in the private Notion working blueprint and the repository scope document.
+The complete functional rules are maintained in the private Notion working blueprint and [docs/SCOPE_V1.md](docs/SCOPE_V1.md).
 
-## Planned repository structure
+## Repository structure
 
 ```text
 apps/
   web/                 React/TypeScript mobile-first PWA
 services/
-  api/                 FastAPI application and authentication
-  telegram/            Telegram sessions, listeners and message routing
-  trading/             MT5 execution, monitoring and reconciliation
+  api/                 FastAPI service
+  telegram/            Added during the Telegram phase
+  trading/             Added during the trading phase
 packages/
-  shared/              Shared schemas, types and validation rules
+  shared/              Shared schemas, types and constants
 docs/                   Scope, decisions, security and operating procedures
 .github/                Pull request and automated workflow controls
 ```
 
-The folders are introduced during Day 2 when the frontend and backend are scaffolded.
+## Foundation commands
+
+Install the JavaScript and Python development dependencies:
+
+```bash
+npm install
+python -m pip install -r requirements-dev.txt
+```
+
+Start the API:
+
+```bash
+npm run dev:api
+```
+
+Start the web app in a second terminal:
+
+```bash
+npm run dev:web
+```
+
+Run all type, lint, format, test and build checks:
+
+```bash
+npm run check
+```
+
+Detailed instructions are in [docs/LOCAL_DEVELOPMENT.md](docs/LOCAL_DEVELOPMENT.md).
 
 ## Build workflow
 

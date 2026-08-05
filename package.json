@@ -1,0 +1,29 @@
+{
+  "name": "super-signals",
+  "version": "0.1.0",
+  "private": true,
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "scripts": {
+    "dev:web": "npm run dev --workspace @super-signals/web",
+    "build:web": "npm run build --workspace @super-signals/web",
+    "lint:web": "npm run lint --workspace @super-signals/web",
+    "format:check:web": "npm run format:check --workspace @super-signals/web",
+    "test:web": "npm run test --workspace @super-signals/web",
+    "typecheck": "npm run typecheck --workspace @super-signals/web",
+    "dev:api": "python -m uvicorn app.main:app --app-dir services/api --reload --host 127.0.0.1 --port 8000",
+    "lint:api": "python -m ruff check services/api",
+    "format:check:api": "python -m ruff format --check services/api",
+    "test:api": "python -m pytest services/api/tests",
+    "lint": "npm run lint:web && npm run lint:api",
+    "format:check": "npm run format:check:web && npm run format:check:api",
+    "test": "npm run test:web && npm run test:api",
+    "check": "npm run typecheck && npm run lint && npm run format:check && npm run test && npm run build:web"
+  },
+  "engines": {
+    "node": ">=20",
+    "npm": ">=10"
+  }
+}
