@@ -57,8 +57,8 @@ export function App() {
         <p className="eyebrow">Private trading infrastructure</p>
         <h1 id="app-title">{APP_NAME}</h1>
         <p className="intro">
-          The secure foundation for approved Telegram signals, controlled automation and Vantage
-          MT5 execution.
+          The secure foundation for approved Telegram signals, controlled automation and Vantage MT5
+          execution.
         </p>
 
         <div className="status-grid" aria-label="Build status">
