@@ -1,38 +1,32 @@
-# Cloudflare Pages deployment
+# Cloudflare frontend deployment
 
-Super Signals uses Cloudflare Pages for the React frontend. The Python API and 24-hour Telegram/trading services are deployed separately.
+Super Signals uses Cloudflare Workers Static Assets for the React frontend. Cloudflare now recommends Workers Static Assets for new static sites and single-page applications. The Python API and 24-hour Telegram/trading services remain separate.
 
-## Git integration settings
+## Connected build settings
 
-Create a Cloudflare Pages project connected to `dannythehat/super-signals` with:
+The existing Cloudflare project `super-signals` is connected to `dannythehat/super-signals`.
+
+Use:
 
 - Production branch: `main`
 - Root directory: repository root
-- Build command: `npm ci && npm run build:web`
-- Build output directory: `apps/web/dist`
+- Build command: `npm install && npm run build:web`
+- Deploy command: `npx wrangler deploy`
+- Non-production deploy command: `npx wrangler versions upload`
 - Node version: `22`
 
-Pull requests and non-production branches should create preview deployments. Commits merged into `main` should update the production Pages deployment.
+The root `wrangler.jsonc` identifies the Worker and serves `apps/web/dist` as static assets. SPA fallback routing is configured with `not_found_handling: single-page-application`.
 
-## Environment separation
+## Environment variables
 
-Set these variables independently in Cloudflare for Preview and Production:
-
-### Preview
+Build-time browser values:
 
 ```text
-VITE_DEPLOYMENT_ENV=preview
 VITE_API_BASE_URL=/api
-```
-
-### Production
-
-```text
 VITE_DEPLOYMENT_ENV=production
-VITE_API_BASE_URL=/api
 ```
 
-The values may initially point to the same placeholder route, but they must remain separate Cloudflare environment entries so the API targets can diverge safely later.
+Non-production builds may use `VITE_DEPLOYMENT_ENV=preview` once separate preview build variables are enabled.
 
 Never place Telegram, MT5, database, Cloudflare API or encryption secrets in `VITE_` variables. Vite embeds `VITE_` values into the browser bundle and they are public.
 
@@ -40,8 +34,8 @@ Never place Telegram, MT5, database, Cloudflare API or encryption secrets in `VI
 
 Day 3 passes when:
 
-1. The branch preview URL loads on phone and desktop.
-2. The screen shows `Preview` as the environment.
-3. A production URL exists for `main` and shows `Production`.
-4. Preview and production variables are stored separately.
-5. GitHub CI is green before the branch is merged.
+1. Cloudflare completes a successful build from the repository.
+2. The generated `workers.dev` URL loads on phone and desktop.
+3. React assets and SPA fallback routing work.
+4. GitHub CI is green.
+5. The successful Day 3 change is merged to `main`.
