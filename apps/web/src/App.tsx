@@ -71,7 +71,9 @@ export function App() {
           <article className={`status-card status-card--${connection}`}>
             <span className="status-label">Backend</span>
             <strong>{connectionLabel}</strong>
-            <small>{health ? `${health.service} v${health.version}` : 'FastAPI health endpoint'}</small>
+            <small>
+              {health ? `${health.service} v${health.version}` : 'FastAPI health endpoint'}
+            </small>
           </article>
         </div>
 
