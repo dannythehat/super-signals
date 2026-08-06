@@ -13,27 +13,13 @@ from app.permissions import ROLE_LABELS
 router = APIRouter(prefix="/access", tags=["access control"])
 CurrentIdentity = Annotated[dict[str, Any], Depends(get_current_identity)]
 OwnerUsers = Annotated[dict[str, Any], Depends(require_permission("users.manage"))]
-OwnerSecurity = Annotated[
-    dict[str, Any], Depends(require_permission("security.manage"))
-]
-TradingSources = Annotated[
-    dict[str, Any], Depends(require_permission("sources.manage"))
-]
-TradingActivity = Annotated[
-    dict[str, Any], Depends(require_permission("activity.view"))
-]
-EmergencyStop = Annotated[
-    dict[str, Any], Depends(require_permission("emergency_stop.use"))
-]
-UserAccount = Annotated[
-    dict[str, Any], Depends(require_permission("account.connect"))
-]
-UserAutomation = Annotated[
-    dict[str, Any], Depends(require_permission("automation.toggle"))
-]
-UserPerformance = Annotated[
-    dict[str, Any], Depends(require_permission("performance.view"))
-]
+OwnerSecurity = Annotated[dict[str, Any], Depends(require_permission("security.manage"))]
+TradingSources = Annotated[dict[str, Any], Depends(require_permission("sources.manage"))]
+TradingActivity = Annotated[dict[str, Any], Depends(require_permission("activity.view"))]
+EmergencyStop = Annotated[dict[str, Any], Depends(require_permission("emergency_stop.use"))]
+UserAccount = Annotated[dict[str, Any], Depends(require_permission("account.connect"))]
+UserAutomation = Annotated[dict[str, Any], Depends(require_permission("automation.toggle"))]
+UserPerformance = Annotated[dict[str, Any], Depends(require_permission("performance.view"))]
 
 
 class CapabilityResponse(BaseModel):
@@ -44,9 +30,7 @@ class CapabilityResponse(BaseModel):
     role_label: str
 
 
-def _capability(
-    identity: dict[str, Any], permission: str, area: str
-) -> CapabilityResponse:
+def _capability(identity: dict[str, Any], permission: str, area: str) -> CapabilityResponse:
     return CapabilityResponse(
         permission=permission,
         area=area,
