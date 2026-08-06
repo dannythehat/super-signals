@@ -34,17 +34,12 @@ jobs:
           git -c http.https://github.com/.extraheader="AUTHORIZATION: basic ${encoded_token}" fetch --no-tags --depth=1 origin "$GITHUB_REF"
           git checkout --detach FETCH_HEAD
 
-      - name: Select hosted Node and Python toolchains
+      - name: Verify hosted Node and Python toolchains
         shell: bash
         run: |
-          node_bin="$(find "$RUNNER_TOOL_CACHE/node" -path '*/bin/node' -type f | sort -V | tail -n 1)"
-          python_bin="$(find "$RUNNER_TOOL_CACHE/Python" -path '*/bin/python' -type f | sort -V | tail -n 1)"
-          test -x "$node_bin"
+          python_bin="$(command -v python3)"
           test -x "$python_bin"
-          node_dir="$(dirname "$node_bin")"
-          echo "$node_dir" >> "$GITHUB_PATH"
           echo "PYTHON_BIN=$python_bin" >> "$GITHUB_ENV"
-          export PATH="$node_dir:$PATH"
           node --version
           npm --version
           "$python_bin" --version
