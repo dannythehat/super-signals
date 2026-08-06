@@ -1,11 +1,12 @@
 # PostgreSQL core data model
 
-Day 4 introduces the first PostgreSQL schema for Super Signals.
+Super Signals uses PostgreSQL for identities, permissions, Telegram metadata, original messages, structured signals, positions and immutable audit history.
 
 ## Tables
 
-- `users`, `roles`, `user_roles` — private users and separated owner/trading-admin permissions
+- `users`, `roles`, `user_roles`, `permissions`, `role_permissions` — private users and centrally enforced permissions
 - `invitations` — hashed one-time access keys tied to an approved email
+- `auth_sessions`, `password_recovery_requests` — hashed authentication and recovery tokens
 - `telegram_accounts`, `sources` — encrypted Telegram sessions and approved exact chats
 - `messages`, `signals` — original Telegram messages and the parser's structured result
 - `positions` — one row per user, signal and take-profit position
@@ -29,10 +30,12 @@ PYTHONPATH=services/api SUPER_SIGNALS_OWNER_EMAIL=owner@example.com python -m ap
 
 ## Managed PostgreSQL
 
-Production and preview must each use a separate managed PostgreSQL database and separate `DATABASE_URL` secret. The application supports any PostgreSQL 16-compatible provider with TLS. The provider must enable automated backups, point-in-time recovery where available, encryption at rest and restricted network credentials.
+Preview currently uses the connected Supabase project `super-signals-preview`. Production must use a separate managed PostgreSQL database and separate `DATABASE_URL` secret.
 
-Do not commit a real connection string. Store it only in the deployment platform's encrypted secret manager.
+The selected production service must provide TLS, encryption at rest, restricted credentials, automated backups and point-in-time recovery where available. Do not commit a real connection string. Store it only in the deployment platform's encrypted secret manager.
 
-## Migration safety
+## Migration and backup safety
 
-The CI job starts a clean PostgreSQL 16 service, upgrades to the latest migration, verifies the owner seed and uniqueness constraints, confirms `audit_events` cannot be changed or deleted, downgrades to an empty schema, and then reapplies the migration.
+CI starts a clean PostgreSQL 16 service, applies all migrations, verifies seeds and constraints, confirms `audit_events` cannot be changed or deleted, safely tests downgrade and reapplication, creates a custom-format logical backup and restores it into a separate database.
+
+The restore gate verifies critical tables, the three role seeds, owner seed, migration marker and both audit-protection triggers. See [BACKUP_AND_RECOVERY.md](BACKUP_AND_RECOVERY.md).

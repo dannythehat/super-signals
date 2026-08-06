@@ -49,10 +49,10 @@ docs/                   Scope, decisions, security and operating procedures
 
 ## Foundation commands
 
-Install the JavaScript and Python development dependencies:
+Install the locked JavaScript and Python development dependencies:
 
 ```bash
-npm install
+npm ci
 python -m pip install -r requirements-dev.txt
 ```
 
@@ -76,14 +76,24 @@ npm run check
 
 Detailed instructions are in [docs/LOCAL_DEVELOPMENT.md](docs/LOCAL_DEVELOPMENT.md).
 
+## Foundation references
+
+- [Architecture and trust boundaries](docs/ARCHITECTURE.md)
+- [Environment map](docs/ENVIRONMENTS.md)
+- [Database and migrations](docs/DATABASE.md)
+- [Backup and recovery](docs/BACKUP_AND_RECOVERY.md)
+- [Threat checklist](docs/THREAT_MODEL.md)
+- [Day 7 foundation gate](docs/FOUNDATION_GATE.md)
+
 ## Build workflow
 
 1. `main` is the source-of-truth branch.
 2. Work is completed on a named branch.
 3. Changes are reviewed through a pull request.
-4. Tests and checks must pass before merge.
-5. Production deployment will eventually run only from `main`.
-6. Every build day records its commit, checks and evidence in the Notion build calendar.
+4. Tests, audits and backup restoration must pass before merge.
+5. Pull requests deploy to the shared preview Worker.
+6. Production frontend deployment runs only from `main`.
+7. Every build day records its commit, checks and evidence in the Notion build calendar.
 
 See [docs/WORKFLOW.md](docs/WORKFLOW.md).
 

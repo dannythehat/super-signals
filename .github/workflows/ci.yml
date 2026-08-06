@@ -11,7 +11,7 @@ permissions:
 jobs:
   checks:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 20
 
     services:
       postgres:
@@ -31,6 +31,11 @@ jobs:
     env:
       DATABASE_URL: postgresql+psycopg://super_signals:super_signals@127.0.0.1:5432/super_signals_test
       SUPER_SIGNALS_OWNER_EMAIL: owner@super-signals.test
+      PGHOST: 127.0.0.1
+      PGPORT: 5432
+      PGUSER: super_signals
+      PGPASSWORD: super_signals
+      PGDATABASE: super_signals_test
 
     steps:
       - name: Check out repository
@@ -40,6 +45,7 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: 22
+          cache: npm
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -47,11 +53,23 @@ jobs:
           python-version: "3.12"
           cache: pip
 
+      - name: Install PostgreSQL client
+        run: sudo apt-get update && sudo apt-get install --yes postgresql-client
+
       - name: Install web dependencies
-        run: npm install
+        run: npm ci
+
+      - name: Audit JavaScript dependencies
+        run: npm audit --audit-level=low
 
       - name: Install API dependencies
-        run: python -m pip install -r requirements-dev.txt
+        run: python -m pip install -r requirements-dev.txt "pip-audit>=2,<3"
+
+      - name: Audit Python dependencies
+        run: python -m pip_audit
 
       - name: Run all checks
         run: npm run check
+
+      - name: Verify database backup and restore
+        run: scripts/verify_database_backup.sh
