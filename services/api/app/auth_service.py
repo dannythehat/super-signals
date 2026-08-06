@@ -93,6 +93,7 @@ def authenticate_user(session: Session, email: str, password: str) -> dict[str, 
                 FROM users AS u
                 WHERE lower(u.email::text) = lower(:email)
                   AND u.status = 'active'
+                  AND u.password_hash IS NOT NULL
                   AND EXISTS (
                       SELECT 1 FROM user_roles AS ur WHERE ur.user_id = u.id
                   )
@@ -105,7 +106,8 @@ def authenticate_user(session: Session, email: str, password: str) -> dict[str, 
         .first()
     )
     encoded = account["password_hash"] if account else _DUMMY_PASSWORD_HASH
-    if not verify_password(password, encoded):
+    valid_password = verify_password(password, encoded)
+    if account is None or not valid_password:
         return None
     return _load_identity(session, account["id"])
 
