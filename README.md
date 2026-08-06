@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="apps/web/public/super-signals-logo.png" alt="Super Signals" width="300" />
+</p>
+
 # Super Signals
 
 Private Telegram signal aggregation and automated Vantage MT5 trading platform.
