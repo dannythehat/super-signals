@@ -38,29 +38,40 @@ jobs:
       PGDATABASE: super_signals_test
 
     steps:
-      - name: Check out repository
-        uses: actions/checkout@v7
+      - name: Check out exact commit without external actions
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          git init .
+          git remote add origin "https://github.com/${GITHUB_REPOSITORY}.git"
+          auth_header="AUTHORIZATION: basic $(printf 'x-access-token:%s' "$GITHUB_TOKEN" | base64 -w0)"
+          git -c http.https://github.com/.extraheader="$auth_header" fetch --no-tags --depth=1 origin "$GITHUB_REF"
+          git checkout --detach FETCH_HEAD
 
-      - name: Set up Node
-        uses: actions/setup-node@v7
-        with:
-          node-version: 22
-          cache: npm
-
-      - name: Set up Python
-        uses: actions/setup-python@v7
-        with:
-          python-version: "3.12"
-          cache: pip
+      - name: Verify runner toolchain
+        shell: bash
+        run: |
+          node --version
+          npm --version
+          python3 --version
+          node -e 'const major = Number(process.versions.node.split(".")[0]); if (major < 22) process.exit(1)'
+          python3 -c 'import sys; assert sys.version_info >= (3, 12)'
 
       - name: Install PostgreSQL client
         run: sudo apt-get update && sudo apt-get install --yes postgresql-client
 
-      - name: Install web dependencies
+      - name: Install locked web dependencies
         run: npm ci
 
       - name: Audit JavaScript dependencies
         run: npm audit --audit-level=low
+
+      - name: Create isolated Python environment
+        shell: bash
+        run: |
+          python3 -m venv .venv
+          echo "$PWD/.venv/bin" >> "$GITHUB_PATH"
 
       - name: Install API dependencies
         run: python -m pip install -r requirements-dev.txt "pip-audit>=2,<3"
