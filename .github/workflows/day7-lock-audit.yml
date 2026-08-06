@@ -52,6 +52,9 @@ jobs:
             }]),
           );
           console.log(JSON.stringify({metadata: report.metadata, vulnerabilities}, null, 2));
+          if ((report.metadata?.vulnerabilities?.total || 0) > 0) {
+            process.exitCode = 1;
+          }
           NODE
 
       - name: Audit production dependencies
@@ -61,13 +64,16 @@ jobs:
           node - <<'NODE'
           const fs = require('fs');
           const report = JSON.parse(fs.readFileSync('/tmp/npm-audit-production.json', 'utf8'));
+          const total = report.metadata?.vulnerabilities?.total || 0;
           console.log('PRODUCTION_AUDIT=' + JSON.stringify(report.metadata?.vulnerabilities || {}));
+          if (total > 0) process.exitCode = 1;
           NODE
 
       - name: Commit lockfile
+        if: always()
         shell: bash
         run: |
-          if git diff --quiet -- package-lock.json; then
+          if [ -z "$(git status --porcelain -- package-lock.json)" ]; then
             exit 0
           fi
           git config user.name "github-actions[bot]"
