@@ -10,7 +10,7 @@ permissions:
 
 jobs:
   checks:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-22.04
     timeout-minutes: 25
 
     env:
@@ -34,14 +34,22 @@ jobs:
           git -c http.https://github.com/.extraheader="$auth_header" fetch --no-tags --depth=1 origin "$GITHUB_REF"
           git checkout --detach FETCH_HEAD
 
-      - name: Verify runner toolchain
+      - name: Select hosted Node and Python toolchains
         shell: bash
         run: |
+          node_bin="$(find /opt/hostedtoolcache/node -path '*/x64/bin/node' -type f | sort -V | tail -n 1)"
+          python_bin="$(find /opt/hostedtoolcache/Python -path '*/x64/bin/python' -type f | sort -V | tail -n 1)"
+          test -x "$node_bin"
+          test -x "$python_bin"
+          node_dir="$(dirname "$node_bin")"
+          echo "$node_dir" >> "$GITHUB_PATH"
+          echo "PYTHON_BIN=$python_bin" >> "$GITHUB_ENV"
+          export PATH="$node_dir:$PATH"
           node --version
           npm --version
-          python3 --version
-          node -e 'const major = Number(process.versions.node.split(".")[0]); if (major < 22) process.exit(1)'
-          python3 -c 'import sys; assert sys.version_info >= (3, 12)'
+          "$python_bin" --version
+          node -e 'const [major, minor] = process.versions.node.split(".").map(Number); if (major < 20 || (major === 20 && minor < 19)) process.exit(1)'
+          "$python_bin" -c 'import sys; assert sys.version_info >= (3, 11)'
 
       - name: Start isolated PostgreSQL database
         shell: bash
@@ -64,7 +72,7 @@ jobs:
       - name: Create isolated Python environment
         shell: bash
         run: |
-          python3 -m venv .venv
+          "$PYTHON_BIN" -m venv .venv
           echo "$PWD/.venv/bin" >> "$GITHUB_PATH"
 
       - name: Install API dependencies
