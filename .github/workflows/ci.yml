@@ -10,8 +10,8 @@ permissions:
 
 jobs:
   checks:
-    runs-on: ubuntu-22.04
-    timeout-minutes: 25
+    runs-on: macos-15
+    timeout-minutes: 30
 
     env:
       DATABASE_URL: postgresql+psycopg://super_signals:super_signals@127.0.0.1:5432/super_signals_test
@@ -30,15 +30,15 @@ jobs:
         run: |
           git init .
           git remote add origin "https://github.com/${GITHUB_REPOSITORY}.git"
-          auth_header="AUTHORIZATION: basic $(printf 'x-access-token:%s' "$GITHUB_TOKEN" | base64 -w0)"
-          git -c http.https://github.com/.extraheader="$auth_header" fetch --no-tags --depth=1 origin "$GITHUB_REF"
+          encoded_token="$(printf 'x-access-token:%s' "$GITHUB_TOKEN" | base64 | tr -d '\n')"
+          git -c http.https://github.com/.extraheader="AUTHORIZATION: basic ${encoded_token}" fetch --no-tags --depth=1 origin "$GITHUB_REF"
           git checkout --detach FETCH_HEAD
 
       - name: Select hosted Node and Python toolchains
         shell: bash
         run: |
-          node_bin="$(find /opt/hostedtoolcache/node -path '*/x64/bin/node' -type f | sort -V | tail -n 1)"
-          python_bin="$(find /opt/hostedtoolcache/Python -path '*/x64/bin/python' -type f | sort -V | tail -n 1)"
+          node_bin="$(find "$RUNNER_TOOL_CACHE/node" -path '*/bin/node' -type f | sort -V | tail -n 1)"
+          python_bin="$(find "$RUNNER_TOOL_CACHE/Python" -path '*/bin/python' -type f | sort -V | tail -n 1)"
           test -x "$node_bin"
           test -x "$python_bin"
           node_dir="$(dirname "$node_bin")"
@@ -54,10 +54,14 @@ jobs:
       - name: Start isolated PostgreSQL database
         shell: bash
         run: |
-          sudo apt-get update
-          sudo apt-get install --yes postgresql postgresql-client
-          sudo service postgresql start
-          sudo -u postgres psql --set=ON_ERROR_STOP=1 <<'SQL'
+          brew install postgresql@16
+          postgres_bin="$(brew --prefix postgresql@16)/bin"
+          echo "$postgres_bin" >> "$GITHUB_PATH"
+          export PATH="$postgres_bin:$PATH"
+          postgres_data="$RUNNER_TEMP/postgres-data"
+          initdb --pgdata="$postgres_data" --username=postgres --auth=trust
+          pg_ctl --pgdata="$postgres_data" --options="-h 127.0.0.1 -p 5432" --wait start
+          PGUSER=postgres psql --dbname=postgres --set=ON_ERROR_STOP=1 <<'SQL'
           CREATE USER super_signals WITH PASSWORD 'super_signals';
           CREATE DATABASE super_signals_test OWNER super_signals;
           SQL
