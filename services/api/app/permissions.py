@@ -87,7 +87,11 @@ SECTION_DEFINITIONS: tuple[dict[str, Any], ...] = (
         "description": "Telegram sources, review activity and emergency trading controls.",
         "actions": (
             ("sources.manage", "Signal sources", "Add, pause, resume or remove sources."),
-            ("sources.change_status", "Testing and Live", "Move approved sources between environments."),
+            (
+                "sources.change_status",
+                "Testing and Live",
+                "Move approved sources between environments.",
+            ),
             ("source_messages.view", "Original messages", "Review private source messages."),
             ("signals.review", "Signal review", "Inspect parsing and unclear messages."),
             ("trades.review", "Trade execution", "Review fills, failures and outcomes."),
