@@ -10,7 +10,7 @@ export PGPASSWORD="${PGPASSWORD:-super_signals}"
 export PGDATABASE="${PGDATABASE:-super_signals_test}"
 
 restore_database="${PGRESTORE_DATABASE:-super_signals_restore}"
-backup_file="$(mktemp --suffix=.dump)"
+backup_file="$(mktemp "${TMPDIR:-/tmp}/super-signals-backup.XXXXXX")"
 
 cleanup() {
   dropdb --if-exists "$restore_database" >/dev/null 2>&1 || true
