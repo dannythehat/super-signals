@@ -24,6 +24,7 @@ jobs:
       WORKER_NAME: ${{ github.ref == 'refs/heads/main' && 'super-signals' || 'super-signals-preview' }}
       VITE_DEPLOYMENT_ENV: ${{ github.ref == 'refs/heads/main' && 'production' || 'preview' }}
       VITE_API_BASE_URL: /api
+      WORKERS_SUBDOMAIN: dannythehat2
 
     steps:
       - name: Check out repository
@@ -47,3 +48,16 @@ jobs:
 
       - name: Deploy to Cloudflare Workers
         run: npx --yes wrangler@4 deploy --config wrangler.jsonc --name "$WORKER_NAME"
+
+      - name: Verify deployed app
+        run: |
+          url="https://${WORKER_NAME}.${WORKERS_SUBDOMAIN}.workers.dev"
+          for attempt in 1 2 3 4 5; do
+            if curl --fail --silent --show-error "$url" | grep -q "Super Signals"; then
+              echo "Verified $url"
+              exit 0
+            fi
+            sleep 3
+          done
+          echo "Deployment did not return the Super Signals app at $url"
+          exit 1
