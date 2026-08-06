@@ -5,6 +5,12 @@ import { APP_NAME, BUILD_PHASE, type HealthResponse } from '@super-signals/share
 type ConnectionState = 'checking' | 'healthy' | 'unavailable';
 
 const apiBaseUrl = import.meta.env.VITE_API_BASE_URL ?? '/api';
+const deploymentEnvironment = import.meta.env.VITE_DEPLOYMENT_ENV ?? 'local';
+const environmentLabels: Record<string, string> = {
+  local: 'Local',
+  preview: 'Preview',
+  production: 'Production',
+};
 
 export function App() {
   const [connection, setConnection] = useState<ConnectionState>('checking');
@@ -46,6 +52,7 @@ export function App() {
     healthy: 'API connected',
     unavailable: 'API unavailable',
   }[connection];
+  const environmentLabel = environmentLabels[deploymentEnvironment] ?? deploymentEnvironment;
 
   return (
     <main className="app-shell">
@@ -66,6 +73,12 @@ export function App() {
             <span className="status-label">Build phase</span>
             <strong>{BUILD_PHASE}</strong>
             <small>Frontend scaffold running</small>
+          </article>
+
+          <article className="status-card">
+            <span className="status-label">Environment</span>
+            <strong>{environmentLabel}</strong>
+            <small>Cloudflare deployment target</small>
           </article>
 
           <article className={`status-card status-card--${connection}`}>
