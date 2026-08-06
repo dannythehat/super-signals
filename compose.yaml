@@ -1,0 +1,19 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: super_signals
+      POSTGRES_USER: super_signals
+      POSTGRES_PASSWORD: super_signals
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U super_signals -d super_signals"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    volumes:
+      - super_signals_postgres:/var/lib/postgresql/data
+
+volumes:
+  super_signals_postgres:
