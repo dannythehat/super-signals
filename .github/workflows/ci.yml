@@ -11,22 +11,7 @@ permissions:
 jobs:
   checks:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
-
-    services:
-      postgres:
-        image: postgres:16-alpine
-        env:
-          POSTGRES_DB: super_signals_test
-          POSTGRES_USER: super_signals
-          POSTGRES_PASSWORD: super_signals
-        ports:
-          - 5432:5432
-        options: >-
-          --health-cmd "pg_isready -U super_signals -d super_signals_test"
-          --health-interval 5s
-          --health-timeout 5s
-          --health-retries 10
+    timeout-minutes: 25
 
     env:
       DATABASE_URL: postgresql+psycopg://super_signals:super_signals@127.0.0.1:5432/super_signals_test
@@ -58,8 +43,17 @@ jobs:
           node -e 'const major = Number(process.versions.node.split(".")[0]); if (major < 22) process.exit(1)'
           python3 -c 'import sys; assert sys.version_info >= (3, 12)'
 
-      - name: Install PostgreSQL client
-        run: sudo apt-get update && sudo apt-get install --yes postgresql-client
+      - name: Start isolated PostgreSQL database
+        shell: bash
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes postgresql postgresql-client
+          sudo service postgresql start
+          sudo -u postgres psql --set=ON_ERROR_STOP=1 <<'SQL'
+          CREATE USER super_signals WITH PASSWORD 'super_signals';
+          CREATE DATABASE super_signals_test OWNER super_signals;
+          SQL
+          pg_isready --host=127.0.0.1 --port=5432 --username=super_signals --dbname=super_signals_test
 
       - name: Install locked web dependencies
         run: npm ci
