@@ -1,14 +1,49 @@
-name: Cloudflare Pages deployment note
+name: Deploy Super Signals
 
 on:
+  push:
+    branches:
+      - main
+      - feature/day-03-cloudflare-preview
   workflow_dispatch:
 
 permissions:
   contents: read
 
+concurrency:
+  group: super-signals-deploy-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
-  information:
+  deploy:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN || secrets.CLOUDFLARE_TOKEN || secrets.CLOUDFLARE_SECRET || secrets.CF_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: a517d133ccec0093de719211a6694951
+      WORKER_NAME: ${{ github.ref == 'refs/heads/main' && 'super-signals' || 'super-signals-preview' }}
+      VITE_DEPLOYMENT_ENV: ${{ github.ref == 'refs/heads/main' && 'production' || 'preview' }}
+      VITE_API_BASE_URL: /api
+
     steps:
-      - name: Deployment method
-        run: echo "Cloudflare Pages previews and production deploys are handled by the connected GitHub integration."
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Confirm deployment credentials
+        run: |
+          test -n "$CLOUDFLARE_API_TOKEN"
+          echo "::add-mask::$CLOUDFLARE_API_TOKEN"
+
+      - name: Install dependencies
+        run: npm install
+
+      - name: Build web app
+        run: npm run build:web
+
+      - name: Deploy to Cloudflare Workers
+        run: npx --yes wrangler@4 deploy --config wrangler.jsonc --name "$WORKER_NAME"
