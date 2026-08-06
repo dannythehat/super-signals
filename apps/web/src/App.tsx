@@ -78,7 +78,7 @@ export function App() {
           <article className="status-card">
             <span className="status-label">Environment</span>
             <strong>{environmentLabel}</strong>
-            <small>Cloudflare Pages deployment target</small>
+            <small>Cloudflare deployment target</small>
           </article>
 
           <article className={`status-card status-card--${connection}`}>
