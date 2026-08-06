@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import os
-from datetime import timedelta
 from pathlib import Path
 
 import pytest
@@ -121,11 +120,11 @@ def test_expired_session_is_rejected(auth_client) -> None:
             text(
                 """
                 UPDATE auth_sessions
-                SET expires_at = now() - :delta
+                SET created_at = now() - interval '2 hours',
+                    expires_at = now() - interval '1 hour'
                 WHERE revoked_at IS NULL
                 """
-            ),
-            {"delta": timedelta(seconds=1)},
+            )
         )
     assert client.get("/auth/me").status_code == 401
 
