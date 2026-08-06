@@ -32,9 +32,7 @@ describe('App', () => {
 
     render(<App />);
 
-    expect(
-      await screen.findByRole('heading', { name: 'Sign in securely' }),
-    ).toBeInTheDocument();
+    expect(await screen.findByRole('heading', { name: 'Sign in securely' })).toBeInTheDocument();
     expect(screen.getByLabelText('Owner email')).toBeInTheDocument();
     expect(screen.getByLabelText('Password')).toBeInTheDocument();
   });
@@ -65,9 +63,7 @@ describe('App', () => {
     });
     fireEvent.click(screen.getByRole('button', { name: 'Sign in' }));
 
-    expect(
-      await screen.findByRole('heading', { name: 'Welcome, Danny' }),
-    ).toBeInTheDocument();
+    expect(await screen.findByRole('heading', { name: 'Welcome, Danny' })).toBeInTheDocument();
     expect(screen.getByText('Securely signed in')).toBeInTheDocument();
     expect(fetchMock).toHaveBeenLastCalledWith(
       '/api/auth/login',
@@ -89,9 +85,7 @@ describe('App', () => {
 
     fireEvent.click(await screen.findByRole('button', { name: 'Log out' }));
 
-    expect(
-      await screen.findByRole('heading', { name: 'Sign in securely' }),
-    ).toBeInTheDocument();
+    expect(await screen.findByRole('heading', { name: 'Sign in securely' })).toBeInTheDocument();
     await waitFor(() => {
       expect(fetchMock).toHaveBeenLastCalledWith(
         '/api/auth/logout',
