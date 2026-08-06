@@ -66,13 +66,17 @@ def _alembic_config() -> Config:
 
 
 @pytest.fixture(scope="module")
-def role_environment(monkeypatch: pytest.MonkeyPatch):
+def role_environment():
     if not DATABASE_URL:
         pytest.skip("DATABASE_URL is required for PostgreSQL integration tests")
 
-    monkeypatch.setenv("SUPER_SIGNALS_ENV", "test")
-    monkeypatch.setenv("SUPER_SIGNALS_COOKIE_SECURE", "false")
-    monkeypatch.setenv("SUPER_SIGNALS_FINGERPRINT_SECRET", "test-fingerprint-secret")
+    environment = {
+        "SUPER_SIGNALS_ENV": "test",
+        "SUPER_SIGNALS_COOKIE_SECURE": "false",
+        "SUPER_SIGNALS_FINGERPRINT_SECRET": "test-fingerprint-secret",
+    }
+    previous_environment = {key: os.environ.get(key) for key in environment}
+    os.environ.update(environment)
     get_settings.cache_clear()
     get_engine.cache_clear()
     get_session_factory.cache_clear()
@@ -100,13 +104,19 @@ def role_environment(monkeypatch: pytest.MonkeyPatch):
             )
         session.commit()
 
-    yield create_app(), engine
-
-    command.downgrade(config, "base")
-    engine.dispose()
-    get_settings.cache_clear()
-    get_engine.cache_clear()
-    get_session_factory.cache_clear()
+    try:
+        yield create_app(), engine
+    finally:
+        command.downgrade(config, "base")
+        engine.dispose()
+        get_settings.cache_clear()
+        get_engine.cache_clear()
+        get_session_factory.cache_clear()
+        for key, value in previous_environment.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
 
 
 def _login(client: TestClient, role: str) -> dict:
