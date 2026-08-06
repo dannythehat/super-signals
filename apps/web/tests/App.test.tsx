@@ -143,7 +143,9 @@ describe('App', () => {
 
     render(<App />);
 
-    expect(await screen.findByRole('heading', { name: 'Welcome, Trading Admin' })).toBeInTheDocument();
+    expect(
+      await screen.findByRole('heading', { name: 'Welcome, Trading Admin' }),
+    ).toBeInTheDocument();
     expect(screen.getByText('Trading operations')).toBeInTheDocument();
     expect(screen.queryByText('Owner controls')).not.toBeInTheDocument();
     expect(screen.queryByText('My trading')).not.toBeInTheDocument();
@@ -154,7 +156,9 @@ describe('App', () => {
 
     render(<App />);
 
-    expect(await screen.findByRole('heading', { name: 'Welcome, Invited User' })).toBeInTheDocument();
+    expect(
+      await screen.findByRole('heading', { name: 'Welcome, Invited User' }),
+    ).toBeInTheDocument();
     expect(screen.getByText('My trading')).toBeInTheDocument();
     expect(screen.queryByText('Owner controls')).not.toBeInTheDocument();
     expect(screen.queryByText('Trading operations')).not.toBeInTheDocument();

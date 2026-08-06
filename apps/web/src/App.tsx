@@ -189,9 +189,7 @@ export function App() {
 
           <p className="eyebrow">{account.role_label}</p>
           <h1 id="dashboard-title">Welcome, {account.display_name ?? account.role_label}</h1>
-          <p className="intro">
-            Your workspace shows only the controls approved for this account.
-          </p>
+          <p className="intro">Your workspace shows only the controls approved for this account.</p>
 
           <div className="status-grid">
             <article className="status-card status-card--healthy">
@@ -219,7 +217,10 @@ export function App() {
 
           <div className="access-grid" aria-label="Approved workspace areas">
             {account.sections.map((section) => (
-              <article className={`access-section access-section--${section.key}`} key={section.key}>
+              <article
+                className={`access-section access-section--${section.key}`}
+                key={section.key}
+              >
                 <span className="status-label">{section.label}</span>
                 <p>{section.description}</p>
                 <ul className="access-action-list">
