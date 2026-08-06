@@ -23,7 +23,7 @@
     "check": "npm run typecheck && npm run lint && npm run format:check && npm run test && npm run build:web"
   },
   "devDependencies": {
-    "wrangler": "^4.0.0"
+    "wrangler": "4.35.0"
   },
   "engines": {
     "node": ">=20",
