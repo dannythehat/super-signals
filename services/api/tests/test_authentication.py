@@ -16,7 +16,7 @@ from app.config import get_settings
 from app.db import get_engine, get_session_factory
 from app.main import create_app
 from app.security import hash_password, verify_password
-from app.seed import seed_owner
+from app.seed import seed_account, seed_owner
 
 DATABASE_URL = os.getenv("DATABASE_URL")
 API_ROOT = Path(__file__).resolve().parents[1]
@@ -96,6 +96,26 @@ def test_owner_can_login_reach_protected_page_and_logout(auth_client) -> None:
     logout = client.post("/auth/logout")
     assert logout.status_code == 204
     assert client.get("/auth/me").status_code == 401
+
+
+def test_missing_and_passwordless_accounts_are_rejected(auth_client) -> None:
+    client, engine = auth_client
+    missing = client.post(
+        "/auth/login",
+        json={"email": "missing@example.com", "password": "any password"},
+    )
+
+    with Session(engine) as session:
+        seed_account(session, "waiting@example.com", "Waiting User", "user")
+
+    passwordless = client.post(
+        "/auth/login",
+        json={"email": "waiting@example.com", "password": "any password"},
+    )
+
+    assert missing.status_code == 401
+    assert passwordless.status_code == 401
+    assert missing.json() == passwordless.json()
 
 
 def test_invalid_and_missing_sessions_are_rejected(auth_client) -> None:
