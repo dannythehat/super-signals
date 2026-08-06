@@ -30,6 +30,10 @@ Non-production builds may use `VITE_DEPLOYMENT_ENV=preview` once separate previe
 
 Never place Telegram, MT5, database, Cloudflare API or encryption secrets in `VITE_` variables. Vite embeds `VITE_` values into the browser bundle and they are public.
 
+## Deployment diagnostics
+
+Commits to the Day 3 feature branch trigger the Cloudflare build diagnostic alongside GitHub CI and the connected Cloudflare Workers build. The diagnostic uses the repository secret `CLOUDFLARE_API_TOKEN` and does not print the credential.
+
 ## Acceptance check
 
 Day 3 passes when:
