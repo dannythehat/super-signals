@@ -1,13 +1,37 @@
-name: Day 5 formatter note
+name: Day 5 test formatter
 
 on:
-  workflow_dispatch:
+  push:
+    branches:
+      - feature/day-05-secure-owner-auth
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
-  information:
+  format:
+    if: github.actor != 'github-actions[bot]'
     runs-on: ubuntu-latest
     steps:
-      - run: echo "Day 5 frontend formatting has already been applied."
+      - name: Check out branch
+        uses: actions/checkout@v4
+        with:
+          ref: feature/day-05-secure-owner-auth
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Install dependencies
+        run: npm install
+      - name: Format authentication tests
+        run: npx prettier --write apps/web/tests/App.test.tsx
+      - name: Commit formatting
+        run: |
+          if git diff --quiet; then
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add apps/web/tests/App.test.tsx
+          git commit -m "style: format authentication UI tests"
+          git push
