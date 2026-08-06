@@ -1,4 +1,4 @@
-"""Secure owner authentication routes."""
+"""Secure account authentication routes."""
 
 from __future__ import annotations
 
@@ -9,14 +9,15 @@ from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
 from app.auth_service import (
-    authenticate_owner,
-    create_owner_session,
+    authenticate_user,
     create_recovery_request,
-    get_owner_for_session,
+    create_session,
+    get_user_for_session,
     revoke_session,
 )
 from app.config import Settings, get_settings
 from app.db import get_db_session
+from app.permissions import ROLE_LABELS, build_access_sections
 
 router = APIRouter(prefix="/auth", tags=["authentication"])
 DbSession = Annotated[Session, Depends(get_db_session)]
@@ -37,11 +38,28 @@ class SecurityStatus(BaseModel):
     passkey: str
 
 
-class OwnerResponse(BaseModel):
+class AccessAction(BaseModel):
+    permission: str
+    label: str
+    description: str
+
+
+class AccessSection(BaseModel):
+    key: str
+    label: str
+    description: str
+    actions: list[AccessAction]
+
+
+class AccountResponse(BaseModel):
     id: str
     email: str
     display_name: str | None
-    role: str = "owner"
+    role: str
+    role_label: str
+    roles: list[str]
+    permissions: list[str]
+    sections: list[AccessSection]
     security: SecurityStatus
 
 
@@ -53,14 +71,19 @@ def _client_ip(request: Request) -> str | None:
     return request.client.host if request.client else None
 
 
-def _owner_response(owner: dict[str, Any]) -> OwnerResponse:
-    return OwnerResponse(
-        id=str(owner["id"]),
-        email=str(owner["email"]),
-        display_name=owner["display_name"],
+def account_response(identity: dict[str, Any]) -> AccountResponse:
+    return AccountResponse(
+        id=str(identity["id"]),
+        email=str(identity["email"]),
+        display_name=identity["display_name"],
+        role=identity["role"],
+        role_label=ROLE_LABELS.get(identity["role"], identity["role"]),
+        roles=list(identity["roles"]),
+        permissions=list(identity["permissions"]),
+        sections=build_access_sections(identity["permissions"]),
         security=SecurityStatus(
-            two_factor="enabled" if owner["two_factor_enabled"] else "setup_required",
-            passkey="enabled" if owner["passkey_enabled"] else "setup_available",
+            two_factor="enabled" if identity["two_factor_enabled"] else "setup_required",
+            passkey="enabled" if identity["passkey_enabled"] else "setup_available",
         ),
     )
 
@@ -75,24 +98,24 @@ def _session_token(request: Request, settings: Settings) -> str:
     return token
 
 
-@router.post("/login", response_model=OwnerResponse)
+@router.post("/login", response_model=AccountResponse)
 def login(
     payload: LoginRequest,
     request: Request,
     response: Response,
     session: DbSession,
     settings: AppSettings,
-) -> OwnerResponse:
-    owner = authenticate_owner(session, payload.email, payload.password)
-    if owner is None:
+) -> AccountResponse:
+    identity = authenticate_user(session, payload.email, payload.password)
+    if identity is None:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Email or password is incorrect.",
         )
 
-    raw_token, _ = create_owner_session(
+    raw_token, _ = create_session(
         session,
-        user_id=owner["id"],
+        user_id=identity["id"],
         ttl_seconds=settings.session_ttl_seconds,
         user_agent=request.headers.get("user-agent"),
         ip_address=_client_ip(request),
@@ -108,22 +131,22 @@ def login(
         path="/",
     )
     response.headers["Cache-Control"] = "no-store"
-    return _owner_response(owner)
+    return account_response(identity)
 
 
-@router.get("/me", response_model=OwnerResponse)
+@router.get("/me", response_model=AccountResponse)
 def me(
     request: Request,
     session: DbSession,
     settings: AppSettings,
-) -> OwnerResponse:
-    owner = get_owner_for_session(session, _session_token(request, settings))
-    if owner is None:
+) -> AccountResponse:
+    identity = get_user_for_session(session, _session_token(request, settings))
+    if identity is None:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Authentication required.",
         )
-    return _owner_response(owner)
+    return account_response(identity)
 
 
 @router.post("/logout", status_code=status.HTTP_204_NO_CONTENT)

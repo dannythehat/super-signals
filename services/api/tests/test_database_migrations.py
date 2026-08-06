@@ -1,4 +1,4 @@
-"""Integration checks for the PostgreSQL schema and owner seed."""
+"""Integration checks for the PostgreSQL schema, roles and owner seed."""
 
 import os
 from pathlib import Path
@@ -17,6 +17,8 @@ DATABASE_URL = os.getenv("DATABASE_URL")
 API_ROOT = Path(__file__).resolve().parents[1]
 CORE_TABLES = {
     "roles",
+    "permissions",
+    "role_permissions",
     "users",
     "user_roles",
     "invitations",
@@ -65,6 +67,10 @@ def test_relationships_and_key_unique_constraints_exist(migrated_engine) -> None
     position_foreign_keys = {
         foreign_key["referred_table"] for foreign_key in inspector.get_foreign_keys("positions")
     }
+    role_permission_foreign_keys = {
+        foreign_key["referred_table"]
+        for foreign_key in inspector.get_foreign_keys("role_permissions")
+    }
     message_unique_names = {
         constraint["name"] for constraint in inspector.get_unique_constraints("messages")
     }
@@ -74,8 +80,51 @@ def test_relationships_and_key_unique_constraints_exist(migrated_engine) -> None
 
     assert source_foreign_keys == {"telegram_accounts", "users"}
     assert position_foreign_keys == {"signals", "users"}
+    assert role_permission_foreign_keys == {"roles", "permissions"}
     assert "uq_messages_source_telegram_id" in message_unique_names
     assert "uq_positions_signal_user_tp" in position_unique_names
+
+
+def test_permission_matrix_is_seeded(migrated_engine) -> None:
+    with migrated_engine.connect() as connection:
+        role_names = set(connection.scalars(text("SELECT name FROM roles")))
+        permission_count = connection.scalar(text("SELECT count(*) FROM permissions"))
+        owner_count = connection.scalar(
+            text(
+                """
+                SELECT count(*)
+                FROM role_permissions AS rp
+                JOIN roles AS r ON r.id = rp.role_id
+                WHERE r.name = 'owner'
+                """
+            )
+        )
+        trading_admin_count = connection.scalar(
+            text(
+                """
+                SELECT count(*)
+                FROM role_permissions AS rp
+                JOIN roles AS r ON r.id = rp.role_id
+                WHERE r.name = 'trading_admin'
+                """
+            )
+        )
+        user_count = connection.scalar(
+            text(
+                """
+                SELECT count(*)
+                FROM role_permissions AS rp
+                JOIN roles AS r ON r.id = rp.role_id
+                WHERE r.name = 'user'
+                """
+            )
+        )
+
+    assert {"owner", "trading_admin", "user"} <= role_names
+    assert permission_count == 23
+    assert owner_count == 23
+    assert trading_admin_count == 8
+    assert user_count == 8
 
 
 def test_owner_seed_is_idempotent_and_assigns_owner_role(migrated_engine) -> None:
@@ -109,7 +158,7 @@ def test_case_insensitive_email_uniqueness_is_enforced(migrated_engine) -> None:
 def test_audit_events_are_append_only(migrated_engine) -> None:
     with Session(migrated_engine) as session:
         event = AuditEvent(
-            event_type="day4.test",
+            event_type="day6.test",
             entity_type="schema",
             payload={"verified": True},
         )

@@ -3,11 +3,28 @@ import { FormEvent, useEffect, useState } from 'react';
 type AuthState = 'checking' | 'signed-out' | 'signed-in';
 type Notice = { tone: 'error' | 'success'; message: string } | null;
 
-interface Owner {
+interface AccessAction {
+  permission: string;
+  label: string;
+  description: string;
+}
+
+interface AccessSection {
+  key: 'owner' | 'trading' | 'user';
+  label: string;
+  description: string;
+  actions: AccessAction[];
+}
+
+interface Account {
   id: string;
   email: string;
   display_name: string | null;
-  role: 'owner';
+  role: 'owner' | 'trading_admin' | 'user';
+  role_label: string;
+  roles: string[];
+  permissions: string[];
+  sections: AccessSection[];
   security: {
     two_factor: 'enabled' | 'setup_required';
     passkey: 'enabled' | 'setup_available';
@@ -21,16 +38,20 @@ async function readJson<T>(response: Response): Promise<T> {
   if (!response.ok) {
     const detail =
       typeof body === 'object' && body !== null && 'detail' in body
-        ? String((body as { detail: unknown }).detail)
+        ? (body as { detail: unknown }).detail
         : 'Something went wrong.';
-    throw new Error(detail);
+    const message =
+      typeof detail === 'object' && detail !== null && 'message' in detail
+        ? String((detail as { message: unknown }).message)
+        : String(detail);
+    throw new Error(message);
   }
   return body;
 }
 
 export function App() {
   const [authState, setAuthState] = useState<AuthState>('checking');
-  const [owner, setOwner] = useState<Owner | null>(null);
+  const [account, setAccount] = useState<Account | null>(null);
   const [notice, setNotice] = useState<Notice>(null);
   const [busy, setBusy] = useState(false);
   const [showRecovery, setShowRecovery] = useState(false);
@@ -49,7 +70,7 @@ export function App() {
           setAuthState('signed-out');
           return;
         }
-        setOwner(await readJson<Owner>(response));
+        setAccount(await readJson<Account>(response));
         setAuthState('signed-in');
       } catch (error) {
         if (error instanceof DOMException && error.name === 'AbortError') return;
@@ -78,8 +99,8 @@ export function App() {
           password: form.get('password'),
         }),
       });
-      const authenticatedOwner = await readJson<Owner>(response);
-      setOwner(authenticatedOwner);
+      const authenticatedAccount = await readJson<Account>(response);
+      setAccount(authenticatedAccount);
       setAuthState('signed-in');
       event.currentTarget.reset();
     } catch (error) {
@@ -101,7 +122,7 @@ export function App() {
         headers: { Accept: 'application/json' },
       });
     } finally {
-      setOwner(null);
+      setAccount(null);
       setAuthState('signed-out');
       setNotice(null);
       setBusy(false);
@@ -146,7 +167,7 @@ export function App() {
     );
   }
 
-  if (authState === 'signed-in' && owner) {
+  if (authState === 'signed-in' && account) {
     return (
       <main className="app-shell">
         <section className="dashboard-card" aria-labelledby="dashboard-title">
@@ -166,33 +187,58 @@ export function App() {
             </button>
           </header>
 
-          <p className="eyebrow">Owner access</p>
-          <h1 id="dashboard-title">Welcome, {owner.display_name ?? 'Owner'}</h1>
-          <p className="intro">Your protected Super Signals administration area is ready.</p>
+          <p className="eyebrow">{account.role_label}</p>
+          <h1 id="dashboard-title">Welcome, {account.display_name ?? account.role_label}</h1>
+          <p className="intro">Your workspace shows only the controls approved for this account.</p>
 
           <div className="status-grid">
             <article className="status-card status-card--healthy">
               <span className="status-label">Session</span>
               <strong>Securely signed in</strong>
-              <small>{owner.email}</small>
+              <small>{account.email}</small>
             </article>
             <article className="status-card">
-              <span className="status-label">Two-factor authentication</span>
+              <span className="status-label">Role</span>
+              <strong>{account.role_label}</strong>
+              <small>{account.permissions.length} approved permissions</small>
+            </article>
+            <article className="status-card">
+              <span className="status-label">Additional security</span>
               <strong>
-                {owner.security.two_factor === 'enabled' ? 'Enabled' : 'Setup required'}
+                {account.security.two_factor === 'enabled' ? '2FA enabled' : 'Setup required'}
               </strong>
-              <small>The guided setup arrives in the next security phase.</small>
+              <small>
+                {account.security.passkey === 'enabled'
+                  ? 'Passkey enabled'
+                  : 'Passkey setup available soon'}
+              </small>
             </article>
-            <article className="status-card">
-              <span className="status-label">Passkey</span>
-              <strong>{owner.security.passkey === 'enabled' ? 'Enabled' : 'Available soon'}</strong>
-              <small>WebAuthn registration is prepared but not active yet.</small>
-            </article>
+          </div>
+
+          <div className="access-grid" aria-label="Approved workspace areas">
+            {account.sections.map((section) => (
+              <article
+                className={`access-section access-section--${section.key}`}
+                key={section.key}
+              >
+                <span className="status-label">{section.label}</span>
+                <p>{section.description}</p>
+                <ul className="access-action-list">
+                  {section.actions.map((action) => (
+                    <li key={action.permission}>
+                      <strong>{action.label}</strong>
+                      <small>{action.description}</small>
+                    </li>
+                  ))}
+                </ul>
+              </article>
+            ))}
           </div>
 
           <div className="foundation-note">
             <span className="pulse" aria-hidden="true" />
-            Protected owner foundation only. No live trading is enabled.
+            Role restrictions are enforced by the API and every denial is audited. No live trading
+            is enabled.
           </div>
         </section>
       </main>
@@ -203,12 +249,12 @@ export function App() {
     <main className="app-shell">
       <section className="auth-card" aria-labelledby="login-title">
         <img className="brand-logo" src="/super-signals-logo.png" alt="Super Signals" />
-        <p className="eyebrow">Private owner access</p>
+        <p className="eyebrow">Private account access</p>
         <h1 id="login-title">{showRecovery ? 'Recover access' : 'Sign in securely'}</h1>
         <p className="intro">
           {showRecovery
-            ? 'Enter the owner email. The response will never reveal whether an account exists.'
-            : 'Only approved Super Signals administrators can continue.'}
+            ? 'Enter the account email. The response will never reveal whether an account exists.'
+            : 'Only approved Super Signals accounts can continue.'}
         </p>
 
         {notice && (
@@ -220,7 +266,7 @@ export function App() {
         {showRecovery ? (
           <form className="auth-form" onSubmit={handleRecovery}>
             <label>
-              Owner email
+              Account email
               <input name="email" type="email" autoComplete="email" required />
             </label>
             <button className="button" type="submit" disabled={busy}>
@@ -240,7 +286,7 @@ export function App() {
         ) : (
           <form className="auth-form" onSubmit={handleLogin}>
             <label>
-              Owner email
+              Email
               <input name="email" type="email" autoComplete="username" required />
             </label>
             <label>
