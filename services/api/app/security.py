@@ -40,8 +40,7 @@ def hash_password(password: str) -> str:
         maxmem=128 * 1024 * 1024,
     )
     return (
-        f"scrypt$n={_SCRYPT_N}$r={_SCRYPT_R}$p={_SCRYPT_P}"
-        f"${_b64encode(salt)}${_b64encode(derived)}"
+        f"scrypt$n={_SCRYPT_N}$r={_SCRYPT_R}$p={_SCRYPT_P}${_b64encode(salt)}${_b64encode(derived)}"
     )
 
 
