@@ -12,8 +12,7 @@ from sqlalchemy.orm import Session
 from app.security import hash_token, new_token, privacy_hash, verify_password
 
 _DUMMY_PASSWORD_HASH = (
-    "scrypt$n=32768$r=8$p=1$c3VwZXItc2lnbmFscy1kbQ"
-    "$puUPWva99xMDxi6WGb_sern6ymlGtbRxUc3Xj5Hb_aQ"
+    "scrypt$n=32768$r=8$p=1$c3VwZXItc2lnbmFscy1kbQ$puUPWva99xMDxi6WGb_sern6ymlGtbRxUc3Xj5Hb_aQ"
 )
 
 
