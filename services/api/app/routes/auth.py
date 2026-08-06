@@ -143,6 +143,7 @@ def logout(
         httponly=True,
         samesite="strict",
     )
+    response.status_code = status.HTTP_204_NO_CONTENT
     response.headers["Cache-Control"] = "no-store"
     return response
 
