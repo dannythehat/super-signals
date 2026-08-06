@@ -1,4 +1,4 @@
-"""Database-backed owner authentication operations."""
+"""Database-backed authentication and session operations."""
 
 from __future__ import annotations
 
@@ -9,6 +9,7 @@ from uuid import UUID
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
+from app.permissions import primary_role
 from app.security import hash_token, new_token, privacy_hash, verify_password
 
 _DUMMY_PASSWORD_HASH = (
@@ -20,19 +21,81 @@ def utc_now() -> datetime:
     return datetime.now(UTC)
 
 
-def authenticate_owner(session: Session, email: str, password: str) -> dict[str, Any] | None:
-    owner = (
+def _load_identity(session: Session, user_id: UUID) -> dict[str, Any] | None:
+    account = (
         session.execute(
             text(
                 """
-                SELECT u.id, u.email, u.display_name, u.password_hash,
-                       u.two_factor_enabled, u.passkey_enabled
-                FROM users AS u
-                JOIN user_roles AS ur ON ur.user_id = u.id
+                SELECT id, email, display_name, two_factor_enabled, passkey_enabled
+                FROM users
+                WHERE id = :user_id
+                  AND status = 'active'
+                """
+            ),
+            {"user_id": user_id},
+        )
+        .mappings()
+        .first()
+    )
+    if account is None:
+        return None
+
+    roles = list(
+        session.scalars(
+            text(
+                """
+                SELECT r.name
+                FROM user_roles AS ur
                 JOIN roles AS r ON r.id = ur.role_id
+                WHERE ur.user_id = :user_id
+                ORDER BY CASE r.name
+                    WHEN 'owner' THEN 1
+                    WHEN 'trading_admin' THEN 2
+                    WHEN 'user' THEN 3
+                    ELSE 99
+                END
+                """
+            ),
+            {"user_id": user_id},
+        )
+    )
+    if not roles:
+        return None
+
+    permissions = list(
+        session.scalars(
+            text(
+                """
+                SELECT DISTINCT p.code
+                FROM user_roles AS ur
+                JOIN role_permissions AS rp ON rp.role_id = ur.role_id
+                JOIN permissions AS p ON p.id = rp.permission_id
+                WHERE ur.user_id = :user_id
+                ORDER BY p.code
+                """
+            ),
+            {"user_id": user_id},
+        )
+    )
+    identity = dict(account)
+    identity["roles"] = roles
+    identity["role"] = primary_role(roles)
+    identity["permissions"] = permissions
+    return identity
+
+
+def authenticate_user(session: Session, email: str, password: str) -> dict[str, Any] | None:
+    account = (
+        session.execute(
+            text(
+                """
+                SELECT u.id, u.password_hash
+                FROM users AS u
                 WHERE lower(u.email::text) = lower(:email)
                   AND u.status = 'active'
-                  AND r.name = 'owner'
+                  AND EXISTS (
+                      SELECT 1 FROM user_roles AS ur WHERE ur.user_id = u.id
+                  )
                 LIMIT 1
                 """
             ),
@@ -41,13 +104,13 @@ def authenticate_owner(session: Session, email: str, password: str) -> dict[str,
         .mappings()
         .first()
     )
-    encoded = owner["password_hash"] if owner else _DUMMY_PASSWORD_HASH
+    encoded = account["password_hash"] if account else _DUMMY_PASSWORD_HASH
     if not verify_password(password, encoded):
         return None
-    return dict(owner)
+    return _load_identity(session, account["id"])
 
 
-def create_owner_session(
+def create_session(
     session: Session,
     *,
     user_id: UUID,
@@ -81,23 +144,18 @@ def create_owner_session(
     return raw_token, expires_at
 
 
-def get_owner_for_session(session: Session, raw_token: str) -> dict[str, Any] | None:
-    owner = (
+def get_user_for_session(session: Session, raw_token: str) -> dict[str, Any] | None:
+    active_session = (
         session.execute(
             text(
                 """
-                SELECT u.id, u.email, u.display_name,
-                       u.two_factor_enabled, u.passkey_enabled,
-                       s.id AS session_id, s.expires_at
+                SELECT s.id AS session_id, s.user_id, s.expires_at
                 FROM auth_sessions AS s
                 JOIN users AS u ON u.id = s.user_id
-                JOIN user_roles AS ur ON ur.user_id = u.id
-                JOIN roles AS r ON r.id = ur.role_id
                 WHERE s.token_hash = :token_hash
                   AND s.revoked_at IS NULL
                   AND s.expires_at > now()
                   AND u.status = 'active'
-                  AND r.name = 'owner'
                 LIMIT 1
                 """
             ),
@@ -106,15 +164,21 @@ def get_owner_for_session(session: Session, raw_token: str) -> dict[str, Any] | 
         .mappings()
         .first()
     )
-    if owner is None:
+    if active_session is None:
+        return None
+
+    identity = _load_identity(session, active_session["user_id"])
+    if identity is None:
         return None
 
     session.execute(
         text("UPDATE auth_sessions SET last_seen_at = now() WHERE id = :session_id"),
-        {"session_id": owner["session_id"]},
+        {"session_id": active_session["session_id"]},
     )
     session.commit()
-    return dict(owner)
+    identity["session_id"] = active_session["session_id"]
+    identity["expires_at"] = active_session["expires_at"]
+    return identity
 
 
 def revoke_session(session: Session, raw_token: str) -> None:
@@ -139,22 +203,22 @@ def create_recovery_request(
     ip_address: str | None,
     fingerprint_secret: str,
 ) -> None:
-    owner_id = session.scalar(
+    user_id = session.scalar(
         text(
             """
             SELECT u.id
             FROM users AS u
-            JOIN user_roles AS ur ON ur.user_id = u.id
-            JOIN roles AS r ON r.id = ur.role_id
             WHERE lower(u.email::text) = lower(:email)
               AND u.status = 'active'
-              AND r.name = 'owner'
+              AND EXISTS (
+                  SELECT 1 FROM user_roles AS ur WHERE ur.user_id = u.id
+              )
             LIMIT 1
             """
         ),
         {"email": email.strip()},
     )
-    if owner_id is None:
+    if user_id is None:
         return
 
     session.execute(
@@ -166,7 +230,7 @@ def create_recovery_request(
               AND expires_at <= now()
             """
         ),
-        {"user_id": owner_id},
+        {"user_id": user_id},
     )
     raw_token = new_token()
     session.execute(
@@ -179,10 +243,15 @@ def create_recovery_request(
             """
         ),
         {
-            "user_id": owner_id,
+            "user_id": user_id,
             "token_hash": hash_token(raw_token),
             "requested_ip_hash": privacy_hash(ip_address, fingerprint_secret),
             "expires_at": utc_now() + timedelta(seconds=ttl_seconds),
         },
     )
     session.commit()
+
+
+authenticate_owner = authenticate_user
+create_owner_session = create_session
+get_owner_for_session = get_user_for_session
