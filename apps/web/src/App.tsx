@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 
-import { APP_NAME, BUILD_PHASE, type HealthResponse } from '@super-signals/shared';
+import { BUILD_PHASE, type HealthResponse } from '@super-signals/shared';
 
 type ConnectionState = 'checking' | 'healthy' | 'unavailable';
 
@@ -57,12 +57,18 @@ export function App() {
   return (
     <main className="app-shell">
       <section className="hero-card" aria-labelledby="app-title">
-        <div className="brand-mark" aria-hidden="true">
-          SS
-        </div>
+        <img
+          className="brand-logo"
+          src="/super-signals-logo.png"
+          alt="Super Signals"
+          width="240"
+          height="166"
+        />
+        <h1 id="app-title" className="visually-hidden">
+          Super Signals
+        </h1>
 
         <p className="eyebrow">Private trading infrastructure</p>
-        <h1 id="app-title">{APP_NAME}</h1>
         <p className="intro">
           The secure foundation for approved Telegram signals, controlled automation and Vantage MT5
           execution.
