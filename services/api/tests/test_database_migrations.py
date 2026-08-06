@@ -3,9 +3,9 @@
 import os
 from pathlib import Path
 
+import pytest
 from alembic import command
 from alembic.config import Config
-import pytest
 from sqlalchemy import inspect, select, text
 from sqlalchemy.exc import DBAPIError, IntegrityError
 from sqlalchemy.orm import Session
@@ -60,12 +60,10 @@ def test_relationships_and_key_unique_constraints_exist(migrated_engine) -> None
     inspector = inspect(migrated_engine)
 
     source_foreign_keys = {
-        foreign_key["referred_table"]
-        for foreign_key in inspector.get_foreign_keys("sources")
+        foreign_key["referred_table"] for foreign_key in inspector.get_foreign_keys("sources")
     }
     position_foreign_keys = {
-        foreign_key["referred_table"]
-        for foreign_key in inspector.get_foreign_keys("positions")
+        foreign_key["referred_table"] for foreign_key in inspector.get_foreign_keys("positions")
     }
     message_unique_names = {
         constraint["name"] for constraint in inspector.get_unique_constraints("messages")

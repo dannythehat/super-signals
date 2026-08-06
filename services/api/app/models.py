@@ -23,7 +23,8 @@ from sqlalchemy import (
     func,
     text,
 )
-from sqlalchemy.dialects.postgresql import CITEXT, JSONB, UUID as PGUUID
+from sqlalchemy.dialects.postgresql import CITEXT, JSONB
+from sqlalchemy.dialects.postgresql import UUID as PGUUID
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
 
@@ -252,9 +253,7 @@ class Message(Base):
     )
 
     source: Mapped[Source] = relationship(back_populates="messages")
-    signal: Mapped[Signal | None] = relationship(
-        back_populates="source_message", uselist=False
-    )
+    signal: Mapped[Signal | None] = relationship(back_populates="source_message", uselist=False)
 
 
 class Signal(TimestampMixin, Base):
@@ -287,15 +286,11 @@ class Signal(TimestampMixin, Base):
     )
     symbol: Mapped[str | None] = mapped_column(String(40))
     side: Mapped[str | None] = mapped_column(String(4))
-    order_type: Mapped[str] = mapped_column(
-        String(12), nullable=False, server_default="market"
-    )
+    order_type: Mapped[str] = mapped_column(String(12), nullable=False, server_default="market")
     entry_low: Mapped[Decimal | None] = mapped_column(Numeric(24, 10))
     entry_high: Mapped[Decimal | None] = mapped_column(Numeric(24, 10))
     stop_loss: Mapped[Decimal | None] = mapped_column(Numeric(24, 10))
-    parser_status: Mapped[str] = mapped_column(
-        String(20), nullable=False, server_default="review"
-    )
+    parser_status: Mapped[str] = mapped_column(String(20), nullable=False, server_default="review")
     skip_reason: Mapped[str | None] = mapped_column(Text)
     risk_multiplier: Mapped[Decimal] = mapped_column(
         Numeric(8, 4), nullable=False, server_default="1"
