@@ -23,6 +23,7 @@ The unchecked technical evidence is completed by the Day 7 pull-request workflow
 - Upgraded vulnerable ESLint, Vite and Vitest development tooling.
 - Added dependency auditing to CI.
 - Replaced `npm install` with deterministic `npm ci` in controlled builds.
+- Upgraded the official GitHub checkout, Node and Python actions to their current v7 releases.
 - Removed obsolete one-day formatting workflows.
 - Replaced the old Day 3-only preview deployment with pull-request preview deployment.
 - Added fail-closed non-development configuration for database, CORS and session fingerprint secrets.
