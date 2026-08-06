@@ -50,7 +50,7 @@ button:disabled {
 
 .auth-card,
 .dashboard-card {
-  width: min(100%, 760px);
+  width: min(100%, 960px);
   padding: clamp(28px, 6vw, 64px);
   border: 1px solid rgba(255, 255, 255, 0.1);
   border-radius: 28px;
@@ -110,7 +110,7 @@ h1 {
 }
 
 .intro {
-  max-width: 580px;
+  max-width: 650px;
   margin: 18px 0 0;
   color: #b8bdca;
   font-size: clamp(0.98rem, 2.4vw, 1.12rem);
@@ -234,6 +234,68 @@ h1 {
   text-transform: uppercase;
 }
 
+.access-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+  gap: 16px;
+  margin-top: 24px;
+}
+
+.access-section {
+  padding: 22px;
+  border: 1px solid rgba(255, 255, 255, 0.09);
+  border-radius: 20px;
+  background: rgba(255, 255, 255, 0.028);
+}
+
+.access-section--owner {
+  border-color: rgba(89, 232, 205, 0.28);
+}
+
+.access-section--trading {
+  border-color: rgba(105, 160, 255, 0.28);
+}
+
+.access-section--user {
+  border-color: rgba(130, 255, 72, 0.24);
+}
+
+.access-section > p {
+  min-height: 52px;
+  margin: 12px 0 18px;
+  color: #aab0bd;
+  line-height: 1.5;
+}
+
+.access-action-list {
+  display: grid;
+  gap: 10px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.access-action-list li {
+  padding: 12px 13px;
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.045);
+}
+
+.access-action-list strong,
+.access-action-list small {
+  display: block;
+}
+
+.access-action-list strong {
+  font-size: 0.94rem;
+}
+
+.access-action-list small {
+  margin-top: 5px;
+  color: #8e95a7;
+  line-height: 1.4;
+}
+
 .foundation-note {
   display: flex;
   align-items: center;
@@ -272,11 +334,16 @@ h1 {
     width: 150px;
   }
 
-  .status-grid {
+  .status-grid,
+  .access-grid {
     grid-template-columns: 1fr;
   }
 
   .status-card {
     min-height: 118px;
+  }
+
+  .access-section > p {
+    min-height: auto;
   }
 }
