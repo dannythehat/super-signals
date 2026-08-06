@@ -151,8 +151,17 @@ export function App() {
       <main className="app-shell">
         <section className="dashboard-card" aria-labelledby="dashboard-title">
           <header className="dashboard-header">
-            <img className="brand-logo brand-logo--dashboard" src="/super-signals-logo.png" alt="" />
-            <button className="button button--quiet" type="button" onClick={handleLogout} disabled={busy}>
+            <img
+              className="brand-logo brand-logo--dashboard"
+              src="/super-signals-logo.png"
+              alt=""
+            />
+            <button
+              className="button button--quiet"
+              type="button"
+              onClick={handleLogout}
+              disabled={busy}
+            >
               Log out
             </button>
           </header>
@@ -169,7 +178,9 @@ export function App() {
             </article>
             <article className="status-card">
               <span className="status-label">Two-factor authentication</span>
-              <strong>{owner.security.two_factor === 'enabled' ? 'Enabled' : 'Setup required'}</strong>
+              <strong>
+                {owner.security.two_factor === 'enabled' ? 'Enabled' : 'Setup required'}
+              </strong>
               <small>The guided setup arrives in the next security phase.</small>
             </article>
             <article className="status-card">
