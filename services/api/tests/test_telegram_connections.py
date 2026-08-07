@@ -24,6 +24,8 @@ from app.seed import seed_account, seed_owner
 from app.telegram_crypto import TelegramSessionCipher
 from app.telegram_gateway import (
     TelegramAuthorizationResult,
+    TelegramCodeAuthorization,
+    TelegramCodeInvalidError,
     TelegramFlowNotFoundError,
     TelegramIdentity,
     TelegramPasswordInvalidError,
@@ -60,8 +62,10 @@ class FakeTelegramGateway:
         default_factory=lambda: {RAW_SESSION: IDENTITY}
     )
     flows: set[UUID] = field(default_factory=set)
+    code_flows: set[UUID] = field(default_factory=set)
     checked_sessions: list[str] = field(default_factory=list)
     revoked_sessions: list[str] = field(default_factory=list)
+    code_request_phones: list[str] = field(default_factory=list)
 
     async def begin_qr_authorization(self, flow_id: UUID) -> TelegramQrAuthorization:
         self.flows.add(flow_id)
@@ -77,6 +81,32 @@ class FakeTelegramGateway:
         if self.require_password:
             return TelegramAuthorizationResult(status="password_required")
         self.flows.remove(flow_id)
+        return TelegramAuthorizationResult(
+            status="connected",
+            session_string=RAW_SESSION,
+            identity=IDENTITY,
+        )
+
+    async def begin_code_authorization(
+        self, flow_id: UUID, phone_number_e164: str
+    ) -> TelegramCodeAuthorization:
+        self.code_flows.add(flow_id)
+        self.code_request_phones.append(phone_number_e164)
+        return TelegramCodeAuthorization(
+            flow_id=flow_id,
+            expires_at=datetime.now(UTC) + timedelta(minutes=5),
+        )
+
+    async def submit_code(self, flow_id: UUID, code: str) -> TelegramAuthorizationResult:
+        if flow_id not in self.code_flows:
+            raise TelegramFlowNotFoundError("missing")
+        if code != "12345":
+            raise TelegramCodeInvalidError("wrong code")
+        if self.require_password:
+            self.flows.add(flow_id)
+            self.code_flows.discard(flow_id)
+            return TelegramAuthorizationResult(status="password_required")
+        self.code_flows.remove(flow_id)
         return TelegramAuthorizationResult(
             status="connected",
             session_string=RAW_SESSION,
@@ -108,6 +138,7 @@ class FakeTelegramGateway:
 
     async def discard_flow(self, flow_id: UUID) -> None:
         self.flows.discard(flow_id)
+        self.code_flows.discard(flow_id)
 
 
 @pytest.fixture()
@@ -175,6 +206,66 @@ def _connect_account(client: TestClient) -> dict[str, object]:
     assert completed.status_code == 200
     assert completed.json()["status"] == "connected"
     return completed.json()["account"]
+
+
+def test_same_phone_code_connection_does_not_store_code_or_full_phone(
+    telegram_client,
+) -> None:
+    client, engine, _, gateway, cipher = telegram_client
+    started = client.post(
+        "/admin/telegram/accounts/authorize/code",
+        json={
+            "label": "Primary signal reader",
+            "phone_number": "+359 88 123 4567",
+        },
+    )
+    assert started.status_code == 201
+    assert started.headers["cache-control"] == "no-store"
+    assert started.json()["status"] == "code_required"
+    assert started.json()["phone_hint"] == "+35***567"
+    assert "+359881234567" not in started.text
+    assert gateway.code_request_phones == ["+359881234567"]
+
+    flow_id = started.json()["flow_id"]
+    rejected = client.post(
+        f"/admin/telegram/accounts/authorize/{flow_id}/code",
+        json={"code": "99999"},
+    )
+    assert rejected.status_code == 400
+    assert "99999" not in rejected.text
+
+    completed = client.post(
+        f"/admin/telegram/accounts/authorize/{flow_id}/code",
+        json={"code": "12345"},
+    )
+    assert completed.status_code == 200
+    assert completed.json()["status"] == "connected"
+    account_id = UUID(completed.json()["account"]["id"])
+
+    with engine.connect() as connection:
+        stored = (
+            connection.execute(
+                text(
+                    """
+                    SELECT session_ciphertext, status
+                    FROM telegram_accounts
+                    WHERE id = :id
+                    """
+                ),
+                {"id": account_id},
+            )
+            .mappings()
+            .one()
+        )
+        audit_text = connection.scalar(
+            text("SELECT string_agg(payload::text, ' ') FROM audit_events")
+        )
+
+    assert stored["status"] == "connected"
+    assert cipher.decrypt(stored["session_ciphertext"]) == RAW_SESSION
+    assert "12345" not in (audit_text or "")
+    assert "+359881234567" not in (audit_text or "")
+    assert "+35***567" in (audit_text or "")
 
 
 def test_qr_connection_is_encrypted_survives_restart_and_disconnects(
@@ -292,6 +383,37 @@ def test_two_step_verification_password_is_not_echoed_or_stored(
     assert "correct telegram password" not in (audit_text or "")
 
 
+def test_same_phone_code_flow_supports_two_step_verification(telegram_client) -> None:
+    client, engine, _, gateway, _ = telegram_client
+    gateway.require_password = True
+
+    started = client.post(
+        "/admin/telegram/accounts/authorize/code",
+        json={"label": "Protected reader", "phone_number": "+359881234567"},
+    )
+    flow_id = started.json()["flow_id"]
+    waiting = client.post(
+        f"/admin/telegram/accounts/authorize/{flow_id}/code",
+        json={"code": "12345"},
+    )
+    assert waiting.status_code == 200
+    assert waiting.json()["status"] == "password_required"
+
+    completed = client.post(
+        f"/admin/telegram/accounts/authorize/{flow_id}/password",
+        json={"password": "correct telegram password"},
+    )
+    assert completed.status_code == 200
+    assert completed.json()["status"] == "connected"
+
+    with engine.connect() as connection:
+        audit_text = connection.scalar(
+            text("SELECT string_agg(payload::text, ' ') FROM audit_events")
+        )
+    assert "12345" not in (audit_text or "")
+    assert "correct telegram password" not in (audit_text or "")
+
+
 def test_invited_user_cannot_manage_telegram_connections(telegram_client) -> None:
     client, engine, _, _, _ = telegram_client
     with Session(engine) as session:
@@ -312,8 +434,8 @@ def test_invited_user_cannot_manage_telegram_connections(telegram_client) -> Non
     )
 
     denied = client.post(
-        "/admin/telegram/accounts/authorize",
-        json={"label": "Should fail"},
+        "/admin/telegram/accounts/authorize/code",
+        json={"label": "Should fail", "phone_number": "+359881234567"},
     )
     assert denied.status_code == 403
 
@@ -330,4 +452,4 @@ def test_invited_user_cannot_manage_telegram_connections(telegram_client) -> Non
             )
         ).scalar_one()
     assert denial["permission"] == "sources.manage"
-    assert denial["path"] == "/admin/telegram/accounts/authorize"
+    assert denial["path"] == "/admin/telegram/accounts/authorize/code"
