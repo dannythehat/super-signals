@@ -108,8 +108,8 @@ class TelegramConnectionService:
         cleaned_label = self._clean_label(label)
         phone_number_e164 = self._normalize_phone(phone_number)
         flow_id = uuid4()
-        authorization: TelegramCodeAuthorization = (
-            await self._gateway.begin_code_authorization(flow_id, phone_number_e164)
+        authorization: TelegramCodeAuthorization = await self._gateway.begin_code_authorization(
+            flow_id, phone_number_e164
         )
         self._remember_flow(flow_id, actor["id"], cleaned_label)
         phone_hint = self._mask_phone(phone_number_e164)
