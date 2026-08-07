@@ -21,6 +21,7 @@ jobs:
       PGUSER: super_signals
       PGPASSWORD: super_signals
       PGDATABASE: super_signals_test
+      PGADMINUSER: postgres
 
     steps:
       - name: Check out exact commit without external actions
