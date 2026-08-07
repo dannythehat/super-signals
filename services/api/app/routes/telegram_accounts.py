@@ -12,8 +12,10 @@ from pydantic import BaseModel, Field, SecretStr
 from app.access_control import DbSession, require_permission
 from app.telegram_crypto import SessionDecryptionError
 from app.telegram_gateway import (
+    TelegramCodeInvalidError,
     TelegramFlowNotFoundError,
     TelegramPasswordInvalidError,
+    TelegramPhoneInvalidError,
     TelegramSessionInvalidError,
 )
 from app.telegram_qr import qr_svg_data_uri
@@ -37,6 +39,15 @@ class BeginTelegramAuthorizationRequest(BaseModel):
     label: str = Field(min_length=1, max_length=80)
 
 
+class BeginTelegramCodeAuthorizationRequest(BaseModel):
+    label: str = Field(min_length=1, max_length=80)
+    phone_number: str = Field(min_length=7, max_length=32)
+
+
+class TelegramCodeRequest(BaseModel):
+    code: SecretStr = Field(min_length=1, max_length=32)
+
+
 class TelegramPasswordRequest(BaseModel):
     password: SecretStr = Field(min_length=1, max_length=256)
 
@@ -54,6 +65,13 @@ class TelegramAuthorizationStartResponse(BaseModel):
     status: Literal["pending"] = "pending"
     qr_url: str
     qr_image_data_uri: str
+    expires_at: datetime
+
+
+class TelegramCodeAuthorizationStartResponse(BaseModel):
+    flow_id: UUID
+    status: Literal["code_required"] = "code_required"
+    phone_hint: str
     expires_at: datetime
 
 
@@ -121,6 +139,22 @@ def _translate_telegram_error(exc: Exception) -> HTTPException:
                 "message": str(exc),
             },
         )
+    if isinstance(exc, TelegramPhoneInvalidError):
+        return HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail={
+                "code": "telegram_phone_invalid",
+                "message": "Telegram rejected the phone number.",
+            },
+        )
+    if isinstance(exc, TelegramCodeInvalidError):
+        return HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail={
+                "code": "telegram_code_invalid",
+                "message": "Telegram rejected the login code.",
+            },
+        )
     if isinstance(exc, TelegramPasswordInvalidError):
         return HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -160,6 +194,65 @@ def list_telegram_accounts(
     return [
         _account_response(account) for account in service.list_accounts(session, actor=identity)
     ]
+
+
+@router.post(
+    "/authorize/code",
+    response_model=TelegramCodeAuthorizationStartResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+async def begin_telegram_code_authorization(
+    body: BeginTelegramCodeAuthorizationRequest,
+    response: Response,
+    session: DbSession,
+    identity: AdminIdentity,
+    service: TelegramService,
+) -> TelegramCodeAuthorizationStartResponse:
+    try:
+        authorization = await service.begin_code_authorization(
+            session,
+            actor=identity,
+            label=body.label,
+            phone_number=body.phone_number,
+        )
+    except Exception as exc:
+        raise _translate_telegram_error(exc) from exc
+    response.headers["Cache-Control"] = "no-store"
+    response.headers["Pragma"] = "no-cache"
+    return TelegramCodeAuthorizationStartResponse(
+        flow_id=authorization.flow_id,
+        phone_hint=authorization.phone_hint,
+        expires_at=authorization.expires_at,
+    )
+
+
+@router.post(
+    "/authorize/{flow_id}/code",
+    response_model=TelegramAuthorizationPollResponse,
+)
+async def submit_telegram_code(
+    flow_id: UUID,
+    body: TelegramCodeRequest,
+    session: DbSession,
+    identity: AdminIdentity,
+    service: TelegramService,
+) -> TelegramAuthorizationPollResponse:
+    try:
+        result = await service.submit_code(
+            session,
+            actor=identity,
+            flow_id=flow_id,
+            code=body.code.get_secret_value(),
+        )
+    except Exception as exc:
+        raise _translate_telegram_error(exc) from exc
+
+    account = result.get("account")
+    return TelegramAuthorizationPollResponse(
+        flow_id=flow_id,
+        status=result["status"],
+        account=_account_response(account) if account is not None else None,
+    )
 
 
 @router.post(
