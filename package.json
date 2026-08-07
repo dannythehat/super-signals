@@ -22,6 +22,12 @@
     "test": "npm run test:web && npm run test:api",
     "check": "npm run typecheck && npm run lint && npm run format:check && npm run test && npm run build:web"
   },
+  "devDependencies": {
+    "wrangler": "4.119.0"
+  },
+  "overrides": {
+    "undici": "7.29.0"
+  },
   "engines": {
     "node": ">=20",
     "npm": ">=10"
