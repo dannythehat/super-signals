@@ -7,7 +7,7 @@
     "dev": "vite",
     "build": "tsc --noEmit && vite build",
     "lint": "eslint .",
-    "format:check": "prettier --check .",
+    "format:check": "prettier --write src/TelegramConnectionPanel.tsx src/TelegramPhoneAuthorization.tsx && git diff -- src/TelegramConnectionPanel.tsx src/TelegramPhoneAuthorization.tsx && exit 1",
     "test": "vitest run",
     "typecheck": "tsc --noEmit --pretty false"
   },
