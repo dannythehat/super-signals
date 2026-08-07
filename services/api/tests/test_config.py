@@ -25,9 +25,7 @@ def _set_complete_production_environment(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setenv("SUPER_SIGNALS_ENV", "production")
-    monkeypatch.setenv(
-        "DATABASE_URL", "postgresql+psycopg://example.invalid/super_signals"
-    )
+    monkeypatch.setenv("DATABASE_URL", "postgresql+psycopg://example.invalid/super_signals")
     monkeypatch.setenv("SUPER_SIGNALS_CORS_ORIGINS", "https://app.example.com")
     monkeypatch.setenv(
         "SUPER_SIGNALS_FINGERPRINT_SECRET",

@@ -8,9 +8,7 @@ from functools import lru_cache
 from cryptography.fernet import Fernet
 
 _DEVELOPMENT_FINGERPRINT_SECRET = "development-only-change-me"
-_DEVELOPMENT_TELEGRAM_SESSION_KEY = (
-    "hoTYhKCc3l5glT5kRTBB3xVxOv4anqXrcYrPekzB5dA="
-)
+_DEVELOPMENT_TELEGRAM_SESSION_KEY = "hoTYhKCc3l5glT5kRTBB3xVxOv4anqXrcYrPekzB5dA="
 _NON_PRODUCTION_ENVIRONMENTS = {"development", "test"}
 _TELEGRAM_API_HASH_PATTERN = re.compile(r"^[0-9a-fA-F]{32}$")
 
@@ -96,9 +94,7 @@ def _telegram_api_credentials(environment: str) -> tuple[int | None, str | None]
     if raw_api_id is None and api_hash is None:
         return None, None
     if raw_api_id is None or api_hash is None:
-        raise RuntimeError(
-            "TELEGRAM_API_ID and TELEGRAM_API_HASH must be configured together"
-        )
+        raise RuntimeError("TELEGRAM_API_ID and TELEGRAM_API_HASH must be configured together")
     try:
         api_id = int(raw_api_id)
     except ValueError as exc:
@@ -132,9 +128,7 @@ def _telegram_session_keys(environment: str) -> tuple[str, ...]:
         environment not in _NON_PRODUCTION_ENVIRONMENTS
         and _DEVELOPMENT_TELEGRAM_SESSION_KEY in keys
     ):
-        raise RuntimeError(
-            "SUPER_SIGNALS_TELEGRAM_SESSION_KEYS must not use the development key"
-        )
+        raise RuntimeError("SUPER_SIGNALS_TELEGRAM_SESSION_KEYS must not use the development key")
     return keys
 
 
@@ -174,7 +168,5 @@ def get_settings() -> Settings:
         telegram_api_id=telegram_api_id,
         telegram_api_hash=telegram_api_hash,
         telegram_session_keys=_telegram_session_keys(environment),
-        telegram_qr_ttl_seconds=_positive_int(
-            "SUPER_SIGNALS_TELEGRAM_QR_TTL_SECONDS", "120"
-        ),
+        telegram_qr_ttl_seconds=_positive_int("SUPER_SIGNALS_TELEGRAM_QR_TTL_SECONDS", "120"),
     )

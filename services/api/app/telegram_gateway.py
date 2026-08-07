@@ -58,9 +58,7 @@ class TelegramAuthorizationResult:
 class TelegramGateway(Protocol):
     async def begin_qr_authorization(self, flow_id: UUID) -> TelegramQrAuthorization: ...
 
-    async def poll_qr_authorization(
-        self, flow_id: UUID
-    ) -> TelegramAuthorizationResult: ...
+    async def poll_qr_authorization(self, flow_id: UUID) -> TelegramAuthorizationResult: ...
 
     async def submit_password(
         self, flow_id: UUID, password: str
@@ -115,9 +113,7 @@ class TelethonTelegramGateway:
             await client.connect()
             qr_login = await client.qr_login()
             telegram_expiry = self._as_utc(qr_login.expires)
-            configured_expiry = datetime.now(UTC) + timedelta(
-                seconds=self._qr_ttl_seconds
-            )
+            configured_expiry = datetime.now(UTC) + timedelta(seconds=self._qr_ttl_seconds)
             expires_at = min(telegram_expiry, configured_expiry)
             timeout = max(1.0, (expires_at - datetime.now(UTC)).total_seconds())
             wait_task = asyncio.create_task(qr_login.wait(timeout=timeout))
@@ -127,9 +123,7 @@ class TelethonTelegramGateway:
                 expires_at=expires_at,
             )
             self._flows[flow_id] = flow
-            flow.expiry_task = asyncio.create_task(
-                self._expire_flow(flow_id, expires_at)
-            )
+            flow.expiry_task = asyncio.create_task(self._expire_flow(flow_id, expires_at))
             return TelegramQrAuthorization(
                 flow_id=flow_id,
                 qr_url=qr_login.url,
@@ -139,9 +133,7 @@ class TelethonTelegramGateway:
             await client.disconnect()
             raise
 
-    async def poll_qr_authorization(
-        self, flow_id: UUID
-    ) -> TelegramAuthorizationResult:
+    async def poll_qr_authorization(self, flow_id: UUID) -> TelegramAuthorizationResult:
         flow = self._flows.get(flow_id)
         if flow is None:
             raise TelegramFlowNotFoundError("Telegram authorisation flow was not found.")
@@ -169,9 +161,7 @@ class TelethonTelegramGateway:
 
         return await self._finalize(flow_id)
 
-    async def submit_password(
-        self, flow_id: UUID, password: str
-    ) -> TelegramAuthorizationResult:
+    async def submit_password(self, flow_id: UUID, password: str) -> TelegramAuthorizationResult:
         flow = self._flows.get(flow_id)
         if flow is None:
             raise TelegramFlowNotFoundError("Telegram authorisation flow was not found.")
@@ -200,9 +190,7 @@ class TelethonTelegramGateway:
 
         try:
             if not await flow.client.is_user_authorized():
-                raise TelegramSessionInvalidError(
-                    "Telegram did not authorise the new session."
-                )
+                raise TelegramSessionInvalidError("Telegram did not authorise the new session.")
             identity = await self._identity(flow.client)
             session_string = flow.client.session.save()
             if not session_string:
@@ -236,9 +224,7 @@ class TelethonTelegramGateway:
             if await client.is_user_authorized():
                 logged_out = await client.log_out()
                 if not logged_out:
-                    raise TelegramGatewayError(
-                        "Telegram did not confirm the remote logout."
-                    )
+                    raise TelegramGatewayError("Telegram did not confirm the remote logout.")
         finally:
             if client.is_connected():
                 await client.disconnect()

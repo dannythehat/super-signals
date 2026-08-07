@@ -128,13 +128,9 @@ class TelegramConnectionService:
         *,
         actor: dict[str, Any],
     ) -> list[TelegramConnectionView]:
-        statement = select(TelegramAccount).order_by(
-            TelegramAccount.created_at.asc()
-        )
+        statement = select(TelegramAccount).order_by(TelegramAccount.created_at.asc())
         if actor["role"] != "owner":
-            statement = statement.where(
-                TelegramAccount.owner_user_id == actor["id"]
-            )
+            statement = statement.where(TelegramAccount.owner_user_id == actor["id"])
         accounts = session.scalars(statement).all()
         return [self._view(account) for account in accounts]
 
@@ -263,9 +259,7 @@ class TelegramConnectionService:
 
         label = self._flow_labels.get(flow_id)
         if label is None:
-            raise TelegramConnectionNotFoundError(
-                "Telegram authorisation flow was not found."
-            )
+            raise TelegramConnectionNotFoundError("Telegram authorisation flow was not found.")
         try:
             account = self._persist_connected_account(
                 session,
@@ -295,8 +289,7 @@ class TelegramConnectionService:
         account = session.scalar(
             select(TelegramAccount).where(
                 TelegramAccount.owner_user_id == actor["id"],
-                TelegramAccount.phone_number_e164
-                == telegram_identity.phone_number_e164,
+                TelegramAccount.phone_number_e164 == telegram_identity.phone_number_e164,
             )
         )
         if account is None:
@@ -332,9 +325,7 @@ class TelegramConnectionService:
             entity_id=account.id,
             payload={
                 "label": label,
-                "phone_hint": self._mask_phone(
-                    telegram_identity.phone_number_e164
-                ),
+                "phone_hint": self._mask_phone(telegram_identity.phone_number_e164),
                 "telegram_user_id": telegram_identity.user_id,
                 "username_present": telegram_identity.username is not None,
             },
@@ -350,9 +341,7 @@ class TelegramConnectionService:
 
     def _assert_flow_owner(self, flow_id: UUID, actor_id: UUID) -> None:
         if self._flow_owners.get(flow_id) != actor_id:
-            raise TelegramConnectionNotFoundError(
-                "Telegram authorisation flow was not found."
-            )
+            raise TelegramConnectionNotFoundError("Telegram authorisation flow was not found.")
 
     def _forget_flow(self, flow_id: UUID) -> None:
         self._flow_owners.pop(flow_id, None)
@@ -364,18 +353,12 @@ class TelegramConnectionService:
         actor: dict[str, Any],
         account_id: UUID,
     ) -> TelegramAccount:
-        statement = select(TelegramAccount).where(
-            TelegramAccount.id == account_id
-        )
+        statement = select(TelegramAccount).where(TelegramAccount.id == account_id)
         if actor["role"] != "owner":
-            statement = statement.where(
-                TelegramAccount.owner_user_id == actor["id"]
-            )
+            statement = statement.where(TelegramAccount.owner_user_id == actor["id"])
         account = session.scalar(statement)
         if account is None:
-            raise TelegramConnectionNotFoundError(
-                "Telegram account was not found."
-            )
+            raise TelegramConnectionNotFoundError("Telegram account was not found.")
         return account
 
     @staticmethod

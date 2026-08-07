@@ -156,8 +156,7 @@ def list_telegram_accounts(
     service: TelegramService,
 ) -> list[TelegramAccountResponse]:
     return [
-        _account_response(account)
-        for account in service.list_accounts(session, actor=identity)
+        _account_response(account) for account in service.list_accounts(session, actor=identity)
     ]
 
 

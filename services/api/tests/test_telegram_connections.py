@@ -63,9 +63,7 @@ class FakeTelegramGateway:
     checked_sessions: list[str] = field(default_factory=list)
     revoked_sessions: list[str] = field(default_factory=list)
 
-    async def begin_qr_authorization(
-        self, flow_id: UUID
-    ) -> TelegramQrAuthorization:
+    async def begin_qr_authorization(self, flow_id: UUID) -> TelegramQrAuthorization:
         self.flows.add(flow_id)
         return TelegramQrAuthorization(
             flow_id=flow_id,
@@ -73,9 +71,7 @@ class FakeTelegramGateway:
             expires_at=datetime.now(UTC) + timedelta(minutes=2),
         )
 
-    async def poll_qr_authorization(
-        self, flow_id: UUID
-    ) -> TelegramAuthorizationResult:
+    async def poll_qr_authorization(self, flow_id: UUID) -> TelegramAuthorizationResult:
         if flow_id not in self.flows:
             raise TelegramFlowNotFoundError("missing")
         if self.require_password:
@@ -87,9 +83,7 @@ class FakeTelegramGateway:
             identity=IDENTITY,
         )
 
-    async def submit_password(
-        self, flow_id: UUID, password: str
-    ) -> TelegramAuthorizationResult:
+    async def submit_password(self, flow_id: UUID, password: str) -> TelegramAuthorizationResult:
         if flow_id not in self.flows:
             raise TelegramFlowNotFoundError("missing")
         if password != "correct telegram password":
@@ -147,9 +141,7 @@ def telegram_client(monkeypatch: pytest.MonkeyPatch):
     cipher = TelegramSessionCipher((TEST_FERNET_KEY,))
     service = TelegramConnectionService(gateway, cipher)
     application = create_app()
-    application.dependency_overrides[provide_telegram_connection_service] = (
-        lambda: service
-    )
+    application.dependency_overrides[provide_telegram_connection_service] = lambda: service
 
     with TestClient(application) as client:
         login = client.post(
@@ -179,9 +171,7 @@ def _connect_account(client: TestClient) -> dict[str, object]:
     assert started.headers["cache-control"] == "no-store"
     assert started.json()["qr_url"].startswith("tg://login?")
 
-    completed = client.get(
-        f"/admin/telegram/accounts/authorize/{started.json()['flow_id']}"
-    )
+    completed = client.get(f"/admin/telegram/accounts/authorize/{started.json()['flow_id']}")
     assert completed.status_code == 200
     assert completed.json()["status"] == "connected"
     return completed.json()["account"]
@@ -198,16 +188,20 @@ def test_qr_connection_is_encrypted_survives_restart_and_disconnects(
     assert "+359881234567" not in client.get("/admin/telegram/accounts").text
 
     with engine.connect() as connection:
-        stored = connection.execute(
-            text(
-                """
+        stored = (
+            connection.execute(
+                text(
+                    """
                 SELECT session_ciphertext, session_fingerprint, status
                 FROM telegram_accounts
                 WHERE id = :id
                 """
-            ),
-            {"id": account_id},
-        ).mappings().one()
+                ),
+                {"id": account_id},
+            )
+            .mappings()
+            .one()
+        )
         audit_text = connection.scalar(
             text("SELECT string_agg(payload::text, ' ') FROM audit_events")
         )
@@ -221,8 +215,8 @@ def test_qr_connection_is_encrypted_survives_restart_and_disconnects(
 
     restarted_gateway = FakeTelegramGateway()
     restarted_service = TelegramConnectionService(restarted_gateway, cipher)
-    application.dependency_overrides[provide_telegram_connection_service] = (
-        lambda: restarted_service
+    application.dependency_overrides[provide_telegram_connection_service] = lambda: (
+        restarted_service
     )
 
     verified = client.post(f"/admin/telegram/accounts/{account_id}/verify")
@@ -230,9 +224,7 @@ def test_qr_connection_is_encrypted_survives_restart_and_disconnects(
     assert verified.json()["status"] == "connected"
     assert restarted_gateway.checked_sessions == [RAW_SESSION]
 
-    disconnected = client.post(
-        f"/admin/telegram/accounts/{account_id}/disconnect"
-    )
+    disconnected = client.post(f"/admin/telegram/accounts/{account_id}/disconnect")
     assert disconnected.status_code == 200
     assert disconnected.json() == {
         "disconnected": True,
@@ -242,25 +234,27 @@ def test_qr_connection_is_encrypted_survives_restart_and_disconnects(
     assert restarted_gateway.revoked_sessions == [RAW_SESSION]
 
     with engine.connect() as connection:
-        destroyed = connection.execute(
-            text(
-                """
+        destroyed = (
+            connection.execute(
+                text(
+                    """
                 SELECT session_ciphertext, session_fingerprint, status
                 FROM telegram_accounts
                 WHERE id = :id
                 """
-            ),
-            {"id": account_id},
-        ).mappings().one()
+                ),
+                {"id": account_id},
+            )
+            .mappings()
+            .one()
+        )
 
     destroyed_marker = cipher.decrypt(destroyed["session_ciphertext"])
     assert destroyed["status"] == "disconnected"
     assert destroyed_marker.startswith("destroyed:")
     assert destroyed_marker != RAW_SESSION
     assert destroyed["session_fingerprint"] != original_fingerprint
-    assert client.post(
-        f"/admin/telegram/accounts/{account_id}/verify"
-    ).status_code == 409
+    assert client.post(f"/admin/telegram/accounts/{account_id}/verify").status_code == 409
 
 
 def test_two_step_verification_password_is_not_echoed_or_stored(
@@ -309,10 +303,13 @@ def test_invited_user_cannot_manage_telegram_connections(telegram_client) -> Non
         session.commit()
 
     assert client.post("/auth/logout").status_code == 204
-    assert client.post(
-        "/auth/login",
-        json={"email": "user@example.com", "password": "user password 123"},
-    ).status_code == 200
+    assert (
+        client.post(
+            "/auth/login",
+            json={"email": "user@example.com", "password": "user password 123"},
+        ).status_code
+        == 200
+    )
 
     denied = client.post(
         "/admin/telegram/accounts/authorize",
