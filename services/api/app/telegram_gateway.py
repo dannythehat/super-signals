@@ -13,6 +13,10 @@ from telethon.errors import (
     AuthTokenExpiredError,
     AuthTokenInvalidError,
     PasswordHashInvalidError,
+    PhoneCodeEmptyError,
+    PhoneCodeExpiredError,
+    PhoneCodeInvalidError,
+    PhoneNumberInvalidError,
     SessionPasswordNeededError,
 )
 from telethon.sessions import StringSession
@@ -28,6 +32,14 @@ class TelegramFlowNotFoundError(TelegramGatewayError):
 
 class TelegramPasswordInvalidError(TelegramGatewayError):
     """Raised when Telegram rejects the account's two-step verification password."""
+
+
+class TelegramCodeInvalidError(TelegramGatewayError):
+    """Raised when Telegram rejects the one-time login code."""
+
+
+class TelegramPhoneInvalidError(TelegramGatewayError):
+    """Raised when Telegram rejects the phone number."""
 
 
 class TelegramSessionInvalidError(TelegramGatewayError):
@@ -49,6 +61,12 @@ class TelegramQrAuthorization:
 
 
 @dataclass(frozen=True, slots=True)
+class TelegramCodeAuthorization:
+    flow_id: UUID
+    expires_at: datetime
+
+
+@dataclass(frozen=True, slots=True)
 class TelegramAuthorizationResult:
     status: Literal["pending", "password_required", "connected", "expired"]
     session_string: str | None = None
@@ -59,6 +77,14 @@ class TelegramGateway(Protocol):
     async def begin_qr_authorization(self, flow_id: UUID) -> TelegramQrAuthorization: ...
 
     async def poll_qr_authorization(self, flow_id: UUID) -> TelegramAuthorizationResult: ...
+
+    async def begin_code_authorization(
+        self, flow_id: UUID, phone_number_e164: str
+    ) -> TelegramCodeAuthorization: ...
+
+    async def submit_code(
+        self, flow_id: UUID, code: str
+    ) -> TelegramAuthorizationResult: ...
 
     async def submit_password(
         self, flow_id: UUID, password: str
@@ -80,8 +106,21 @@ class _ActiveQrFlow:
     password_required: bool = False
 
 
+@dataclass(slots=True)
+class _ActiveCodeFlow:
+    client: TelegramClient
+    phone_number_e164: str
+    phone_code_hash: str
+    expires_at: datetime
+    expiry_task: asyncio.Task[None] | None = None
+    password_required: bool = False
+
+
+ActiveTelegramFlow = _ActiveQrFlow | _ActiveCodeFlow
+
+
 class TelethonTelegramGateway:
-    """Run short-lived QR flows and export portable Telethon StringSessions."""
+    """Run short-lived login flows and export portable Telethon StringSessions."""
 
     def __init__(self, api_id: int, api_hash: str, qr_ttl_seconds: int = 120) -> None:
         if qr_ttl_seconds <= 0:
@@ -89,7 +128,8 @@ class TelethonTelegramGateway:
         self._api_id = api_id
         self._api_hash = api_hash
         self._qr_ttl_seconds = qr_ttl_seconds
-        self._flows: dict[UUID, _ActiveQrFlow] = {}
+        self._code_ttl_seconds = max(qr_ttl_seconds, 300)
+        self._flows: dict[UUID, ActiveTelegramFlow] = {}
 
     def _client(self, session_string: str = "") -> TelegramClient:
         client = TelegramClient(
@@ -135,8 +175,8 @@ class TelethonTelegramGateway:
 
     async def poll_qr_authorization(self, flow_id: UUID) -> TelegramAuthorizationResult:
         flow = self._flows.get(flow_id)
-        if flow is None:
-            raise TelegramFlowNotFoundError("Telegram authorisation flow was not found.")
+        if not isinstance(flow, _ActiveQrFlow):
+            raise TelegramFlowNotFoundError("Telegram QR authorisation flow was not found.")
 
         if flow.password_required:
             return TelegramAuthorizationResult(status="password_required")
@@ -161,7 +201,73 @@ class TelethonTelegramGateway:
 
         return await self._finalize(flow_id)
 
-    async def submit_password(self, flow_id: UUID, password: str) -> TelegramAuthorizationResult:
+    async def begin_code_authorization(
+        self, flow_id: UUID, phone_number_e164: str
+    ) -> TelegramCodeAuthorization:
+        if flow_id in self._flows:
+            raise TelegramGatewayError("Telegram authorisation flow already exists.")
+
+        client = self._client()
+        try:
+            await client.connect()
+            try:
+                sent_code = await client.send_code_request(phone_number_e164)
+            except PhoneNumberInvalidError as exc:
+                raise TelegramPhoneInvalidError(
+                    "Telegram rejected the phone number."
+                ) from exc
+
+            expires_at = datetime.now(UTC) + timedelta(seconds=self._code_ttl_seconds)
+            flow = _ActiveCodeFlow(
+                client=client,
+                phone_number_e164=phone_number_e164,
+                phone_code_hash=sent_code.phone_code_hash,
+                expires_at=expires_at,
+            )
+            self._flows[flow_id] = flow
+            flow.expiry_task = asyncio.create_task(self._expire_flow(flow_id, expires_at))
+            return TelegramCodeAuthorization(flow_id=flow_id, expires_at=expires_at)
+        except Exception:
+            if client.is_connected():
+                await client.disconnect()
+            raise
+
+    async def submit_code(
+        self, flow_id: UUID, code: str
+    ) -> TelegramAuthorizationResult:
+        flow = self._flows.get(flow_id)
+        if not isinstance(flow, _ActiveCodeFlow):
+            raise TelegramFlowNotFoundError("Telegram code authorisation flow was not found.")
+        if datetime.now(UTC) >= flow.expires_at:
+            await self.discard_flow(flow_id)
+            return TelegramAuthorizationResult(status="expired")
+
+        cleaned_code = code.strip()
+        if not cleaned_code:
+            raise TelegramCodeInvalidError("Telegram login code is required.")
+
+        try:
+            await flow.client.sign_in(
+                phone=flow.phone_number_e164,
+                code=cleaned_code,
+                phone_code_hash=flow.phone_code_hash,
+            )
+        except SessionPasswordNeededError:
+            flow.password_required = True
+            return TelegramAuthorizationResult(status="password_required")
+        except (PhoneCodeEmptyError, PhoneCodeInvalidError) as exc:
+            raise TelegramCodeInvalidError("Telegram rejected the login code.") from exc
+        except PhoneCodeExpiredError:
+            await self.discard_flow(flow_id)
+            return TelegramAuthorizationResult(status="expired")
+        except Exception as exc:
+            raise TelegramGatewayError("Telegram code authorisation failed.") from exc
+
+        return await self._finalize(flow_id)
+
+    async def submit_password(
+        self, flow_id: UUID, password: str
+    ) -> TelegramAuthorizationResult:
         flow = self._flows.get(flow_id)
         if flow is None:
             raise TelegramFlowNotFoundError("Telegram authorisation flow was not found.")
@@ -202,7 +308,10 @@ class TelethonTelegramGateway:
             )
         finally:
             self._flows.pop(flow_id, None)
-            await self._cancel_task(flow.expiry_task)
+            await self._cancel_task(getattr(flow, "expiry_task", None))
+            wait_task = getattr(flow, "wait_task", None)
+            if wait_task is not None:
+                await self._cancel_task(wait_task)
             await flow.client.disconnect()
 
     async def check_session(self, session_string: str) -> TelegramIdentity:
@@ -233,7 +342,9 @@ class TelethonTelegramGateway:
         flow = self._flows.pop(flow_id, None)
         if flow is None:
             return
-        await self._cancel_task(flow.wait_task)
+        wait_task = getattr(flow, "wait_task", None)
+        if wait_task is not None:
+            await self._cancel_task(wait_task)
         await self._cancel_task(flow.expiry_task)
         await flow.client.disconnect()
 
