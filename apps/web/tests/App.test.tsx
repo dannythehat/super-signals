@@ -132,13 +132,14 @@ describe('App', () => {
     expect(screen.getByText('Owner controls')).toBeInTheDocument();
     expect(screen.getByText('Trading operations')).toBeInTheDocument();
     expect(screen.getByText('My trading')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Manage Telegram accounts' })).toBeInTheDocument();
     expect(fetchMock).toHaveBeenLastCalledWith(
       '/api/auth/login',
       expect.objectContaining({ method: 'POST', credentials: 'include' }),
     );
   });
 
-  it('shows only trading operations to the Trading Admin', async () => {
+  it('shows only trading operations and Telegram management to the Trading Admin', async () => {
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue(jsonResponse(200, tradingAdmin)));
 
     render(<App />);
@@ -147,6 +148,7 @@ describe('App', () => {
       await screen.findByRole('heading', { name: 'Welcome, Trading Admin' }),
     ).toBeInTheDocument();
     expect(screen.getByText('Trading operations')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Manage Telegram accounts' })).toBeInTheDocument();
     expect(screen.queryByText('Owner controls')).not.toBeInTheDocument();
     expect(screen.queryByText('My trading')).not.toBeInTheDocument();
   });
@@ -162,6 +164,9 @@ describe('App', () => {
     expect(screen.getByText('My trading')).toBeInTheDocument();
     expect(screen.queryByText('Owner controls')).not.toBeInTheDocument();
     expect(screen.queryByText('Trading operations')).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole('button', { name: 'Manage Telegram accounts' }),
+    ).not.toBeInTheDocument();
   });
 
   it('revokes the visible session and returns to login on logout', async () => {
