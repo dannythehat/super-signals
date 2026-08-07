@@ -424,7 +424,8 @@ class TelegramConnectionService:
         cleaned = re.sub(r"[\s().-]", "", phone_number.strip())
         if not re.fullmatch(r"\+[1-9]\d{6,14}", cleaned):
             raise ValueError(
-                "Enter the Telegram phone number in international format, including + and country code."
+                "Enter the Telegram phone number in international format, "
+                "including + and country code."
             )
         return cleaned
 
