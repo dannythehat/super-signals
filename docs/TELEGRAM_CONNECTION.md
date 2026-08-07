@@ -21,7 +21,7 @@ Configure these only in the API service's encrypted secret store:
 
 - `TELEGRAM_API_ID`
 - `TELEGRAM_API_HASH`
-- `SUPER_SIGNALS_TELEGRAM_SESSION_KEYS`
+- `SUPER_SIGNALS_TEGRAM_SESSION_KEYS`
 - `SUPER_SIGNALS_TELEGRAM_QR_TTL_SECONDS` (optional, defaults to 120)
 
 `SUPER_SIGNALS_TELEGRAM_SESSION_KEYS` is a comma-separated Fernet key ring. The first key encrypts new sessions. Following keys remain available only to decrypt older ciphertext during a controlled rotation.
@@ -91,5 +91,7 @@ Automated PostgreSQL integration tests prove that:
 - Telegram two-step passwords are not echoed or stored
 - Disconnect revokes remotely when possible and always destroys the original local session
 - invited users receive an audited permission denial
+
+The repository gate also reruns the complete API and frontend suites, dependency audits, production web build and isolated database backup/restore check.
 
 The final live acceptance check still requires server-side Telegram API credentials and a dedicated test Telegram account to scan the QR. Do not use a personal production account for development acceptance.
