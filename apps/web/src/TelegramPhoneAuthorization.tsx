@@ -129,8 +129,8 @@ export function TelegramPhoneAuthorization({
           <span className="status-label">Same-phone login</span>
           <h3>Enter the Telegram code</h3>
           <p>
-            Telegram sent a code to the account shown as <strong>{authorization.phone_hint}</strong>.
-            Open Telegram, read the code, then return here.
+            Telegram sent a code to the account shown as <strong>{authorization.phone_hint}</strong>
+            . Open Telegram, read the code, then return here.
           </p>
           <form className="telegram-password-form" onSubmit={submitCode}>
             <label>
