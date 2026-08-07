@@ -230,7 +230,7 @@ export function TelegramConnectionPanel({ apiBaseUrl }: TelegramConnectionPanelP
       await readJson<TelegramAccount>(response);
       setNotice({
         tone: 'success',
-        message: 'The encrypted Telegram session survived restart and is still authorised.',
+        message: 'Verified ✓ — the encrypted Telegram session survived restart and is still authorised.',
       });
       await loadAccounts();
     } catch (error) {
@@ -313,11 +313,18 @@ export function TelegramConnectionPanel({ apiBaseUrl }: TelegramConnectionPanelP
             {accounts.map((telegramAccount) => (
               <article className="telegram-account" key={telegramAccount.id}>
                 <div>
-                  <span
-                    className={`connection-status connection-status--${telegramAccount.status}`}
-                  >
-                    {telegramAccount.status}
-                  </span>
+                  <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px' }}>
+                    <span
+                      className={`connection-status connection-status--${telegramAccount.status}`}
+                    >
+                      {telegramAccount.status}
+                    </span>
+                    {telegramAccount.status === 'connected' && telegramAccount.last_connected_at && (
+                      <span className="connection-status connection-status--connected">
+                        Verified ✓
+                      </span>
+                    )}
+                  </div>
                   <h3>{telegramAccount.label}</h3>
                   <p>{telegramAccount.phone_hint}</p>
                   <small>Last verified: {formatDate(telegramAccount.last_connected_at)}</small>
@@ -330,7 +337,11 @@ export function TelegramConnectionPanel({ apiBaseUrl }: TelegramConnectionPanelP
                       onClick={() => void handleVerify(telegramAccount.id)}
                       disabled={busyAction !== null}
                     >
-                      {busyAction === `verify:${telegramAccount.id}` ? 'Verifying…' : 'Verify'}
+                      {busyAction === `verify:${telegramAccount.id}`
+                        ? 'Verifying…'
+                        : telegramAccount.last_connected_at
+                          ? 'Verify again'
+                          : 'Verify'}
                     </button>
                   )}
                   {telegramAccount.status !== 'disconnected' && (
