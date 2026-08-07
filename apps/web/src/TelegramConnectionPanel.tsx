@@ -361,12 +361,7 @@ export function TelegramConnectionPanel({ apiBaseUrl }: TelegramConnectionPanelP
               >
                 <label>
                   Telegram two-step password
-                  <input
-                    name="password"
-                    type="password"
-                    autoComplete="current-password"
-                    required
-                  />
+                  <input name="password" type="password" autoComplete="current-password" required />
                 </label>
                 <button className="button" type="submit" disabled={busyAction !== null}>
                   {busyAction === 'password' ? 'Authorising…' : 'Complete protected sign-in'}
