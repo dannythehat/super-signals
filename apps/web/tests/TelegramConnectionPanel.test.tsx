@@ -192,9 +192,7 @@ describe('TelegramConnectionPanel', () => {
     });
     expect(qrImage).toHaveAttribute('src', authorization.qr_image_data_uri);
     expect(screen.getByText('Optional second-device method')).toBeInTheDocument();
-    expect(
-      screen.getByText(/QR login is optional\. The QR is never saved/),
-    ).toBeInTheDocument();
+    expect(screen.getByText(/QR login is optional\. The QR is never saved/)).toBeInTheDocument();
     expect(screen.queryByRole('link', { name: 'Open in Telegram' })).not.toBeInTheDocument();
     expect(fetchMock).toHaveBeenLastCalledWith(
       '/api/admin/telegram/accounts/authorize',
