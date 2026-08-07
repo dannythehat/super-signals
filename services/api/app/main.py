@@ -12,6 +12,7 @@ from app.routes.access import router as access_router
 from app.routes.auth import router as auth_router
 from app.routes.health import router as health_router
 from app.routes.telegram_accounts import router as telegram_accounts_router
+from app.routes.telegram_sources import router as telegram_sources_router
 
 
 def _mount_web_application(application: FastAPI) -> None:
@@ -34,7 +35,7 @@ def create_app() -> FastAPI:
     settings = get_settings()
     application = FastAPI(
         title="Super Signals API",
-        version="0.5.0",
+        version="0.6.0",
         description="Private signal-processing and trading infrastructure.",
     )
     application.add_middleware(
@@ -48,6 +49,7 @@ def create_app() -> FastAPI:
     application.include_router(auth_router)
     application.include_router(access_router)
     application.include_router(telegram_accounts_router)
+    application.include_router(telegram_sources_router)
     _mount_web_application(application)
     return application
 
