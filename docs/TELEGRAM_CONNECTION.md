@@ -123,6 +123,6 @@ Automated PostgreSQL and interface tests prove that:
 - the interface requires confirmation before Disconnect
 - Disconnect revokes remotely when possible and always destroys the original local session
 
-The repository gate also reruns the complete API and frontend suites, dependency audits, production web build and isolated database backup/restore check.
+The repository gate also reruns the complete API and frontend suites, dependency audits, canonical Python and web formatting, the production web build and isolated database backup/restore check.
 
 The final real-network acceptance check still requires server-side Telegram API credentials and a dedicated test Telegram account to scan the QR. Do not use a personal production account for development acceptance.
