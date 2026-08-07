@@ -1,5 +1,7 @@
 import { FormEvent, useEffect, useState } from 'react';
 
+import { TelegramConnectionPanel } from './TelegramConnectionPanel';
+
 type AuthState = 'checking' | 'signed-out' | 'signed-in';
 type Notice = { tone: 'error' | 'success'; message: string } | null;
 
@@ -55,6 +57,7 @@ export function App() {
   const [notice, setNotice] = useState<Notice>(null);
   const [busy, setBusy] = useState(false);
   const [showRecovery, setShowRecovery] = useState(false);
+  const canManageTelegram = account?.permissions.includes('sources.manage') ?? false;
 
   useEffect(() => {
     const controller = new AbortController();
@@ -214,6 +217,8 @@ export function App() {
               </small>
             </article>
           </div>
+
+          {canManageTelegram && <TelegramConnectionPanel apiBaseUrl={apiBaseUrl} />}
 
           <div className="access-grid" aria-label="Approved workspace areas">
             {account.sections.map((section) => (
