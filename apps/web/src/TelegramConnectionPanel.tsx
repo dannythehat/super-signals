@@ -230,7 +230,8 @@ export function TelegramConnectionPanel({ apiBaseUrl }: TelegramConnectionPanelP
       await readJson<TelegramAccount>(response);
       setNotice({
         tone: 'success',
-        message: 'Verified ✓ — the encrypted Telegram session survived restart and is still authorised.',
+        message:
+          'Verified ✓ — the encrypted Telegram session survived restart and is still authorised.',
       });
       await loadAccounts();
     } catch (error) {
@@ -319,11 +320,12 @@ export function TelegramConnectionPanel({ apiBaseUrl }: TelegramConnectionPanelP
                     >
                       {telegramAccount.status}
                     </span>
-                    {telegramAccount.status === 'connected' && telegramAccount.last_connected_at && (
-                      <span className="connection-status connection-status--connected">
-                        Verified ✓
-                      </span>
-                    )}
+                    {telegramAccount.status === 'connected' &&
+                      telegramAccount.last_connected_at && (
+                        <span className="connection-status connection-status--connected">
+                          Verified ✓
+                        </span>
+                      )}
                   </div>
                   <h3>{telegramAccount.label}</h3>
                   <p>{telegramAccount.phone_hint}</p>
