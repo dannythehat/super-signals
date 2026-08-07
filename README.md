@@ -8,6 +8,16 @@ Private Telegram signal aggregation and automated Vantage MT5 trading platform.
 
 > **Status:** Foundation build. Demo and test environments only. No external user may trade live until the technical, security and Europe-focused legal launch gates have passed.
 
+## Day 8 phone deployment
+
+The Day 8 branch includes a temporary one-click full-stack deployment for the live Telegram connection acceptance test.
+
+[![Deploy to Render](https://render.com/images/deploy-to-render-button.svg)](https://render.com/deploy?repo=https%3A%2F%2Fgithub.com%2Fdannythehat%2Fsuper-signals%2Ftree%2Ffeature%2Fday-08-secure-telegram-connection)
+
+The deployment creates its database, runs migrations, generates encryption secrets, builds the website and API together, and prepares the Owner login. The operator enters only an email, a password, Telegram API ID and Telegram API hash.
+
+See [Day 8 phone setup](docs/PHONE_SETUP.md).
+
 ## Product purpose
 
 Super Signals combines approved Telegram signal sources into one controlled system. Recognised trade messages are filtered from ordinary conversation, recorded as a single internal signal event, published to the private Super Signals channel, shown in the mobile-first app and sent to eligible users' connected Vantage MT5 accounts.
