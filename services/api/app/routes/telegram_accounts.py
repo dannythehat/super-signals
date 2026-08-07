@@ -16,6 +16,7 @@ from app.telegram_gateway import (
     TelegramPasswordInvalidError,
     TelegramSessionInvalidError,
 )
+from app.telegram_qr import qr_svg_data_uri
 from app.telegram_service import (
     TelegramConfigurationError,
     TelegramConnectionConflictError,
@@ -52,6 +53,7 @@ class TelegramAuthorizationStartResponse(BaseModel):
     flow_id: UUID
     status: Literal["pending"] = "pending"
     qr_url: str
+    qr_image_data_uri: str
     expires_at: datetime
 
 
@@ -178,6 +180,7 @@ async def begin_telegram_authorization(
             actor=identity,
             label=body.label,
         )
+        qr_image = qr_svg_data_uri(authorization.qr_url)
     except Exception as exc:
         raise _translate_telegram_error(exc) from exc
     response.headers["Cache-Control"] = "no-store"
@@ -185,6 +188,7 @@ async def begin_telegram_authorization(
     return TelegramAuthorizationStartResponse(
         flow_id=authorization.flow_id,
         qr_url=authorization.qr_url,
+        qr_image_data_uri=qr_image,
         expires_at=authorization.expires_at,
     )
 
