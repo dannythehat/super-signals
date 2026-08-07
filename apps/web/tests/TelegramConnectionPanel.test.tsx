@@ -60,7 +60,9 @@ describe('TelegramConnectionPanel', () => {
       authorization.qr_url,
     );
     expect(
-      screen.getByText('This QR is never saved to the database or audit log and expires automatically.'),
+      screen.getByText(
+        'This QR is never saved to the database or audit log and expires automatically.',
+      ),
     ).toBeInTheDocument();
     expect(fetchMock).toHaveBeenLastCalledWith(
       '/api/admin/telegram/accounts/authorize',

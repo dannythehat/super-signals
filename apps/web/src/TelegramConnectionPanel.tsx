@@ -1,10 +1,6 @@
 import { FormEvent, useCallback, useEffect, useState } from 'react';
 
-type TelegramAuthorizationStatus =
-  | 'pending'
-  | 'password_required'
-  | 'connected'
-  | 'expired';
+type TelegramAuthorizationStatus = 'pending' | 'password_required' | 'connected' | 'expired';
 
 type PanelNotice = { tone: 'error' | 'success'; message: string } | null;
 
@@ -113,9 +109,7 @@ export function TelegramConnectionPanel({ apiBaseUrl }: TelegramConnectionPanelP
         });
         return;
       }
-      setAuthorization((current) =>
-        current ? { ...current, status: result.status } : current,
-      );
+      setAuthorization((current) => (current ? { ...current, status: result.status } : current));
     } catch (error) {
       setNotice({
         tone: 'error',
@@ -216,14 +210,11 @@ export function TelegramConnectionPanel({ apiBaseUrl }: TelegramConnectionPanelP
     setBusyAction(`verify:${accountId}`);
     setNotice(null);
     try {
-      const response = await fetch(
-        `${apiBaseUrl}/admin/telegram/accounts/${accountId}/verify`,
-        {
-          method: 'POST',
-          credentials: 'include',
-          headers: { Accept: 'application/json' },
-        },
-      );
+      const response = await fetch(`${apiBaseUrl}/admin/telegram/accounts/${accountId}/verify`, {
+        method: 'POST',
+        credentials: 'include',
+        headers: { Accept: 'application/json' },
+      });
       await readJson<TelegramAccount>(response);
       setNotice({
         tone: 'success',
@@ -310,7 +301,9 @@ export function TelegramConnectionPanel({ apiBaseUrl }: TelegramConnectionPanelP
             {accounts.map((telegramAccount) => (
               <article className="telegram-account" key={telegramAccount.id}>
                 <div>
-                  <span className={`connection-status connection-status--${telegramAccount.status}`}>
+                  <span
+                    className={`connection-status connection-status--${telegramAccount.status}`}
+                  >
                     {telegramAccount.status}
                   </span>
                   <h3>{telegramAccount.label}</h3>
