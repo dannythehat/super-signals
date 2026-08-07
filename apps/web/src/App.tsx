@@ -1,6 +1,7 @@
 import { FormEvent, useEffect, useState } from 'react';
 
 import { TelegramConnectionPanel } from './TelegramConnectionPanel';
+import { TelegramSourceSelector } from './TelegramSourceSelector';
 
 type AuthState = 'checking' | 'signed-out' | 'signed-in';
 type Notice = { tone: 'error' | 'success'; message: string } | null;
@@ -218,7 +219,12 @@ export function App() {
             </article>
           </div>
 
-          {canManageTelegram && <TelegramConnectionPanel apiBaseUrl={apiBaseUrl} />}
+          {canManageTelegram && (
+            <>
+              <TelegramConnectionPanel apiBaseUrl={apiBaseUrl} />
+              <TelegramSourceSelector apiBaseUrl={apiBaseUrl} />
+            </>
+          )}
 
           <div className="access-grid" aria-label="Approved workspace areas">
             {account.sections.map((section) => (
