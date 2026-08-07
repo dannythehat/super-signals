@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from functools import lru_cache
@@ -17,11 +18,14 @@ from app.models import AuditEvent, TelegramAccount
 from app.telegram_crypto import SessionDecryptionError, TelegramSessionCipher
 from app.telegram_gateway import (
     TelegramAuthorizationResult,
+    TelegramCodeAuthorization,
+    TelegramCodeInvalidError,
     TelegramFlowNotFoundError,
     TelegramGateway,
     TelegramGatewayError,
     TelegramIdentity,
     TelegramPasswordInvalidError,
+    TelegramPhoneInvalidError,
     TelegramQrAuthorization,
     TelegramSessionInvalidError,
     TelethonTelegramGateway,
@@ -49,6 +53,13 @@ class TelegramConnectionView:
     last_connected_at: datetime | None
 
 
+@dataclass(frozen=True, slots=True)
+class TelegramCodeAuthorizationView:
+    flow_id: UUID
+    phone_hint: str
+    expires_at: datetime
+
+
 class TelegramConnectionService:
     def __init__(
         self,
@@ -67,14 +78,10 @@ class TelegramConnectionService:
         actor: dict[str, Any],
         label: str,
     ) -> TelegramQrAuthorization:
-        cleaned_label = label.strip()
-        if not cleaned_label:
-            raise ValueError("A Telegram account label is required.")
-
+        cleaned_label = self._clean_label(label)
         flow_id = uuid4()
         authorization = await self._gateway.begin_qr_authorization(flow_id)
-        self._flow_owners[flow_id] = actor["id"]
-        self._flow_labels[flow_id] = cleaned_label
+        self._remember_flow(flow_id, actor["id"], cleaned_label)
         self._audit(
             session,
             actor_id=actor["id"],
@@ -83,11 +90,48 @@ class TelegramConnectionService:
             payload={
                 "flow_id": str(flow_id),
                 "label": cleaned_label,
+                "method": "qr",
                 "expires_at": authorization.expires_at.isoformat(),
             },
         )
         session.commit()
         return authorization
+
+    async def begin_code_authorization(
+        self,
+        session: Session,
+        *,
+        actor: dict[str, Any],
+        label: str,
+        phone_number: str,
+    ) -> TelegramCodeAuthorizationView:
+        cleaned_label = self._clean_label(label)
+        phone_number_e164 = self._normalize_phone(phone_number)
+        flow_id = uuid4()
+        authorization: TelegramCodeAuthorization = (
+            await self._gateway.begin_code_authorization(flow_id, phone_number_e164)
+        )
+        self._remember_flow(flow_id, actor["id"], cleaned_label)
+        phone_hint = self._mask_phone(phone_number_e164)
+        self._audit(
+            session,
+            actor_id=actor["id"],
+            event_type="telegram.code_authorization_started",
+            entity_id=None,
+            payload={
+                "flow_id": str(flow_id),
+                "label": cleaned_label,
+                "method": "code",
+                "phone_hint": phone_hint,
+                "expires_at": authorization.expires_at.isoformat(),
+            },
+        )
+        session.commit()
+        return TelegramCodeAuthorizationView(
+            flow_id=flow_id,
+            phone_hint=phone_hint,
+            expires_at=authorization.expires_at,
+        )
 
     async def poll_authorization(
         self,
@@ -98,6 +142,23 @@ class TelegramConnectionService:
     ) -> dict[str, Any]:
         self._assert_flow_owner(flow_id, actor["id"])
         result = await self._gateway.poll_qr_authorization(flow_id)
+        return self._handle_authorization_result(
+            session,
+            actor=actor,
+            flow_id=flow_id,
+            result=result,
+        )
+
+    async def submit_code(
+        self,
+        session: Session,
+        *,
+        actor: dict[str, Any],
+        flow_id: UUID,
+        code: str,
+    ) -> dict[str, Any]:
+        self._assert_flow_owner(flow_id, actor["id"])
+        result = await self._gateway.submit_code(flow_id, code)
         return self._handle_authorization_result(
             session,
             actor=actor,
@@ -339,6 +400,10 @@ class TelegramConnectionService:
         account.session_ciphertext = self._cipher.encrypt(marker)
         account.session_fingerprint = self._cipher.fingerprint(marker)
 
+    def _remember_flow(self, flow_id: UUID, actor_id: UUID, label: str) -> None:
+        self._flow_owners[flow_id] = actor_id
+        self._flow_labels[flow_id] = label
+
     def _assert_flow_owner(self, flow_id: UUID, actor_id: UUID) -> None:
         if self._flow_owners.get(flow_id) != actor_id:
             raise TelegramConnectionNotFoundError("Telegram authorisation flow was not found.")
@@ -346,6 +411,22 @@ class TelegramConnectionService:
     def _forget_flow(self, flow_id: UUID) -> None:
         self._flow_owners.pop(flow_id, None)
         self._flow_labels.pop(flow_id, None)
+
+    @staticmethod
+    def _clean_label(label: str) -> str:
+        cleaned_label = label.strip()
+        if not cleaned_label:
+            raise ValueError("A Telegram account label is required.")
+        return cleaned_label
+
+    @staticmethod
+    def _normalize_phone(phone_number: str) -> str:
+        cleaned = re.sub(r"[\s().-]", "", phone_number.strip())
+        if not re.fullmatch(r"\+[1-9]\d{6,14}", cleaned):
+            raise ValueError(
+                "Enter the Telegram phone number in international format, including + and country code."
+            )
+        return cleaned
 
     @staticmethod
     def _account_for_actor(
@@ -416,6 +497,7 @@ def get_telegram_connection_service() -> TelegramConnectionService:
 
 __all__ = [
     "SessionDecryptionError",
+    "TelegramCodeInvalidError",
     "TelegramConfigurationError",
     "TelegramConnectionConflictError",
     "TelegramConnectionNotFoundError",
@@ -424,6 +506,7 @@ __all__ = [
     "TelegramFlowNotFoundError",
     "TelegramGatewayError",
     "TelegramPasswordInvalidError",
+    "TelegramPhoneInvalidError",
     "TelegramSessionInvalidError",
     "get_telegram_connection_service",
 ]
