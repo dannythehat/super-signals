@@ -1,11 +1,18 @@
 """Environment-backed application configuration."""
 
 import os
+import re
 from dataclasses import dataclass
 from functools import lru_cache
 
+from cryptography.fernet import Fernet
+
 _DEVELOPMENT_FINGERPRINT_SECRET = "development-only-change-me"
+_DEVELOPMENT_TELEGRAM_SESSION_KEY = (
+    "hoTYhKCc3l5glT5kRTBB3xVxOv4anqXrcYrPekzB5dA="
+)
 _NON_PRODUCTION_ENVIRONMENTS = {"development", "test"}
+_TELEGRAM_API_HASH_PATTERN = re.compile(r"^[0-9a-fA-F]{32}$")
 
 
 @dataclass(frozen=True, slots=True)
@@ -18,6 +25,10 @@ class Settings:
     recovery_ttl_seconds: int
     session_cookie_secure: bool
     session_fingerprint_secret: str
+    telegram_api_id: int | None
+    telegram_api_hash: str | None
+    telegram_session_keys: tuple[str, ...]
+    telegram_qr_ttl_seconds: int
 
 
 def _parse_origins(value: str) -> tuple[str, ...]:
@@ -26,6 +37,17 @@ def _parse_origins(value: str) -> tuple[str, ...]:
 
 def _parse_bool(value: str) -> bool:
     return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _positive_int(variable_name: str, default: str) -> int:
+    raw_value = os.getenv(variable_name, default)
+    try:
+        value = int(raw_value)
+    except ValueError as exc:
+        raise RuntimeError(f"{variable_name} must be a positive integer") from exc
+    if value <= 0:
+        raise RuntimeError(f"{variable_name} must be a positive integer")
+    return value
 
 
 def _required_non_production_value(
@@ -41,6 +63,18 @@ def _required_non_production_value(
     return value
 
 
+def _optional_non_production_value(
+    environment: str,
+    variable_name: str,
+) -> str | None:
+    value = os.getenv(variable_name)
+    if value:
+        return value.strip()
+    if environment in _NON_PRODUCTION_ENVIRONMENTS:
+        return None
+    raise RuntimeError(f"{variable_name} must be configured for {environment}")
+
+
 def _fingerprint_secret(environment: str) -> str:
     secret = _required_non_production_value(
         environment,
@@ -54,6 +88,54 @@ def _fingerprint_secret(environment: str) -> str:
             "SUPER_SIGNALS_FINGERPRINT_SECRET must be a unique value of at least 32 characters"
         )
     return secret
+
+
+def _telegram_api_credentials(environment: str) -> tuple[int | None, str | None]:
+    raw_api_id = _optional_non_production_value(environment, "TELEGRAM_API_ID")
+    api_hash = _optional_non_production_value(environment, "TELEGRAM_API_HASH")
+    if raw_api_id is None and api_hash is None:
+        return None, None
+    if raw_api_id is None or api_hash is None:
+        raise RuntimeError(
+            "TELEGRAM_API_ID and TELEGRAM_API_HASH must be configured together"
+        )
+    try:
+        api_id = int(raw_api_id)
+    except ValueError as exc:
+        raise RuntimeError("TELEGRAM_API_ID must be a positive integer") from exc
+    if api_id <= 0:
+        raise RuntimeError("TELEGRAM_API_ID must be a positive integer")
+    if not _TELEGRAM_API_HASH_PATTERN.fullmatch(api_hash):
+        raise RuntimeError("TELEGRAM_API_HASH must be a 32-character hexadecimal value")
+    return api_id, api_hash.lower()
+
+
+def _telegram_session_keys(environment: str) -> tuple[str, ...]:
+    raw_keys = _required_non_production_value(
+        environment,
+        "SUPER_SIGNALS_TELEGRAM_SESSION_KEYS",
+        _DEVELOPMENT_TELEGRAM_SESSION_KEY,
+    )
+    keys = tuple(key.strip() for key in raw_keys.split(",") if key.strip())
+    if not keys:
+        raise RuntimeError(
+            "SUPER_SIGNALS_TELEGRAM_SESSION_KEYS must contain at least one Fernet key"
+        )
+    try:
+        for key in keys:
+            Fernet(key.encode("ascii"))
+    except (TypeError, ValueError) as exc:
+        raise RuntimeError(
+            "SUPER_SIGNALS_TELEGRAM_SESSION_KEYS contains an invalid Fernet key"
+        ) from exc
+    if (
+        environment not in _NON_PRODUCTION_ENVIRONMENTS
+        and _DEVELOPMENT_TELEGRAM_SESSION_KEY in keys
+    ):
+        raise RuntimeError(
+            "SUPER_SIGNALS_TELEGRAM_SESSION_KEYS must not use the development key"
+        )
+    return keys
 
 
 @lru_cache
@@ -73,6 +155,7 @@ def get_settings() -> Settings:
     cors_origins = _parse_origins(cors_value)
     if not cors_origins:
         raise RuntimeError("SUPER_SIGNALS_CORS_ORIGINS must contain at least one origin")
+    telegram_api_id, telegram_api_hash = _telegram_api_credentials(environment)
 
     return Settings(
         environment=environment,
@@ -88,4 +171,10 @@ def get_settings() -> Settings:
             os.getenv("SUPER_SIGNALS_COOKIE_SECURE", str(default_secure))
         ),
         session_fingerprint_secret=_fingerprint_secret(environment),
+        telegram_api_id=telegram_api_id,
+        telegram_api_hash=telegram_api_hash,
+        telegram_session_keys=_telegram_session_keys(environment),
+        telegram_qr_ttl_seconds=_positive_int(
+            "SUPER_SIGNALS_TELEGRAM_QR_TTL_SECONDS", "120"
+        ),
     )
