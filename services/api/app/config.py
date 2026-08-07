@@ -1,5 +1,7 @@
 """Environment-backed application configuration."""
 
+import base64
+import hashlib
 import os
 import re
 from dataclasses import dataclass
@@ -73,6 +75,14 @@ def _optional_non_production_value(
     raise RuntimeError(f"{variable_name} must be configured for {environment}")
 
 
+def _normalize_database_url(value: str) -> str:
+    if value.startswith("postgres://"):
+        return value.replace("postgres://", "postgresql+psycopg://", 1)
+    if value.startswith("postgresql://"):
+        return value.replace("postgresql://", "postgresql+psycopg://", 1)
+    return value
+
+
 def _fingerprint_secret(environment: str) -> str:
     secret = _required_non_production_value(
         environment,
@@ -106,13 +116,37 @@ def _telegram_api_credentials(environment: str) -> tuple[int | None, str | None]
     return api_id, api_hash.lower()
 
 
+def _derive_telegram_session_key(secret: str) -> str:
+    if len(secret) < 32:
+        raise RuntimeError(
+            "SUPER_SIGNALS_TELEGRAM_SESSION_SECRET must contain at least 32 characters"
+        )
+    digest = hashlib.sha256(secret.encode("utf-8")).digest()
+    return base64.urlsafe_b64encode(digest).decode("ascii")
+
+
 def _telegram_session_keys(environment: str) -> tuple[str, ...]:
-    raw_keys = _required_non_production_value(
-        environment,
-        "SUPER_SIGNALS_TELEGRAM_SESSION_KEYS",
-        _DEVELOPMENT_TELEGRAM_SESSION_KEY,
-    )
-    keys = tuple(key.strip() for key in raw_keys.split(",") if key.strip())
+    raw_keys = os.getenv("SUPER_SIGNALS_TELEGRAM_SESSION_KEYS")
+    generated_secret = os.getenv("SUPER_SIGNALS_TELEGRAM_SESSION_SECRET")
+
+    if raw_keys and generated_secret:
+        raise RuntimeError(
+            "Configure only one of SUPER_SIGNALS_TELEGRAM_SESSION_KEYS or "
+            "SUPER_SIGNALS_TELEGRAM_SESSION_SECRET"
+        )
+
+    if raw_keys:
+        keys = tuple(key.strip() for key in raw_keys.split(",") if key.strip())
+    elif generated_secret:
+        keys = (_derive_telegram_session_key(generated_secret),)
+    elif environment in _NON_PRODUCTION_ENVIRONMENTS:
+        keys = (_DEVELOPMENT_TELEGRAM_SESSION_KEY,)
+    else:
+        raise RuntimeError(
+            "SUPER_SIGNALS_TELEGRAM_SESSION_KEYS or "
+            "SUPER_SIGNALS_TELEGRAM_SESSION_SECRET must be configured"
+        )
+
     if not keys:
         raise RuntimeError(
             "SUPER_SIGNALS_TELEGRAM_SESSION_KEYS must contain at least one Fernet key"
@@ -136,10 +170,12 @@ def _telegram_session_keys(environment: str) -> tuple[str, ...]:
 def get_settings() -> Settings:
     environment = os.getenv("SUPER_SIGNALS_ENV", "development").strip().lower()
     default_secure = environment not in _NON_PRODUCTION_ENVIRONMENTS
-    database_url = _required_non_production_value(
-        environment,
-        "DATABASE_URL",
-        "postgresql+psycopg://super_signals:super_signals@127.0.0.1:5432/super_signals",
+    database_url = _normalize_database_url(
+        _required_non_production_value(
+            environment,
+            "DATABASE_URL",
+            "postgresql+psycopg://super_signals:super_signals@127.0.0.1:5432/super_signals",
+        )
     )
     cors_value = _required_non_production_value(
         environment,
