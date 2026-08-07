@@ -12,8 +12,14 @@ export PGDATABASE="${PGDATABASE:-super_signals_test}"
 restore_database="${PGRESTORE_DATABASE:-super_signals_restore}"
 backup_file="$(mktemp "${TMPDIR:-/tmp}/super-signals-backup.XXXXXX")"
 
+admin_pg() {
+  PGUSER="${PGADMINUSER:-$PGUSER}" \
+    PGPASSWORD="${PGADMINPASSWORD:-$PGPASSWORD}" \
+    "$@"
+}
+
 cleanup() {
-  dropdb --if-exists "$restore_database" >/dev/null 2>&1 || true
+  admin_pg dropdb --if-exists "$restore_database" >/dev/null 2>&1 || true
   rm -f "$backup_file"
 }
 trap cleanup EXIT
@@ -30,8 +36,11 @@ pg_dump \
   --file="$backup_file" \
   "$PGDATABASE"
 
-dropdb --if-exists "$restore_database"
-createdb --template=template0 "$restore_database"
+admin_pg dropdb --if-exists "$restore_database"
+admin_pg createdb \
+  --template=template0 \
+  --owner="$PGUSER" \
+  "$restore_database"
 pg_restore \
   --no-owner \
   --no-privileges \
