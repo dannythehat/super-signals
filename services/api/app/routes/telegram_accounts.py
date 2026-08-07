@@ -13,7 +13,6 @@ from app.access_control import DbSession, require_permission
 from app.telegram_crypto import SessionDecryptionError
 from app.telegram_gateway import (
     TelegramFlowNotFoundError,
-    TelegramGatewayError,
     TelegramPasswordInvalidError,
     TelegramSessionInvalidError,
 )
