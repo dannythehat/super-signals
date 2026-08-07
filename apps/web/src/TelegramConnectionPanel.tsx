@@ -146,9 +146,10 @@ export function TelegramConnectionPanel({ apiBaseUrl }: TelegramConnectionPanelP
 
   async function handleBeginAuthorization(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
+    const formElement = event.currentTarget;
     setBusyAction('begin');
     setNotice(null);
-    const form = new FormData(event.currentTarget);
+    const form = new FormData(formElement);
     try {
       const response = await fetch(`${apiBaseUrl}/admin/telegram/accounts/authorize`, {
         method: 'POST',
@@ -157,8 +158,8 @@ export function TelegramConnectionPanel({ apiBaseUrl }: TelegramConnectionPanelP
         body: JSON.stringify({ label: form.get('label') }),
       });
       const started = await readJson<TelegramAuthorizationStart>(response);
+      formElement.reset();
       setAuthorization(started);
-      event.currentTarget.reset();
     } catch (error) {
       setNotice({
         tone: 'error',
@@ -172,9 +173,10 @@ export function TelegramConnectionPanel({ apiBaseUrl }: TelegramConnectionPanelP
   async function handleTelegramPassword(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (!authorization) return;
+    const formElement = event.currentTarget;
     setBusyAction('password');
     setNotice(null);
-    const form = new FormData(event.currentTarget);
+    const form = new FormData(formElement);
     try {
       const response = await fetch(
         `${apiBaseUrl}/admin/telegram/accounts/authorize/${authorization.flow_id}/password`,
@@ -189,12 +191,12 @@ export function TelegramConnectionPanel({ apiBaseUrl }: TelegramConnectionPanelP
       if (result.status !== 'connected') {
         throw new Error('Telegram did not complete the protected sign-in.');
       }
+      formElement.reset();
       setAuthorization(null);
       setNotice({
         tone: 'success',
         message: 'Telegram connected and the encrypted server session was saved.',
       });
-      event.currentTarget.reset();
       await loadAccounts();
     } catch (error) {
       setNotice({
