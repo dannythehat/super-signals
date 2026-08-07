@@ -30,9 +30,9 @@ interface TelegramAuthorizationPoll {
   account: TelegramAccount | null;
 }
 
-interface ActiveAuthorization extends TelegramAuthorizationStart {
+type ActiveAuthorization = Omit<TelegramAuthorizationStart, 'status'> & {
   status: TelegramAuthorizationStatus;
-}
+};
 
 interface TelegramDisconnectResult {
   disconnected: boolean;
