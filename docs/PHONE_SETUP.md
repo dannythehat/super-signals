@@ -41,20 +41,27 @@ Render will show four blank private fields:
 
 Enter those values and approve the Blueprint. Leave all generated values unchanged.
 
-## Connect Telegram
+## Connect Telegram from one phone
 
 When Render shows the web service as Live:
 
 1. Open its `onrender.com` address.
 2. Sign in with the Owner email and password entered during deployment.
 3. Open **Manage Telegram accounts**.
-4. Enter a label such as `Day 8 test reader`.
-5. Tap **Create secure QR**.
-6. In the Telegram mobile app, open **Settings → Devices → Link Desktop Device**.
-7. Scan the QR.
-8. Enter the Telegram two-step-verification password in Super Signals only if Telegram requests it.
+4. Enter a private label such as `Day 8 test reader`.
+5. Enter the phone number linked to Telegram in international format, including `+` and country code.
+6. Tap **Send Telegram code**.
+7. Switch to Telegram and read the one-time login code Telegram sends to the account.
+8. Return to Super Signals and enter that code.
+9. Enter the Telegram two-step-verification password only if Telegram requests it.
+
+The login code and two-step password are never stored or written to the audit log. The phone number is masked in the UI and audit evidence. The approved account record retains the Telegram phone number for identity verification, while the portable Telegram session itself is stored encrypted for restart-safe access.
 
 The app should show the account as connected with a masked phone number.
+
+### Optional QR method
+
+QR login remains available for users who have a second already-authorised device. It is no longer the default mobile flow.
 
 ## Restart acceptance test
 
@@ -72,4 +79,4 @@ The account must become disconnected and verification must stop working. In Tele
 
 ## Safe evidence
 
-Safe screenshots may show the masked connected status, successful Verify result and disconnected status. Do not capture the QR, full phone number, Telegram API hash, passwords, database URL or generated secrets.
+Safe screenshots may show the masked connected status, successful Verify result and disconnected status. Do not capture login codes, QR codes, full phone numbers, Telegram API hash, passwords, database URLs or generated secrets.
