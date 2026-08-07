@@ -1,6 +1,8 @@
 import { FormEvent, useCallback, useEffect, useState } from 'react';
+import { TelegramPhoneAuthorization } from './TelegramPhoneAuthorization';
 
 type TelegramAuthorizationStatus = 'pending' | 'password_required' | 'connected' | 'expired';
+type TelegramConnectMethod = 'phone' | 'qr';
 
 type PanelNotice = { tone: 'error' | 'success'; message: string } | null;
 
@@ -67,7 +69,9 @@ function formatDate(value: string | null): string {
 export function TelegramConnectionPanel({ apiBaseUrl }: TelegramConnectionPanelProps) {
   const [expanded, setExpanded] = useState(false);
   const [accounts, setAccounts] = useState<TelegramAccount[]>([]);
+  const [connectMethod, setConnectMethod] = useState<TelegramConnectMethod>('phone');
   const [authorization, setAuthorization] = useState<ActiveAuthorization | null>(null);
+  const [passwordFlowId, setPasswordFlowId] = useState<string | null>(null);
   const [notice, setNotice] = useState<PanelNotice>(null);
   const [busyAction, setBusyAction] = useState<string | null>(null);
   const [disconnectConfirmation, setDisconnectConfirmation] = useState<string | null>(null);
@@ -109,6 +113,9 @@ export function TelegramConnectionPanel({ apiBaseUrl }: TelegramConnectionPanelP
         });
         return;
       }
+      if (result.status === 'password_required') {
+        setPasswordFlowId(authorization.flow_id);
+      }
       setAuthorization((current) => (current ? { ...current, status: result.status } : current));
     } catch (error) {
       setNotice({
@@ -144,7 +151,7 @@ export function TelegramConnectionPanel({ apiBaseUrl }: TelegramConnectionPanelP
     }
   }
 
-  async function handleBeginAuthorization(event: FormEvent<HTMLFormElement>) {
+  async function handleBeginQrAuthorization(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const formElement = event.currentTarget;
     setBusyAction('begin');
@@ -160,6 +167,7 @@ export function TelegramConnectionPanel({ apiBaseUrl }: TelegramConnectionPanelP
       const started = await readJson<TelegramAuthorizationStart>(response);
       formElement.reset();
       setAuthorization(started);
+      setPasswordFlowId(null);
     } catch (error) {
       setNotice({
         tone: 'error',
@@ -172,14 +180,15 @@ export function TelegramConnectionPanel({ apiBaseUrl }: TelegramConnectionPanelP
 
   async function handleTelegramPassword(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    if (!authorization) return;
+    const flowId = passwordFlowId ?? authorization?.flow_id;
+    if (!flowId) return;
     const formElement = event.currentTarget;
     setBusyAction('password');
     setNotice(null);
     const form = new FormData(formElement);
     try {
       const response = await fetch(
-        `${apiBaseUrl}/admin/telegram/accounts/authorize/${authorization.flow_id}/password`,
+        `${apiBaseUrl}/admin/telegram/accounts/authorize/${flowId}/password`,
         {
           method: 'POST',
           credentials: 'include',
@@ -193,6 +202,7 @@ export function TelegramConnectionPanel({ apiBaseUrl }: TelegramConnectionPanelP
       }
       formElement.reset();
       setAuthorization(null);
+      setPasswordFlowId(null);
       setNotice({
         tone: 'success',
         message: 'Telegram connected and the encrypted server session was saved.',
@@ -297,7 +307,7 @@ export function TelegramConnectionPanel({ apiBaseUrl }: TelegramConnectionPanelP
 
           <div className="telegram-account-list" aria-label="Connected Telegram accounts">
             {busyAction === 'load' && <p className="muted-copy">Loading secure accounts…</p>}
-            {!busyAction && accounts.length === 0 && (
+            {busyAction !== 'load' && accounts.length === 0 && (
               <p className="muted-copy">No Telegram reader account is connected yet.</p>
             )}
             {accounts.map((telegramAccount) => (
@@ -342,22 +352,41 @@ export function TelegramConnectionPanel({ apiBaseUrl }: TelegramConnectionPanelP
             ))}
           </div>
 
-          {authorization ? (
+          {passwordFlowId ? (
+            <article className="telegram-qr-card">
+              <form
+                className="telegram-password-form"
+                style={{ gridColumn: '1 / -1' }}
+                onSubmit={handleTelegramPassword}
+              >
+                <label>
+                  Telegram two-step password
+                  <input
+                    name="password"
+                    type="password"
+                    autoComplete="current-password"
+                    required
+                  />
+                </label>
+                <button className="button" type="submit" disabled={busyAction !== null}>
+                  {busyAction === 'password' ? 'Authorising…' : 'Complete protected sign-in'}
+                </button>
+                <small>The password is sent directly to Telegram and is never stored.</small>
+              </form>
+            </article>
+          ) : authorization ? (
             <article className="telegram-qr-card" aria-live="polite">
               <div className="telegram-qr-card__image">
                 <img src={authorization.qr_image_data_uri} alt="Telegram authorisation QR code" />
               </div>
               <div className="telegram-qr-card__instructions">
-                <span className="status-label">Short-lived authorisation</span>
+                <span className="status-label">Optional second-device method</span>
                 <h3>Scan with Telegram</h3>
                 <ol>
-                  <li>Open Telegram on an already authorised device.</li>
+                  <li>Open Telegram on another already authorised device.</li>
                   <li>Open Devices, then Link Desktop Device.</li>
                   <li>Scan this QR before {formatDate(authorization.expires_at)}.</li>
                 </ol>
-                <a className="button telegram-open-link" href={authorization.qr_url}>
-                  Open in Telegram
-                </a>
                 <button
                   className="button button--quiet"
                   type="button"
@@ -367,44 +396,61 @@ export function TelegramConnectionPanel({ apiBaseUrl }: TelegramConnectionPanelP
                   {busyAction === 'poll' ? 'Checking…' : 'Check connection'}
                 </button>
                 <p className="security-copy">
-                  This QR is never saved to the database or audit log and expires automatically.
+                  QR login is optional. The QR is never saved to the database or audit log and
+                  expires automatically.
                 </p>
               </div>
-
-              {authorization.status === 'password_required' && (
-                <form className="telegram-password-form" onSubmit={handleTelegramPassword}>
-                  <label>
-                    Telegram two-step password
-                    <input
-                      name="password"
-                      type="password"
-                      autoComplete="current-password"
-                      required
-                    />
-                  </label>
-                  <button className="button" type="submit" disabled={busyAction !== null}>
-                    {busyAction === 'password' ? 'Authorising…' : 'Complete protected sign-in'}
-                  </button>
-                  <small>The password is sent directly to Telegram and is never stored.</small>
-                </form>
-              )}
             </article>
-          ) : (
-            <form className="telegram-connect-form" onSubmit={handleBeginAuthorization}>
-              <label>
-                Private account label
-                <input
-                  name="label"
-                  type="text"
-                  maxLength={80}
-                  placeholder="Primary signal reader"
-                  required
-                />
-              </label>
-              <button className="button" type="submit" disabled={busyAction !== null}>
-                {busyAction === 'begin' ? 'Creating secure QR…' : 'Create secure QR'}
+          ) : connectMethod === 'phone' ? (
+            <>
+              <TelegramPhoneAuthorization
+                apiBaseUrl={apiBaseUrl}
+                disabled={busyAction !== null}
+                onConnected={() => {
+                  setNotice({
+                    tone: 'success',
+                    message: 'Telegram connected and the encrypted server session was saved.',
+                  });
+                  void loadAccounts();
+                }}
+                onPasswordRequired={(flowId) => setPasswordFlowId(flowId)}
+                onNotice={(tone, message) => setNotice({ tone, message })}
+              />
+              <button
+                className="button button--quiet"
+                type="button"
+                onClick={() => setConnectMethod('qr')}
+                disabled={busyAction !== null}
+              >
+                Use QR on a second device instead
               </button>
-            </form>
+            </>
+          ) : (
+            <>
+              <form className="telegram-connect-form" onSubmit={handleBeginQrAuthorization}>
+                <label>
+                  Private account label
+                  <input
+                    name="label"
+                    type="text"
+                    maxLength={80}
+                    placeholder="Primary signal reader"
+                    required
+                  />
+                </label>
+                <button className="button" type="submit" disabled={busyAction !== null}>
+                  {busyAction === 'begin' ? 'Creating secure QR…' : 'Create secure QR'}
+                </button>
+              </form>
+              <button
+                className="button button--quiet"
+                type="button"
+                onClick={() => setConnectMethod('phone')}
+                disabled={busyAction !== null}
+              >
+                Use same-phone code login instead
+              </button>
+            </>
           )}
         </div>
       )}
