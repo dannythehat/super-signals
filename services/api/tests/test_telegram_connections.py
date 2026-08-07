@@ -265,16 +265,14 @@ def test_same_phone_code_connection_does_not_store_code_or_full_phone(
             .mappings()
             .one()
         )
-        audit_payloads = connection.execute(
-            text("SELECT payload FROM audit_events ORDER BY id")
-        ).scalars().all()
+        audit_payloads = (
+            connection.execute(text("SELECT payload FROM audit_events ORDER BY id")).scalars().all()
+        )
 
     assert stored["status"] == "connected"
     assert cipher.decrypt(stored["session_ciphertext"]) == RAW_SESSION
     assert all(not _contains_exact_secret(payload, "12345") for payload in audit_payloads)
-    assert all(
-        not _contains_exact_secret(payload, "+359881234567") for payload in audit_payloads
-    )
+    assert all(not _contains_exact_secret(payload, "+359881234567") for payload in audit_payloads)
     assert any(
         isinstance(payload, dict) and payload.get("phone_hint") == "+35***567"
         for payload in audit_payloads
@@ -420,9 +418,9 @@ def test_same_phone_code_flow_supports_two_step_verification(telegram_client) ->
     assert completed.json()["status"] == "connected"
 
     with engine.connect() as connection:
-        audit_payloads = connection.execute(
-            text("SELECT payload FROM audit_events ORDER BY id")
-        ).scalars().all()
+        audit_payloads = (
+            connection.execute(text("SELECT payload FROM audit_events ORDER BY id")).scalars().all()
+        )
     assert all(not _contains_exact_secret(payload, "12345") for payload in audit_payloads)
     assert all(
         not _contains_exact_secret(payload, "correct telegram password")
