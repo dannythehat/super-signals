@@ -204,6 +204,39 @@ describe('TelegramConnectionPanel', () => {
     );
   });
 
+  it('makes successful session verification explicit', async () => {
+    const notYetVerified = {
+      ...connectedAccount,
+      last_connected_at: null,
+    };
+    const verifiedAccount = {
+      ...connectedAccount,
+      last_connected_at: '2026-08-07T06:44:00Z',
+    };
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(jsonResponse(200, [notYetVerified]))
+      .mockResolvedValueOnce(jsonResponse(200, verifiedAccount))
+      .mockResolvedValueOnce(jsonResponse(200, [verifiedAccount]));
+    vi.stubGlobal('fetch', fetchMock);
+
+    render(<TelegramConnectionPanel apiBaseUrl="/api" />);
+
+    openTelegramManager();
+    expect(await screen.findByText('Primary signal reader')).toBeInTheDocument();
+    expect(screen.queryByText('Verified ✓')).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Verify' }));
+
+    expect(
+      await screen.findByText(
+        'Verified ✓ — the encrypted Telegram session survived restart and is still authorised.',
+      ),
+    ).toBeInTheDocument();
+    expect(await screen.findByText('Verified ✓')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Verify again' })).toBeInTheDocument();
+  });
+
   it('requires confirmation before destroying a connected server session', async () => {
     const disconnectedAccount = {
       ...connectedAccount,
