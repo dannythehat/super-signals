@@ -82,9 +82,7 @@ class TelegramGateway(Protocol):
         self, flow_id: UUID, phone_number_e164: str
     ) -> TelegramCodeAuthorization: ...
 
-    async def submit_code(
-        self, flow_id: UUID, code: str
-    ) -> TelegramAuthorizationResult: ...
+    async def submit_code(self, flow_id: UUID, code: str) -> TelegramAuthorizationResult: ...
 
     async def submit_password(
         self, flow_id: UUID, password: str
@@ -213,9 +211,7 @@ class TelethonTelegramGateway:
             try:
                 sent_code = await client.send_code_request(phone_number_e164)
             except PhoneNumberInvalidError as exc:
-                raise TelegramPhoneInvalidError(
-                    "Telegram rejected the phone number."
-                ) from exc
+                raise TelegramPhoneInvalidError("Telegram rejected the phone number.") from exc
 
             expires_at = datetime.now(UTC) + timedelta(seconds=self._code_ttl_seconds)
             flow = _ActiveCodeFlow(
@@ -232,9 +228,7 @@ class TelethonTelegramGateway:
                 await client.disconnect()
             raise
 
-    async def submit_code(
-        self, flow_id: UUID, code: str
-    ) -> TelegramAuthorizationResult:
+    async def submit_code(self, flow_id: UUID, code: str) -> TelegramAuthorizationResult:
         flow = self._flows.get(flow_id)
         if not isinstance(flow, _ActiveCodeFlow):
             raise TelegramFlowNotFoundError("Telegram code authorisation flow was not found.")
@@ -265,9 +259,7 @@ class TelethonTelegramGateway:
 
         return await self._finalize(flow_id)
 
-    async def submit_password(
-        self, flow_id: UUID, password: str
-    ) -> TelegramAuthorizationResult:
+    async def submit_password(self, flow_id: UUID, password: str) -> TelegramAuthorizationResult:
         flow = self._flows.get(flow_id)
         if flow is None:
             raise TelegramFlowNotFoundError("Telegram authorisation flow was not found.")
