@@ -99,6 +99,7 @@ export function TelegramPhoneAuthorization({
       );
       const result = await readJson<CodeResponse>(response);
       if (result.status === 'connected' && result.account) {
+        setAuthorization(null);
         onConnected(result.account);
         return;
       }
