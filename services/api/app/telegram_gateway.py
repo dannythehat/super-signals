@@ -160,7 +160,7 @@ class TelethonTelegramGateway:
         except SessionPasswordNeededError:
             flow.password_required = True
             return TelegramAuthorizationResult(status="password_required")
-        except (asyncio.TimeoutError, AuthTokenExpiredError, AuthTokenInvalidError):
+        except (TimeoutError, AuthTokenExpiredError, AuthTokenInvalidError):
             await self.discard_flow(flow_id)
             return TelegramAuthorizationResult(status="expired")
         except Exception as exc:
