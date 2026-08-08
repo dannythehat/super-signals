@@ -51,6 +51,7 @@ interface OwnerSourceAlert {
 
 interface TelegramSourceSelectorProps {
   apiBaseUrl: string;
+  canViewOwnerAlerts?: boolean;
 }
 
 async function readJson<T>(response: Response): Promise<T> {
@@ -76,7 +77,10 @@ function formatAlertDate(value: string): string {
   }).format(new Date(value));
 }
 
-export function TelegramSourceSelector({ apiBaseUrl }: TelegramSourceSelectorProps) {
+export function TelegramSourceSelector({
+  apiBaseUrl,
+  canViewOwnerAlerts = true,
+}: TelegramSourceSelectorProps) {
   const [expanded, setExpanded] = useState(false);
   const [accounts, setAccounts] = useState<TelegramAccount[]>([]);
   const [accountId, setAccountId] = useState('');
@@ -137,7 +141,11 @@ export function TelegramSourceSelector({ apiBaseUrl }: TelegramSourceSelectorPro
         });
       }
       await fetchSharedSources();
-      await fetchOwnerAlerts();
+      if (canViewOwnerAlerts) {
+        await fetchOwnerAlerts();
+      } else {
+        setOwnerAlerts(null);
+      }
     } catch (error) {
       setNotice({
         tone: 'error',
@@ -206,7 +214,9 @@ export function TelegramSourceSelector({ apiBaseUrl }: TelegramSourceSelectorPro
         tone: 'success',
         message: `${changed.title} moved from ${changed.previous_status.toUpperCase()} to ${changed.status.toUpperCase()}. The change was audited. Live trading remains disabled.`,
       });
-      await fetchOwnerAlerts();
+      if (canViewOwnerAlerts) {
+        await fetchOwnerAlerts();
+      }
     } catch (error) {
       setNotice({
         tone: 'error',
