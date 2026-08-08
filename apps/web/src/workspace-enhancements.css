@@ -160,6 +160,108 @@
   display: block;
 }
 
+.source-state-card {
+  align-items: center;
+}
+
+.source-state-card__copy {
+  min-width: 0;
+}
+
+.source-state-controls {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(82px, 1fr));
+  gap: 8px;
+  min-width: min(100%, 300px);
+}
+
+.source-state-button {
+  min-height: 42px;
+  padding: 9px 12px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 11px;
+  color: #cbd3df;
+  background: rgba(255, 255, 255, 0.035);
+  font-weight: 800;
+}
+
+.source-state-button:not(:disabled):hover {
+  border-color: rgba(89, 232, 205, 0.32);
+  background: rgba(89, 232, 205, 0.07);
+}
+
+.source-state-button[aria-pressed='true'],
+.source-state-button:disabled[aria-pressed='true'] {
+  opacity: 1;
+  color: #f6fbff;
+  cursor: default;
+}
+
+.source-state-button--testing[aria-pressed='true'] {
+  border-color: rgba(83, 165, 255, 0.42);
+  background: rgba(83, 165, 255, 0.13);
+}
+
+.source-state-button--live[aria-pressed='true'] {
+  border-color: rgba(73, 218, 152, 0.42);
+  background: rgba(73, 218, 152, 0.13);
+}
+
+.source-state-button--paused[aria-pressed='true'] {
+  border-color: rgba(241, 180, 73, 0.4);
+  background: rgba(241, 180, 73, 0.11);
+}
+
+.connection-status--testing {
+  color: #c9e1ff;
+  background: rgba(83, 165, 255, 0.14);
+}
+
+.connection-status--live {
+  color: #bdfbe0;
+  background: rgba(73, 218, 152, 0.14);
+}
+
+.connection-status--paused {
+  color: #ffe1ad;
+  background: rgba(241, 180, 73, 0.14);
+}
+
+.owner-alerts {
+  padding: 18px;
+  border: 1px solid rgba(241, 180, 73, 0.18);
+  border-radius: 16px;
+  background: rgba(241, 180, 73, 0.045);
+}
+
+.owner-alerts__header h3 {
+  margin-top: 7px;
+}
+
+.owner-alert-list {
+  display: grid;
+  gap: 9px;
+  margin-top: 13px;
+}
+
+.owner-alert {
+  padding: 13px 14px;
+  border: 1px solid rgba(255, 255, 255, 0.075);
+  border-radius: 12px;
+  background: rgba(4, 9, 17, 0.48);
+}
+
+.owner-alert strong,
+.owner-alert small {
+  display: block;
+}
+
+.owner-alert small {
+  margin-top: 5px;
+  color: #929cac;
+  line-height: 1.4;
+}
+
 @media (max-width: 760px) {
   .workspace-brand .brand-logo {
     width: 126px;
@@ -172,7 +274,8 @@
   }
 
   .overview-section-header,
-  .overview-source-card {
+  .overview-source-card,
+  .source-state-card {
     align-items: stretch;
     flex-direction: column;
   }
@@ -184,6 +287,11 @@
 
   .overview-source-card {
     padding: 16px;
+  }
+
+  .source-state-controls {
+    width: 100%;
+    min-width: 0;
   }
 }
 
@@ -208,5 +316,9 @@
     clip: rect(0, 0, 0, 0);
     white-space: nowrap;
     border: 0;
+  }
+
+  .source-state-controls {
+    grid-template-columns: 1fr;
   }
 }
