@@ -5,6 +5,7 @@ import { TelegramSourceSelector } from './TelegramSourceSelector';
 
 type AuthState = 'checking' | 'signed-out' | 'signed-in';
 type Notice = { tone: 'error' | 'success'; message: string } | null;
+type WorkspaceView = 'overview' | 'telegram' | 'sources' | 'access';
 
 interface AccessAction {
   permission: string;
@@ -58,6 +59,8 @@ export function App() {
   const [notice, setNotice] = useState<Notice>(null);
   const [busy, setBusy] = useState(false);
   const [showRecovery, setShowRecovery] = useState(false);
+  const [menuOpen, setMenuOpen] = useState(false);
+  const [activeView, setActiveView] = useState<WorkspaceView>('overview');
   const canManageTelegram = account?.permissions.includes('sources.manage') ?? false;
 
   useEffect(() => {
@@ -87,6 +90,15 @@ export function App() {
     return () => controller.abort();
   }, []);
 
+  useEffect(() => {
+    if (!menuOpen) return;
+    function closeOnEscape(event: KeyboardEvent) {
+      if (event.key === 'Escape') setMenuOpen(false);
+    }
+    window.addEventListener('keydown', closeOnEscape);
+    return () => window.removeEventListener('keydown', closeOnEscape);
+  }, [menuOpen]);
+
   async function handleLogin(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     setBusy(true);
@@ -106,6 +118,7 @@ export function App() {
       const authenticatedAccount = await readJson<Account>(response);
       setAccount(authenticatedAccount);
       setAuthState('signed-in');
+      setActiveView('overview');
       event.currentTarget.reset();
     } catch (error) {
       setNotice({
@@ -129,6 +142,8 @@ export function App() {
       setAccount(null);
       setAuthState('signed-out');
       setNotice(null);
+      setActiveView('overview');
+      setMenuOpen(false);
       setBusy(false);
     }
   }
@@ -160,6 +175,12 @@ export function App() {
     }
   }
 
+  function navigate(view: WorkspaceView) {
+    setActiveView(view);
+    setMenuOpen(false);
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  }
+
   if (authState === 'checking') {
     return (
       <main className="app-shell">
@@ -172,84 +193,225 @@ export function App() {
   }
 
   if (authState === 'signed-in' && account) {
+    const displayName = account.display_name ?? account.role_label;
+
     return (
-      <main className="app-shell">
-        <section className="dashboard-card" aria-labelledby="dashboard-title">
-          <header className="dashboard-header">
-            <img
-              className="brand-logo brand-logo--dashboard"
-              src="/super-signals-logo.png"
-              alt=""
-            />
+      <main className="app-shell workspace-shell">
+        <section className="dashboard-card dashboard-card--workspace" aria-label="Super Signals workspace">
+          <header className="workspace-topbar">
+            <div className="workspace-brand">
+              <img className="brand-logo" src="/super-signals-logo.png" alt="Super Signals" />
+              <div className="workspace-brand-copy">
+                <strong>Trading workspace</strong>
+                <small>Private · controlled · live trading disabled</small>
+              </div>
+            </div>
             <button
-              className="button button--quiet"
+              className="menu-trigger"
               type="button"
-              onClick={handleLogout}
-              disabled={busy}
+              aria-label="Open menu"
+              aria-expanded={menuOpen}
+              onClick={() => setMenuOpen(true)}
             >
-              Log out
+              <span className="menu-bars" aria-hidden="true">
+                <span />
+                <span />
+                <span />
+              </span>
             </button>
           </header>
 
-          <p className="eyebrow">{account.role_label}</p>
-          <h1 id="dashboard-title">Welcome, {account.display_name ?? account.role_label}</h1>
-          <p className="intro">Your workspace shows only the controls approved for this account.</p>
-
-          <div className="status-grid">
-            <article className="status-card status-card--healthy">
-              <span className="status-label">Session</span>
-              <strong>Securely signed in</strong>
-              <small>{account.email}</small>
-            </article>
-            <article className="status-card">
-              <span className="status-label">Role</span>
-              <strong>{account.role_label}</strong>
-              <small>{account.permissions.length} approved permissions</small>
-            </article>
-            <article className="status-card">
-              <span className="status-label">Additional security</span>
-              <strong>
-                {account.security.two_factor === 'enabled' ? '2FA enabled' : 'Setup required'}
-              </strong>
-              <small>
-                {account.security.passkey === 'enabled'
-                  ? 'Passkey enabled'
-                  : 'Passkey setup available soon'}
-              </small>
-            </article>
-          </div>
-
-          {canManageTelegram && (
-            <>
-              <TelegramConnectionPanel apiBaseUrl={apiBaseUrl} />
-              <TelegramSourceSelector apiBaseUrl={apiBaseUrl} />
-            </>
+          {menuOpen && (
+            <button className="menu-backdrop" type="button" aria-label="Close menu" onClick={() => setMenuOpen(false)} />
           )}
 
-          <div className="access-grid" aria-label="Approved workspace areas">
-            {account.sections.map((section) => (
-              <article
-                className={`access-section access-section--${section.key}`}
-                key={section.key}
-              >
-                <span className="status-label">{section.label}</span>
-                <p>{section.description}</p>
-                <ul className="access-action-list">
-                  {section.actions.map((action) => (
-                    <li key={action.permission}>
-                      <strong>{action.label}</strong>
-                      <small>{action.description}</small>
-                    </li>
-                  ))}
-                </ul>
-              </article>
-            ))}
-          </div>
+          <aside
+            className={`workspace-drawer ${menuOpen ? 'workspace-drawer--open' : ''}`}
+            aria-label="Workspace navigation"
+            aria-hidden={!menuOpen}
+          >
+            <div className="drawer-header">
+              <div>
+                <strong>Super Signals</strong>
+                <span>{account.role_label}</span>
+              </div>
+              <button className="menu-close" type="button" aria-label="Close menu" onClick={() => setMenuOpen(false)}>
+                ×
+              </button>
+            </div>
 
-          <div className="foundation-note">
-            <span className="pulse" aria-hidden="true" />
-            Role restrictions are enforced by the API and every denial is audited. No live trading
-            is enabled.
+            <nav className="drawer-nav" aria-label="Main menu">
+              <button type="button" aria-current={activeView === 'overview' ? 'page' : undefined} onClick={() => navigate('overview')}>
+                <span className="drawer-nav-icon" aria-hidden="true">01</span>
+                <span className="drawer-nav-label">
+                  <strong>Overview</strong>
+                  <small>Workspace status and shortcuts</small>
+                </span>
+              </button>
+
+              {canManageTelegram && (
+                <button type="button" aria-current={activeView === 'telegram' ? 'page' : undefined} onClick={() => navigate('telegram')}>
+                  <span className="drawer-nav-icon" aria-hidden="true">02</span>
+                  <span className="drawer-nav-label">
+                    <strong>Telegram accounts</strong>
+                    <small>Connect and manage private readers</small>
+                  </span>
+                </button>
+              )}
+
+              {canManageTelegram && (
+                <button type="button" aria-current={activeView === 'sources' ? 'page' : undefined} onClick={() => navigate('sources')}>
+                  <span className="drawer-nav-icon" aria-hidden="true">03</span>
+                  <span className="drawer-nav-label">
+                    <strong>Signal sources</strong>
+                    <small>Add shared groups and channels</small>
+                  </span>
+                </button>
+              )}
+
+              <button type="button" aria-current={activeView === 'access' ? 'page' : undefined} onClick={() => navigate('access')}>
+                <span className="drawer-nav-icon" aria-hidden="true">04</span>
+                <span className="drawer-nav-label">
+                  <strong>Access &amp; security</strong>
+                  <small>Role, permissions and account security</small>
+                </span>
+              </button>
+            </nav>
+
+            <div className="drawer-footer">
+              <div className="drawer-account">
+                <strong>{displayName}</strong>
+                <small>{account.email}</small>
+              </div>
+              <button className="button button--quiet" type="button" onClick={handleLogout} disabled={busy}>
+                Log out
+              </button>
+            </div>
+          </aside>
+
+          <div className="workspace-content">
+            {activeView === 'overview' && (
+              <section aria-labelledby="dashboard-title">
+                <div className="overview-hero">
+                  <p className="eyebrow">{account.role_label}</p>
+                  <h1 id="dashboard-title">Welcome back, {displayName}</h1>
+                  <p className="intro">
+                    This is your operational dashboard. Detailed connection, source and security settings now live behind the menu instead of filling the homepage.
+                  </p>
+                  <div className="overview-actions">
+                    {canManageTelegram && (
+                      <button className="button" type="button" onClick={() => navigate('sources')}>
+                        Add a signal group
+                      </button>
+                    )}
+                    {canManageTelegram && (
+                      <button className="button button--quiet" type="button" onClick={() => navigate('telegram')}>
+                        Telegram readers
+                      </button>
+                    )}
+                  </div>
+                </div>
+
+                <div className="overview-grid" aria-label="Workspace status">
+                  <article className="overview-card">
+                    <span className="status-label">Session</span>
+                    <strong>Securely signed in</strong>
+                    <small>Your current Super Signals session is active.</small>
+                  </article>
+                  <article className="overview-card">
+                    <span className="status-label">Role</span>
+                    <strong>{account.role_label}</strong>
+                    <small>{account.permissions.length} approved permissions.</small>
+                  </article>
+                  <article className="overview-card">
+                    <span className="status-label">Trading state</span>
+                    <strong>Live trading disabled</strong>
+                    <small>Day 10 source work remains PAUSED and cannot place trades.</small>
+                  </article>
+                </div>
+              </section>
+            )}
+
+            {activeView === 'telegram' && canManageTelegram && (
+              <section className="workspace-panel-page" aria-labelledby="telegram-page-title">
+                <div className="workspace-page-header">
+                  <div>
+                    <p className="eyebrow">Private reader connections</p>
+                    <h1 id="telegram-page-title">Telegram accounts</h1>
+                    <p className="intro">Each connected reader remains private to the administrator who authorised it.</p>
+                  </div>
+                  <span className="workspace-role-pill">Private sessions</span>
+                </div>
+                <TelegramConnectionPanel apiBaseUrl={apiBaseUrl} />
+              </section>
+            )}
+
+            {activeView === 'sources' && canManageTelegram && (
+              <section className="workspace-panel-page" aria-labelledby="sources-page-title">
+                <div className="workspace-page-header">
+                  <div>
+                    <p className="eyebrow">Shared Super Signals data</p>
+                    <h1 id="sources-page-title">Signal sources</h1>
+                    <p className="intro">Add Telegram groups or channels to the shared source catalogue. They remain PAUSED until a later stage enables listening.</p>
+                  </div>
+                  <span className="workspace-role-pill">PAUSED</span>
+                </div>
+                <TelegramSourceSelector apiBaseUrl={apiBaseUrl} />
+              </section>
+            )}
+
+            {activeView === 'access' && (
+              <section className="access-page" aria-labelledby="access-page-title">
+                <div className="workspace-page-header">
+                  <div>
+                    <p className="eyebrow">Account controls</p>
+                    <h1 id="access-page-title">Access &amp; security</h1>
+                    <p className="intro">Your role, security state and approved workspace permissions.</p>
+                  </div>
+                  <span className="workspace-role-pill">{account.role_label}</span>
+                </div>
+
+                <div className="status-grid">
+                  <article className="status-card status-card--healthy">
+                    <span className="status-label">Session</span>
+                    <strong>Securely signed in</strong>
+                    <small>{account.email}</small>
+                  </article>
+                  <article className="status-card">
+                    <span className="status-label">Role</span>
+                    <strong>{account.role_label}</strong>
+                    <small>{account.permissions.length} approved permissions</small>
+                  </article>
+                  <article className="status-card">
+                    <span className="status-label">Additional security</span>
+                    <strong>{account.security.two_factor === 'enabled' ? '2FA enabled' : 'Setup required'}</strong>
+                    <small>{account.security.passkey === 'enabled' ? 'Passkey enabled' : 'Passkey setup available soon'}</small>
+                  </article>
+                </div>
+
+                <div className="access-grid" aria-label="Approved workspace areas">
+                  {account.sections.map((section) => (
+                    <article className={`access-section access-section--${section.key}`} key={section.key}>
+                      <span className="status-label">{section.label}</span>
+                      <p>{section.description}</p>
+                      <ul className="access-action-list">
+                        {section.actions.map((action) => (
+                          <li key={action.permission}>
+                            <strong>{action.label}</strong>
+                            <small>{action.description}</small>
+                          </li>
+                        ))}
+                      </ul>
+                    </article>
+                  ))}
+                </div>
+
+                <div className="foundation-note">
+                  <span className="pulse" aria-hidden="true" />
+                  Role restrictions are enforced by the API and every denial is audited.
+                </div>
+              </section>
+            )}
           </div>
         </section>
       </main>
