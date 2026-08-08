@@ -52,6 +52,7 @@ export function TelegramSourceSelector({ apiBaseUrl }: TelegramSourceSelectorPro
   const [accountId, setAccountId] = useState('');
   const [sources, setSources] = useState<TelegramSelectableSource[]>([]);
   const [sharedSources, setSharedSources] = useState<SharedTelegramSource[]>([]);
+  const [sharedCatalogueAvailable, setSharedCatalogueAvailable] = useState(true);
   const [loaded, setLoaded] = useState(false);
   const [busyAction, setBusyAction] = useState<string | null>(null);
   const [notice, setNotice] = useState<Notice>(null);
@@ -61,7 +62,13 @@ export function TelegramSourceSelector({ apiBaseUrl }: TelegramSourceSelectorPro
       credentials: 'include',
       headers: { Accept: 'application/json' },
     });
+    if (response.status === 404) {
+      setSharedCatalogueAvailable(false);
+      setSharedSources([]);
+      return;
+    }
     const shared = await readJson<SharedTelegramSource[]>(response);
+    setSharedCatalogueAvailable(true);
     setSharedSources(shared);
   }
 
@@ -70,21 +77,13 @@ export function TelegramSourceSelector({ apiBaseUrl }: TelegramSourceSelectorPro
     setBusyAction('accounts');
     setNotice(null);
     try {
-      const [accountsResponse, sharedResponse] = await Promise.all([
-        fetch(`${apiBaseUrl}/admin/telegram/accounts`, {
-          credentials: 'include',
-          headers: { Accept: 'application/json' },
-        }),
-        fetch(`${apiBaseUrl}/admin/telegram/sources/shared`, {
-          credentials: 'include',
-          headers: { Accept: 'application/json' },
-        }),
-      ]);
+      const accountsResponse = await fetch(`${apiBaseUrl}/admin/telegram/accounts`, {
+        credentials: 'include',
+        headers: { Accept: 'application/json' },
+      });
       const allAccounts = await readJson<TelegramAccount[]>(accountsResponse);
-      const shared = await readJson<SharedTelegramSource[]>(sharedResponse);
       const connected = allAccounts.filter((account) => account.status === 'connected');
       setAccounts(connected);
-      setSharedSources(shared);
       if (connected.length > 0) {
         setAccountId((current) => current || connected[0].id);
       }
@@ -94,6 +93,7 @@ export function TelegramSourceSelector({ apiBaseUrl }: TelegramSourceSelectorPro
           message: 'Connect your own Telegram reader above before adding another signal source.',
         });
       }
+      await fetchSharedSources();
     } catch (error) {
       setNotice({
         tone: 'error',
@@ -152,9 +152,11 @@ export function TelegramSourceSelector({ apiBaseUrl }: TelegramSourceSelectorPro
       await readJson<TelegramSelectableSource>(response);
       setNotice({
         tone: 'success',
-        message: wasAlreadyShared
-          ? 'Existing shared source linked to your reader too. No duplicate source was created.'
-          : 'Source added to the shared list and kept PAUSED. No monitoring has started.',
+        message: !sharedCatalogueAvailable
+          ? 'Source selected and kept PAUSED. This confirms the real Telegram group-selection path; the shared catalogue will appear when the Day 10 backend is deployed.'
+          : wasAlreadyShared
+            ? 'Existing shared source linked to your reader too. No duplicate source was created.'
+            : 'Source added to the shared list and kept PAUSED. No monitoring has started.',
       });
       await loadSources(accountId);
     } catch (error) {
@@ -183,7 +185,9 @@ export function TelegramSourceSelector({ apiBaseUrl }: TelegramSourceSelectorPro
       await readJson<{ removed: boolean }>(response);
       setNotice({
         tone: 'success',
-        message: 'Your reader was removed from this source. The shared source stays available if another reader still supplies access.',
+        message: sharedCatalogueAvailable
+          ? 'Your reader was removed from this source. The shared source stays available if another reader still supplies access.'
+          : 'Source selection removed from this Telegram reader.',
       });
       await loadSources(accountId);
     } catch (error) {
@@ -234,7 +238,12 @@ export function TelegramSourceSelector({ apiBaseUrl }: TelegramSourceSelectorPro
           <div>
             <span className="status-label">Shared across Super Signals</span>
             <h3>Added signal sources</h3>
-            {sharedSources.length === 0 ? (
+            {!sharedCatalogueAvailable ? (
+              <p className="muted-copy">
+                The shared Day 10 catalogue is not live on the backend yet. You can still use this
+                screen to smoke-test adding one real Telegram group as PAUSED.
+              </p>
+            ) : sharedSources.length === 0 ? (
               <p className="muted-copy">No shared Telegram signal sources have been added yet.</p>
             ) : (
               <div className="telegram-account-list" aria-label="Shared Super Signals sources">
