@@ -79,6 +79,13 @@ const invitedUser = {
   sections: [owner.sections[2]],
 };
 
+const sharedSource = {
+  source_id: '11111111-1111-4111-8111-111111111111',
+  chat_id: -1001651583302,
+  title: 'FXTradingVision | Forex & Crypto Signals 🚀',
+  status: 'paused',
+};
+
 function jsonResponse(status: number, body: unknown): Response {
   return {
     ok: status >= 200 && status < 300,
@@ -90,6 +97,7 @@ function jsonResponse(status: number, body: unknown): Response {
 describe('App', () => {
   afterEach(() => {
     vi.unstubAllGlobals();
+    window.history.replaceState({}, '', window.location.href);
   });
 
   it('shows account login when no valid session exists', async () => {
@@ -115,7 +123,8 @@ describe('App', () => {
     const fetchMock = vi
       .fn()
       .mockResolvedValueOnce(jsonResponse(401, {}))
-      .mockResolvedValueOnce(jsonResponse(200, owner));
+      .mockResolvedValueOnce(jsonResponse(200, owner))
+      .mockResolvedValueOnce(jsonResponse(200, []));
     vi.stubGlobal('fetch', fetchMock);
 
     render(<App />);
@@ -133,10 +142,31 @@ describe('App', () => {
     expect(screen.queryByText('Owner controls')).not.toBeInTheDocument();
     expect(screen.queryByText('Trading operations')).not.toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Open menu' })).toBeInTheDocument();
-    expect(fetchMock).toHaveBeenLastCalledWith(
+    expect(fetchMock).toHaveBeenCalledWith(
       '/api/auth/login',
       expect.objectContaining({ method: 'POST', credentials: 'include' }),
     );
+  });
+
+  it('shows connected shared sources on the overview and returns home without browser back', async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(jsonResponse(200, owner))
+      .mockResolvedValueOnce(jsonResponse(200, [sharedSource]));
+    vi.stubGlobal('fetch', fetchMock);
+    window.scrollTo = vi.fn();
+
+    render(<App />);
+
+    expect(await screen.findByText(sharedSource.title)).toBeInTheDocument();
+    expect(screen.getByText('SHARED · PAUSED')).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Open menu' }));
+    fireEvent.click(screen.getByRole('button', { name: /Access & security/i }));
+
+    expect(await screen.findByRole('heading', { name: 'Access & security' })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Back to overview' }));
+    expect(await screen.findByRole('heading', { name: 'Welcome back, Danny' })).toBeInTheDocument();
   });
 
   it('opens the workspace menu and navigates to access settings', async () => {
@@ -194,6 +224,7 @@ describe('App', () => {
     const fetchMock = vi
       .fn()
       .mockResolvedValueOnce(jsonResponse(200, owner))
+      .mockResolvedValueOnce(jsonResponse(200, []))
       .mockResolvedValueOnce(jsonResponse(204, {}));
     vi.stubGlobal('fetch', fetchMock);
 
