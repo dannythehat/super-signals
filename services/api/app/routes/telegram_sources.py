@@ -1,7 +1,8 @@
-"""Administrator-only Telegram group/channel discovery and shared source selection."""
+"""Administrator Telegram source discovery, sharing and Day 11 state controls."""
 
 from __future__ import annotations
 
+from datetime import datetime
 from typing import Annotated, Any, Literal
 from uuid import UUID
 
@@ -13,7 +14,9 @@ from app.telegram_crypto import SessionDecryptionError
 from app.telegram_gateway import TelegramSessionInvalidError
 from app.telegram_source_gateway import TelegramSourceGatewayError
 from app.telegram_source_service import (
+    OwnerSourceAlertView,
     SharedTelegramSourceView,
+    SourceStatusChangeView,
     TelegramSelectableSourceView,
     TelegramSourceConfigurationError,
     TelegramSourceNotFoundError,
@@ -25,6 +28,14 @@ router = APIRouter(prefix="/admin/telegram/sources", tags=["telegram-sources"])
 AdminIdentity = Annotated[
     dict[str, Any],
     Depends(require_permission("sources.manage")),
+]
+StatusIdentity = Annotated[
+    dict[str, Any],
+    Depends(require_permission("sources.change_status")),
+]
+OwnerIdentity = Annotated[
+    dict[str, Any],
+    Depends(require_permission("admins.manage")),
 ]
 
 
@@ -53,6 +64,32 @@ class TelegramSourceRemovalResponse(BaseModel):
     removed: bool
     source_id: UUID
     monitoring_started: bool
+
+
+class SourceStatusChangeRequest(BaseModel):
+    status: Literal["testing", "live", "paused"]
+
+
+class SourceStatusChangeResponse(BaseModel):
+    source_id: UUID
+    title: str
+    previous_status: str
+    status: str
+    changed_at: datetime
+    actor_display_name: str
+    actor_role: str
+    monitoring_started: Literal[False] = False
+    live_trading_enabled: Literal[False] = False
+
+
+class OwnerSourceAlertResponse(BaseModel):
+    event_id: int
+    source_id: UUID
+    title: str
+    previous_status: str
+    status: str
+    actor_display_name: str
+    changed_at: datetime
 
 
 def provide_telegram_source_service() -> TelegramSourceService:
@@ -95,6 +132,30 @@ def _shared_response(item: SharedTelegramSourceView) -> SharedTelegramSourceResp
     )
 
 
+def _status_response(item: SourceStatusChangeView) -> SourceStatusChangeResponse:
+    return SourceStatusChangeResponse(
+        source_id=item.source_id,
+        title=item.title,
+        previous_status=item.previous_status,
+        status=item.status,
+        changed_at=item.changed_at,
+        actor_display_name=item.actor_display_name,
+        actor_role=item.actor_role,
+    )
+
+
+def _alert_response(item: OwnerSourceAlertView) -> OwnerSourceAlertResponse:
+    return OwnerSourceAlertResponse(
+        event_id=item.event_id,
+        source_id=item.source_id,
+        title=item.title,
+        previous_status=item.previous_status,
+        status=item.status,
+        actor_display_name=item.actor_display_name,
+        changed_at=item.changed_at,
+    )
+
+
 def _translate_error(exc: Exception) -> HTTPException:
     if isinstance(exc, TelegramSourceNotFoundError):
         return HTTPException(
@@ -128,7 +189,7 @@ def _translate_error(exc: Exception) -> HTTPException:
         status_code=status.HTTP_502_BAD_GATEWAY,
         detail={
             "code": "telegram_unavailable",
-            "message": "Telegram could not complete the source-selection request.",
+            "message": "Telegram could not complete the source request.",
         },
     )
 
@@ -144,6 +205,45 @@ def list_shared_sources(
     response.headers["Cache-Control"] = "no-store"
     response.headers["Pragma"] = "no-cache"
     return [_shared_response(item) for item in service.list_shared_sources(session)]
+
+
+@router.patch(
+    "/shared/{source_id}/status",
+    response_model=SourceStatusChangeResponse,
+)
+def change_shared_source_status(
+    source_id: UUID,
+    body: SourceStatusChangeRequest,
+    response: Response,
+    session: DbSession,
+    identity: StatusIdentity,
+    service: TelegramSources,
+) -> SourceStatusChangeResponse:
+    try:
+        item = service.change_source_status(
+            session,
+            actor=identity,
+            source_id=source_id,
+            new_status=body.status,
+        )
+    except Exception as exc:
+        raise _translate_error(exc) from exc
+    response.headers["Cache-Control"] = "no-store"
+    response.headers["Pragma"] = "no-cache"
+    return _status_response(item)
+
+
+@router.get("/owner-alerts", response_model=list[OwnerSourceAlertResponse])
+def list_owner_source_alerts(
+    response: Response,
+    session: DbSession,
+    identity: OwnerIdentity,
+    service: TelegramSources,
+) -> list[OwnerSourceAlertResponse]:
+    del identity
+    response.headers["Cache-Control"] = "no-store"
+    response.headers["Pragma"] = "no-cache"
+    return [_alert_response(item) for item in service.list_owner_source_alerts(session)]
 
 
 @router.get(
