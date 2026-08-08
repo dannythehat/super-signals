@@ -1,6 +1,7 @@
 import { useState } from 'react';
 
 type Notice = { tone: 'error' | 'success'; message: string } | null;
+type SourceState = 'testing' | 'live' | 'paused';
 
 interface TelegramAccount {
   id: string;
@@ -24,6 +25,18 @@ interface SharedTelegramSource {
   chat_id: number;
   title: string;
   status: string;
+}
+
+interface SourceStatusChange {
+  source_id: string;
+  title: string;
+  previous_status: string;
+  status: SourceState;
+  changed_at: string;
+  actor_display_name: string;
+  actor_role: string;
+  monitoring_started: false;
+  live_trading_enabled: false;
 }
 
 interface TelegramSourceSelectorProps {
@@ -90,7 +103,7 @@ export function TelegramSourceSelector({ apiBaseUrl }: TelegramSourceSelectorPro
       if (connected.length === 0) {
         setNotice({
           tone: 'error',
-          message: 'Connect your own Telegram reader above before adding another signal source.',
+          message: 'Connect your own Telegram reader before adding another signal source.',
         });
       }
       await fetchSharedSources();
@@ -118,7 +131,6 @@ export function TelegramSourceSelector({ apiBaseUrl }: TelegramSourceSelectorPro
         },
       );
       const discovered = await readJson<TelegramSelectableSource[]>(response);
-      // Defence in depth: never render a user/private-chat row even if a server regression occurs.
       setSources(
         discovered.filter((source) => source.kind === 'group' || source.kind === 'channel'),
       );
@@ -128,6 +140,45 @@ export function TelegramSourceSelector({ apiBaseUrl }: TelegramSourceSelectorPro
       setNotice({
         tone: 'error',
         message: error instanceof Error ? error.message : 'Telegram sources could not be loaded.',
+      });
+    } finally {
+      setBusyAction(null);
+    }
+  }
+
+  async function changeSourceStatus(source: SharedTelegramSource, nextStatus: SourceState) {
+    if (source.status === nextStatus) return;
+    setBusyAction(`status:${source.source_id}:${nextStatus}`);
+    setNotice(null);
+    try {
+      const response = await fetch(
+        `${apiBaseUrl}/admin/telegram/sources/shared/${source.source_id}/status`,
+        {
+          method: 'PATCH',
+          credentials: 'include',
+          headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+          body: JSON.stringify({ status: nextStatus }),
+        },
+      );
+      const changed = await readJson<SourceStatusChange>(response);
+      setSharedSources((current) =>
+        current.map((item) =>
+          item.source_id === changed.source_id ? { ...item, status: changed.status } : item,
+        ),
+      );
+      setSources((current) =>
+        current.map((item) =>
+          item.source_id === changed.source_id ? { ...item, status: changed.status } : item,
+        ),
+      );
+      setNotice({
+        tone: 'success',
+        message: `${changed.title} moved from ${changed.previous_status.toUpperCase()} to ${changed.status.toUpperCase()}. The change was audited. Live trading remains disabled.`,
+      });
+    } catch (error) {
+      setNotice({
+        tone: 'error',
+        message: error instanceof Error ? error.message : 'Source state could not be changed.',
       });
     } finally {
       setBusyAction(null);
@@ -153,7 +204,7 @@ export function TelegramSourceSelector({ apiBaseUrl }: TelegramSourceSelectorPro
       setNotice({
         tone: 'success',
         message: !sharedCatalogueAvailable
-          ? 'Source selected and kept PAUSED. This confirms the real Telegram group-selection path; the shared catalogue will appear when the Day 10 backend is deployed.'
+          ? 'Source selected and kept PAUSED.'
           : wasAlreadyShared
             ? 'Existing shared source linked to your reader too. No duplicate source was created.'
             : 'Source added to the shared list and kept PAUSED. No monitoring has started.',
@@ -186,7 +237,7 @@ export function TelegramSourceSelector({ apiBaseUrl }: TelegramSourceSelectorPro
       setNotice({
         tone: 'success',
         message: sharedCatalogueAvailable
-          ? 'Your reader was removed from this source. The shared source stays available if another reader still supplies access.'
+          ? 'Your reader was removed. The shared source remains if another private reader still supplies access.'
           : 'Source selection removed from this Telegram reader.',
       });
       await loadSources(accountId);
@@ -207,8 +258,7 @@ export function TelegramSourceSelector({ apiBaseUrl }: TelegramSourceSelectorPro
           <span className="status-label">Shared signal sources</span>
           <h2 id="telegram-source-selector-title">Telegram groups &amp; channels</h2>
           <p>
-            You and the other authorised admins share the groups and channels deliberately added to
-            Super Signals. Your Telegram login and session stay private to you.
+            Shared sources can now be marked Testing, Live or Paused. Every state change is audited.
           </p>
         </div>
         {!expanded && (
@@ -228,9 +278,8 @@ export function TelegramSourceSelector({ apiBaseUrl }: TelegramSourceSelectorPro
 
           <div className="foundation-note">
             <span className="pulse" aria-hidden="true" />
-            Shared source names and trade activity are visible to authorised admins, but Telegram
-            sessions remain private. Sources stay PAUSED until a later build step explicitly enables
-            listening.
+            Day 11 source states are operational controls only. Setting a source to LIVE does not
+            enable MT5 execution or live trading. Telegram sessions remain private to their owner.
           </div>
 
           {busyAction === 'accounts' && <p className="muted-copy">Loading Telegram readers…</p>}
@@ -239,22 +288,35 @@ export function TelegramSourceSelector({ apiBaseUrl }: TelegramSourceSelectorPro
             <span className="status-label">Shared across Super Signals</span>
             <h3>Added signal sources</h3>
             {!sharedCatalogueAvailable ? (
-              <p className="muted-copy">
-                The shared Day 10 catalogue is not live on the backend yet. You can still use this
-                screen to smoke-test adding one real Telegram group as PAUSED.
-              </p>
+              <p className="muted-copy">The shared source catalogue is not available.</p>
             ) : sharedSources.length === 0 ? (
               <p className="muted-copy">No shared Telegram signal sources have been added yet.</p>
             ) : (
               <div className="telegram-account-list" aria-label="Shared Super Signals sources">
                 {sharedSources.map((source) => (
-                  <article className="telegram-account" key={source.source_id}>
-                    <div>
-                      <span className="connection-status connection-status--connected">
+                  <article className="telegram-account source-state-card" key={source.source_id}>
+                    <div className="source-state-card__copy">
+                      <span className={`connection-status connection-status--${source.status}`}>
                         SHARED · {source.status.toUpperCase()}
                       </span>
                       <h3>{source.title}</h3>
                       <small>Visible to all authorised Super Signals admins</small>
+                    </div>
+                    <div className="source-state-controls" aria-label={`Change ${source.title} state`}>
+                      {(['testing', 'live', 'paused'] as SourceState[]).map((state) => (
+                        <button
+                          className={`source-state-button source-state-button--${state}`}
+                          type="button"
+                          key={state}
+                          aria-pressed={source.status === state}
+                          disabled={busyAction !== null || source.status === state}
+                          onClick={() => void changeSourceStatus(source, state)}
+                        >
+                          {busyAction === `status:${source.source_id}:${state}`
+                            ? 'Saving…'
+                            : state[0].toUpperCase() + state.slice(1)}
+                        </button>
+                      ))}
                     </div>
                   </article>
                 ))}
@@ -317,7 +379,7 @@ export function TelegramSourceSelector({ apiBaseUrl }: TelegramSourceSelectorPro
                     <div>
                       <span
                         className={`connection-status ${
-                          source.selected ? 'connection-status--connected' : ''
+                          source.selected ? `connection-status--${source.status ?? 'paused'}` : ''
                         }`}
                       >
                         {source.selected
