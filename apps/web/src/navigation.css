@@ -113,11 +113,15 @@
   background: linear-gradient(180deg, rgba(9, 16, 28, 0.99), rgba(3, 7, 17, 0.995));
   box-shadow: -30px 0 80px rgba(0, 0, 0, 0.5);
   transform: translateX(104%);
-  transition: transform 180ms ease;
+  visibility: hidden;
+  pointer-events: none;
+  transition: transform 180ms ease, visibility 180ms ease;
 }
 
 .workspace-drawer--open {
   transform: translateX(0);
+  visibility: visible;
+  pointer-events: auto;
 }
 
 .drawer-header {
