@@ -1,4 +1,4 @@
-"""Explicit Telegram group/channel selection without starting monitoring."""
+"""Shared Telegram group/channel selection without starting monitoring."""
 
 from __future__ import annotations
 
@@ -7,7 +7,8 @@ from functools import lru_cache
 from typing import Any
 from uuid import UUID
 
-from sqlalchemy import select
+from sqlalchemy import select, text
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.config import get_settings
@@ -37,6 +38,15 @@ class TelegramSelectableSourceView:
     selected: bool
     source_id: UUID | None
     status: str | None
+    managed_by_this_reader: bool
+
+
+@dataclass(frozen=True, slots=True)
+class SharedTelegramSourceView:
+    source_id: UUID
+    chat_id: int
+    title: str
+    status: str
 
 
 class TelegramSourceService:
@@ -55,28 +65,52 @@ class TelegramSourceService:
         session_string = self._cipher.decrypt(account.session_ciphertext)
         dialogs = await self._gateway.list_selectable_dialogs(session_string)
 
-        selected_rows = session.scalars(
-            select(Source).where(Source.telegram_account_id == account.id)
+        shared_rows = session.scalars(
+            select(Source)
+            .where(Source.status != "revoked")
+            .order_by(Source.created_at.asc())
         ).all()
-        by_chat_id = {source.chat_id: source for source in selected_rows}
+        shared_by_chat_id: dict[int, Source] = {}
+        for source in shared_rows:
+            shared_by_chat_id.setdefault(source.chat_id, source)
 
+        reader_source_ids = self._reader_source_ids(session, account.id)
         views: list[TelegramSelectableSourceView] = []
         for dialog in dialogs:
             if dialog.kind not in {"group", "channel"}:
                 continue
-            source = by_chat_id.get(dialog.chat_id)
-            is_selected = source is not None and source.status != "revoked"
+            shared_source = shared_by_chat_id.get(dialog.chat_id)
+            is_selected = shared_source is not None
             views.append(
                 TelegramSelectableSourceView(
                     chat_id=dialog.chat_id,
                     title=dialog.title,
                     kind=dialog.kind,
                     selected=is_selected,
-                    source_id=source.id if is_selected else None,
-                    status=source.status if is_selected else None,
+                    source_id=shared_source.id if shared_source is not None else None,
+                    status=shared_source.status if shared_source is not None else None,
+                    managed_by_this_reader=(
+                        shared_source.id in reader_source_ids if shared_source is not None else True
+                    ),
                 )
             )
         return views
+
+    def list_shared_sources(self, session: Session) -> list[SharedTelegramSourceView]:
+        rows = session.scalars(
+            select(Source)
+            .where(Source.status != "revoked")
+            .order_by(Source.created_at.asc())
+        ).all()
+        return [
+            SharedTelegramSourceView(
+                source_id=source.id,
+                chat_id=source.chat_id,
+                title=source.chat_title or source.source_alias,
+                status=source.status,
+            )
+            for source in rows
+        ]
 
     async def select_source(
         self,
@@ -103,11 +137,25 @@ class TelegramSourceService:
             )
 
         source = session.scalar(
-            select(Source).where(
-                Source.telegram_account_id == account.id,
+            select(Source)
+            .where(
                 Source.chat_id == dialog.chat_id,
+                Source.status != "revoked",
             )
+            .order_by(Source.created_at.asc())
         )
+        shared_source_reused = source is not None
+
+        if source is None:
+            source = session.scalar(
+                select(Source)
+                .where(
+                    Source.chat_id == dialog.chat_id,
+                    Source.status == "revoked",
+                )
+                .order_by(Source.created_at.asc())
+            )
+
         if source is None:
             source = Source(
                 telegram_account_id=account.id,
@@ -121,9 +169,34 @@ class TelegramSourceService:
             session.add(source)
         else:
             source.chat_title = dialog.title[:255]
-            source.status = "paused"
+            if source.status == "revoked":
+                source.telegram_account_id = account.id
+                source.status = "paused"
 
-        session.flush()
+        try:
+            session.flush()
+        except IntegrityError as exc:
+            # The database enforces one active logical source per Telegram chat. If
+            # two admins select the same group concurrently, keep the first source.
+            session.rollback()
+            source = session.scalar(
+                select(Source)
+                .where(
+                    Source.chat_id == dialog.chat_id,
+                    Source.status != "revoked",
+                )
+                .order_by(Source.created_at.asc())
+            )
+            if source is None:
+                raise exc
+            shared_source_reused = True
+
+        self._ensure_reader_access(
+            session,
+            source_id=source.id,
+            telegram_account_id=account.id,
+            actor_id=actor["id"],
+        )
         self._audit(
             session,
             actor_id=actor["id"],
@@ -133,8 +206,10 @@ class TelegramSourceService:
                 "telegram_account_id": str(account.id),
                 "chat_id": dialog.chat_id,
                 "kind": dialog.kind,
-                "status": "paused",
+                "status": source.status,
                 "monitoring_started": False,
+                "shared_source_reused": shared_source_reused,
+                "reader_access_added": True,
             },
         )
         session.commit()
@@ -146,6 +221,7 @@ class TelegramSourceService:
             selected=True,
             source_id=source.id,
             status=source.status,
+            managed_by_this_reader=True,
         )
 
     def unselect_source(
@@ -157,24 +233,43 @@ class TelegramSourceService:
         source_id: UUID,
     ) -> dict[str, Any]:
         account = self._account_for_actor(session, actor, account_id)
-        source = session.scalar(
-            select(Source).where(
-                Source.id == source_id,
-                Source.telegram_account_id == account.id,
-            )
-        )
-        if source is None:
+        source = session.get(Source, source_id)
+        if source is None or source.status == "revoked":
             raise TelegramSourceNotFoundError("Selected Telegram source was not found.")
+        if source_id not in self._reader_source_ids(session, account.id):
+            raise TelegramSourceNotFoundError(
+                "This reader does not have an access link to that Telegram source."
+            )
 
-        source.status = "revoked"
+        session.execute(
+            text(
+                """
+                DELETE FROM source_reader_access
+                WHERE source_id = :source_id
+                  AND telegram_account_id = :telegram_account_id
+                """
+            ),
+            {"source_id": source.id, "telegram_account_id": account.id},
+        )
+        remaining_reader_ids = self._source_reader_ids(session, source.id)
+        source_revoked = not remaining_reader_ids
+        if source_revoked:
+            source.status = "revoked"
+        elif source.telegram_account_id == account.id:
+            # Keep the legacy/preferred reader pointer valid while the new access
+            # table records every authorised fallback reader.
+            source.telegram_account_id = remaining_reader_ids[0]
+
         self._audit(
             session,
             actor_id=actor["id"],
-            event_type="telegram.source_unselected",
+            event_type="telegram.source_reader_removed",
             source_id=source.id,
             payload={
                 "telegram_account_id": str(account.id),
                 "chat_id": source.chat_id,
+                "source_revoked": source_revoked,
+                "remaining_reader_count": len(remaining_reader_ids),
                 "monitoring_started": False,
             },
         )
@@ -184,6 +279,62 @@ class TelegramSourceService:
             "source_id": source.id,
             "monitoring_started": False,
         }
+
+    @staticmethod
+    def _reader_source_ids(session: Session, telegram_account_id: UUID) -> set[UUID]:
+        rows = session.execute(
+            text(
+                """
+                SELECT source_id
+                FROM source_reader_access
+                WHERE telegram_account_id = :telegram_account_id
+                """
+            ),
+            {"telegram_account_id": telegram_account_id},
+        ).scalars()
+        return set(rows)
+
+    @staticmethod
+    def _source_reader_ids(session: Session, source_id: UUID) -> list[UUID]:
+        rows = session.execute(
+            text(
+                """
+                SELECT telegram_account_id
+                FROM source_reader_access
+                WHERE source_id = :source_id
+                ORDER BY created_at ASC, telegram_account_id ASC
+                """
+            ),
+            {"source_id": source_id},
+        ).scalars()
+        return list(rows)
+
+    @staticmethod
+    def _ensure_reader_access(
+        session: Session,
+        *,
+        source_id: UUID,
+        telegram_account_id: UUID,
+        actor_id: UUID,
+    ) -> None:
+        session.execute(
+            text(
+                """
+                INSERT INTO source_reader_access (
+                    source_id,
+                    telegram_account_id,
+                    created_by_user_id
+                )
+                VALUES (:source_id, :telegram_account_id, :actor_id)
+                ON CONFLICT (source_id, telegram_account_id) DO NOTHING
+                """
+            ),
+            {
+                "source_id": source_id,
+                "telegram_account_id": telegram_account_id,
+                "actor_id": actor_id,
+            },
+        )
 
     @staticmethod
     def _default_alias(dialog: TelegramSelectableDialog) -> str:
@@ -210,10 +361,14 @@ class TelegramSourceService:
         actor: dict[str, Any],
         account_id: UUID,
     ) -> TelegramAccount:
-        statement = select(TelegramAccount).where(TelegramAccount.id == account_id)
-        if actor["role"] != "owner":
-            statement = statement.where(TelegramAccount.owner_user_id == actor["id"])
-        account = session.scalar(statement)
+        # Telegram sessions are private credentials. Even the platform owner may only
+        # operate reader sessions that they personally connected.
+        account = session.scalar(
+            select(TelegramAccount).where(
+                TelegramAccount.id == account_id,
+                TelegramAccount.owner_user_id == actor["id"],
+            )
+        )
         if account is None:
             raise TelegramSourceNotFoundError("Telegram account was not found.")
         return account

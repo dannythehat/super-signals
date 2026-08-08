@@ -1,4 +1,4 @@
-"""Authenticated administrator routes for Telegram account connections."""
+"""Authenticated administrator routes for private Telegram account connections."""
 
 from __future__ import annotations
 
@@ -116,6 +116,18 @@ def _account_response(account: TelegramConnectionView) -> TelegramAccountRespons
     )
 
 
+def _private_session_actor(identity: dict[str, Any]) -> dict[str, Any]:
+    """Preserve permissions while forcing owner-scoped Telegram-session access.
+
+    TelegramConnectionService predates multi-admin reader ownership and historically
+    let the platform owner bypass the owner_user_id filter. Day 10 deliberately
+    removes that privilege at the HTTP boundary: a Telegram session is a private
+    credential even when shared signal-source metadata is visible to other admins.
+    """
+
+    return {**identity, "role": "telegram_session_owner"}
+
+
 def _translate_telegram_error(exc: Exception) -> HTTPException:
     if isinstance(
         exc,
@@ -192,7 +204,8 @@ def list_telegram_accounts(
     service: TelegramService,
 ) -> list[TelegramAccountResponse]:
     return [
-        _account_response(account) for account in service.list_accounts(session, actor=identity)
+        _account_response(account)
+        for account in service.list_accounts(session, actor=_private_session_actor(identity))
     ]
 
 
@@ -211,7 +224,7 @@ async def begin_telegram_code_authorization(
     try:
         authorization = await service.begin_code_authorization(
             session,
-            actor=identity,
+            actor=_private_session_actor(identity),
             label=body.label,
             phone_number=body.phone_number,
         )
@@ -240,7 +253,7 @@ async def submit_telegram_code(
     try:
         result = await service.submit_code(
             session,
-            actor=identity,
+            actor=_private_session_actor(identity),
             flow_id=flow_id,
             code=body.code.get_secret_value(),
         )
@@ -270,7 +283,7 @@ async def begin_telegram_authorization(
     try:
         authorization = await service.begin_authorization(
             session,
-            actor=identity,
+            actor=_private_session_actor(identity),
             label=body.label,
         )
         qr_image = qr_svg_data_uri(authorization.qr_url)
@@ -299,7 +312,7 @@ async def poll_telegram_authorization(
     try:
         result = await service.poll_authorization(
             session,
-            actor=identity,
+            actor=_private_session_actor(identity),
             flow_id=flow_id,
         )
     except Exception as exc:
@@ -327,7 +340,7 @@ async def submit_telegram_password(
     try:
         result = await service.submit_password(
             session,
-            actor=identity,
+            actor=_private_session_actor(identity),
             flow_id=flow_id,
             password=body.password.get_secret_value(),
         )
@@ -355,7 +368,7 @@ async def verify_telegram_account(
     try:
         account = await service.verify_account(
             session,
-            actor=identity,
+            actor=_private_session_actor(identity),
             account_id=account_id,
         )
     except Exception as exc:
@@ -376,7 +389,7 @@ async def disconnect_telegram_account(
     try:
         result = await service.disconnect_account(
             session,
-            actor=identity,
+            actor=_private_session_actor(identity),
             account_id=account_id,
         )
     except Exception as exc:

@@ -1,4 +1,4 @@
-"""Administrator-only Telegram group/channel discovery and explicit source selection."""
+"""Administrator-only Telegram group/channel discovery and shared source selection."""
 
 from __future__ import annotations
 
@@ -13,6 +13,7 @@ from app.telegram_crypto import SessionDecryptionError
 from app.telegram_gateway import TelegramSessionInvalidError
 from app.telegram_source_gateway import TelegramSourceGatewayError
 from app.telegram_source_service import (
+    SharedTelegramSourceView,
     TelegramSelectableSourceView,
     TelegramSourceConfigurationError,
     TelegramSourceNotFoundError,
@@ -38,6 +39,14 @@ class TelegramSelectableSourceResponse(BaseModel):
     selected: bool
     source_id: UUID | None
     status: str | None
+    managed_by_this_reader: bool = True
+
+
+class SharedTelegramSourceResponse(BaseModel):
+    source_id: UUID
+    chat_id: int
+    title: str
+    status: str
 
 
 class TelegramSourceRemovalResponse(BaseModel):
@@ -72,6 +81,16 @@ def _response(item: TelegramSelectableSourceView) -> TelegramSelectableSourceRes
         kind=item.kind,
         selected=item.selected,
         source_id=item.source_id,
+        status=item.status,
+        managed_by_this_reader=item.managed_by_this_reader,
+    )
+
+
+def _shared_response(item: SharedTelegramSourceView) -> SharedTelegramSourceResponse:
+    return SharedTelegramSourceResponse(
+        source_id=item.source_id,
+        chat_id=item.chat_id,
+        title=item.title,
         status=item.status,
     )
 
@@ -114,9 +133,23 @@ def _translate_error(exc: Exception) -> HTTPException:
     )
 
 
+@router.get("/shared", response_model=list[SharedTelegramSourceResponse])
+def list_shared_sources(
+    response: Response,
+    session: DbSession,
+    identity: AdminIdentity,
+    service: TelegramSources,
+) -> list[SharedTelegramSourceResponse]:
+    del identity
+    response.headers["Cache-Control"] = "no-store"
+    response.headers["Pragma"] = "no-cache"
+    return [_shared_response(item) for item in service.list_shared_sources(session)]
+
+
 @router.get(
     "/accounts/{account_id}/available",
     response_model=list[TelegramSelectableSourceResponse],
+    response_model_exclude_defaults=True,
 )
 async def list_available_sources(
     account_id: UUID,
@@ -141,6 +174,7 @@ async def list_available_sources(
 @router.post(
     "/accounts/{account_id}/select",
     response_model=TelegramSelectableSourceResponse,
+    response_model_exclude_defaults=True,
     status_code=status.HTTP_201_CREATED,
 )
 async def select_source(
