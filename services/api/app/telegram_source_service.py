@@ -161,6 +161,17 @@ class TelegramSourceService:
         )
         actor_role = str(actor.get("role") or "administrator")
 
+        if previous_status == normalized_status:
+            return SourceStatusChangeView(
+                source_id=source.id,
+                title=title,
+                previous_status=previous_status,
+                status=normalized_status,
+                changed_at=changed_at,
+                actor_display_name=actor_display_name,
+                actor_role=actor_role,
+            )
+
         source.status = normalized_status
         payload = {
             "source_title": title,
@@ -180,9 +191,6 @@ class TelegramSourceService:
             payload=payload,
         )
 
-        # Day 11 requires the Owner to receive an alert when a Trading Admin changes
-        # a source state. The alert is persisted in the audit stream so it survives
-        # refreshes/restarts and can be rendered safely without exposing Telegram sessions.
         if actor_role == "trading_admin":
             self._audit(
                 session,
