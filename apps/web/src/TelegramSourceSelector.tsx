@@ -39,6 +39,16 @@ interface SourceStatusChange {
   live_trading_enabled: false;
 }
 
+interface OwnerSourceAlert {
+  event_id: number;
+  source_id: string;
+  title: string;
+  previous_status: string;
+  status: string;
+  actor_display_name: string;
+  changed_at: string;
+}
+
 interface TelegramSourceSelectorProps {
   apiBaseUrl: string;
 }
@@ -59,12 +69,20 @@ async function readJson<T>(response: Response): Promise<T> {
   return body;
 }
 
+function formatAlertDate(value: string): string {
+  return new Intl.DateTimeFormat(undefined, {
+    dateStyle: 'medium',
+    timeStyle: 'short',
+  }).format(new Date(value));
+}
+
 export function TelegramSourceSelector({ apiBaseUrl }: TelegramSourceSelectorProps) {
   const [expanded, setExpanded] = useState(false);
   const [accounts, setAccounts] = useState<TelegramAccount[]>([]);
   const [accountId, setAccountId] = useState('');
   const [sources, setSources] = useState<TelegramSelectableSource[]>([]);
   const [sharedSources, setSharedSources] = useState<SharedTelegramSource[]>([]);
+  const [ownerAlerts, setOwnerAlerts] = useState<OwnerSourceAlert[] | null>(null);
   const [sharedCatalogueAvailable, setSharedCatalogueAvailable] = useState(true);
   const [loaded, setLoaded] = useState(false);
   const [busyAction, setBusyAction] = useState<string | null>(null);
@@ -83,6 +101,18 @@ export function TelegramSourceSelector({ apiBaseUrl }: TelegramSourceSelectorPro
     const shared = await readJson<SharedTelegramSource[]>(response);
     setSharedCatalogueAvailable(true);
     setSharedSources(shared);
+  }
+
+  async function fetchOwnerAlerts() {
+    const response = await fetch(`${apiBaseUrl}/admin/telegram/sources/owner-alerts`, {
+      credentials: 'include',
+      headers: { Accept: 'application/json' },
+    });
+    if (response.status === 403 || response.status === 404) {
+      setOwnerAlerts(null);
+      return;
+    }
+    setOwnerAlerts(await readJson<OwnerSourceAlert[]>(response));
   }
 
   async function handleExpand() {
@@ -107,6 +137,7 @@ export function TelegramSourceSelector({ apiBaseUrl }: TelegramSourceSelectorPro
         });
       }
       await fetchSharedSources();
+      await fetchOwnerAlerts();
     } catch (error) {
       setNotice({
         tone: 'error',
@@ -175,6 +206,7 @@ export function TelegramSourceSelector({ apiBaseUrl }: TelegramSourceSelectorPro
         tone: 'success',
         message: `${changed.title} moved from ${changed.previous_status.toUpperCase()} to ${changed.status.toUpperCase()}. The change was audited. Live trading remains disabled.`,
       });
+      await fetchOwnerAlerts();
     } catch (error) {
       setNotice({
         tone: 'error',
@@ -281,6 +313,31 @@ export function TelegramSourceSelector({ apiBaseUrl }: TelegramSourceSelectorPro
             Day 11 source states are operational controls only. Setting a source to LIVE does not
             enable MT5 execution or live trading. Telegram sessions remain private to their owner.
           </div>
+
+          {ownerAlerts !== null && (
+            <section className="owner-alerts" aria-labelledby="owner-alerts-title">
+              <div className="owner-alerts__header">
+                <span className="status-label">Owner only</span>
+                <h3 id="owner-alerts-title">Source-state alerts</h3>
+              </div>
+              {ownerAlerts.length === 0 ? (
+                <p className="muted-copy">No Trading Admin source-state changes have been recorded yet.</p>
+              ) : (
+                <div className="owner-alert-list">
+                  {ownerAlerts.map((alert) => (
+                    <article className="owner-alert" key={alert.event_id}>
+                      <strong>
+                        {alert.actor_display_name} changed {alert.title} to {alert.status.toUpperCase()}
+                      </strong>
+                      <small>
+                        {alert.previous_status.toUpperCase()} → {alert.status.toUpperCase()} · {formatAlertDate(alert.changed_at)}
+                      </small>
+                    </article>
+                  ))}
+                </div>
+              )}
+            </section>
+          )}
 
           {busyAction === 'accounts' && <p className="muted-copy">Loading Telegram readers…</p>}
 
