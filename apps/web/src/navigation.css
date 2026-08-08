@@ -345,6 +345,68 @@
   margin-top: 0;
 }
 
+/* Signal-source management is intentionally denser than the old admin panels. */
+.workspace-panel-page .telegram-panel__body {
+  display: grid;
+  gap: 24px;
+}
+
+.workspace-panel-page .telegram-panel__body > div {
+  min-width: 0;
+}
+
+.workspace-panel-page .foundation-note {
+  margin-top: 0;
+  padding: 14px 16px;
+  border: 1px solid rgba(241, 180, 73, 0.16);
+  border-radius: 14px;
+  background: rgba(241, 180, 73, 0.045);
+  line-height: 1.5;
+}
+
+.workspace-panel-page .telegram-account-list {
+  margin-top: 12px;
+}
+
+.workspace-panel-page .telegram-panel__body > .button {
+  justify-self: start;
+  min-height: 44px;
+  padding-inline: 16px;
+  font-size: 0.92rem;
+}
+
+.workspace-panel-page
+  .telegram-account-list[aria-label='Shared Super Signals sources']
+  .telegram-account {
+  border-color: rgba(73, 218, 152, 0.16);
+  background: rgba(73, 218, 152, 0.035);
+}
+
+.workspace-panel-page
+  .telegram-account-list[aria-label='Selectable Telegram groups and channels']
+  .telegram-account:has(.connection-status--connected) {
+  padding: 14px 16px;
+  border-style: dashed;
+  border-color: rgba(255, 255, 255, 0.1);
+  background: rgba(255, 255, 255, 0.018);
+}
+
+.workspace-panel-page
+  .telegram-account-list[aria-label='Selectable Telegram groups and channels']
+  .telegram-account:has(.connection-status--connected)
+  h3 {
+  font-size: 1.02rem;
+}
+
+.workspace-panel-page
+  .telegram-account-list[aria-label='Selectable Telegram groups and channels']
+  .telegram-account:has(.connection-status--connected)
+  .button--quiet {
+  min-height: 38px;
+  padding: 9px 13px;
+  font-size: 0.82rem;
+}
+
 @media (max-width: 760px) {
   .workspace-topbar {
     min-height: 68px;
@@ -379,6 +441,39 @@
 
   .overview-hero {
     border-radius: 22px;
+  }
+
+  .workspace-panel-page .telegram-panel {
+    padding: 20px 18px;
+  }
+
+  .workspace-panel-page .telegram-panel__body {
+    gap: 22px;
+  }
+
+  .workspace-panel-page .foundation-note {
+    align-items: flex-start;
+    font-size: 0.82rem;
+  }
+
+  .workspace-panel-page .telegram-panel__body > .button {
+    width: auto;
+    max-width: 100%;
+  }
+
+  .workspace-panel-page
+    .telegram-account-list[aria-label='Selectable Telegram groups and channels']
+    .telegram-account:has(.connection-status--connected) {
+    gap: 12px;
+  }
+
+  .workspace-panel-page
+    .telegram-account-list[aria-label='Selectable Telegram groups and channels']
+    .telegram-account:has(.connection-status--connected)
+    .telegram-account__actions
+    .button {
+    flex: 0 1 auto;
+    width: auto;
   }
 }
 
