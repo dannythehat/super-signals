@@ -85,6 +85,7 @@ export function App() {
   const [sharedSources, setSharedSources] = useState<SharedSignalSource[]>([]);
   const [sharedSourcesLoaded, setSharedSourcesLoaded] = useState(false);
   const canManageTelegram = account?.permissions.includes('sources.manage') ?? false;
+  const canViewOwnerAlerts = account?.permissions.includes('admins.manage') ?? false;
 
   const refreshSharedSources = useCallback(async () => {
     if (!canManageTelegram) {
@@ -505,7 +506,10 @@ export function App() {
                   </div>
                   <span className="workspace-role-pill">STATE CONTROL</span>
                 </div>
-                <TelegramSourceSelector apiBaseUrl={apiBaseUrl} />
+                <TelegramSourceSelector
+                  apiBaseUrl={apiBaseUrl}
+                  canViewOwnerAlerts={canViewOwnerAlerts}
+                />
               </section>
             )}
 
