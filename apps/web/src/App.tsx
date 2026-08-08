@@ -178,7 +178,11 @@ export function App() {
   function navigate(view: WorkspaceView) {
     setActiveView(view);
     setMenuOpen(false);
-    window.scrollTo({ top: 0, behavior: 'smooth' });
+    try {
+      window.scrollTo({ top: 0, behavior: 'smooth' });
+    } catch {
+      // Non-browser test environments may not implement scrolling.
+    }
   }
 
   if (authState === 'checking') {
