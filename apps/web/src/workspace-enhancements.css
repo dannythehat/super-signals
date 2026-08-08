@@ -1,3 +1,7 @@
+.brand-logo {
+  content: url('/super-signals-brand.svg');
+}
+
 .workspace-brand-button {
   padding: 0;
   border: 0;
@@ -7,13 +11,12 @@
   cursor: pointer;
 }
 
-/* The repo logo is a 240 × 166 artwork, not a horizontal wordmark. Keep its
-   natural aspect ratio and let the artwork sit directly on the dark app chrome. */
+/* Use the user's uploaded Super Signals artwork directly. */
 .workspace-brand .brand-logo {
   display: block;
-  width: auto;
-  height: 58px;
-  max-width: 92px;
+  width: 138px;
+  height: auto;
+  max-width: 36vw;
   margin: 0;
   padding: 0;
   object-fit: contain;
@@ -21,14 +24,13 @@
   border-radius: 0;
   background: transparent;
   box-shadow: none;
-  filter: drop-shadow(0 4px 12px rgba(0, 0, 0, 0.34));
+  filter: drop-shadow(0 5px 14px rgba(0, 218, 218, 0.16));
 }
 
 .auth-card .brand-logo {
   display: block;
-  width: auto;
-  height: 138px;
-  max-width: min(70vw, 220px);
+  width: min(100%, 280px);
+  height: auto;
   margin: 0 auto 22px;
   padding: 0;
   object-fit: contain;
@@ -36,7 +38,7 @@
   border-radius: 0;
   background: transparent;
   box-shadow: none;
-  filter: drop-shadow(0 12px 28px rgba(0, 0, 0, 0.34));
+  filter: drop-shadow(0 12px 28px rgba(0, 218, 218, 0.14));
 }
 
 .workspace-brand-button:focus-visible,
@@ -160,8 +162,8 @@
 
 @media (max-width: 760px) {
   .workspace-brand .brand-logo {
-    height: 54px;
-    max-width: 86px;
+    width: 126px;
+    max-width: 38vw;
   }
 
   .workspace-back-button {
@@ -187,8 +189,8 @@
 
 @media (max-width: 430px) {
   .workspace-brand .brand-logo {
-    height: 50px;
-    max-width: 80px;
+    width: 116px;
+    max-width: 40vw;
   }
 
   .topbar-home-button {
