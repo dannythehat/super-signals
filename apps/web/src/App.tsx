@@ -1,4 +1,4 @@
-import { FormEvent, useEffect, useState } from 'react';
+import { FormEvent, useCallback, useEffect, useState } from 'react';
 
 import { TelegramConnectionPanel } from './TelegramConnectionPanel';
 import { TelegramSourceSelector } from './TelegramSourceSelector';
@@ -35,7 +35,28 @@ interface Account {
   };
 }
 
+interface SharedSignalSource {
+  source_id: string;
+  chat_id: number;
+  title: string;
+  status: string;
+}
+
 const apiBaseUrl = import.meta.env.VITE_API_BASE_URL ?? '/api';
+
+function workspaceViewFromHistory(value: unknown): WorkspaceView | null {
+  return value === 'overview' || value === 'telegram' || value === 'sources' || value === 'access'
+    ? value
+    : null;
+}
+
+function historyStateWithView(view: WorkspaceView) {
+  const existing =
+    typeof window.history.state === 'object' && window.history.state !== null
+      ? window.history.state
+      : {};
+  return { ...existing, superSignalsView: view };
+}
 
 async function readJson<T>(response: Response): Promise<T> {
   const body = (await response.json()) as T;
@@ -61,7 +82,35 @@ export function App() {
   const [showRecovery, setShowRecovery] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
   const [activeView, setActiveView] = useState<WorkspaceView>('overview');
+  const [sharedSources, setSharedSources] = useState<SharedSignalSource[]>([]);
+  const [sharedSourcesLoaded, setSharedSourcesLoaded] = useState(false);
   const canManageTelegram = account?.permissions.includes('sources.manage') ?? false;
+
+  const refreshSharedSources = useCallback(async () => {
+    if (!canManageTelegram) {
+      setSharedSources([]);
+      setSharedSourcesLoaded(true);
+      return;
+    }
+
+    try {
+      const response = await fetch(`${apiBaseUrl}/admin/telegram/sources/shared`, {
+        credentials: 'include',
+        headers: { Accept: 'application/json' },
+      });
+      if (response.status === 404) {
+        setSharedSources([]);
+        setSharedSourcesLoaded(true);
+        return;
+      }
+      const sources = await readJson<SharedSignalSource[]>(response);
+      setSharedSources(Array.isArray(sources) ? sources : []);
+    } catch {
+      setSharedSources([]);
+    } finally {
+      setSharedSourcesLoaded(true);
+    }
+  }, [canManageTelegram]);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -89,6 +138,32 @@ export function App() {
     void restoreSession();
     return () => controller.abort();
   }, []);
+
+  useEffect(() => {
+    if (authState !== 'signed-in') return;
+    void refreshSharedSources();
+  }, [account?.id, authState, refreshSharedSources]);
+
+  useEffect(() => {
+    if (authState !== 'signed-in') return;
+
+    const initialView = workspaceViewFromHistory(window.history.state?.superSignalsView);
+    if (initialView) {
+      setActiveView(initialView);
+    } else {
+      window.history.replaceState(historyStateWithView('overview'), '', window.location.href);
+    }
+
+    function handlePopState(event: PopStateEvent) {
+      const view = workspaceViewFromHistory(event.state?.superSignalsView) ?? 'overview';
+      setActiveView(view);
+      setMenuOpen(false);
+      if (view === 'overview') void refreshSharedSources();
+    }
+
+    window.addEventListener('popstate', handlePopState);
+    return () => window.removeEventListener('popstate', handlePopState);
+  }, [authState, refreshSharedSources]);
 
   useEffect(() => {
     if (!menuOpen) return;
@@ -119,6 +194,7 @@ export function App() {
       setAccount(authenticatedAccount);
       setAuthState('signed-in');
       setActiveView('overview');
+      window.history.replaceState(historyStateWithView('overview'), '', window.location.href);
       event.currentTarget.reset();
     } catch (error) {
       setNotice({
@@ -140,10 +216,13 @@ export function App() {
       });
     } finally {
       setAccount(null);
+      setSharedSources([]);
+      setSharedSourcesLoaded(false);
       setAuthState('signed-out');
       setNotice(null);
       setActiveView('overview');
       setMenuOpen(false);
+      window.history.replaceState({}, '', window.location.href);
       setBusy(false);
     }
   }
@@ -176,8 +255,12 @@ export function App() {
   }
 
   function navigate(view: WorkspaceView) {
+    if (view !== activeView) {
+      window.history.pushState(historyStateWithView(view), '', window.location.href);
+    }
     setActiveView(view);
     setMenuOpen(false);
+    if (view === 'overview') void refreshSharedSources();
     try {
       window.scrollTo({ top: 0, behavior: 'smooth' });
     } catch {
@@ -203,26 +286,39 @@ export function App() {
       <main className="app-shell workspace-shell">
         <section className="dashboard-card dashboard-card--workspace" aria-label="Super Signals workspace">
           <header className="workspace-topbar">
-            <div className="workspace-brand">
+            <button
+              className="workspace-brand workspace-brand-button"
+              type="button"
+              aria-label="Go to overview"
+              onClick={() => navigate('overview')}
+            >
               <img className="brand-logo" src="/super-signals-logo.png" alt="Super Signals" />
-              <div className="workspace-brand-copy">
+              <span className="workspace-brand-copy">
                 <strong>Trading workspace</strong>
                 <small>Private · controlled · live trading disabled</small>
-              </div>
-            </div>
-            <button
-              className="menu-trigger"
-              type="button"
-              aria-label="Open menu"
-              aria-expanded={menuOpen}
-              onClick={() => setMenuOpen(true)}
-            >
-              <span className="menu-bars" aria-hidden="true">
-                <span />
-                <span />
-                <span />
               </span>
             </button>
+            <div className="workspace-topbar-actions">
+              {activeView !== 'overview' && (
+                <button className="topbar-home-button" type="button" onClick={() => navigate('overview')}>
+                  <span aria-hidden="true">⌂</span>
+                  <span>Overview</span>
+                </button>
+              )}
+              <button
+                className="menu-trigger"
+                type="button"
+                aria-label="Open menu"
+                aria-expanded={menuOpen}
+                onClick={() => setMenuOpen(true)}
+              >
+                <span className="menu-bars" aria-hidden="true">
+                  <span />
+                  <span />
+                  <span />
+                </span>
+              </button>
+            </div>
           </header>
 
           {menuOpen && (
@@ -294,6 +390,12 @@ export function App() {
           </aside>
 
           <div className="workspace-content">
+            {activeView !== 'overview' && (
+              <button className="workspace-back-button" type="button" onClick={() => navigate('overview')}>
+                <span aria-hidden="true">←</span> Back to overview
+              </button>
+            )}
+
             {activeView === 'overview' && (
               <section aria-labelledby="dashboard-title">
                 <div className="overview-hero">
@@ -333,6 +435,49 @@ export function App() {
                     <small>Day 10 source work remains PAUSED and cannot place trades.</small>
                   </article>
                 </div>
+
+                {canManageTelegram && (
+                  <section className="overview-sources" aria-labelledby="overview-sources-title">
+                    <div className="overview-section-header">
+                      <div>
+                        <span className="status-label">Signal network</span>
+                        <h2 id="overview-sources-title">Connected signal sources</h2>
+                        <p>
+                          Groups and channels currently shared across Super Signals. Sources remain PAUSED.
+                        </p>
+                      </div>
+                      <button className="button button--quiet" type="button" onClick={() => navigate('sources')}>
+                        Manage sources
+                      </button>
+                    </div>
+
+                    {!sharedSourcesLoaded ? (
+                      <p className="muted-copy">Loading connected sources…</p>
+                    ) : sharedSources.length === 0 ? (
+                      <div className="overview-source-empty">
+                        <strong>No signal sources connected yet</strong>
+                        <small>Add a Telegram group or channel to start building the shared signal network.</small>
+                      </div>
+                    ) : (
+                      <div className="overview-source-list" aria-label="Connected signal sources">
+                        {sharedSources.map((source) => (
+                          <article className="overview-source-card" key={source.source_id}>
+                            <div>
+                              <span className="connection-status connection-status--connected">
+                                SHARED · {source.status.toUpperCase()}
+                              </span>
+                              <h3>{source.title}</h3>
+                              <small>Connected to the shared Super Signals source catalogue</small>
+                            </div>
+                            <button className="button button--quiet" type="button" onClick={() => navigate('sources')}>
+                              Manage
+                            </button>
+                          </article>
+                        ))}
+                      </div>
+                    )}
+                  </section>
+                )}
               </section>
             )}
 
