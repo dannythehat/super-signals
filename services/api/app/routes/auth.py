@@ -6,6 +6,7 @@ from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from pydantic import BaseModel, Field
+from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from app.auth_service import (
@@ -17,7 +18,9 @@ from app.auth_service import (
 )
 from app.config import Settings, get_settings
 from app.db import get_db_session
+from app.models import AuditEvent
 from app.permissions import ROLE_LABELS, build_access_sections
+from app.security import hash_password, hash_token
 
 router = APIRouter(prefix="/auth", tags=["authentication"])
 DbSession = Annotated[Session, Depends(get_db_session)]
@@ -31,6 +34,11 @@ class LoginRequest(BaseModel):
 
 class RecoveryRequest(BaseModel):
     email: str = Field(min_length=3, max_length=320)
+
+
+class AdminSetupRequest(BaseModel):
+    token: str = Field(min_length=20, max_length=256)
+    password: str = Field(min_length=12, max_length=128)
 
 
 class SecurityStatus(BaseModel):
@@ -65,6 +73,11 @@ class AccountResponse(BaseModel):
 
 class RecoveryResponse(BaseModel):
     message: str
+
+
+class AdminSetupResponse(BaseModel):
+    message: str
+    email: str
 
 
 def _client_ip(request: Request) -> str | None:
@@ -132,6 +145,92 @@ def login(
     )
     response.headers["Cache-Control"] = "no-store"
     return account_response(identity)
+
+
+@router.post("/admin-setup", response_model=AdminSetupResponse)
+def complete_admin_setup(
+    payload: AdminSetupRequest,
+    session: DbSession,
+) -> AdminSetupResponse:
+    setup = (
+        session.execute(
+            text(
+                """
+                SELECT pr.id, pr.user_id, u.email
+                FROM password_recovery_requests AS pr
+                JOIN users AS u ON u.id = pr.user_id
+                WHERE pr.token_hash = :token_hash
+                  AND pr.used_at IS NULL
+                  AND pr.expires_at > now()
+                  AND u.status IN ('invited', 'active')
+                  AND EXISTS (
+                      SELECT 1
+                      FROM user_roles AS ur
+                      JOIN roles AS r ON r.id = ur.role_id
+                      WHERE ur.user_id = u.id
+                        AND r.name = 'trading_admin'
+                  )
+                ORDER BY pr.created_at DESC
+                LIMIT 1
+                """
+            ),
+            {"token_hash": hash_token(payload.token)},
+        )
+        .mappings()
+        .first()
+    )
+    if setup is None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="This administrator setup link is invalid or has expired.",
+        )
+
+    try:
+        password_hash = hash_password(payload.password)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=str(exc),
+        ) from exc
+
+    session.execute(
+        text(
+            """
+            UPDATE users
+            SET password_hash = :password_hash,
+                status = 'active',
+                updated_at = now()
+            WHERE id = :user_id
+            """
+        ),
+        {"password_hash": password_hash, "user_id": setup["user_id"]},
+    )
+    session.execute(
+        text(
+            """
+            UPDATE password_recovery_requests
+            SET used_at = COALESCE(used_at, now())
+            WHERE user_id = :user_id
+              AND used_at IS NULL
+            """
+        ),
+        {"user_id": setup["user_id"]},
+    )
+    session.add(
+        AuditEvent(
+            actor_user_id=setup["user_id"],
+            event_type="admin.trading_admin_setup_completed",
+            entity_type="user",
+            entity_id=setup["user_id"],
+            payload={"email": str(setup["email"]), "role": "trading_admin"},
+        )
+    )
+    session.commit()
+
+    return AdminSetupResponse(
+        message="Trading Admin account is ready. You can sign in now.",
+        email=str(setup["email"]),
+    )
 
 
 @router.get("/me", response_model=AccountResponse)
