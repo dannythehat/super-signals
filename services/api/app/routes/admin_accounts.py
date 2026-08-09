@@ -7,7 +7,7 @@ from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, Field
-from sqlalchemy import delete, select, text
+from sqlalchemy import select, text
 from sqlalchemy.orm import Session
 
 from app.access_control import require_permission
@@ -89,8 +89,8 @@ def create_trading_admin_setup(
             )
         )
 
-    # Invalidate any older unused setup/recovery tokens for this account before
-    # issuing a fresh single-use administrator setup token.
+    # Invalidate older unused recovery/setup tokens before issuing a fresh
+    # single-use administrator setup token.
     session.execute(
         text(
             """
