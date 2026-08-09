@@ -85,6 +85,7 @@ export function App() {
   const [sharedSources, setSharedSources] = useState<SharedSignalSource[]>([]);
   const [sharedSourcesLoaded, setSharedSourcesLoaded] = useState(false);
   const canManageTelegram = account?.permissions.includes('sources.manage') ?? false;
+  const canViewOwnerAlerts = account?.permissions.includes('admins.manage') ?? false;
 
   const refreshSharedSources = useCallback(async () => {
     if (!canManageTelegram) {
@@ -432,7 +433,7 @@ export function App() {
                   <article className="overview-card">
                     <span className="status-label">Trading state</span>
                     <strong>Live trading disabled</strong>
-                    <small>Day 10 source work remains PAUSED and cannot place trades.</small>
+                    <small>Source operating states are separate from trade execution.</small>
                   </article>
                 </div>
 
@@ -443,7 +444,7 @@ export function App() {
                         <span className="status-label">Signal network</span>
                         <h2 id="overview-sources-title">Connected signal sources</h2>
                         <p>
-                          Groups and channels currently shared across Super Signals. Sources remain PAUSED.
+                          Groups and channels currently shared across Super Signals, with each source showing its current operating state.
                         </p>
                       </div>
                       <button className="button button--quiet" type="button" onClick={() => navigate('sources')}>
@@ -463,7 +464,7 @@ export function App() {
                         {sharedSources.map((source) => (
                           <article className="overview-source-card" key={source.source_id}>
                             <div>
-                              <span className="connection-status connection-status--connected">
+                              <span className={`connection-status connection-status--${source.status}`}>
                                 SHARED · {source.status.toUpperCase()}
                               </span>
                               <h3>{source.title}</h3>
@@ -501,11 +502,14 @@ export function App() {
                   <div>
                     <p className="eyebrow">Shared Super Signals data</p>
                     <h1 id="sources-page-title">Signal sources</h1>
-                    <p className="intro">Add Telegram groups or channels to the shared source catalogue. They remain PAUSED until a later stage enables listening.</p>
+                    <p className="intro">Add shared Telegram groups or channels and control each source as Testing, Live or Paused. LIVE is a source state only and does not enable trade execution.</p>
                   </div>
-                  <span className="workspace-role-pill">PAUSED</span>
+                  <span className="workspace-role-pill">STATE CONTROL</span>
                 </div>
-                <TelegramSourceSelector apiBaseUrl={apiBaseUrl} />
+                <TelegramSourceSelector
+                  apiBaseUrl={apiBaseUrl}
+                  canViewOwnerAlerts={canViewOwnerAlerts}
+                />
               </section>
             )}
 
