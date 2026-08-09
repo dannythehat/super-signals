@@ -1,8 +1,9 @@
-"""Shared Telegram group/channel selection without starting monitoring."""
+"""Shared Telegram source selection and controlled Day 11 source states."""
 
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from functools import lru_cache
 from typing import Any
 from uuid import UUID
@@ -20,6 +21,8 @@ from app.telegram_source_gateway import (
     TelegramSourceGateway,
     TelethonTelegramSourceGateway,
 )
+
+SOURCE_OPERATING_STATES = {"testing", "live", "paused"}
 
 
 class TelegramSourceConfigurationError(RuntimeError):
@@ -47,6 +50,28 @@ class SharedTelegramSourceView:
     chat_id: int
     title: str
     status: str
+
+
+@dataclass(frozen=True, slots=True)
+class SourceStatusChangeView:
+    source_id: UUID
+    title: str
+    previous_status: str
+    status: str
+    changed_at: datetime
+    actor_display_name: str
+    actor_role: str
+
+
+@dataclass(frozen=True, slots=True)
+class OwnerSourceAlertView:
+    event_id: int
+    source_id: UUID
+    title: str
+    previous_status: str
+    status: str
+    actor_display_name: str
+    changed_at: datetime
 
 
 class TelegramSourceService:
@@ -112,6 +137,111 @@ class TelegramSourceService:
             for source in rows
         ]
 
+    def change_source_status(
+        self,
+        session: Session,
+        *,
+        actor: dict[str, Any],
+        source_id: UUID,
+        new_status: str,
+    ) -> SourceStatusChangeView:
+        normalized_status = new_status.strip().lower()
+        if normalized_status not in SOURCE_OPERATING_STATES:
+            raise ValueError("Source status must be Testing, Live or Paused.")
+
+        source = session.get(Source, source_id)
+        if source is None or source.status == "revoked":
+            raise TelegramSourceNotFoundError("Shared Telegram source was not found.")
+
+        previous_status = source.status
+        changed_at = datetime.now(UTC)
+        title = source.chat_title or source.source_alias
+        actor_display_name = str(
+            actor.get("display_name") or actor.get("email") or actor.get("role") or "Administrator"
+        )
+        actor_role = str(actor.get("role") or "administrator")
+
+        if previous_status == normalized_status:
+            return SourceStatusChangeView(
+                source_id=source.id,
+                title=title,
+                previous_status=previous_status,
+                status=normalized_status,
+                changed_at=changed_at,
+                actor_display_name=actor_display_name,
+                actor_role=actor_role,
+            )
+
+        source.status = normalized_status
+        payload = {
+            "source_title": title,
+            "previous_status": previous_status,
+            "status": normalized_status,
+            "actor_role": actor_role,
+            "actor_display_name": actor_display_name,
+            "changed_at": changed_at.isoformat(),
+            "monitoring_started": False,
+            "live_trading_enabled": False,
+        }
+        self._audit(
+            session,
+            actor_id=actor["id"],
+            event_type="telegram.source_status_changed",
+            source_id=source.id,
+            payload=payload,
+        )
+
+        if actor_role == "trading_admin":
+            self._audit(
+                session,
+                actor_id=actor["id"],
+                event_type="owner.alert.source_status_changed",
+                source_id=source.id,
+                payload={**payload, "audience": "owner"},
+            )
+
+        session.commit()
+        return SourceStatusChangeView(
+            source_id=source.id,
+            title=title,
+            previous_status=previous_status,
+            status=normalized_status,
+            changed_at=changed_at,
+            actor_display_name=actor_display_name,
+            actor_role=actor_role,
+        )
+
+    def list_owner_source_alerts(
+        self,
+        session: Session,
+        *,
+        limit: int = 20,
+    ) -> list[OwnerSourceAlertView]:
+        safe_limit = min(max(limit, 1), 50)
+        rows = session.scalars(
+            select(AuditEvent)
+            .where(AuditEvent.event_type == "owner.alert.source_status_changed")
+            .order_by(AuditEvent.created_at.desc(), AuditEvent.id.desc())
+            .limit(safe_limit)
+        ).all()
+        alerts: list[OwnerSourceAlertView] = []
+        for event in rows:
+            payload = event.payload or {}
+            if event.entity_id is None:
+                continue
+            alerts.append(
+                OwnerSourceAlertView(
+                    event_id=event.id,
+                    source_id=event.entity_id,
+                    title=str(payload.get("source_title") or "Signal source"),
+                    previous_status=str(payload.get("previous_status") or "unknown"),
+                    status=str(payload.get("status") or "unknown"),
+                    actor_display_name=str(payload.get("actor_display_name") or "Trading Admin"),
+                    changed_at=event.created_at,
+                )
+            )
+        return alerts
+
     async def select_source(
         self,
         session: Session,
@@ -176,8 +306,6 @@ class TelegramSourceService:
         try:
             session.flush()
         except IntegrityError as exc:
-            # The database enforces one active logical source per Telegram chat. If
-            # two admins select the same group concurrently, keep the first source.
             session.rollback()
             source = session.scalar(
                 select(Source)
@@ -256,8 +384,6 @@ class TelegramSourceService:
         if source_revoked:
             source.status = "revoked"
         elif source.telegram_account_id == account.id:
-            # Keep the legacy/preferred reader pointer valid while the new access
-            # table records every authorised fallback reader.
             source.telegram_account_id = remaining_reader_ids[0]
 
         self._audit(
@@ -361,8 +487,6 @@ class TelegramSourceService:
         actor: dict[str, Any],
         account_id: UUID,
     ) -> TelegramAccount:
-        # Telegram sessions are private credentials. Even the platform owner may only
-        # operate reader sessions that they personally connected.
         account = session.scalar(
             select(TelegramAccount).where(
                 TelegramAccount.id == account_id,

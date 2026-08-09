@@ -1,6 +1,7 @@
 import { useState } from 'react';
 
 type Notice = { tone: 'error' | 'success'; message: string } | null;
+type SourceState = 'testing' | 'live' | 'paused';
 
 interface TelegramAccount {
   id: string;
@@ -26,8 +27,31 @@ interface SharedTelegramSource {
   status: string;
 }
 
+interface SourceStatusChange {
+  source_id: string;
+  title: string;
+  previous_status: string;
+  status: SourceState;
+  changed_at: string;
+  actor_display_name: string;
+  actor_role: string;
+  monitoring_started: false;
+  live_trading_enabled: false;
+}
+
+interface OwnerSourceAlert {
+  event_id: number;
+  source_id: string;
+  title: string;
+  previous_status: string;
+  status: string;
+  actor_display_name: string;
+  changed_at: string;
+}
+
 interface TelegramSourceSelectorProps {
   apiBaseUrl: string;
+  canViewOwnerAlerts?: boolean;
 }
 
 async function readJson<T>(response: Response): Promise<T> {
@@ -46,12 +70,23 @@ async function readJson<T>(response: Response): Promise<T> {
   return body;
 }
 
-export function TelegramSourceSelector({ apiBaseUrl }: TelegramSourceSelectorProps) {
+function formatAlertDate(value: string): string {
+  return new Intl.DateTimeFormat(undefined, {
+    dateStyle: 'medium',
+    timeStyle: 'short',
+  }).format(new Date(value));
+}
+
+export function TelegramSourceSelector({
+  apiBaseUrl,
+  canViewOwnerAlerts = true,
+}: TelegramSourceSelectorProps) {
   const [expanded, setExpanded] = useState(false);
   const [accounts, setAccounts] = useState<TelegramAccount[]>([]);
   const [accountId, setAccountId] = useState('');
   const [sources, setSources] = useState<TelegramSelectableSource[]>([]);
   const [sharedSources, setSharedSources] = useState<SharedTelegramSource[]>([]);
+  const [ownerAlerts, setOwnerAlerts] = useState<OwnerSourceAlert[] | null>(null);
   const [sharedCatalogueAvailable, setSharedCatalogueAvailable] = useState(true);
   const [loaded, setLoaded] = useState(false);
   const [busyAction, setBusyAction] = useState<string | null>(null);
@@ -72,6 +107,18 @@ export function TelegramSourceSelector({ apiBaseUrl }: TelegramSourceSelectorPro
     setSharedSources(shared);
   }
 
+  async function fetchOwnerAlerts() {
+    const response = await fetch(`${apiBaseUrl}/admin/telegram/sources/owner-alerts`, {
+      credentials: 'include',
+      headers: { Accept: 'application/json' },
+    });
+    if (response.status === 403 || response.status === 404) {
+      setOwnerAlerts(null);
+      return;
+    }
+    setOwnerAlerts(await readJson<OwnerSourceAlert[]>(response));
+  }
+
   async function handleExpand() {
     setExpanded(true);
     setBusyAction('accounts');
@@ -90,10 +137,15 @@ export function TelegramSourceSelector({ apiBaseUrl }: TelegramSourceSelectorPro
       if (connected.length === 0) {
         setNotice({
           tone: 'error',
-          message: 'Connect your own Telegram reader above before adding another signal source.',
+          message: 'Connect your own Telegram reader before adding another signal source.',
         });
       }
       await fetchSharedSources();
+      if (canViewOwnerAlerts) {
+        await fetchOwnerAlerts();
+      } else {
+        setOwnerAlerts(null);
+      }
     } catch (error) {
       setNotice({
         tone: 'error',
@@ -118,7 +170,6 @@ export function TelegramSourceSelector({ apiBaseUrl }: TelegramSourceSelectorPro
         },
       );
       const discovered = await readJson<TelegramSelectableSource[]>(response);
-      // Defence in depth: never render a user/private-chat row even if a server regression occurs.
       setSources(
         discovered.filter((source) => source.kind === 'group' || source.kind === 'channel'),
       );
@@ -128,6 +179,48 @@ export function TelegramSourceSelector({ apiBaseUrl }: TelegramSourceSelectorPro
       setNotice({
         tone: 'error',
         message: error instanceof Error ? error.message : 'Telegram sources could not be loaded.',
+      });
+    } finally {
+      setBusyAction(null);
+    }
+  }
+
+  async function changeSourceStatus(source: SharedTelegramSource, nextStatus: SourceState) {
+    if (source.status === nextStatus) return;
+    setBusyAction(`status:${source.source_id}:${nextStatus}`);
+    setNotice(null);
+    try {
+      const response = await fetch(
+        `${apiBaseUrl}/admin/telegram/sources/shared/${source.source_id}/status`,
+        {
+          method: 'PATCH',
+          credentials: 'include',
+          headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+          body: JSON.stringify({ status: nextStatus }),
+        },
+      );
+      const changed = await readJson<SourceStatusChange>(response);
+      setSharedSources((current) =>
+        current.map((item) =>
+          item.source_id === changed.source_id ? { ...item, status: changed.status } : item,
+        ),
+      );
+      setSources((current) =>
+        current.map((item) =>
+          item.source_id === changed.source_id ? { ...item, status: changed.status } : item,
+        ),
+      );
+      setNotice({
+        tone: 'success',
+        message: `${changed.title} moved from ${changed.previous_status.toUpperCase()} to ${changed.status.toUpperCase()}. The change was audited. Live trading remains disabled.`,
+      });
+      if (canViewOwnerAlerts) {
+        await fetchOwnerAlerts();
+      }
+    } catch (error) {
+      setNotice({
+        tone: 'error',
+        message: error instanceof Error ? error.message : 'Source state could not be changed.',
       });
     } finally {
       setBusyAction(null);
@@ -153,7 +246,7 @@ export function TelegramSourceSelector({ apiBaseUrl }: TelegramSourceSelectorPro
       setNotice({
         tone: 'success',
         message: !sharedCatalogueAvailable
-          ? 'Source selected and kept PAUSED. This confirms the real Telegram group-selection path; the shared catalogue will appear when the Day 10 backend is deployed.'
+          ? 'Source selected and kept PAUSED.'
           : wasAlreadyShared
             ? 'Existing shared source linked to your reader too. No duplicate source was created.'
             : 'Source added to the shared list and kept PAUSED. No monitoring has started.',
@@ -186,7 +279,7 @@ export function TelegramSourceSelector({ apiBaseUrl }: TelegramSourceSelectorPro
       setNotice({
         tone: 'success',
         message: sharedCatalogueAvailable
-          ? 'Your reader was removed from this source. The shared source stays available if another reader still supplies access.'
+          ? 'Your reader was removed. The shared source remains if another private reader still supplies access.'
           : 'Source selection removed from this Telegram reader.',
       });
       await loadSources(accountId);
@@ -207,8 +300,7 @@ export function TelegramSourceSelector({ apiBaseUrl }: TelegramSourceSelectorPro
           <span className="status-label">Shared signal sources</span>
           <h2 id="telegram-source-selector-title">Telegram groups &amp; channels</h2>
           <p>
-            You and the other authorised admins share the groups and channels deliberately added to
-            Super Signals. Your Telegram login and session stay private to you.
+            Shared sources can now be marked Testing, Live or Paused. Every state change is audited.
           </p>
         </div>
         {!expanded && (
@@ -228,10 +320,34 @@ export function TelegramSourceSelector({ apiBaseUrl }: TelegramSourceSelectorPro
 
           <div className="foundation-note">
             <span className="pulse" aria-hidden="true" />
-            Shared source names and trade activity are visible to authorised admins, but Telegram
-            sessions remain private. Sources stay PAUSED until a later build step explicitly enables
-            listening.
+            Day 11 source states are operational controls only. Setting a source to LIVE does not
+            enable MT5 execution or live trading. Telegram sessions remain private to their owner.
           </div>
+
+          {ownerAlerts !== null && (
+            <section className="owner-alerts" aria-labelledby="owner-alerts-title">
+              <div className="owner-alerts__header">
+                <span className="status-label">Owner only</span>
+                <h3 id="owner-alerts-title">Source-state alerts</h3>
+              </div>
+              {ownerAlerts.length === 0 ? (
+                <p className="muted-copy">No Trading Admin source-state changes have been recorded yet.</p>
+              ) : (
+                <div className="owner-alert-list">
+                  {ownerAlerts.map((alert) => (
+                    <article className="owner-alert" key={alert.event_id}>
+                      <strong>
+                        {alert.actor_display_name} changed {alert.title} to {alert.status.toUpperCase()}
+                      </strong>
+                      <small>
+                        {alert.previous_status.toUpperCase()} → {alert.status.toUpperCase()} · {formatAlertDate(alert.changed_at)}
+                      </small>
+                    </article>
+                  ))}
+                </div>
+              )}
+            </section>
+          )}
 
           {busyAction === 'accounts' && <p className="muted-copy">Loading Telegram readers…</p>}
 
@@ -239,22 +355,35 @@ export function TelegramSourceSelector({ apiBaseUrl }: TelegramSourceSelectorPro
             <span className="status-label">Shared across Super Signals</span>
             <h3>Added signal sources</h3>
             {!sharedCatalogueAvailable ? (
-              <p className="muted-copy">
-                The shared Day 10 catalogue is not live on the backend yet. You can still use this
-                screen to smoke-test adding one real Telegram group as PAUSED.
-              </p>
+              <p className="muted-copy">The shared source catalogue is not available.</p>
             ) : sharedSources.length === 0 ? (
               <p className="muted-copy">No shared Telegram signal sources have been added yet.</p>
             ) : (
               <div className="telegram-account-list" aria-label="Shared Super Signals sources">
                 {sharedSources.map((source) => (
-                  <article className="telegram-account" key={source.source_id}>
-                    <div>
-                      <span className="connection-status connection-status--connected">
+                  <article className="telegram-account source-state-card" key={source.source_id}>
+                    <div className="source-state-card__copy">
+                      <span className={`connection-status connection-status--${source.status}`}>
                         SHARED · {source.status.toUpperCase()}
                       </span>
                       <h3>{source.title}</h3>
                       <small>Visible to all authorised Super Signals admins</small>
+                    </div>
+                    <div className="source-state-controls" aria-label={`Change ${source.title} state`}>
+                      {(['testing', 'live', 'paused'] as SourceState[]).map((state) => (
+                        <button
+                          className={`source-state-button source-state-button--${state}`}
+                          type="button"
+                          key={state}
+                          aria-pressed={source.status === state}
+                          disabled={busyAction !== null || source.status === state}
+                          onClick={() => void changeSourceStatus(source, state)}
+                        >
+                          {busyAction === `status:${source.source_id}:${state}`
+                            ? 'Saving…'
+                            : state[0].toUpperCase() + state.slice(1)}
+                        </button>
+                      ))}
                     </div>
                   </article>
                 ))}
@@ -317,7 +446,7 @@ export function TelegramSourceSelector({ apiBaseUrl }: TelegramSourceSelectorPro
                     <div>
                       <span
                         className={`connection-status ${
-                          source.selected ? 'connection-status--connected' : ''
+                          source.selected ? `connection-status--${source.status ?? 'paused'}` : ''
                         }`}
                       >
                         {source.selected

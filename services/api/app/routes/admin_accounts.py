@@ -89,8 +89,6 @@ def create_trading_admin_setup(
             )
         )
 
-    # Invalidate older unused recovery/setup tokens before issuing a fresh
-    # single-use administrator setup token.
     session.execute(
         text(
             """
