@@ -29,6 +29,8 @@ class Settings:
     telegram_api_hash: str | None
     telegram_session_keys: tuple[str, ...]
     telegram_qr_ttl_seconds: int
+    telegram_listener_enabled: bool
+    telegram_listener_refresh_seconds: int
 
 
 def _parse_origins(value: str) -> tuple[str, ...]:
@@ -170,6 +172,7 @@ def _telegram_session_keys(environment: str) -> tuple[str, ...]:
 def get_settings() -> Settings:
     environment = os.getenv("SUPER_SIGNALS_ENV", "development").strip().lower()
     default_secure = environment not in _NON_PRODUCTION_ENVIRONMENTS
+    default_listener_enabled = environment not in _NON_PRODUCTION_ENVIRONMENTS
     database_url = _normalize_database_url(
         _required_non_production_value(
             environment,
@@ -205,4 +208,14 @@ def get_settings() -> Settings:
         telegram_api_hash=telegram_api_hash,
         telegram_session_keys=_telegram_session_keys(environment),
         telegram_qr_ttl_seconds=_positive_int("SUPER_SIGNALS_TELEGRAM_QR_TTL_SECONDS", "120"),
+        telegram_listener_enabled=_parse_bool(
+            os.getenv(
+                "SUPER_SIGNALS_TELEGRAM_LISTENER_ENABLED",
+                str(default_listener_enabled),
+            )
+        ),
+        telegram_listener_refresh_seconds=_positive_int(
+            "SUPER_SIGNALS_TELEGRAM_LISTENER_REFRESH_SECONDS",
+            "5",
+        ),
     )
