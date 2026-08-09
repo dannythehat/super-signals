@@ -5,7 +5,7 @@ services:
     plan: free
     region: frankfurt
     repo: https://github.com/dannythehat/super-signals
-    branch: feature/day-08-secure-telegram-connection
+    branch: feature/day-10-shared-telegram-sources
     dockerfilePath: ./Dockerfile
     dockerContext: .
     healthCheckPath: /health

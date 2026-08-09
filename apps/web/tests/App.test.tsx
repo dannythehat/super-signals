@@ -79,6 +79,13 @@ const invitedUser = {
   sections: [owner.sections[2]],
 };
 
+const sharedSource = {
+  source_id: '11111111-1111-4111-8111-111111111111',
+  chat_id: -1001651583302,
+  title: 'FXTradingVision | Forex & Crypto Signals 🚀',
+  status: 'paused',
+};
+
 function jsonResponse(status: number, body: unknown): Response {
   return {
     ok: status >= 200 && status < 300,
@@ -90,6 +97,7 @@ function jsonResponse(status: number, body: unknown): Response {
 describe('App', () => {
   afterEach(() => {
     vi.unstubAllGlobals();
+    window.history.replaceState({}, '', window.location.href);
   });
 
   it('shows account login when no valid session exists', async () => {
@@ -111,11 +119,12 @@ describe('App', () => {
     expect(screen.queryByText('private network details')).not.toBeInTheDocument();
   });
 
-  it('signs the owner in and shows every approved workspace', async () => {
+  it('signs the owner in to a clean overview with settings behind the menu', async () => {
     const fetchMock = vi
       .fn()
       .mockResolvedValueOnce(jsonResponse(401, {}))
-      .mockResolvedValueOnce(jsonResponse(200, owner));
+      .mockResolvedValueOnce(jsonResponse(200, owner))
+      .mockResolvedValueOnce(jsonResponse(200, []));
     vi.stubGlobal('fetch', fetchMock);
 
     render(<App />);
@@ -128,57 +137,101 @@ describe('App', () => {
     });
     fireEvent.click(screen.getByRole('button', { name: 'Sign in' }));
 
-    expect(await screen.findByRole('heading', { name: 'Welcome, Danny' })).toBeInTheDocument();
-    expect(screen.getByText('Owner controls')).toBeInTheDocument();
-    expect(screen.getByText('Trading operations')).toBeInTheDocument();
-    expect(screen.getByText('My trading')).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'Manage Telegram accounts' })).toBeInTheDocument();
-    expect(fetchMock).toHaveBeenLastCalledWith(
+    expect(await screen.findByRole('heading', { name: 'Welcome back, Danny' })).toBeInTheDocument();
+    expect(screen.getByText('Live trading disabled')).toBeInTheDocument();
+    expect(screen.queryByText('Owner controls')).not.toBeInTheDocument();
+    expect(screen.queryByText('Trading operations')).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Open menu' })).toBeInTheDocument();
+    expect(fetchMock).toHaveBeenCalledWith(
       '/api/auth/login',
       expect.objectContaining({ method: 'POST', credentials: 'include' }),
     );
   });
 
-  it('shows only trading operations and Telegram management to the Trading Admin', async () => {
+  it('shows connected shared sources on the overview and returns home without browser back', async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(jsonResponse(200, owner))
+      .mockResolvedValueOnce(jsonResponse(200, [sharedSource]));
+    vi.stubGlobal('fetch', fetchMock);
+    window.scrollTo = vi.fn();
+
+    render(<App />);
+
+    expect(await screen.findByText(sharedSource.title)).toBeInTheDocument();
+    expect(screen.getByText('SHARED · PAUSED')).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Open menu' }));
+    fireEvent.click(screen.getByRole('button', { name: /Access & security/i }));
+
+    expect(await screen.findByRole('heading', { name: 'Access & security' })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Back to overview' }));
+    expect(await screen.findByRole('heading', { name: 'Welcome back, Danny' })).toBeInTheDocument();
+  });
+
+  it('opens the workspace menu and navigates to access settings', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(jsonResponse(200, owner)));
+    window.scrollTo = vi.fn();
+
+    render(<App />);
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Open menu' }));
+    expect(screen.getByRole('button', { name: /Telegram accounts/i })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /Signal sources/i })).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: /Access & security/i }));
+
+    expect(await screen.findByRole('heading', { name: 'Access & security' })).toBeInTheDocument();
+    expect(screen.getByText('Owner controls')).toBeInTheDocument();
+    expect(screen.getByText('Trading operations')).toBeInTheDocument();
+    expect(screen.getByText('My trading')).toBeInTheDocument();
+  });
+
+  it('shows Telegram navigation to a Trading Admin without exposing Owner controls', async () => {
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue(jsonResponse(200, tradingAdmin)));
 
     render(<App />);
 
     expect(
-      await screen.findByRole('heading', { name: 'Welcome, Trading Admin' }),
+      await screen.findByRole('heading', { name: 'Welcome back, Trading Admin' }),
     ).toBeInTheDocument();
-    expect(screen.getByText('Trading operations')).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'Manage Telegram accounts' })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Open menu' }));
+    expect(screen.getByRole('button', { name: /Telegram accounts/i })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /Signal sources/i })).toBeInTheDocument();
     expect(screen.queryByText('Owner controls')).not.toBeInTheDocument();
-    expect(screen.queryByText('My trading')).not.toBeInTheDocument();
   });
 
-  it('shows only personal trading controls to an invited user', async () => {
+  it('keeps Telegram management out of an invited user menu', async () => {
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue(jsonResponse(200, invitedUser)));
+    window.scrollTo = vi.fn();
 
     render(<App />);
 
     expect(
-      await screen.findByRole('heading', { name: 'Welcome, Invited User' }),
+      await screen.findByRole('heading', { name: 'Welcome back, Invited User' }),
     ).toBeInTheDocument();
-    expect(screen.getByText('My trading')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Open menu' }));
+    expect(screen.queryByRole('button', { name: /Telegram accounts/i })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /Signal sources/i })).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: /Access & security/i }));
+    expect(await screen.findByText('My trading')).toBeInTheDocument();
     expect(screen.queryByText('Owner controls')).not.toBeInTheDocument();
     expect(screen.queryByText('Trading operations')).not.toBeInTheDocument();
-    expect(
-      screen.queryByRole('button', { name: 'Manage Telegram accounts' }),
-    ).not.toBeInTheDocument();
   });
 
   it('revokes the visible session and returns to login on logout', async () => {
     const fetchMock = vi
       .fn()
       .mockResolvedValueOnce(jsonResponse(200, owner))
+      .mockResolvedValueOnce(jsonResponse(200, []))
       .mockResolvedValueOnce(jsonResponse(204, {}));
     vi.stubGlobal('fetch', fetchMock);
 
     render(<App />);
 
-    fireEvent.click(await screen.findByRole('button', { name: 'Log out' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Open menu' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Log out' }));
 
     expect(await screen.findByRole('heading', { name: 'Sign in securely' })).toBeInTheDocument();
     await waitFor(() => {

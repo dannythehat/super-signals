@@ -16,6 +16,14 @@ interface TelegramSelectableSource {
   selected: boolean;
   source_id: string | null;
   status: string | null;
+  managed_by_this_reader?: boolean;
+}
+
+interface SharedTelegramSource {
+  source_id: string;
+  chat_id: number;
+  title: string;
+  status: string;
 }
 
 interface TelegramSourceSelectorProps {
@@ -43,20 +51,37 @@ export function TelegramSourceSelector({ apiBaseUrl }: TelegramSourceSelectorPro
   const [accounts, setAccounts] = useState<TelegramAccount[]>([]);
   const [accountId, setAccountId] = useState('');
   const [sources, setSources] = useState<TelegramSelectableSource[]>([]);
+  const [sharedSources, setSharedSources] = useState<SharedTelegramSource[]>([]);
+  const [sharedCatalogueAvailable, setSharedCatalogueAvailable] = useState(true);
   const [loaded, setLoaded] = useState(false);
   const [busyAction, setBusyAction] = useState<string | null>(null);
   const [notice, setNotice] = useState<Notice>(null);
+
+  async function fetchSharedSources() {
+    const response = await fetch(`${apiBaseUrl}/admin/telegram/sources/shared`, {
+      credentials: 'include',
+      headers: { Accept: 'application/json' },
+    });
+    if (response.status === 404) {
+      setSharedCatalogueAvailable(false);
+      setSharedSources([]);
+      return;
+    }
+    const shared = await readJson<SharedTelegramSource[]>(response);
+    setSharedCatalogueAvailable(true);
+    setSharedSources(shared);
+  }
 
   async function handleExpand() {
     setExpanded(true);
     setBusyAction('accounts');
     setNotice(null);
     try {
-      const response = await fetch(`${apiBaseUrl}/admin/telegram/accounts`, {
+      const accountsResponse = await fetch(`${apiBaseUrl}/admin/telegram/accounts`, {
         credentials: 'include',
         headers: { Accept: 'application/json' },
       });
-      const allAccounts = await readJson<TelegramAccount[]>(response);
+      const allAccounts = await readJson<TelegramAccount[]>(accountsResponse);
       const connected = allAccounts.filter((account) => account.status === 'connected');
       setAccounts(connected);
       if (connected.length > 0) {
@@ -65,13 +90,15 @@ export function TelegramSourceSelector({ apiBaseUrl }: TelegramSourceSelectorPro
       if (connected.length === 0) {
         setNotice({
           tone: 'error',
-          message: 'Connect a Telegram reader above before choosing signal sources.',
+          message: 'Connect your own Telegram reader above before adding another signal source.',
         });
       }
+      await fetchSharedSources();
     } catch (error) {
       setNotice({
         tone: 'error',
-        message: error instanceof Error ? error.message : 'Telegram accounts could not be loaded.',
+        message:
+          error instanceof Error ? error.message : 'Telegram source settings could not be loaded.',
       });
     } finally {
       setBusyAction(null);
@@ -96,6 +123,7 @@ export function TelegramSourceSelector({ apiBaseUrl }: TelegramSourceSelectorPro
         discovered.filter((source) => source.kind === 'group' || source.kind === 'channel'),
       );
       setLoaded(true);
+      await fetchSharedSources();
     } catch (error) {
       setNotice({
         tone: 'error',
@@ -108,6 +136,7 @@ export function TelegramSourceSelector({ apiBaseUrl }: TelegramSourceSelectorPro
 
   async function selectSource(source: TelegramSelectableSource) {
     if (!accountId) return;
+    const wasAlreadyShared = source.selected;
     setBusyAction(`select:${source.chat_id}`);
     setNotice(null);
     try {
@@ -123,7 +152,11 @@ export function TelegramSourceSelector({ apiBaseUrl }: TelegramSourceSelectorPro
       await readJson<TelegramSelectableSource>(response);
       setNotice({
         tone: 'success',
-        message: 'Source selected and kept PAUSED. No monitoring has started.',
+        message: !sharedCatalogueAvailable
+          ? 'Source selected and kept PAUSED. This confirms the real Telegram group-selection path; the shared catalogue will appear when the Day 10 backend is deployed.'
+          : wasAlreadyShared
+            ? 'Existing shared source linked to your reader too. No duplicate source was created.'
+            : 'Source added to the shared list and kept PAUSED. No monitoring has started.',
       });
       await loadSources(accountId);
     } catch (error) {
@@ -150,7 +183,12 @@ export function TelegramSourceSelector({ apiBaseUrl }: TelegramSourceSelectorPro
         },
       );
       await readJson<{ removed: boolean }>(response);
-      setNotice({ tone: 'success', message: 'Source selection removed.' });
+      setNotice({
+        tone: 'success',
+        message: sharedCatalogueAvailable
+          ? 'Your reader was removed from this source. The shared source stays available if another reader still supplies access.'
+          : 'Source selection removed from this Telegram reader.',
+      });
       await loadSources(accountId);
     } catch (error) {
       setNotice({
@@ -166,11 +204,11 @@ export function TelegramSourceSelector({ apiBaseUrl }: TelegramSourceSelectorPro
     <section className="telegram-panel" aria-labelledby="telegram-source-selector-title">
       <div className="telegram-panel__header">
         <div>
-          <span className="status-label">Explicit source selection</span>
+          <span className="status-label">Shared signal sources</span>
           <h2 id="telegram-source-selector-title">Telegram groups &amp; channels</h2>
           <p>
-            Choose which groups or channels Super Signals may use later. Private one-to-one chats
-            are excluded by the server.
+            You and the other authorised admins share the groups and channels deliberately added to
+            Super Signals. Your Telegram login and session stay private to you.
           </p>
         </div>
         {!expanded && (
@@ -190,15 +228,46 @@ export function TelegramSourceSelector({ apiBaseUrl }: TelegramSourceSelectorPro
 
           <div className="foundation-note">
             <span className="pulse" aria-hidden="true" />
-            Viewing this list does not inspect, persist or process message content and does not start
-            monitoring. A selected source is stored as PAUSED until a later build step explicitly
-            enables listening.
+            Shared source names and trade activity are visible to authorised admins, but Telegram
+            sessions remain private. Sources stay PAUSED until a later build step explicitly enables
+            listening.
           </div>
 
           {busyAction === 'accounts' && <p className="muted-copy">Loading Telegram readers…</p>}
 
+          <div>
+            <span className="status-label">Shared across Super Signals</span>
+            <h3>Added signal sources</h3>
+            {!sharedCatalogueAvailable ? (
+              <p className="muted-copy">
+                The shared Day 10 catalogue is not live on the backend yet. You can still use this
+                screen to smoke-test adding one real Telegram group as PAUSED.
+              </p>
+            ) : sharedSources.length === 0 ? (
+              <p className="muted-copy">No shared Telegram signal sources have been added yet.</p>
+            ) : (
+              <div className="telegram-account-list" aria-label="Shared Super Signals sources">
+                {sharedSources.map((source) => (
+                  <article className="telegram-account" key={source.source_id}>
+                    <div>
+                      <span className="connection-status connection-status--connected">
+                        SHARED · {source.status.toUpperCase()}
+                      </span>
+                      <h3>{source.title}</h3>
+                      <small>Visible to all authorised Super Signals admins</small>
+                    </div>
+                  </article>
+                ))}
+              </div>
+            )}
+          </div>
+
           {accounts.length > 0 && (
             <>
+              <div>
+                <span className="status-label">Your private reader</span>
+                <h3>Add a group or channel</h3>
+              </div>
               {accounts.length > 1 && (
                 <label>
                   Telegram reader
@@ -241,44 +310,64 @@ export function TelegramSourceSelector({ apiBaseUrl }: TelegramSourceSelectorPro
 
           {sources.length > 0 && (
             <div className="telegram-account-list" aria-label="Selectable Telegram groups and channels">
-              {sources.map((source) => (
-                <article className="telegram-account" key={`${source.kind}:${source.chat_id}`}>
-                  <div>
-                    <span
-                      className={`connection-status ${
-                        source.selected ? 'connection-status--connected' : ''
-                      }`}
-                    >
-                      {source.selected ? 'SELECTED · PAUSED' : source.kind.toUpperCase()}
-                    </span>
-                    <h3>{source.title}</h3>
-                    <small>{source.kind === 'group' ? 'Telegram group' : 'Telegram channel'}</small>
-                  </div>
-                  <div className="telegram-account__actions">
-                    {source.selected ? (
-                      <button
-                        className="button button--quiet"
-                        type="button"
-                        onClick={() => void removeSource(source)}
-                        disabled={busyAction !== null}
+              {sources.map((source) => {
+                const managedByThisReader = source.managed_by_this_reader !== false;
+                return (
+                  <article className="telegram-account" key={`${source.kind}:${source.chat_id}`}>
+                    <div>
+                      <span
+                        className={`connection-status ${
+                          source.selected ? 'connection-status--connected' : ''
+                        }`}
                       >
-                        {busyAction === `remove:${source.source_id}`
-                          ? 'Removing…'
-                          : 'Remove selection'}
-                      </button>
-                    ) : (
-                      <button
-                        className="button"
-                        type="button"
-                        onClick={() => void selectSource(source)}
-                        disabled={busyAction !== null}
-                      >
-                        {busyAction === `select:${source.chat_id}` ? 'Selecting…' : 'Select source'}
-                      </button>
-                    )}
-                  </div>
-                </article>
-              ))}
+                        {source.selected
+                          ? managedByThisReader
+                            ? `SELECTED · ${(source.status ?? 'paused').toUpperCase()}`
+                            : `ALREADY SHARED · ${(source.status ?? 'paused').toUpperCase()}`
+                          : source.kind.toUpperCase()}
+                      </span>
+                      <h3>{source.title}</h3>
+                      <small>{source.kind === 'group' ? 'Telegram group' : 'Telegram channel'}</small>
+                    </div>
+                    <div className="telegram-account__actions">
+                      {source.selected ? (
+                        managedByThisReader ? (
+                          <button
+                            className="button button--quiet"
+                            type="button"
+                            onClick={() => void removeSource(source)}
+                            disabled={busyAction !== null}
+                          >
+                            {busyAction === `remove:${source.source_id}`
+                              ? 'Removing…'
+                              : 'Remove my reader'}
+                          </button>
+                        ) : (
+                          <button
+                            className="button button--quiet"
+                            type="button"
+                            onClick={() => void selectSource(source)}
+                            disabled={busyAction !== null}
+                          >
+                            {busyAction === `select:${source.chat_id}`
+                              ? 'Linking…'
+                              : 'Add my reader too'}
+                          </button>
+                        )
+                      ) : (
+                        <button
+                          className="button"
+                          type="button"
+                          onClick={() => void selectSource(source)}
+                          disabled={busyAction !== null}
+                        >
+                          {busyAction === `select:${source.chat_id}` ? 'Selecting…' : 'Add to shared sources'}
+                        </button>
+                      )}
+                    </div>
+                  </article>
+                );
+              })}
             </div>
           )}
         </div>
