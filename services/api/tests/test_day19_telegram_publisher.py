@@ -1,6 +1,7 @@
 from decimal import Decimal
 
-from app.telegram_publisher import TelegramPublisherManager, render_signal_post
+from app.telegram_publisher import render_signal_post
+from app.telegram_publisher_policy import Day19TelegramPublisherManager
 
 
 def test_render_signal_post_uses_only_canonical_fields() -> None:
@@ -45,30 +46,34 @@ def test_render_double_size_instruction() -> None:
 
 
 def test_minimum_permissions_accepts_plain_group_member() -> None:
-    assert TelegramPublisherManager._minimum_permissions_ok(
+    assert Day19TelegramPublisherManager._minimum_permissions_ok(
         "supergroup", {"status": "member"}
     )
 
 
 def test_minimum_permissions_accepts_post_only_channel_admin() -> None:
-    assert TelegramPublisherManager._minimum_permissions_ok(
+    assert Day19TelegramPublisherManager._minimum_permissions_ok(
         "channel",
         {
             "status": "administrator",
+            "can_manage_chat": True,
             "can_post_messages": True,
             "can_delete_messages": False,
             "can_change_info": False,
             "can_invite_users": False,
             "can_promote_members": False,
+            "can_edit_messages": False,
+            "can_post_stories": False,
         },
     )
 
 
 def test_minimum_permissions_rejects_broad_admin_rights() -> None:
-    assert not TelegramPublisherManager._minimum_permissions_ok(
+    assert not Day19TelegramPublisherManager._minimum_permissions_ok(
         "channel",
         {
             "status": "administrator",
+            "can_manage_chat": True,
             "can_post_messages": True,
             "can_delete_messages": True,
         },
