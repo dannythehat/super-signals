@@ -9,6 +9,7 @@ from sqlalchemy import text
 from app.models import AuditEvent
 from app.telegram_publisher import (
     PUBLISHER_VERSION,
+    PublisherConnectionStatus,
     TelegramPublishError,
     TelegramPublisherManager,
     _bot_api_call,
@@ -47,6 +48,105 @@ class Day19TelegramPublisherManager(TelegramPublisherManager):
         )
         return not any(bool(membership.get(name)) for name in broad_permissions)
 
+    def _active_reader_source_collision(self) -> bool:
+        """Only Testing/Live sources are actively read; Paused is safe for cutover."""
+
+        assert self._destination_chat_id is not None
+        with self._session_factory() as session:
+            return bool(
+                session.execute(
+                    text(
+                        """
+                        SELECT 1 FROM sources
+                        WHERE chat_id = :chat_id
+                          AND status IN ('testing', 'live')
+                        LIMIT 1
+                        """
+                    ),
+                    {"chat_id": self._destination_chat_id},
+                ).scalar_one_or_none()
+            )
+
+    def check_connection(self) -> PublisherConnectionStatus:
+        if not self._enabled:
+            return PublisherConnectionStatus(
+                configured=self.configured,
+                enabled=False,
+                destination_chat_type=None,
+                bot_membership_status=None,
+                minimum_permissions_ok=False,
+                source_collision=False,
+                reason="Publisher is disabled.",
+            )
+        if not self.configured:
+            return PublisherConnectionStatus(
+                configured=False,
+                enabled=True,
+                destination_chat_type=None,
+                bot_membership_status=None,
+                minimum_permissions_ok=False,
+                source_collision=False,
+                reason="Publisher bot token and destination chat ID must both be configured.",
+            )
+        assert self._bot_token is not None
+        assert self._destination_chat_id is not None
+
+        if self._active_reader_source_collision():
+            return PublisherConnectionStatus(
+                configured=True,
+                enabled=True,
+                destination_chat_type=None,
+                bot_membership_status=None,
+                minimum_permissions_ok=False,
+                source_collision=True,
+                reason="Publishing destination cannot also be an active Testing/Live reader source. Pause the source before cutover.",
+            )
+
+        try:
+            me = _bot_api_call(self._bot_token, "getMe", {})
+            chat = _bot_api_call(
+                self._bot_token,
+                "getChat",
+                {"chat_id": self._destination_chat_id},
+            )
+            membership = _bot_api_call(
+                self._bot_token,
+                "getChatMember",
+                {"chat_id": self._destination_chat_id, "user_id": int(me["id"])},
+            )
+        except (TelegramPublishError, KeyError, TypeError, ValueError) as exc:
+            reason = (
+                exc.reason
+                if isinstance(exc, TelegramPublishError)
+                else "Telegram bot identity could not be verified."
+            )
+            return PublisherConnectionStatus(
+                configured=True,
+                enabled=True,
+                destination_chat_type=None,
+                bot_membership_status=None,
+                minimum_permissions_ok=False,
+                source_collision=False,
+                reason=reason,
+            )
+
+        chat_type = str(chat.get("type") or "")
+        membership_status = str(membership.get("status") or "")
+        minimum_ok = self._minimum_permissions_ok(chat_type, membership)
+        return PublisherConnectionStatus(
+            configured=True,
+            enabled=True,
+            destination_chat_type=chat_type or None,
+            bot_membership_status=membership_status or None,
+            minimum_permissions_ok=minimum_ok,
+            source_collision=False,
+            reason=(
+                "Publish-only Telegram connection verified."
+                if minimum_ok
+                else "Bot permissions are broader than required or do not allow posting."
+            ),
+        )
+
     def send_connection_test(self) -> dict[str, Any]:
         """Call Telegram sendMessage directly and audit success/failure.
 
@@ -70,24 +170,10 @@ class Day19TelegramPublisherManager(TelegramPublisherManager):
         assert self._bot_token is not None
         assert self._destination_chat_id is not None
 
-        with self._session_factory() as session:
-            source_collision = bool(
-                session.execute(
-                    text(
-                        """
-                        SELECT 1 FROM sources
-                        WHERE chat_id = :chat_id
-                          AND status <> 'revoked'
-                        LIMIT 1
-                        """
-                    ),
-                    {"chat_id": self._destination_chat_id},
-                ).scalar_one_or_none()
-            )
-        if source_collision:
+        if self._active_reader_source_collision():
             return {
                 "status": "blocked",
-                "reason": "Publishing destination cannot also be an active reader source.",
+                "reason": "Publishing destination cannot also be an active Testing/Live reader source. Pause the source before cutover.",
                 "telegram_message_id": None,
             }
 
