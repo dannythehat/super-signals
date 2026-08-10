@@ -11,6 +11,7 @@ from fastapi.staticfiles import StaticFiles
 
 from app.config import get_settings
 from app.db import get_session_factory
+from app.publisher_config import get_publisher_settings
 from app.routes.access import router as access_router
 from app.routes.admin_accounts import router as admin_accounts_router
 from app.routes.auth import router as auth_router
@@ -20,6 +21,7 @@ from app.routes.telegram_accounts import router as telegram_accounts_router
 from app.routes.telegram_classifications import router as telegram_classifications_router
 from app.routes.telegram_messages import router as telegram_messages_router
 from app.routes.telegram_parses import router as telegram_parses_router
+from app.routes.telegram_publisher import router as telegram_publisher_router
 from app.routes.telegram_reliability import (
     provide_day14_telegram_source_service,
     router as telegram_reliability_router,
@@ -32,11 +34,24 @@ from app.routes.telegram_sources import (
 from app.telegram_crypto import TelegramSessionCipher
 from app.telegram_listener import TelegramListenerManager
 from app.telegram_listener_day18 import build_day18_listener_manager
+from app.telegram_publisher import TelegramPublisherManager
 
 
 @asynccontextmanager
 async def _lifespan(application: FastAPI) -> AsyncIterator[None]:
     settings = get_settings()
+    publisher_settings = get_publisher_settings()
+    session_factory = get_session_factory()
+
+    publisher = TelegramPublisherManager(
+        session_factory=session_factory,
+        enabled=publisher_settings.enabled,
+        bot_token=publisher_settings.bot_token,
+        destination_chat_id=publisher_settings.destination_chat_id,
+        poll_seconds=publisher_settings.poll_seconds,
+    )
+    application.state.telegram_publisher = publisher
+
     listener: TelegramListenerManager | None = None
     if (
         settings.telegram_listener_enabled
@@ -47,15 +62,18 @@ async def _lifespan(application: FastAPI) -> AsyncIterator[None]:
             api_id=settings.telegram_api_id,
             api_hash=settings.telegram_api_hash,
             cipher=TelegramSessionCipher(settings.telegram_session_keys),
-            session_factory=get_session_factory(),
+            session_factory=session_factory,
             refresh_seconds=settings.telegram_listener_refresh_seconds,
         )
         application.state.telegram_listener = listener
         await listener.start()
 
+    await publisher.start()
+
     try:
         yield
     finally:
+        await publisher.stop()
         if listener is not None:
             await listener.stop()
 
@@ -91,8 +109,7 @@ def create_app() -> FastAPI:
         allow_methods=["GET", "POST", "PATCH"],
         allow_headers=["Accept", "Content-Type", "X-Request-ID"],
     )
-    # Day 14 reliability-aware source management remains the accepted source
-    # contract. Day 18 adds only canonical post-validation Signal events.
+    # Reader/source access remains separate from the Day 19 publish-only Bot API path.
     application.dependency_overrides[provide_telegram_source_service] = (
         provide_day14_telegram_source_service
     )
@@ -108,6 +125,7 @@ def create_app() -> FastAPI:
     application.include_router(telegram_parses_router)
     application.include_router(telegram_reviews_router)
     application.include_router(signals_router)
+    application.include_router(telegram_publisher_router)
     _mount_web_application(application)
     return application
 
