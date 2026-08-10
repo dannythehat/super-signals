@@ -55,7 +55,7 @@ class MetaApiProvisioningGateway:
         self,
         *,
         base_url: str | None = None,
-        timeout_seconds: float = 30.0,
+        timeout_seconds: float = 90.0,
     ) -> None:
         self._base_url = (
             base_url
@@ -264,7 +264,7 @@ class MetaApiProvisioningGateway:
             return 3
         try:
             seconds = int(raw)
-            return max(1, min(seconds, 30))
+            return max(1, min(seconds, 90))
         except ValueError:
             pass
         try:
@@ -274,6 +274,6 @@ class MetaApiProvisioningGateway:
             seconds = int(
                 (target.astimezone(UTC) - datetime.now(UTC)).total_seconds()
             )
-            return max(1, min(seconds, 30))
+            return max(1, min(seconds, 90))
         except (TypeError, ValueError, OverflowError):
             return 3
