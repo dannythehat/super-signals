@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from dataclasses import asdict
 from datetime import datetime
 from typing import Annotated, Any
 from uuid import UUID
@@ -63,7 +64,7 @@ async def publisher_status(
     result = await asyncio.to_thread(manager.check_connection)
     response.headers["Cache-Control"] = "no-store"
     response.headers["Pragma"] = "no-cache"
-    return PublisherStatusResponse(**result.__dict__)
+    return PublisherStatusResponse(**asdict(result))
 
 
 @router.get("/publications/recent", response_model=list[PublicationResponse])
