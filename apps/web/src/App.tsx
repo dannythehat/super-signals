@@ -2,10 +2,11 @@ import { FormEvent, useCallback, useEffect, useState } from 'react';
 
 import { TelegramConnectionPanel } from './TelegramConnectionPanel';
 import { TelegramSourceSelector } from './TelegramSourceSelector';
+import { TradingAdminOnboarding } from './TradingAdminOnboarding';
 
 type AuthState = 'checking' | 'signed-out' | 'signed-in';
 type Notice = { tone: 'error' | 'success'; message: string } | null;
-type WorkspaceView = 'overview' | 'telegram' | 'sources' | 'access';
+type WorkspaceView = 'overview' | 'setup' | 'telegram' | 'sources' | 'access';
 
 interface AccessAction {
   permission: string;
@@ -42,10 +43,24 @@ interface SharedSignalSource {
   status: string;
 }
 
+interface TelegramAccountSummary {
+  id: string;
+  status: string;
+}
+
+interface TelegramSetupSource {
+  selected: boolean;
+  managed_by_this_reader?: boolean;
+}
+
 const apiBaseUrl = import.meta.env.VITE_API_BASE_URL ?? '/api';
 
 function workspaceViewFromHistory(value: unknown): WorkspaceView | null {
-  return value === 'overview' || value === 'telegram' || value === 'sources' || value === 'access'
+  return value === 'overview' ||
+    value === 'setup' ||
+    value === 'telegram' ||
+    value === 'sources' ||
+    value === 'access'
     ? value
     : null;
 }
@@ -74,6 +89,33 @@ async function readJson<T>(response: Response): Promise<T> {
   return body;
 }
 
+async function tradingAdminSetupComplete(account: Account): Promise<boolean> {
+  if (account.role !== 'trading_admin' || !account.permissions.includes('sources.manage')) return true;
+
+  const accountsResponse = await fetch(`${apiBaseUrl}/admin/telegram/accounts`, {
+    credentials: 'include',
+    headers: { Accept: 'application/json' },
+  });
+  const accounts = await readJson<TelegramAccountSummary[]>(accountsResponse);
+  const connected = accounts.filter((item) => item.status === 'connected');
+  if (connected.length === 0) return false;
+
+  for (const telegramAccount of connected) {
+    const sourcesResponse = await fetch(
+      `${apiBaseUrl}/admin/telegram/sources/accounts/${telegramAccount.id}/available`,
+      {
+        credentials: 'include',
+        headers: { Accept: 'application/json' },
+      },
+    );
+    const sources = await readJson<TelegramSetupSource[]>(sourcesResponse);
+    if (sources.some((source) => source.selected && source.managed_by_this_reader !== false)) {
+      return true;
+    }
+  }
+  return false;
+}
+
 export function App() {
   const [authState, setAuthState] = useState<AuthState>('checking');
   const [account, setAccount] = useState<Account | null>(null);
@@ -84,6 +126,7 @@ export function App() {
   const [activeView, setActiveView] = useState<WorkspaceView>('overview');
   const [sharedSources, setSharedSources] = useState<SharedSignalSource[]>([]);
   const [sharedSourcesLoaded, setSharedSourcesLoaded] = useState(false);
+  const [setupCheckComplete, setSetupCheckComplete] = useState(false);
   const canManageTelegram = account?.permissions.includes('sources.manage') ?? false;
   const canViewOwnerAlerts = account?.permissions.includes('admins.manage') ?? false;
 
@@ -146,6 +189,35 @@ export function App() {
   }, [account?.id, authState, refreshSharedSources]);
 
   useEffect(() => {
+    if (authState !== 'signed-in' || !account) return;
+    let cancelled = false;
+    setSetupCheckComplete(account.role !== 'trading_admin');
+
+    async function checkSetup() {
+      if (account.role !== 'trading_admin') return;
+      try {
+        const complete = await tradingAdminSetupComplete(account);
+        if (cancelled) return;
+        if (!complete) {
+          setActiveView('setup');
+          window.history.replaceState(historyStateWithView('setup'), '', window.location.href);
+        }
+      } catch {
+        if (cancelled) return;
+        setActiveView('setup');
+        window.history.replaceState(historyStateWithView('setup'), '', window.location.href);
+      } finally {
+        if (!cancelled) setSetupCheckComplete(true);
+      }
+    }
+
+    void checkSetup();
+    return () => {
+      cancelled = true;
+    };
+  }, [account, authState]);
+
+  useEffect(() => {
     if (authState !== 'signed-in') return;
 
     const initialView = workspaceViewFromHistory(window.history.state?.superSignalsView);
@@ -179,6 +251,7 @@ export function App() {
     event.preventDefault();
     setBusy(true);
     setNotice(null);
+    setSetupCheckComplete(false);
     const form = new FormData(event.currentTarget);
 
     try {
@@ -219,6 +292,7 @@ export function App() {
       setAccount(null);
       setSharedSources([]);
       setSharedSourcesLoaded(false);
+      setSetupCheckComplete(false);
       setAuthState('signed-out');
       setNotice(null);
       setActiveView('overview');
@@ -282,6 +356,17 @@ export function App() {
 
   if (authState === 'signed-in' && account) {
     const displayName = account.display_name ?? account.role_label;
+
+    if (account.role === 'trading_admin' && !setupCheckComplete) {
+      return (
+        <main className="app-shell">
+          <section className="auth-card auth-card--loading" aria-live="polite">
+            <img className="brand-logo" src="/super-signals-logo.png" alt="Super Signals" />
+            <p>Checking your one-time Telegram setup…</p>
+          </section>
+        </main>
+      );
+    }
 
     return (
       <main className="app-shell workspace-shell">
@@ -350,9 +435,19 @@ export function App() {
                 </span>
               </button>
 
+              {account.role === 'trading_admin' && canManageTelegram && (
+                <button type="button" aria-current={activeView === 'setup' ? 'page' : undefined} onClick={() => navigate('setup')}>
+                  <span className="drawer-nav-icon" aria-hidden="true">02</span>
+                  <span className="drawer-nav-label">
+                    <strong>Telegram setup</strong>
+                    <small>Connect once and add your groups</small>
+                  </span>
+                </button>
+              )}
+
               {canManageTelegram && (
                 <button type="button" aria-current={activeView === 'telegram' ? 'page' : undefined} onClick={() => navigate('telegram')}>
-                  <span className="drawer-nav-icon" aria-hidden="true">02</span>
+                  <span className="drawer-nav-icon" aria-hidden="true">03</span>
                   <span className="drawer-nav-label">
                     <strong>Telegram accounts</strong>
                     <small>Connect and manage private readers</small>
@@ -362,7 +457,7 @@ export function App() {
 
               {canManageTelegram && (
                 <button type="button" aria-current={activeView === 'sources' ? 'page' : undefined} onClick={() => navigate('sources')}>
-                  <span className="drawer-nav-icon" aria-hidden="true">03</span>
+                  <span className="drawer-nav-icon" aria-hidden="true">04</span>
                   <span className="drawer-nav-label">
                     <strong>Signal sources</strong>
                     <small>Add shared groups and channels</small>
@@ -371,7 +466,7 @@ export function App() {
               )}
 
               <button type="button" aria-current={activeView === 'access' ? 'page' : undefined} onClick={() => navigate('access')}>
-                <span className="drawer-nav-icon" aria-hidden="true">04</span>
+                <span className="drawer-nav-icon" aria-hidden="true">05</span>
                 <span className="drawer-nav-label">
                   <strong>Access &amp; security</strong>
                   <small>Role, permissions and account security</small>
@@ -391,10 +486,21 @@ export function App() {
           </aside>
 
           <div className="workspace-content">
-            {activeView !== 'overview' && (
+            {activeView !== 'overview' && activeView !== 'setup' && (
               <button className="workspace-back-button" type="button" onClick={() => navigate('overview')}>
                 <span aria-hidden="true">←</span> Back to overview
               </button>
+            )}
+
+            {activeView === 'setup' && account.role === 'trading_admin' && canManageTelegram && (
+              <TradingAdminOnboarding
+                apiBaseUrl={apiBaseUrl}
+                displayName={displayName}
+                onComplete={() => {
+                  void refreshSharedSources();
+                  navigate('overview');
+                }}
+              />
             )}
 
             {activeView === 'overview' && (
@@ -406,7 +512,12 @@ export function App() {
                     This is your operational dashboard. Detailed connection, source and security settings now live behind the menu instead of filling the homepage.
                   </p>
                   <div className="overview-actions">
-                    {canManageTelegram && (
+                    {account.role === 'trading_admin' && canManageTelegram && (
+                      <button className="button" type="button" onClick={() => navigate('setup')}>
+                        Add my Telegram groups
+                      </button>
+                    )}
+                    {account.role !== 'trading_admin' && canManageTelegram && (
                       <button className="button" type="button" onClick={() => navigate('sources')}>
                         Add a signal group
                       </button>
