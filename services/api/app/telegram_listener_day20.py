@@ -1,10 +1,11 @@
-"""Day 20 listener: attach explicit provider updates to canonical Signals."""
+"""Day 20 listener: attach provider updates to canonical Signals."""
 
 from __future__ import annotations
 
 import asyncio
 
 from app.signal_lifecycle import SignalLifecycleService
+from app.standalone_lifecycle_linker import StandaloneLifecycleLinker
 from app.telegram_crypto import TelegramSessionCipher
 from app.telegram_listener import CapturedTelegramMessage
 from app.telegram_listener_day13 import CapturedTelegramEdit
@@ -34,6 +35,7 @@ class Day20TelegramListenerManager(Day19TelegramListenerManager):
             excluded_chat_id=excluded_chat_id,
         )
         self._lifecycle_service = SignalLifecycleService(session_factory)
+        self._standalone_lifecycle = StandaloneLifecycleLinker(session_factory)
 
     async def start(self) -> None:
         await super().start()
@@ -41,18 +43,28 @@ class Day20TelegramListenerManager(Day19TelegramListenerManager):
 
     def _persist_message(self, captured: CapturedTelegramMessage) -> bool:
         persisted = super()._persist_message(captured)
-        self._lifecycle_service.process_original(
+        handled_as_standalone = self._standalone_lifecycle.process_original(
             captured.source_id,
             captured.telegram_message_id,
         )
+        if not handled_as_standalone:
+            self._lifecycle_service.process_original(
+                captured.source_id,
+                captured.telegram_message_id,
+            )
         return persisted
 
     def _persist_edit(self, captured: CapturedTelegramEdit) -> bool:
         persisted = super()._persist_edit(captured)
-        self._lifecycle_service.process_latest_revision(
+        handled_as_standalone = self._standalone_lifecycle.process_latest_revision(
             captured.source_id,
             captured.telegram_message_id,
         )
+        if not handled_as_standalone:
+            self._lifecycle_service.process_latest_revision(
+                captured.source_id,
+                captured.telegram_message_id,
+            )
         return persisted
 
 
