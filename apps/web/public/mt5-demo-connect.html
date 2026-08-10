@@ -71,22 +71,24 @@
       <label>
         MetaAPI token
         <input id="metaapi-token" name="metaapi_token" type="password" autocomplete="off" required minlength="20" />
-        <small>Use the API token from your MetaAPI account. Do not send it in chat.</small>
+        <small>Use the API token from your MetaAPI account.</small>
       </label>
       <div class="row">
         <label>
           Vantage MT5 account number
           <input id="login" name="login" inputmode="numeric" pattern="[0-9]+" autocomplete="off" required />
+          <small>Vantage calls this “MT5 Login” in the account email. It is the same number.</small>
         </label>
         <label>
           Vantage MT5 server
-          <input id="server" name="server" autocomplete="off" placeholder="Exact server name" required />
+          <input id="server" name="server" autocomplete="off" placeholder="Exact server from your Vantage email" required />
+          <small>Copy the server name exactly as Vantage shows it.</small>
         </label>
       </div>
       <label>
-        Vantage MT5 password
+        Vantage MT5 trading password
         <input id="password" name="password" type="password" autocomplete="off" required />
-        <small>Sent for the connection request and then discarded by Super Signals.</small>
+        <small>This is the MT5 password in your Vantage account email, not your Vantage website password. It is sent for the connection request and then discarded by Super Signals.</small>
       </label>
       <button id="submit" type="submit">Connect demo account</button>
     </form>
@@ -98,7 +100,7 @@
       <div class="facts">
         <div><span>Broker</span><span>Vantage</span></div>
         <div><span>Platform</span><span>MT5 demo</span></div>
-        <div><span>Account</span><span id="connected-login">—</span></div>
+        <div><span>Account number</span><span id="connected-login">—</span></div>
         <div><span>Server</span><span id="connected-server">—</span></div>
         <div><span>MetaAPI state</span><span id="remote-state">—</span></div>
         <div><span>Connection</span><span id="remote-connection">—</span></div>
