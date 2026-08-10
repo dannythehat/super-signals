@@ -54,15 +54,19 @@
     <a class="brand" href="/"><img src="/super-signals-logo.png" alt="Super Signals" /><span><strong>Super Signals</strong><small>Owner connection test</small></span></a>
     <a class="back" href="/">← Dashboard</a>
   </div>
+
   <section class="card" aria-labelledby="title">
     <p class="eyebrow">Day 22 · connection only</p>
     <h1 id="title">Connect Vantage MT5 demo</h1>
-    <p class="intro">Connect your Vantage demo account. Super Signals handles the MetaAPI connection behind the scenes.</p>
+    <p class="intro">This proves that Super Signals can securely recognise your Vantage demo account and reconnect after the backend restarts. This Day 22 screen cannot place trades.</p>
+
     <div class="safety">
-      <strong>Your Vantage MT5 password is never saved by Super Signals.</strong>
+      <strong>Your Vantage trading password is never saved by Super Signals.</strong>
       <span>It is used only for the connection request. Nothing on this page is written to browser storage.</span>
     </div>
+
     <div id="status" class="status" role="status" aria-live="polite"></div>
+
     <form id="connect-form" autocomplete="off">
       <div class="row">
         <label>
@@ -79,11 +83,13 @@
       <label>
         Vantage MT5 trading password
         <input id="password" name="password" type="password" autocomplete="off" required />
-        <small>Use the MT5 password from the Vantage account email, not your Vantage website password.</small>
+        <small>This is the MT5 password in your Vantage account email, not your Vantage website password. It is used for the connection request and then discarded by Super Signals.</small>
       </label>
       <button id="submit" type="submit">Connect demo account</button>
     </form>
+
     <button id="refresh" class="refresh" type="button">Refresh connection status</button>
+
     <section id="connected" class="connected" aria-live="polite">
       <h2>Connected ✓</h2>
       <div class="facts">
@@ -91,10 +97,12 @@
         <div><span>Platform</span><span>MT5 demo</span></div>
         <div><span>Account number</span><span id="connected-login">—</span></div>
         <div><span>Server</span><span id="connected-server">—</span></div>
-        <div><span>Connection</span><span id="remote-connection">—</span></div>
+        <div><span>Connection state</span><span id="remote-state">—</span></div>
+        <div><span>Broker connection</span><span id="remote-connection">—</span></div>
       </div>
     </section>
-    <p class="footer-note">MetaAPI is infrastructure managed by Super Signals and is not part of the user connection flow.</p>
+
+    <p class="footer-note">Owner-only acceptance screen. Live trading remains disabled. Refreshing status only checks the stored connection and never repeats your password.</p>
   </section>
 </main>
 <script>
@@ -103,48 +111,99 @@
   const submit = document.getElementById('submit');
   const refresh = document.getElementById('refresh');
   const connected = document.getElementById('connected');
-  function showStatus(kind, message) { statusBox.className = `status show ${kind}`; statusBox.textContent = message; }
+
+  function showStatus(kind, message) {
+    statusBox.className = `status show ${kind}`;
+    statusBox.textContent = message;
+  }
+
   function renderConnection(data) {
     const configured = Boolean(data && data.configured);
     form.style.display = configured ? 'none' : 'grid';
     refresh.classList.toggle('show', configured);
-    if (!data || data.status !== 'connected') { connected.classList.remove('show'); return; }
+
+    if (!data || data.status !== 'connected') {
+      connected.classList.remove('show');
+      return;
+    }
     connected.classList.add('show');
     document.getElementById('connected-login').textContent = data.login_masked || 'Connected account';
     document.getElementById('connected-server').textContent = data.server || '—';
+    document.getElementById('remote-state').textContent = data.remote_state || '—';
     document.getElementById('remote-connection').textContent = data.remote_connection_status || '—';
   }
+
   async function readJson(response) {
-    let body = null; try { body = await response.json(); } catch (_) { body = null; }
+    let body = null;
+    try { body = await response.json(); } catch (_) { body = null; }
     if (!response.ok) {
       const detail = body && body.detail;
-      const message = detail && typeof detail === 'object' && detail.message ? detail.message : response.status === 401 ? 'Please sign in to the Super Signals dashboard first.' : 'The MT5 demo account could not be connected. Check the account number, password and exact server name.';
+      const message = detail && typeof detail === 'object' && detail.message
+        ? detail.message
+        : response.status === 401
+          ? 'Please sign in to the Super Signals dashboard first.'
+          : response.status === 503
+            ? 'Super Signals broker connection is still being configured. Please try again shortly.'
+            : 'The MT5 demo account could not be connected. Check the account number, password and exact server name.';
       throw new Error(message);
     }
     return body;
   }
+
   async function loadStatus(useRefreshEndpoint = false) {
     const url = useRefreshEndpoint ? '/owner/mt5/demo/refresh' : '/owner/mt5/demo/status';
-    const options = useRefreshEndpoint ? { method:'POST', credentials:'include', headers:{ Accept:'application/json' }, cache:'no-store' } : { credentials:'include', headers:{ Accept:'application/json' }, cache:'no-store' };
+    const options = useRefreshEndpoint
+      ? { method:'POST', credentials:'include', headers:{ Accept:'application/json' }, cache:'no-store' }
+      : { credentials:'include', headers:{ Accept:'application/json' }, cache:'no-store' };
     try {
-      const response = await fetch(url, options); const data = await readJson(response); renderConnection(data);
+      const response = await fetch(url, options);
+      const data = await readJson(response);
+      renderConnection(data);
       if (data.status === 'connected') showStatus('good', 'The stored demo connection is currently healthy.');
       else if (data.configured) showStatus('wait', `Connection is ${data.status}. Refresh again shortly.`);
       return data;
-    } catch (error) { showStatus('bad', error instanceof Error ? error.message : 'Status check failed.'); return null; }
+    } catch (error) {
+      if (String(error.message).includes('sign in')) showStatus('bad', error.message);
+      else showStatus('bad', error instanceof Error ? error.message : 'Status check failed.');
+      return null;
+    }
   }
+
   form.addEventListener('submit', async (event) => {
-    event.preventDefault(); submit.disabled = true; submit.textContent = 'Connecting securely…'; connected.classList.remove('show'); showStatus('wait', 'Connecting to Vantage. This can take a minute or two.');
+    event.preventDefault();
+    submit.disabled = true;
+    submit.textContent = 'Connecting securely…';
+    connected.classList.remove('show');
+    showStatus('wait', 'Connecting to your Vantage MT5 demo. This can take a minute or two.');
     const data = Object.fromEntries(new FormData(form).entries());
     try {
-      const response = await fetch('/owner/mt5/demo/connect', { method:'POST', credentials:'include', headers:{ 'Content-Type':'application/json', Accept:'application/json' }, body:JSON.stringify(data) });
-      const result = await readJson(response); form.reset(); renderConnection(result);
+      const response = await fetch('/owner/mt5/demo/connect', {
+        method:'POST', credentials:'include',
+        headers:{ 'Content-Type':'application/json', Accept:'application/json' },
+        body:JSON.stringify(data),
+      });
+      const result = await readJson(response);
+      form.reset();
+      renderConnection(result);
       if (result.status === 'connected') showStatus('good', 'Connected. Super Signals can now recognise this Vantage MT5 demo account.');
-      else showStatus('wait', `Connection submitted and currently reports ${result.status}. Use Refresh connection status shortly.`);
-    } catch (error) { document.getElementById('password').value = ''; showStatus('bad', error instanceof Error ? error.message : 'Connection failed.'); }
-    finally { submit.disabled = false; submit.textContent = 'Connect demo account'; }
+      else showStatus('wait', `The account was accepted and reports ${result.status}. Use Refresh connection status shortly.`);
+    } catch (error) {
+      document.getElementById('password').value = '';
+      showStatus('bad', error instanceof Error ? error.message : 'Connection failed.');
+    } finally {
+      submit.disabled = false;
+      submit.textContent = 'Connect demo account';
+    }
   });
-  refresh.addEventListener('click', async () => { refresh.disabled = true; refresh.textContent = 'Checking connection…'; await loadStatus(true); refresh.disabled = false; refresh.textContent = 'Refresh connection status'; });
+
+  refresh.addEventListener('click', async () => {
+    refresh.disabled = true;
+    refresh.textContent = 'Checking connection…';
+    await loadStatus(true);
+    refresh.disabled = false;
+    refresh.textContent = 'Refresh connection status';
+  });
+
   void loadStatus();
 </script>
 </body>
