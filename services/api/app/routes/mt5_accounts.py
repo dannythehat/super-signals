@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from dataclasses import asdict
 from datetime import datetime
 from typing import Annotated, Any
@@ -18,7 +19,6 @@ OwnerIdentity = Annotated[dict[str, Any], Depends(require_permission("mt5_accoun
 
 
 class ConnectOwnerDemoRequest(BaseModel):
-    metaapi_token: str = Field(min_length=20, max_length=4096)
     login: str = Field(min_length=1, max_length=32)
     password: str = Field(min_length=1, max_length=256)
     server: str = Field(min_length=2, max_length=160)
@@ -70,10 +70,19 @@ async def connect_owner_demo(
     identity: OwnerIdentity,
 ) -> Mt5ConnectionResponse:
     service = require_mt5_service(request)
+    metaapi_token = os.getenv("SUPER_SIGNALS_METAAPI_TOKEN", "").strip()
+    if len(metaapi_token) < 20:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail={
+                "code": "metaapi_platform_token_not_configured",
+                "message": "The broker connection service is not configured yet.",
+            },
+        )
     try:
         view = await service.connect_owner_demo(
             owner_user_id=identity["id"],
-            metaapi_token=payload.metaapi_token,
+            metaapi_token=metaapi_token,
             login=payload.login,
             password=payload.password,
             server=payload.server,
