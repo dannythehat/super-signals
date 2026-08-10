@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="robots" content="noindex,nofollow" />
+  <title>Super Signals — Canonical Signals</title>
+  <style>
+    *{box-sizing:border-box}body{margin:0;min-height:100vh;background:radial-gradient(circle at 50% 0,#073433 0,#02151d 32%,#020710 72%);color:#f4f7fb;font-family:Inter,ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;padding:24px 16px}.shell{width:min(980px,100%);margin:0 auto}.logo{display:block;width:min(300px,70vw);height:auto;margin:0 auto 20px}.card{background:rgba(6,17,29,.94);border:1px solid rgba(255,255,255,.1);border-radius:26px;padding:24px;box-shadow:0 30px 80px rgba(0,0,0,.35)}.eyebrow{color:#58e3cf;font-size:.78rem;letter-spacing:.2em;font-weight:800;text-transform:uppercase}h1{font-size:clamp(2rem,7vw,3.5rem);line-height:1;margin:10px 0 14px}.intro{color:#aab4c3;line-height:1.55;margin:0}.rule{margin:20px 0;padding:14px 16px;border:1px solid rgba(88,227,207,.18);border-radius:16px;background:rgba(88,227,207,.05);color:#c9f3ec;line-height:1.5}.toolbar{display:flex;gap:10px;align-items:center;justify-content:space-between;margin:20px 0 12px}.toolbar small{color:#8290a1}.button{border:1px solid rgba(255,255,255,.13);border-radius:13px;padding:10px 14px;background:#111c28;color:#f5f7fa;font:inherit;font-weight:800;cursor:pointer}.items{display:grid;gap:10px}.item{padding:16px;border:1px solid rgba(255,255,255,.08);border-radius:17px;background:rgba(255,255,255,.025)}.top{display:flex;gap:10px;justify-content:space-between;align-items:flex-start}.item h2{font-size:1rem;margin:0;color:#e9eef5}.badge{white-space:nowrap;font-size:.68rem;font-weight:900;letter-spacing:.07em;padding:5px 8px;border-radius:999px;border:1px solid rgba(88,227,207,.22);color:#76f0d8;background:rgba(44,214,180,.08)}.text{margin:10px 0 8px;white-space:pre-wrap;word-break:break-word;line-height:1.5;color:#d9e0e9}.fields{display:flex;gap:8px;flex-wrap:wrap;color:#c7d0da;font-size:.84rem}.meta{margin-top:9px;color:#7f8b99;font-size:.76rem;line-height:1.45}.fingerprint{word-break:break-all}.empty,.error{padding:18px;border-radius:16px;color:#aab4c3;background:rgba(255,255,255,.025)}.error{color:#ffc1c9;border:1px solid rgba(255,106,124,.2)}.back{display:inline-block;margin-top:18px;color:#9ba8b7;text-decoration:none}@media(max-width:620px){.card{padding:20px 17px}.top{display:grid}.toolbar{align-items:flex-start}.button{min-height:42px}}
+  </style>
+</head>
+<body>
+  <main class="shell">
+    <img class="logo" src="/super-signals-logo.png" alt="Super Signals" />
+    <section class="card">
+      <div class="eyebrow">Day 18 · canonical events</div>
+      <h1>Canonical signals</h1>
+      <p class="intro">Shows the one internal Signal created after classification, parsing and strict validation have all passed.</p>
+      <div class="rule">A provider message can create <strong>one</strong> canonical Signal. Reprocessing or restart must resolve to the same event. Day 18 creates no Positions and performs no publishing or broker action.</div>
+      <div class="toolbar"><small id="status">Refreshing every 3 seconds</small><button id="refresh" class="button" type="button">Refresh now</button></div>
+      <div id="items" class="items" aria-live="polite"></div>
+      <a class="back" href="/review-queue.html">← Review queue</a>
+    </section>
+  </main>
+  <script>
+    const items=document.getElementById('items');const status=document.getElementById('status');let loading=false;
+    function formatDate(v){try{return new Intl.DateTimeFormat(undefined,{dateStyle:'medium',timeStyle:'medium'}).format(new Date(v))}catch{return v}}
+    function render(rows){items.innerHTML='';if(!rows.length){items.innerHTML='<div class="empty">No canonical Signals yet.</div>';return}for(const row of rows){const a=document.createElement('article');a.className='item';const top=document.createElement('div');top.className='top';const h=document.createElement('h2');h.textContent=`${row.symbol} · ${row.side}`;const b=document.createElement('span');b.className='badge';b.textContent='CANONICAL';top.append(h,b);const text=document.createElement('div');text.className='text';text.textContent=row.original_text;const fields=document.createElement('div');fields.className='fields';fields.textContent=`Entry ${row.entry_price} · SL ${row.stop_loss} · TP ${row.take_profits.join(', ')} · ${row.risk_multiplier}× size`;const meta=document.createElement('div');meta.className='meta';meta.innerHTML=`Telegram #${row.provider_message_id} · revision ${row.source_revision_index} · received ${formatDate(row.source_posted_at)} · observations ${row.observation_count}<br><span class="fingerprint">Fingerprint ${row.signal_fingerprint}</span>`;a.append(top,text,fields,meta);items.appendChild(a)}}
+    async function load(){if(loading)return;loading=true;try{const r=await fetch('/admin/signals/recent?limit=50',{credentials:'include',headers:{Accept:'application/json'}});if(r.status===401){items.innerHTML='<div class="error">Sign in to Super Signals in this browser, then reopen this page.</div>';status.textContent='Authentication required';return}const body=await r.json();if(!r.ok)throw new Error(typeof body?.detail==='string'?body.detail:'Canonical Signals could not be loaded.');render(Array.isArray(body)?body:[]);status.textContent=`Last refreshed ${new Date().toLocaleTimeString()}`}catch(e){items.innerHTML='';const el=document.createElement('div');el.className='error';el.textContent=e instanceof Error?e.message:'Canonical Signals could not be loaded.';items.appendChild(el);status.textContent='Refresh failed'}finally{loading=false}}
+    document.getElementById('refresh').addEventListener('click',()=>void load());void load();setInterval(()=>void load(),3000);
+  </script>
+</body>
+</html>
