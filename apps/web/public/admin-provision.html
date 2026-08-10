@@ -15,11 +15,11 @@
     <section class="card">
       <div class="eyebrow">Owner only</div>
       <h1>Add a Trading Admin</h1>
-      <p class="intro">Whitelist the administrator’s email and create a single-use setup link. They choose their own password. You never need to know it.</p>
+      <p class="intro">Whitelist the administrator’s email and create a single-use setup link. They choose their own password. The link stays valid until it is used or you deliberately replace it.</p>
       <div id="notice"></div>
       <section id="ownerLogin" class="owner-login" aria-labelledby="owner-login-title">
         <h2 id="owner-login-title">Owner sign-in required</h2>
-        <p>This browser does not currently have your Super Signals Owner session. Sign in here once and Rikke’s details will stay in place.</p>
+        <p>This browser does not currently have your Super Signals Owner session. Sign in here once and the administrator details will stay in place.</p>
         <form id="loginForm" class="form">
           <label>Your Owner email<input id="ownerEmail" name="email" type="email" autocomplete="username" required /></label>
           <label>Your password<input id="ownerPassword" name="password" type="password" autocomplete="current-password" required /></label>
@@ -34,7 +34,7 @@
       <div id="result" class="result">
         <label>One-time setup link<textarea id="setupLink" class="linkbox" rows="5" readonly></textarea></label>
         <button id="copy" class="button secondary" type="button">Copy setup link</button>
-        <small>This link expires after two hours and becomes unusable as soon as the Trading Admin creates their password.</small>
+        <small>This link stays valid until the Trading Admin creates their password or you deliberately issue a replacement link.</small>
       </div>
       <a class="back" href="/">← Back to Super Signals</a>
     </section>
@@ -55,8 +55,8 @@
     function showOwnerLogin(){ownerLogin.classList.add('show');showNotice('This browser needs your Owner sign-in before it can whitelist an administrator.','info');document.getElementById('ownerEmail').focus()}
     async function createSetupLink(){submit.disabled=true;submit.textContent='Creating setup link…';notice.innerHTML='';result.classList.remove('show');try{const response=await fetch('/admin/accounts/trading-admins/setup',{method:'POST',credentials:'include',headers:{'Content-Type':'application/json','Accept':'application/json'},body:JSON.stringify({email:document.getElementById('email').value,display_name:document.getElementById('name').value})});const body=await response.json();if(response.status===401){showOwnerLogin();return false}if(!response.ok){const detail=body&&body.detail;throw new Error(typeof detail==='string'?detail:(detail&&detail.message)||'Administrator setup could not be created.')}const link=`${location.origin}/admin-setup.html#token=${encodeURIComponent(body.setup_token)}`;setupLink.value=link;result.classList.add('show');ownerLogin.classList.remove('show');showNotice(`${body.display_name} is now whitelisted as Trading Admin. Send the setup link privately.`,'ok');return true}catch(error){showNotice(error instanceof Error?error.message:'Administrator setup could not be created.');return false}finally{submit.disabled=false;submit.textContent='Whitelist & create setup link'}}
     form.addEventListener('submit',async(event)=>{event.preventDefault();await createSetupLink()});
-    loginForm.addEventListener('submit',async(event)=>{event.preventDefault();loginSubmit.disabled=true;loginSubmit.textContent='Signing in…';try{const response=await fetch('/auth/login',{method:'POST',credentials:'include',headers:{'Content-Type':'application/json','Accept':'application/json'},body:JSON.stringify({email:document.getElementById('ownerEmail').value,password:document.getElementById('ownerPassword').value})});const body=await response.json();if(!response.ok){const detail=body&&body.detail;throw new Error(typeof detail==='string'?detail:'Owner sign-in failed.')}if(!Array.isArray(body.permissions)||!body.permissions.includes('admins.manage')){throw new Error('This account is not authorised to manage administrators.')}document.getElementById('ownerPassword').value='';ownerLogin.classList.remove('show');showNotice('Owner signed in. Creating Rikke’s setup link now…','ok');await createSetupLink()}catch(error){showNotice(error instanceof Error?error.message:'Owner sign-in failed.')}finally{loginSubmit.disabled=false;loginSubmit.textContent='Sign in as Owner'}});
-    document.getElementById('copy').addEventListener('click',async()=>{try{await navigator.clipboard.writeText(setupLink.value);showNotice('Setup link copied. Send it directly to Rikke.','ok')}catch{setupLink.focus();setupLink.select();showNotice('Press and hold the selected link to copy it.','info')}})
+    loginForm.addEventListener('submit',async(event)=>{event.preventDefault();loginSubmit.disabled=true;loginSubmit.textContent='Signing in…';try{const response=await fetch('/auth/login',{method:'POST',credentials:'include',headers:{'Content-Type':'application/json','Accept':'application/json'},body:JSON.stringify({email:document.getElementById('ownerEmail').value,password:document.getElementById('ownerPassword').value})});const body=await response.json();if(!response.ok){const detail=body&&body.detail;throw new Error(typeof detail==='string'?detail:'Owner sign-in failed.')}if(!Array.isArray(body.permissions)||!body.permissions.includes('admins.manage')){throw new Error('This account is not authorised to manage administrators.')}document.getElementById('ownerPassword').value='';ownerLogin.classList.remove('show');showNotice('Owner signed in. Creating the setup link now…','ok');await createSetupLink()}catch(error){showNotice(error instanceof Error?error.message:'Owner sign-in failed.')}finally{loginSubmit.disabled=false;loginSubmit.textContent='Sign in as Owner'}});
+    document.getElementById('copy').addEventListener('click',async()=>{try{await navigator.clipboard.writeText(setupLink.value);showNotice('Setup link copied. Send it directly to the Trading Admin.','ok')}catch{setupLink.focus();setupLink.select();showNotice('Press and hold the selected link to copy it.','info')}})
   </script>
 </body>
 </html>
