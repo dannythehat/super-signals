@@ -33,8 +33,8 @@ from app.routes.telegram_sources import (
 )
 from app.telegram_crypto import TelegramSessionCipher
 from app.telegram_listener import TelegramListenerManager
-from app.telegram_listener_day19 import build_day19_listener_manager
-from app.telegram_publisher_policy import Day19TelegramPublisherManager
+from app.telegram_listener_day20 import build_day20_listener_manager
+from app.telegram_publisher_day20 import Day20TelegramPublisherManager
 
 
 @asynccontextmanager
@@ -43,14 +43,13 @@ async def _lifespan(application: FastAPI) -> AsyncIterator[None]:
     publisher_settings = get_publisher_settings()
     session_factory = get_session_factory()
 
-    # When the publisher is enabled, the destination chat is excluded from the
-    # private-reader plan before the publisher starts. That makes same-chat cutover
-    # safe even if the historical source row still says Testing.
+    # The member-facing publishing destination is explicitly removed from the
+    # private-reader plan before either Day 20 component starts.
     publisher_destination_excluded = bool(
         publisher_settings.enabled and publisher_settings.destination_chat_id is not None
     )
 
-    publisher = Day19TelegramPublisherManager(
+    publisher = Day20TelegramPublisherManager(
         session_factory=session_factory,
         enabled=publisher_settings.enabled,
         bot_token=publisher_settings.bot_token,
@@ -66,7 +65,7 @@ async def _lifespan(application: FastAPI) -> AsyncIterator[None]:
         and settings.telegram_api_id is not None
         and settings.telegram_api_hash is not None
     ):
-        listener = build_day19_listener_manager(
+        listener = build_day20_listener_manager(
             api_id=settings.telegram_api_id,
             api_hash=settings.telegram_api_hash,
             cipher=TelegramSessionCipher(settings.telegram_session_keys),
@@ -122,7 +121,7 @@ def create_app() -> FastAPI:
         allow_methods=["GET", "POST", "PATCH"],
         allow_headers=["Accept", "Content-Type", "X-Request-ID"],
     )
-    # Reader/source access remains separate from the Day 19 publish-only Bot API path.
+    # Reader/source access remains separate from the publish-only Bot API path.
     application.dependency_overrides[provide_telegram_source_service] = (
         provide_day14_telegram_source_service
     )
