@@ -152,6 +152,10 @@ def complete_admin_setup(
     payload: AdminSetupRequest,
     session: DbSession,
 ) -> AdminSetupResponse:
+    # Trading Admin setup tokens are deliberately single-use but do not expire
+    # with time. They remain valid until completed or explicitly replaced by an
+    # Owner, at which point the previous unused token is marked used. Ordinary
+    # password-recovery tokens retain their normal expiry behaviour elsewhere.
     setup = (
         session.execute(
             text(
@@ -161,7 +165,6 @@ def complete_admin_setup(
                 JOIN users AS u ON u.id = pr.user_id
                 WHERE pr.token_hash = :token_hash
                   AND pr.used_at IS NULL
-                  AND pr.expires_at > now()
                   AND u.status IN ('invited', 'active')
                   AND EXISTS (
                       SELECT 1
@@ -182,7 +185,7 @@ def complete_admin_setup(
     if setup is None:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="This administrator setup link is invalid or has expired.",
+            detail="This administrator setup link is invalid, already used, or has been replaced.",
         )
 
     try:
