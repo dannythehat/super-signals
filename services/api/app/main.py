@@ -11,11 +11,16 @@ from fastapi.staticfiles import StaticFiles
 
 from app.config import get_settings
 from app.db import get_session_factory
+from app.metaapi_gateway import MetaApiProvisioningGateway
+from app.mt5_connection_manager import Mt5ConnectionManager
+from app.mt5_connection_service import Mt5DemoConnectionService
+from app.mt5_crypto import MetaApiTokenCipher
 from app.publisher_config import get_publisher_settings
 from app.routes.access import router as access_router
 from app.routes.admin_accounts import router as admin_accounts_router
 from app.routes.auth import router as auth_router
 from app.routes.health import router as health_router
+from app.routes.mt5_accounts import router as mt5_accounts_router
 from app.routes.signals import router as signals_router
 from app.routes.telegram_accounts import router as telegram_accounts_router
 from app.routes.telegram_classifications import router as telegram_classifications_router
@@ -43,6 +48,26 @@ async def _lifespan(application: FastAPI) -> AsyncIterator[None]:
     settings = get_settings()
     publisher_settings = get_publisher_settings()
     session_factory = get_session_factory()
+
+    broker_keys = tuple(
+        value.strip()
+        for value in os.getenv("SUPER_SIGNALS_MT5_ENCRYPTION_KEYS", "").split(",")
+        if value.strip()
+    )
+    if not broker_keys:
+        # Day 22 deliberately refuses to persist broker credentials without a
+        # dedicated encryption key. Telegram keys are not reused for broker data.
+        mt5_connection_service = None
+        mt5_connection_manager = None
+    else:
+        mt5_connection_service = Mt5DemoConnectionService(
+            session_factory=session_factory,
+            cipher=MetaApiTokenCipher(broker_keys),
+            gateway=MetaApiProvisioningGateway(),
+        )
+        mt5_connection_manager = Mt5ConnectionManager(mt5_connection_service)
+        application.state.mt5_connection_service = mt5_connection_service
+        await mt5_connection_manager.start()
 
     # The member-facing publishing destination is explicitly removed from the
     # private-reader plan before either Telegram component starts.
@@ -89,6 +114,8 @@ async def _lifespan(application: FastAPI) -> AsyncIterator[None]:
         await publisher.stop()
         if listener is not None:
             await listener.stop()
+        if mt5_connection_manager is not None:
+            await mt5_connection_manager.stop()
 
 
 def _mount_web_application(application: FastAPI) -> None:
@@ -140,6 +167,7 @@ def create_app() -> FastAPI:
     application.include_router(signals_router)
     application.include_router(telegram_publisher_router)
     application.include_router(telegram_e2e_gate_router)
+    application.include_router(mt5_accounts_router)
     _mount_web_application(application)
     return application
 
