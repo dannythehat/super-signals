@@ -58,7 +58,7 @@ async def _run_day22_mt5_bootstrap(service: Mt5DemoConnectionService) -> None:
         return
 
     owner_id_raw = os.getenv("SUPER_SIGNALS_DAY22_OWNER_ID", "").strip()
-    metaapi_token = os.getenv("SUPER-SIGNALS_API", "").strip()
+    metaapi_token = os.getenv("SUPER_SIGNALS_API", "").strip()
     login = os.getenv("SUPER_SIGNALS_DAY22_DEMO_LOGIN", "").strip()
     server = os.getenv("SUPER_SIGNALS_DAY22_DEMO_SERVER", "").strip()
     password = os.getenv("SUPER_SIGNALS_DAY22_DEMO_PASSWORD", "")
