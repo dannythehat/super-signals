@@ -70,7 +70,7 @@ async def connect_owner_demo(
     identity: OwnerIdentity,
 ) -> Mt5ConnectionResponse:
     service = require_mt5_service(request)
-    metaapi_token = os.getenv("SUPER-SIGNALS_API", "").strip()
+    metaapi_token = os.getenv("SUPER_SIGNALS_API", "").strip()
     if len(metaapi_token) < 20:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
