@@ -36,6 +36,8 @@
     .row { display:grid; grid-template-columns:1fr 1fr; gap:16px; }
     button { border:0; border-radius:13px; padding:14px 18px; font:inherit; font-weight:750; cursor:pointer; background:#f2f5f7; color:#0b0e12; }
     button:disabled { opacity:.55; cursor:wait; }
+    .refresh { display:none; width:100%; margin-top:14px; background:#202731; color:#f2f5f7; }
+    .refresh.show { display:block; }
     .connected { display:none; margin-top:22px; border:1px solid #31543c; background:#0e1b14; border-radius:16px; padding:18px; }
     .connected.show { display:block; }
     .connected h2 { margin:0 0 10px; font-size:20px; }
@@ -89,6 +91,8 @@
       <button id="submit" type="submit">Connect demo account</button>
     </form>
 
+    <button id="refresh" class="refresh" type="button">Refresh connection status</button>
+
     <section id="connected" class="connected" aria-live="polite">
       <h2>Connected ✓</h2>
       <div class="facts">
@@ -101,13 +105,14 @@
       </div>
     </section>
 
-    <p class="footer-note">Owner-only acceptance screen. Live trading remains disabled. Refreshing this page only checks stored connection status and never repeats your password.</p>
+    <p class="footer-note">Owner-only acceptance screen. Live trading remains disabled. Refreshing status only checks the stored connection and never repeats your password.</p>
   </section>
 </main>
 <script>
   const statusBox = document.getElementById('status');
   const form = document.getElementById('connect-form');
   const submit = document.getElementById('submit');
+  const refresh = document.getElementById('refresh');
   const connected = document.getElementById('connected');
 
   function showStatus(kind, message) {
@@ -116,6 +121,10 @@
   }
 
   function renderConnection(data) {
+    const configured = Boolean(data && data.configured);
+    form.style.display = configured ? 'none' : 'grid';
+    refresh.classList.toggle('show', configured);
+
     if (!data || data.status !== 'connected') {
       connected.classList.remove('show');
       return;
@@ -142,15 +151,22 @@
     return body;
   }
 
-  async function loadStatus() {
+  async function loadStatus(useRefreshEndpoint = false) {
+    const url = useRefreshEndpoint ? '/owner/mt5/demo/refresh' : '/owner/mt5/demo/status';
+    const options = useRefreshEndpoint
+      ? { method:'POST', credentials:'include', headers:{ Accept:'application/json' }, cache:'no-store' }
+      : { credentials:'include', headers:{ Accept:'application/json' }, cache:'no-store' };
     try {
-      const response = await fetch('/owner/mt5/demo/status', { credentials:'include', headers:{ Accept:'application/json' }, cache:'no-store' });
+      const response = await fetch(url, options);
       const data = await readJson(response);
       renderConnection(data);
       if (data.status === 'connected') showStatus('good', 'The stored demo connection is currently healthy.');
-      else if (data.configured) showStatus('wait', `Connection is ${data.status}. Use Refresh after MetaAPI finishes connecting.`);
+      else if (data.configured) showStatus('wait', `Connection is ${data.status}. Refresh again after MetaAPI finishes connecting.`);
+      return data;
     } catch (error) {
       if (String(error.message).includes('sign in')) showStatus('bad', error.message);
+      else showStatus('bad', error instanceof Error ? error.message : 'Status check failed.');
+      return null;
     }
   }
 
@@ -171,7 +187,7 @@
       form.reset();
       renderConnection(result);
       if (result.status === 'connected') showStatus('good', 'Connected. Super Signals can now recognise this Vantage MT5 demo account.');
-      else showStatus('wait', `MetaAPI accepted the account and reports ${result.status}. Refresh shortly to re-check it.`);
+      else showStatus('wait', `MetaAPI accepted the account and reports ${result.status}. Use Refresh connection status shortly.`);
     } catch (error) {
       document.getElementById('password').value = '';
       document.getElementById('metaapi-token').value = '';
@@ -180,6 +196,14 @@
       submit.disabled = false;
       submit.textContent = 'Connect demo account';
     }
+  });
+
+  refresh.addEventListener('click', async () => {
+    refresh.disabled = true;
+    refresh.textContent = 'Checking MetaAPI…';
+    await loadStatus(true);
+    refresh.disabled = false;
+    refresh.textContent = 'Refresh connection status';
   });
 
   void loadStatus();
