@@ -19,6 +19,7 @@ from app.routes.health import router as health_router
 from app.routes.signals import router as signals_router
 from app.routes.telegram_accounts import router as telegram_accounts_router
 from app.routes.telegram_classifications import router as telegram_classifications_router
+from app.routes.telegram_e2e_gate import router as telegram_e2e_gate_router
 from app.routes.telegram_messages import router as telegram_messages_router
 from app.routes.telegram_parses import router as telegram_parses_router
 from app.routes.telegram_publisher import router as telegram_publisher_router
@@ -138,6 +139,7 @@ def create_app() -> FastAPI:
     application.include_router(telegram_reviews_router)
     application.include_router(signals_router)
     application.include_router(telegram_publisher_router)
+    application.include_router(telegram_e2e_gate_router)
     _mount_web_application(application)
     return application
 
