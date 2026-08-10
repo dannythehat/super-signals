@@ -226,6 +226,80 @@ def test_deletion_marks_original_and_creates_no_trade_action(day13_environment) 
         assert session.scalar(select(func.count()).select_from(Position)) == 0
 
 
+def test_chatless_deletion_resolves_only_unique_active_source(day13_environment) -> None:
+    engine, manager, ids = day13_environment
+    telegram_message_id = 13003
+    active_message = CapturedTelegramMessage(
+        source_id=ids["source"],
+        chat_id=-10013001,
+        telegram_message_id=telegram_message_id,
+        raw_text="ACTIVE CHATLESS DELETE",
+        posted_at=datetime.now(UTC),
+        reply_to_message_id=None,
+        has_media=False,
+        media_type=None,
+    )
+    assert manager._persist_message(active_message) is True
+
+    # Create the same Telegram-local message ID in another source, then pause it.
+    with Session(engine) as session:
+        paused_source = session.get(Source, ids["paused_source"])
+        assert paused_source is not None
+        paused_source.status = "testing"
+        session.commit()
+    colliding_message = CapturedTelegramMessage(
+        source_id=ids["paused_source"],
+        chat_id=-10013002,
+        telegram_message_id=telegram_message_id,
+        raw_text="COLLIDING CHATLESS DELETE",
+        posted_at=datetime.now(UTC),
+        reply_to_message_id=None,
+        has_media=False,
+        media_type=None,
+    )
+    assert manager._persist_message(colliding_message) is True
+
+    # Two active selected sources with the same chat-local ID are ambiguous.
+    assert manager._resolve_chatless_deletions(
+        (ids["source"], ids["paused_source"]),
+        (telegram_message_id,),
+    ) == ()
+
+    with Session(engine) as session:
+        paused_source = session.get(Source, ids["paused_source"])
+        assert paused_source is not None
+        paused_source.status = "paused"
+        session.commit()
+
+    # Once the collision is paused, the active source is uniquely resolvable.
+    targets = manager._resolve_chatless_deletions(
+        (ids["source"], ids["paused_source"]),
+        (telegram_message_id,),
+    )
+    assert targets == ((ids["source"], -10013001, (telegram_message_id,)),)
+    deleted_at = datetime.now(UTC)
+    source_id, chat_id, resolved_ids = targets[0]
+    assert manager._persist_deletion(source_id, chat_id, resolved_ids, deleted_at) == 1
+
+    with Session(engine) as session:
+        active = session.scalar(
+            select(Message).where(
+                Message.source_id == ids["source"],
+                Message.telegram_message_id == telegram_message_id,
+            )
+        )
+        paused = session.scalar(
+            select(Message).where(
+                Message.source_id == ids["paused_source"],
+                Message.telegram_message_id == telegram_message_id,
+            )
+        )
+        assert active is not None and active.deleted_at == deleted_at
+        assert paused is not None and paused.deleted_at is None
+        assert session.scalar(select(func.count()).select_from(Signal)) == 0
+        assert session.scalar(select(func.count()).select_from(Position)) == 0
+
+
 def test_edit_for_paused_source_is_ignored_and_missing_original_is_audited(day13_environment) -> None:
     engine, manager, ids = day13_environment
     now = datetime.now(UTC)
