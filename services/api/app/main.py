@@ -16,6 +16,7 @@ from app.routes.admin_accounts import router as admin_accounts_router
 from app.routes.auth import router as auth_router
 from app.routes.health import router as health_router
 from app.routes.telegram_accounts import router as telegram_accounts_router
+from app.routes.telegram_classifications import router as telegram_classifications_router
 from app.routes.telegram_messages import router as telegram_messages_router
 from app.routes.telegram_reliability import (
     provide_day14_telegram_source_service,
@@ -27,7 +28,7 @@ from app.routes.telegram_sources import (
 )
 from app.telegram_crypto import TelegramSessionCipher
 from app.telegram_listener import TelegramListenerManager
-from app.telegram_listener_day14 import build_day14_listener_manager
+from app.telegram_listener_day15 import build_day15_listener_manager
 
 
 @asynccontextmanager
@@ -39,7 +40,7 @@ async def _lifespan(application: FastAPI) -> AsyncIterator[None]:
         and settings.telegram_api_id is not None
         and settings.telegram_api_hash is not None
     ):
-        listener = build_day14_listener_manager(
+        listener = build_day15_listener_manager(
             api_id=settings.telegram_api_id,
             api_hash=settings.telegram_api_hash,
             cipher=TelegramSessionCipher(settings.telegram_session_keys),
@@ -76,7 +77,7 @@ def create_app() -> FastAPI:
     settings = get_settings()
     application = FastAPI(
         title="Super Signals API",
-        version="0.9.0",
+        version="1.0.0",
         description="Private signal-processing and trading infrastructure.",
         lifespan=_lifespan,
     )
@@ -87,8 +88,8 @@ def create_app() -> FastAPI:
         allow_methods=["GET", "POST", "PATCH"],
         allow_headers=["Accept", "Content-Type", "X-Request-ID"],
     )
-    # Day 14 keeps the existing source-management HTTP contract but swaps in the
-    # reliability-aware service implementation underneath it.
+    # Day 14 reliability-aware source management remains the accepted source
+    # contract. Day 15 changes only what happens after raw evidence is ingested.
     application.dependency_overrides[provide_telegram_source_service] = (
         provide_day14_telegram_source_service
     )
@@ -100,6 +101,7 @@ def create_app() -> FastAPI:
     application.include_router(telegram_sources_router)
     application.include_router(telegram_reliability_router)
     application.include_router(telegram_messages_router)
+    application.include_router(telegram_classifications_router)
     _mount_web_application(application)
     return application
 
