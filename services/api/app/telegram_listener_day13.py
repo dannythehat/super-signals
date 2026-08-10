@@ -63,6 +63,7 @@ class Day13TelegramListenerManager(TelegramListenerManager):
         client.session.save_entities = False
         source_by_chat_id = {source.chat_id: source for source in plan.sources}
         exact_chat_ids = tuple(source_by_chat_id)
+        selected_source_ids = tuple(source.source_id for source in plan.sources)
 
         async def handle_new_message(event: Any) -> None:
             captured = self._capture_new_message(event, source_by_chat_id)
@@ -75,14 +76,6 @@ class Day13TelegramListenerManager(TelegramListenerManager):
                 await asyncio.to_thread(self._persist_edit, captured)
 
         async def handle_deleted_message(event: Any) -> None:
-            chat_id = getattr(event, "chat_id", None)
-            if chat_id is None:
-                # Telegram does not always provide a chat for deletion updates.
-                # Never guess which source a deletion belongs to.
-                return
-            source = source_by_chat_id.get(int(chat_id))
-            if source is None:
-                return
             deleted_ids = tuple(
                 int(item)
                 for item in (getattr(event, "deleted_ids", None) or ())
@@ -90,12 +83,39 @@ class Day13TelegramListenerManager(TelegramListenerManager):
             )
             if not deleted_ids:
                 return
+
+            deleted_at = datetime.now(UTC)
+            chat_id = getattr(event, "chat_id", None)
+            if chat_id is None:
+                # Telegram can omit chat identity on deletion updates. Resolve a
+                # deletion only when an incoming message ID maps uniquely to one
+                # currently selected Testing/Live source for this exact reader.
+                # Message IDs are chat-local, so collisions across selected chats
+                # are deliberately treated as ambiguous and ignored.
+                targets = await asyncio.to_thread(
+                    self._resolve_chatless_deletions,
+                    selected_source_ids,
+                    deleted_ids,
+                )
+                for source_id, resolved_chat_id, resolved_ids in targets:
+                    await asyncio.to_thread(
+                        self._persist_deletion,
+                        source_id,
+                        resolved_chat_id,
+                        resolved_ids,
+                        deleted_at,
+                    )
+                return
+
+            source = source_by_chat_id.get(int(chat_id))
+            if source is None:
+                return
             await asyncio.to_thread(
                 self._persist_deletion,
                 source.source_id,
                 source.chat_id,
                 deleted_ids,
-                datetime.now(UTC),
+                deleted_at,
             )
 
         try:
@@ -115,8 +135,8 @@ class Day13TelegramListenerManager(TelegramListenerManager):
                 handle_edited_message,
                 events.MessageEdited(chats=list(exact_chat_ids)),
             )
-            # Deletion updates can omit entity information. Register broadly but
-            # hard-filter by exact selected chat id before any persistence.
+            # Deletion updates can omit entity information. Register broadly and
+            # resolve only against exact selected source IDs before persistence.
             client.add_event_handler(handle_deleted_message, events.MessageDeleted())
             logger.info(
                 "Telegram reader listening to %d selected source(s)",
@@ -324,6 +344,49 @@ class Day13TelegramListenerManager(TelegramListenerManager):
                 session.rollback()
                 return False
             return True
+
+    def _resolve_chatless_deletions(
+        self,
+        source_ids: tuple[UUID, ...],
+        telegram_message_ids: tuple[int, ...],
+    ) -> tuple[tuple[UUID, int, tuple[int, ...]], ...]:
+        """Resolve chatless deletions only when each message maps to one active source."""
+        if not source_ids or not telegram_message_ids:
+            return ()
+
+        with self._session_factory() as session:
+            rows = session.execute(
+                select(
+                    Message.source_id,
+                    Source.chat_id,
+                    Message.telegram_message_id,
+                )
+                .join(Source, Source.id == Message.source_id)
+                .where(
+                    Message.source_id.in_(source_ids),
+                    Message.telegram_message_id.in_(telegram_message_ids),
+                    Source.status.in_({"testing", "live"}),
+                )
+            ).all()
+
+        candidates: dict[int, list[tuple[UUID, int]]] = {}
+        for source_id, chat_id, telegram_message_id in rows:
+            candidates.setdefault(int(telegram_message_id), []).append(
+                (source_id, int(chat_id))
+            )
+
+        grouped: dict[tuple[UUID, int], list[int]] = {}
+        for telegram_message_id in telegram_message_ids:
+            matches = candidates.get(telegram_message_id, [])
+            if len(matches) != 1:
+                continue
+            key = matches[0]
+            grouped.setdefault(key, []).append(telegram_message_id)
+
+        return tuple(
+            (source_id, chat_id, tuple(message_ids))
+            for (source_id, chat_id), message_ids in grouped.items()
+        )
 
     def _persist_deletion(
         self,
