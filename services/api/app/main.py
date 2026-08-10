@@ -33,7 +33,7 @@ from app.routes.telegram_sources import (
 )
 from app.telegram_crypto import TelegramSessionCipher
 from app.telegram_listener import TelegramListenerManager
-from app.telegram_listener_day18 import build_day18_listener_manager
+from app.telegram_listener_day19 import build_day19_listener_manager
 from app.telegram_publisher_policy import Day19TelegramPublisherManager
 
 
@@ -43,12 +43,20 @@ async def _lifespan(application: FastAPI) -> AsyncIterator[None]:
     publisher_settings = get_publisher_settings()
     session_factory = get_session_factory()
 
+    # When the publisher is enabled, the destination chat is excluded from the
+    # private-reader plan before the publisher starts. That makes same-chat cutover
+    # safe even if the historical source row still says Testing.
+    publisher_destination_excluded = bool(
+        publisher_settings.enabled and publisher_settings.destination_chat_id is not None
+    )
+
     publisher = Day19TelegramPublisherManager(
         session_factory=session_factory,
         enabled=publisher_settings.enabled,
         bot_token=publisher_settings.bot_token,
         destination_chat_id=publisher_settings.destination_chat_id,
         poll_seconds=publisher_settings.poll_seconds,
+        reader_exclusion_active=publisher_destination_excluded,
     )
     application.state.telegram_publisher = publisher
 
@@ -58,12 +66,17 @@ async def _lifespan(application: FastAPI) -> AsyncIterator[None]:
         and settings.telegram_api_id is not None
         and settings.telegram_api_hash is not None
     ):
-        listener = build_day18_listener_manager(
+        listener = build_day19_listener_manager(
             api_id=settings.telegram_api_id,
             api_hash=settings.telegram_api_hash,
             cipher=TelegramSessionCipher(settings.telegram_session_keys),
             session_factory=session_factory,
             refresh_seconds=settings.telegram_listener_refresh_seconds,
+            excluded_chat_id=(
+                publisher_settings.destination_chat_id
+                if publisher_destination_excluded
+                else None
+            ),
         )
         application.state.telegram_listener = listener
         await listener.start()
