@@ -45,8 +45,8 @@ def _positive_int(variable_name: str, default: str) -> int:
     raw_value = os.getenv(variable_name, default)
     try:
         value = int(raw_value)
-    except ValueError as exc:
-        raise RuntimeError(f"{variable_name} must be a positive integer") from exc
+    except ValueError:
+        raise RuntimeError(f"{variable_name} must be a positive integer") from None
     if value <= 0:
         raise RuntimeError(f"{variable_name} must be a positive integer")
     return value
@@ -109,8 +109,11 @@ def _telegram_api_credentials(environment: str) -> tuple[int | None, str | None]
         raise RuntimeError("TELEGRAM_API_ID and TELEGRAM_API_HASH must be configured together")
     try:
         api_id = int(raw_api_id)
-    except ValueError as exc:
-        raise RuntimeError("TELEGRAM_API_ID must be a positive integer") from exc
+    except ValueError:
+        # Do not chain the parser exception: Python's ValueError includes the
+        # invalid raw value, which could itself be a credential pasted into the
+        # wrong environment-variable field.
+        raise RuntimeError("TELEGRAM_API_ID must be a positive integer") from None
     if api_id <= 0:
         raise RuntimeError("TELEGRAM_API_ID must be a positive integer")
     if not _TELEGRAM_API_HASH_PATTERN.fullmatch(api_hash):
