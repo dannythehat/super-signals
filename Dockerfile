@@ -1,10 +1,16 @@
 FROM node:22-bookworm-slim AS web-build
 
 WORKDIR /build
+
+# Keep dependency installation in a stable Docker layer. Ordinary source-code
+# edits no longer invalidate npm ci unless a package manifest/lockfile changes.
 COPY package.json package-lock.json ./
+COPY apps/web/package.json ./apps/web/package.json
+COPY packages/shared/package.json ./packages/shared/package.json
+RUN npm ci
+
 COPY apps ./apps
 COPY packages ./packages
-RUN npm ci
 RUN VITE_API_BASE_URL= npm run build:web
 
 FROM python:3.13-slim AS runtime

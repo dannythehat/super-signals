@@ -40,6 +40,8 @@ interface TelegramDisconnectResult {
 
 interface TelegramConnectionPanelProps {
   apiBaseUrl: string;
+  startExpanded?: boolean;
+  onConnected?: () => void;
 }
 
 async function readJson<T>(response: Response): Promise<T> {
@@ -66,14 +68,18 @@ function formatDate(value: string | null): string {
   }).format(new Date(value));
 }
 
-export function TelegramConnectionPanel({ apiBaseUrl }: TelegramConnectionPanelProps) {
-  const [expanded, setExpanded] = useState(false);
+export function TelegramConnectionPanel({
+  apiBaseUrl,
+  startExpanded = false,
+  onConnected,
+}: TelegramConnectionPanelProps) {
+  const [expanded, setExpanded] = useState(startExpanded);
   const [accounts, setAccounts] = useState<TelegramAccount[]>([]);
   const [connectMethod, setConnectMethod] = useState<TelegramConnectMethod>('phone');
   const [authorization, setAuthorization] = useState<ActiveAuthorization | null>(null);
   const [passwordFlowId, setPasswordFlowId] = useState<string | null>(null);
   const [notice, setNotice] = useState<PanelNotice>(null);
-  const [busyAction, setBusyAction] = useState<string | null>(null);
+  const [busyAction, setBusyAction] = useState<string | null>(startExpanded ? 'load' : null);
   const [disconnectConfirmation, setDisconnectConfirmation] = useState<string | null>(null);
 
   const loadAccounts = useCallback(async () => {
@@ -83,6 +89,26 @@ export function TelegramConnectionPanel({ apiBaseUrl }: TelegramConnectionPanelP
     });
     setAccounts(await readJson<TelegramAccount[]>(response));
   }, [apiBaseUrl]);
+
+  useEffect(() => {
+    if (!startExpanded) return;
+    let cancelled = false;
+    void loadAccounts()
+      .catch((error) => {
+        if (!cancelled) {
+          setNotice({
+            tone: 'error',
+            message: error instanceof Error ? error.message : 'Telegram accounts could not be loaded.',
+          });
+        }
+      })
+      .finally(() => {
+        if (!cancelled) setBusyAction(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [loadAccounts, startExpanded]);
 
   const pollAuthorization = useCallback(async () => {
     if (!authorization || busyAction) return;
@@ -103,6 +129,7 @@ export function TelegramConnectionPanel({ apiBaseUrl }: TelegramConnectionPanelP
           message: 'Telegram connected and the encrypted server session was saved.',
         });
         await loadAccounts();
+        onConnected?.();
         return;
       }
       if (result.status === 'expired') {
@@ -125,7 +152,7 @@ export function TelegramConnectionPanel({ apiBaseUrl }: TelegramConnectionPanelP
     } finally {
       setBusyAction(null);
     }
-  }, [apiBaseUrl, authorization, busyAction, loadAccounts]);
+  }, [apiBaseUrl, authorization, busyAction, loadAccounts, onConnected]);
 
   useEffect(() => {
     if (!authorization || authorization.status !== 'pending' || busyAction) return;
@@ -208,6 +235,7 @@ export function TelegramConnectionPanel({ apiBaseUrl }: TelegramConnectionPanelP
         message: 'Telegram connected and the encrypted server session was saved.',
       });
       await loadAccounts();
+      onConnected?.();
     } catch (error) {
       setNotice({
         tone: 'error',
@@ -419,7 +447,7 @@ export function TelegramConnectionPanel({ apiBaseUrl }: TelegramConnectionPanelP
                     tone: 'success',
                     message: 'Telegram connected and the encrypted server session was saved.',
                   });
-                  void loadAccounts();
+                  void loadAccounts().then(() => onConnected?.());
                 }}
                 onPasswordRequired={(flowId) => setPasswordFlowId(flowId)}
                 onNotice={(tone, message) => setNotice({ tone, message })}

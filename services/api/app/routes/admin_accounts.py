@@ -102,7 +102,10 @@ def create_trading_admin_setup(
     )
 
     raw_token = new_token()
-    expires_at = datetime.now(UTC) + timedelta(hours=2)
+    # The shared recovery table requires an expires_at value. Trading Admin setup
+    # validation deliberately ignores this timestamp and instead stays valid
+    # until the token is used or replaced by the Owner.
+    expires_at = datetime.now(UTC) + timedelta(days=36500)
     session.execute(
         text(
             """
@@ -128,7 +131,7 @@ def create_trading_admin_setup(
                 "email": normalized_email,
                 "display_name": account.display_name,
                 "role": "trading_admin",
-                "expires_at": expires_at.isoformat(),
+                "valid_until_used_or_replaced": True,
             },
         )
     )

@@ -1,0 +1,82 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="robots" content="noindex,nofollow" />
+  <title>Super Signals — Message Log</title>
+  <style>
+    *{box-sizing:border-box}body{margin:0;min-height:100vh;background:radial-gradient(circle at 50% 0,#073433 0,#02151d 32%,#020710 72%);color:#f4f7fb;font-family:Inter,ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;padding:24px 16px}.shell{width:min(920px,100%);margin:0 auto}.logo{display:block;width:min(300px,70vw);height:auto;margin:0 auto 20px}.card{background:rgba(6,17,29,.94);border:1px solid rgba(255,255,255,.1);border-radius:26px;padding:24px;box-shadow:0 30px 80px rgba(0,0,0,.35)}.eyebrow{color:#58e3cf;font-size:.78rem;letter-spacing:.2em;font-weight:800;text-transform:uppercase}h1{font-size:clamp(2rem,7vw,3.5rem);line-height:1;margin:10px 0 14px}.intro{color:#aab4c3;line-height:1.55;margin:0}.rule{margin:20px 0;padding:14px 16px;border:1px solid rgba(88,227,207,.18);border-radius:16px;background:rgba(88,227,207,.05);color:#c9f3ec;line-height:1.5}.toolbar{display:flex;gap:10px;align-items:center;justify-content:space-between;margin:20px 0 12px}.toolbar small{color:#8290a1}.button{border:1px solid rgba(255,255,255,.13);border-radius:13px;padding:10px 14px;background:#111c28;color:#f5f7fa;font:inherit;font-weight:800;cursor:pointer}.messages{display:grid;gap:10px}.message{padding:15px;border:1px solid rgba(255,255,255,.08);border-radius:17px;background:rgba(255,255,255,.025)}.message__top{display:flex;gap:10px;justify-content:space-between;align-items:flex-start}.message h2{font-size:1rem;margin:0;color:#e9eef5}.badge{white-space:nowrap;font-size:.7rem;font-weight:900;letter-spacing:.08em;color:#6ce7d7}.text{margin:10px 0 8px;white-space:pre-wrap;word-break:break-word;line-height:1.5;color:#d9e0e9}.meta{color:#7f8b99;font-size:.78rem}.empty,.error{padding:18px;border-radius:16px;color:#aab4c3;background:rgba(255,255,255,.025)}.error{color:#ffc1c9;border:1px solid rgba(255,106,124,.2)}.back{display:inline-block;margin-top:18px;color:#9ba8b7;text-decoration:none}@media(max-width:620px){.card{padding:20px 17px}.message__top{display:grid}.toolbar{align-items:flex-start}.button{min-height:42px}}
+  </style>
+</head>
+<body>
+  <main class="shell">
+    <img class="logo" src="/super-signals-logo.png" alt="Super Signals" />
+    <section class="card">
+      <div class="eyebrow">Day 12 · ingestion only</div>
+      <h1>Recent message log</h1>
+      <p class="intro">New Telegram messages admitted to the internal Super Signals pipeline.</p>
+      <div class="rule"><strong>TESTING and LIVE</strong> sources are listened to. <strong>PAUSED</strong> sources are ignored. Live trading remains disabled.</div>
+      <div class="toolbar">
+        <small id="status">Refreshing every 3 seconds</small>
+        <button id="refresh" class="button" type="button">Refresh now</button>
+      </div>
+      <div id="messages" class="messages" aria-live="polite"></div>
+      <a class="back" href="/">← Back to Super Signals</a>
+    </section>
+  </main>
+  <script>
+    const messages = document.getElementById('messages');
+    const status = document.getElementById('status');
+    let loading = false;
+
+    function formatDate(value){
+      try{return new Intl.DateTimeFormat(undefined,{dateStyle:'medium',timeStyle:'medium'}).format(new Date(value))}
+      catch{return value}
+    }
+
+    function render(items){
+      messages.innerHTML='';
+      if(!items.length){
+        const empty=document.createElement('div');
+        empty.className='empty';
+        empty.textContent='No Telegram messages have entered the Day 12 pipeline yet.';
+        messages.appendChild(empty);
+        return;
+      }
+      for(const item of items){
+        const article=document.createElement('article'); article.className='message';
+        const top=document.createElement('div'); top.className='message__top';
+        const title=document.createElement('h2'); title.textContent=item.source_title;
+        const badge=document.createElement('span'); badge.className='badge'; badge.textContent=String(item.ingestion_status||'received').toUpperCase();
+        top.append(title,badge);
+        const text=document.createElement('div'); text.className='text'; text.textContent=item.raw_text || '[Media / no text]';
+        const meta=document.createElement('div'); meta.className='meta'; meta.textContent=`Telegram #${item.telegram_message_id} · posted ${formatDate(item.posted_at)} · received ${formatDate(item.received_at)}`;
+        article.append(top,text,meta); messages.appendChild(article);
+      }
+    }
+
+    async function load(){
+      if(loading)return; loading=true;
+      try{
+        const response=await fetch('/admin/telegram/messages/recent?limit=30',{credentials:'include',headers:{Accept:'application/json'}});
+        if(response.status===401){
+          messages.innerHTML='<div class="error">Sign in to Super Signals in this browser, then reopen the message log.</div>';
+          status.textContent='Authentication required'; return;
+        }
+        const body=await response.json();
+        if(!response.ok){
+          const detail=body&&body.detail; throw new Error(typeof detail==='string'?detail:'Message log could not be loaded.');
+        }
+        render(Array.isArray(body)?body:[]);
+        status.textContent=`Last refreshed ${new Date().toLocaleTimeString()}`;
+      }catch(error){
+        messages.innerHTML=''; const el=document.createElement('div'); el.className='error'; el.textContent=error instanceof Error?error.message:'Message log could not be loaded.'; messages.appendChild(el);
+        status.textContent='Refresh failed';
+      }finally{loading=false}
+    }
+    document.getElementById('refresh').addEventListener('click',()=>void load());
+    void load(); setInterval(()=>void load(),3000);
+  </script>
+</body>
+</html>
