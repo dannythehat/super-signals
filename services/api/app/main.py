@@ -34,7 +34,7 @@ from app.routes.telegram_sources import (
 from app.telegram_crypto import TelegramSessionCipher
 from app.telegram_listener import TelegramListenerManager
 from app.telegram_listener_day18 import build_day18_listener_manager
-from app.telegram_publisher import TelegramPublisherManager
+from app.telegram_publisher_policy import Day19TelegramPublisherManager
 
 
 @asynccontextmanager
@@ -43,7 +43,7 @@ async def _lifespan(application: FastAPI) -> AsyncIterator[None]:
     publisher_settings = get_publisher_settings()
     session_factory = get_session_factory()
 
-    publisher = TelegramPublisherManager(
+    publisher = Day19TelegramPublisherManager(
         session_factory=session_factory,
         enabled=publisher_settings.enabled,
         bot_token=publisher_settings.bot_token,
