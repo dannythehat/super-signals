@@ -23,13 +23,14 @@ from app.routes.telegram_reliability import (
     provide_day14_telegram_source_service,
     router as telegram_reliability_router,
 )
+from app.routes.telegram_reviews import router as telegram_reviews_router
 from app.routes.telegram_sources import (
     provide_telegram_source_service,
     router as telegram_sources_router,
 )
 from app.telegram_crypto import TelegramSessionCipher
 from app.telegram_listener import TelegramListenerManager
-from app.telegram_listener_day16 import build_day16_listener_manager
+from app.telegram_listener_day17 import build_day17_listener_manager
 
 
 @asynccontextmanager
@@ -41,7 +42,7 @@ async def _lifespan(application: FastAPI) -> AsyncIterator[None]:
         and settings.telegram_api_id is not None
         and settings.telegram_api_hash is not None
     ):
-        listener = build_day16_listener_manager(
+        listener = build_day17_listener_manager(
             api_id=settings.telegram_api_id,
             api_hash=settings.telegram_api_hash,
             cipher=TelegramSessionCipher(settings.telegram_session_keys),
@@ -90,7 +91,7 @@ def create_app() -> FastAPI:
         allow_headers=["Accept", "Content-Type", "X-Request-ID"],
     )
     # Day 14 reliability-aware source management remains the accepted source
-    # contract. Day 16 changes only the post-classification parser stage.
+    # contract. Day 17 changes only post-classification parsing/validation review.
     application.dependency_overrides[provide_telegram_source_service] = (
         provide_day14_telegram_source_service
     )
@@ -104,6 +105,7 @@ def create_app() -> FastAPI:
     application.include_router(telegram_messages_router)
     application.include_router(telegram_classifications_router)
     application.include_router(telegram_parses_router)
+    application.include_router(telegram_reviews_router)
     _mount_web_application(application)
     return application
 
