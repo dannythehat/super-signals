@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Super Signals · Vantage MT5 Demo</title>
+  <style>
+    :root{color-scheme:dark;font-family:Inter,system-ui,sans-serif;background:#080a0d;color:#eef2f6}*{box-sizing:border-box}body{margin:0;min-height:100vh;background:radial-gradient(circle at top,#151b24,#080a0d 52%);padding:24px}.wrap{max-width:760px;margin:0 auto}.brand{display:flex;align-items:center;gap:14px;margin-bottom:28px}.brand img{width:50px;height:50px;object-fit:contain}.brand strong{font-size:1.15rem}.card{background:#10141b;border:1px solid #27303b;border-radius:22px;padding:24px;box-shadow:0 20px 60px #0008}.eyebrow{font-size:.78rem;text-transform:uppercase;letter-spacing:.12em;color:#8aa0b7}h1{font-size:clamp(2rem,7vw,3.5rem);margin:.2em 0}.intro{color:#b8c2cc;line-height:1.6}.status{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:12px;margin:22px 0}.tile{border:1px solid #27303b;border-radius:16px;padding:16px;background:#0b0e13}.tile span{display:block;color:#8290a0;font-size:.75rem;text-transform:uppercase;letter-spacing:.08em}.tile strong{display:block;margin-top:8px;font-size:1.05rem}.tile small{display:block;color:#9da9b5;margin-top:7px;line-height:1.35}.warning{border-left:3px solid #93a7ba;padding:12px 14px;background:#0b0e13;color:#bac5cf;border-radius:0 12px 12px 0}form{display:grid;gap:14px;margin-top:22px}label{display:grid;gap:7px;font-weight:650}input{width:100%;padding:14px;border-radius:12px;border:1px solid #34404d;background:#080b10;color:white;font-size:16px}button{padding:14px 18px;border-radius:12px;border:0;font-size:16px;font-weight:750;cursor:pointer;background:#e8edf2;color:#0a0d11}.quiet{background:#202731;color:#e8edf2}.actions{display:flex;gap:10px;flex-wrap:wrap;margin-top:18px}.msg{min-height:1.5em;color:#ccd6df}code{font-family:ui-monospace,monospace;color:#cbd8e5}.hidden{display:none}.danger{color:#ffb6b6}
+  </style>
+</head>
+<body><div class="wrap">
+  <div class="brand"><img src="/super-signals-logo.png" alt="Super Signals"><div><strong>Super Signals</strong><div style="color:#8e9aaa">Owner setup · Day 22</div></div></div>
+  <section class="card">
+    <p class="eyebrow">Vantage MT5 demo · MetaAPI</p><h1>Connect the demo account</h1>
+    <p class="intro">This Day 22 screen only establishes and monitors the demo connection. It has no trade-placement controls or order endpoint.</p>
+    <p class="warning"><strong>Security:</strong> your MT5 password is sent only to MetaAPI during setup and is not stored by Super Signals. The MetaAPI token is encrypted at rest. Nothing typed here is written to browser storage.</p>
+    <div class="status">
+      <div class="tile"><span>Connection</span><strong id="status">Checking…</strong><small id="remote">—</small></div>
+      <div class="tile"><span>Account</span><strong id="login">—</strong><small id="server">—</small></div>
+      <div class="tile"><span>Trading</span><strong>Disabled</strong><small>Connection/status only</small></div>
+    </div>
+    <form id="form" class="hidden" autocomplete="off">
+      <label>MetaAPI token<input name="metaapi_token" type="password" required autocomplete="off"></label>
+      <label>MT5 demo account number<input name="login" inputmode="numeric" required autocomplete="off"></label>
+      <label>MT5 demo password<input name="password" type="password" required autocomplete="new-password"></label>
+      <label>Exact Vantage MT5 server name<input name="server" required autocomplete="off" placeholder="As shown in MT5"></label>
+      <button type="submit">Connect demo account</button>
+    </form>
+    <div class="actions"><button id="refresh" class="quiet hidden" type="button">Refresh connection</button></div>
+    <p class="msg" id="message" role="status"></p>
+  </section>
+</div>
+<script>
+const statusEl=document.querySelector('#status'),remoteEl=document.querySelector('#remote'),loginEl=document.querySelector('#login'),serverEl=document.querySelector('#server'),form=document.querySelector('#form'),refresh=document.querySelector('#refresh'),message=document.querySelector('#message');
+async function json(r){let b={};try{b=await r.json()}catch{}if(!r.ok){const d=b&&b.detail;throw new Error((d&&d.message)||'Request failed.')}return b}
+function draw(v){statusEl.textContent=v.status||'Unknown';remoteEl.textContent=[v.remote_state,v.remote_connection_status].filter(Boolean).join(' · ')||'No remote state';loginEl.textContent=v.login_masked||'Not configured';serverEl.textContent=v.server||'Vantage demo server not set';form.classList.toggle('hidden',!!v.configured);refresh.classList.toggle('hidden',!v.configured)}
+async function load(){try{const r=await fetch('/api/owner/mt5/demo/status',{credentials:'include',headers:{Accept:'application/json'}});if(r.status===401){message.textContent='Sign in to Super Signals as Owner Admin first.';message.className='msg danger';statusEl.textContent='Sign-in required';return}draw(await json(r))}catch(e){message.textContent=e.message;message.className='msg danger'}}
+form.addEventListener('submit',async e=>{e.preventDefault();message.textContent='Connecting securely…';message.className='msg';const fd=new FormData(form);const payload=Object.fromEntries(fd.entries());try{const r=await fetch('/api/owner/mt5/demo/connect',{method:'POST',credentials:'include',headers:{'Content-Type':'application/json',Accept:'application/json'},body:JSON.stringify(payload)});draw(await json(r));form.reset();message.textContent='Connection submitted. Refresh if MetaAPI is still deploying the account.'}catch(err){message.textContent=err.message;message.className='msg danger'}});
+refresh.addEventListener('click',async()=>{message.textContent='Checking MetaAPI…';try{const r=await fetch('/api/owner/mt5/demo/refresh',{method:'POST',credentials:'include',headers:{Accept:'application/json'}});draw(await json(r));message.textContent='Connection status refreshed.'}catch(err){message.textContent=err.message;message.className='msg danger'}});
+load();
+</script></body></html>
