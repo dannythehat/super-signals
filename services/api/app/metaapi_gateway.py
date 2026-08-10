@@ -51,7 +51,12 @@ class MetaApiCreateResult:
 class MetaApiProvisioningGateway:
     """Small REST client limited to MetaAPI's MT account management API."""
 
-    def __init__(self, *, base_url: str | None = None, timeout_seconds: float = 30.0) -> None:
+    def __init__(
+        self,
+        *,
+        base_url: str | None = None,
+        timeout_seconds: float = 30.0,
+    ) -> None:
         self._base_url = (
             base_url
             or os.getenv("SUPER_SIGNALS_METAAPI_PROVISIONING_URL")
@@ -74,7 +79,7 @@ class MetaApiProvisioningGateway:
             "GET",
             "/users/current/accounts",
             token=token,
-            params=[("query", login), ("version", "5")],
+            params=[("version", "5")],
         )
         payload = self._json(response)
         rows = payload.get("items", []) if isinstance(payload, dict) else payload
@@ -130,7 +135,12 @@ class MetaApiProvisioningGateway:
             state=str(payload.get("state") or "UNKNOWN").upper(),
         )
 
-    async def read_account(self, *, token: str, account_id: str) -> MetaApiAccountState:
+    async def read_account(
+        self,
+        *,
+        token: str,
+        account_id: str,
+    ) -> MetaApiAccountState:
         response = await self._request(
             "GET",
             f"/users/current/accounts/{account_id}",
@@ -200,7 +210,10 @@ class MetaApiProvisioningGateway:
         if response.status_code == 404:
             return MetaApiGatewayError("metaapi_account_not_found")
         if response.status_code in {408, 425, 429} or response.status_code >= 500:
-            return MetaApiGatewayError("metaapi_temporarily_unavailable", retryable=True)
+            return MetaApiGatewayError(
+                "metaapi_temporarily_unavailable",
+                retryable=True,
+            )
 
         remote_code: str | None = None
         try:
@@ -208,13 +221,21 @@ class MetaApiProvisioningGateway:
         except ValueError:
             body = None
         if isinstance(body, dict):
-            for key in ("details", "error"):
-                candidate = body.get(key)
+            details = body.get("details")
+            if isinstance(details, str) and _SAFE_REMOTE_CODE.fullmatch(details):
+                remote_code = details
+            elif isinstance(details, dict):
+                candidate = details.get("code")
                 if isinstance(candidate, str) and _SAFE_REMOTE_CODE.fullmatch(candidate):
-                    remote_code = candidate.lower().replace("-", "_")
-                    break
+                    remote_code = candidate
+            if remote_code is None:
+                candidate = body.get("error")
+                if isinstance(candidate, str) and _SAFE_REMOTE_CODE.fullmatch(candidate):
+                    remote_code = candidate
         if remote_code:
-            return MetaApiGatewayError(f"metaapi_{remote_code}")
+            return MetaApiGatewayError(
+                f"metaapi_{remote_code.lower().replace('-', '_')}"
+            )
         return MetaApiGatewayError("metaapi_account_rejected")
 
     @staticmethod
@@ -250,7 +271,9 @@ class MetaApiProvisioningGateway:
             target = parsedate_to_datetime(raw)
             if target.tzinfo is None:
                 target = target.replace(tzinfo=UTC)
-            seconds = int((target.astimezone(UTC) - datetime.now(UTC)).total_seconds())
+            seconds = int(
+                (target.astimezone(UTC) - datetime.now(UTC)).total_seconds()
+            )
             return max(1, min(seconds, 30))
         except (TypeError, ValueError, OverflowError):
             return 3
