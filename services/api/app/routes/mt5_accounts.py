@@ -76,7 +76,7 @@ async def connect_owner_demo(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail={
                 "code": "metaapi_platform_token_not_configured",
-                "message": "The broker connection service is not configured yet.",
+                "message": "The Super Signals broker connection key is not available to the running service yet.",
             },
         )
     try:
