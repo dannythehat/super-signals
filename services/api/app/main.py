@@ -20,7 +20,7 @@ from app.routes.access import router as access_router
 from app.routes.admin_accounts import router as admin_accounts_router
 from app.routes.auth import router as auth_router
 from app.routes.health import router as health_router
-from app.routes.mt5_accounts import router as mt5_accounts_router
+from app.routes.mt5_accounts_v2 import router as mt5_accounts_router
 from app.routes.signals import router as signals_router
 from app.routes.telegram_accounts import router as telegram_accounts_router
 from app.routes.telegram_classifications import router as telegram_classifications_router
@@ -55,8 +55,6 @@ async def _lifespan(application: FastAPI) -> AsyncIterator[None]:
         if value.strip()
     )
     if not broker_keys:
-        # Day 22 deliberately refuses to persist broker credentials without a
-        # dedicated encryption key. Telegram keys are not reused for broker data.
         mt5_connection_service = None
         mt5_connection_manager = None
     else:
@@ -69,8 +67,6 @@ async def _lifespan(application: FastAPI) -> AsyncIterator[None]:
         application.state.mt5_connection_service = mt5_connection_service
         await mt5_connection_manager.start()
 
-    # The member-facing publishing destination is explicitly removed from the
-    # private-reader plan before either Telegram component starts.
     publisher_destination_excluded = bool(
         publisher_settings.enabled and publisher_settings.destination_chat_id is not None
     )
@@ -97,11 +93,7 @@ async def _lifespan(application: FastAPI) -> AsyncIterator[None]:
             cipher=TelegramSessionCipher(settings.telegram_session_keys),
             session_factory=session_factory,
             refresh_seconds=settings.telegram_listener_refresh_seconds,
-            excluded_chat_id=(
-                publisher_settings.destination_chat_id
-                if publisher_destination_excluded
-                else None
-            ),
+            excluded_chat_id=(publisher_settings.destination_chat_id if publisher_destination_excluded else None),
         )
         application.state.telegram_listener = listener
         await listener.start()
@@ -121,11 +113,9 @@ async def _lifespan(application: FastAPI) -> AsyncIterator[None]:
 def _mount_web_application(application: FastAPI) -> None:
     web_dist_value = os.getenv("SUPER_SIGNALS_WEB_DIST")
     if not web_dist_value:
-
         @application.get("/", include_in_schema=False)
         def root() -> dict[str, str]:
             return {"name": "Super Signals API", "docs": "/docs"}
-
         return
 
     web_dist = Path(web_dist_value)
@@ -149,10 +139,7 @@ def create_app() -> FastAPI:
         allow_methods=["GET", "POST", "PATCH"],
         allow_headers=["Accept", "Content-Type", "X-Request-ID"],
     )
-    # Reader/source access remains separate from the publish-only Bot API path.
-    application.dependency_overrides[provide_telegram_source_service] = (
-        provide_day14_telegram_source_service
-    )
+    application.dependency_overrides[provide_telegram_source_service] = provide_day14_telegram_source_service
     application.include_router(health_router)
     application.include_router(auth_router)
     application.include_router(access_router)
