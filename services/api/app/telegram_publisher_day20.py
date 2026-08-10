@@ -25,8 +25,29 @@ class Day20TelegramPublisherManager(Day19TelegramPublisherManager):
     """Day 19 publisher plus one idempotent reply per stored lifecycle event."""
 
     def _seed_missing_publications(self) -> None:
-        super()._seed_missing_publications()
+        # Day 20 replaces Day 19's signal/kind unique constraint with separate
+        # root-Signal and lifecycle-event idempotency indexes. Seed against those
+        # indexes directly instead of using the old conflict target.
         with self._session_factory() as session:
+            session.execute(
+                text(
+                    """
+                    INSERT INTO telegram_publications (
+                        signal_id,
+                        publication_kind,
+                        status
+                    )
+                    SELECT sig.id, 'signal_created', 'pending'
+                    FROM signals AS sig
+                    LEFT JOIN telegram_publications AS pub
+                      ON pub.signal_id = sig.id
+                     AND pub.publication_kind = 'signal_created'
+                     AND pub.lifecycle_event_id IS NULL
+                    WHERE pub.id IS NULL
+                    ON CONFLICT DO NOTHING
+                    """
+                )
+            )
             session.execute(
                 text(
                     """
