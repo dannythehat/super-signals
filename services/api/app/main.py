@@ -1,9 +1,12 @@
 """FastAPI application entry point."""
 
+import asyncio
+import logging
 import os
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import AsyncIterator
+from uuid import UUID
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -13,7 +16,7 @@ from app.config import get_settings
 from app.db import get_session_factory
 from app.metaapi_gateway import MetaApiProvisioningGateway
 from app.mt5_connection_manager import Mt5ConnectionManager
-from app.mt5_connection_service import Mt5DemoConnectionService
+from app.mt5_connection_service import Mt5ConnectionError, Mt5DemoConnectionService
 from app.mt5_crypto import MetaApiTokenCipher
 from app.publisher_config import get_publisher_settings
 from app.routes.access import router as access_router
@@ -42,6 +45,56 @@ from app.telegram_listener import TelegramListenerManager
 from app.telegram_listener_day21 import build_day21_listener_manager
 from app.telegram_publisher_day20 import Day20TelegramPublisherManager
 
+logger = logging.getLogger(__name__)
+
+
+async def _run_day22_mt5_bootstrap(service: Mt5DemoConnectionService) -> None:
+    """One-time owner demo bootstrap using temporary Render secrets.
+
+    Credential values are never logged. The connection service persists only the
+    encrypted MetaAPI token and account metadata; the broker password is discarded.
+    """
+    if os.getenv("SUPER_SIGNALS_DAY22_BOOTSTRAP_ENABLED", "").strip() != "1":
+        return
+
+    owner_id_raw = os.getenv("SUPER_SIGNALS_DAY22_OWNER_ID", "").strip()
+    metaapi_token = os.getenv("SUPER-SIGNALS_API", "").strip()
+    login = os.getenv("SUPER_SIGNALS_DAY22_DEMO_LOGIN", "").strip()
+    server = os.getenv("SUPER_SIGNALS_DAY22_DEMO_SERVER", "").strip()
+    password = os.getenv("SUPER_SIGNALS_DAY22_DEMO_PASSWORD", "")
+
+    if not all((owner_id_raw, metaapi_token, login, server, password)):
+        logger.error("Day 22 MT5 bootstrap skipped: required secret/config value missing")
+        return
+
+    try:
+        owner_user_id = UUID(owner_id_raw)
+    except ValueError:
+        logger.error("Day 22 MT5 bootstrap skipped: owner id is invalid")
+        return
+
+    try:
+        view = await service.connect_owner_demo(
+            owner_user_id=owner_user_id,
+            metaapi_token=metaapi_token,
+            login=login,
+            password=password,
+            server=server,
+        )
+    except Mt5ConnectionError as exc:
+        logger.error("Day 22 MT5 bootstrap failed code=%s", exc.code)
+        return
+    except Exception:
+        logger.exception("Day 22 MT5 bootstrap failed unexpectedly")
+        return
+
+    logger.info(
+        "Day 22 MT5 bootstrap completed status=%s remote_state=%s remote_connection_status=%s",
+        view.status,
+        view.remote_state,
+        view.remote_connection_status,
+    )
+
 
 @asynccontextmanager
 async def _lifespan(application: FastAPI) -> AsyncIterator[None]:
@@ -60,6 +113,7 @@ async def _lifespan(application: FastAPI) -> AsyncIterator[None]:
         if value.strip()
     )
     mt5_connection_manager: Mt5ConnectionManager | None = None
+    mt5_bootstrap_task: asyncio.Task[None] | None = None
     if broker_keys:
         mt5_connection_service = Mt5DemoConnectionService(
             session_factory=session_factory,
@@ -69,6 +123,10 @@ async def _lifespan(application: FastAPI) -> AsyncIterator[None]:
         mt5_connection_manager = Mt5ConnectionManager(mt5_connection_service)
         application.state.mt5_connection_service = mt5_connection_service
         await mt5_connection_manager.start()
+        mt5_bootstrap_task = asyncio.create_task(
+            _run_day22_mt5_bootstrap(mt5_connection_service),
+            name="super-signals-day22-mt5-bootstrap",
+        )
 
     publisher_destination_excluded = bool(
         publisher_settings.enabled and publisher_settings.destination_chat_id is not None
@@ -113,6 +171,12 @@ async def _lifespan(application: FastAPI) -> AsyncIterator[None]:
         await publisher.stop()
         if listener is not None:
             await listener.stop()
+        if mt5_bootstrap_task is not None and not mt5_bootstrap_task.done():
+            mt5_bootstrap_task.cancel()
+            try:
+                await mt5_bootstrap_task
+            except asyncio.CancelledError:
+                pass
         if mt5_connection_manager is not None:
             await mt5_connection_manager.stop()
 
