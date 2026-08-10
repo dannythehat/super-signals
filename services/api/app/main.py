@@ -1,5 +1,6 @@
 """FastAPI application entry point."""
 
+import logging
 import os
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -42,12 +43,17 @@ from app.telegram_listener import TelegramListenerManager
 from app.telegram_listener_day21 import build_day21_listener_manager
 from app.telegram_publisher_day20 import Day20TelegramPublisherManager
 
+logger = logging.getLogger(__name__)
+
 
 @asynccontextmanager
 async def _lifespan(application: FastAPI) -> AsyncIterator[None]:
     settings = get_settings()
     publisher_settings = get_publisher_settings()
     session_factory = get_session_factory()
+
+    metaapi_env_names = sorted(name for name in os.environ if "METAAPI" in name.upper())
+    logger.info("MetaAPI environment variable names present: %s", metaapi_env_names)
 
     broker_keys = tuple(
         value.strip()
