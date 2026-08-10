@@ -15,7 +15,7 @@ from sqlalchemy.orm import Session
 
 from app.access_control import require_permission
 from app.db import get_db_session
-from app.telegram_publisher import TelegramPublisherManager
+from app.telegram_publisher_policy import Day19TelegramPublisherManager
 
 router = APIRouter(prefix="/admin/telegram-publisher", tags=["telegram-publisher"])
 DbSession = Annotated[Session, Depends(get_db_session)]
@@ -30,6 +30,12 @@ class PublisherStatusResponse(BaseModel):
     minimum_permissions_ok: bool
     source_collision: bool
     reason: str
+
+
+class PublisherTestResponse(BaseModel):
+    status: str
+    reason: str
+    telegram_message_id: int | None
 
 
 class PublicationResponse(BaseModel):
@@ -49,7 +55,7 @@ class PublicationResponse(BaseModel):
     side: str
 
 
-def _manager(request: Request) -> TelegramPublisherManager:
+def _manager(request: Request) -> Day19TelegramPublisherManager:
     return request.app.state.telegram_publisher
 
 
@@ -65,6 +71,20 @@ async def publisher_status(
     response.headers["Cache-Control"] = "no-store"
     response.headers["Pragma"] = "no-cache"
     return PublisherStatusResponse(**asdict(result))
+
+
+@router.post("/test-send", response_model=PublisherTestResponse)
+async def publisher_test_send(
+    request: Request,
+    response: Response,
+    identity: SourceManager,
+) -> PublisherTestResponse:
+    del identity
+    manager = _manager(request)
+    result = await asyncio.to_thread(manager.send_connection_test)
+    response.headers["Cache-Control"] = "no-store"
+    response.headers["Pragma"] = "no-cache"
+    return PublisherTestResponse(**result)
 
 
 @router.get("/publications/recent", response_model=list[PublicationResponse])
