@@ -49,12 +49,14 @@ async def _lifespan(application: FastAPI) -> AsyncIterator[None]:
     publisher_settings = get_publisher_settings()
     session_factory = get_session_factory()
 
-    metaapi_env_names = sorted(name for name in os.environ if "METAAPI" in name.upper())
-    print(f"MetaAPI environment variable names present: {metaapi_env_names}", flush=True)
-
+    broker_key_value = (
+        os.getenv("SUPER_SIGNALS_BROKER_CREDENTIAL_KEYS")
+        or os.getenv("SUPER_SIGNALS_MT5_ENCRYPTION_KEYS")
+        or ""
+    )
     broker_keys = tuple(
         value.strip()
-        for value in os.getenv("SUPER_SIGNALS_MT5_ENCRYPTION_KEYS", "").split(",")
+        for value in broker_key_value.split(",")
         if value.strip()
     )
     mt5_connection_manager: Mt5ConnectionManager | None = None
