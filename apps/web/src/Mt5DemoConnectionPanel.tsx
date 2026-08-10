@@ -38,7 +38,7 @@ export function Mt5DemoConnectionPanel({ apiBaseUrl }: { apiBaseUrl: string }) {
       if (!response.ok) throw new Error('detail' in body ? body.detail?.message ?? 'Connection failed.' : 'Connection failed.');
       setConnection(body as Connection);
       event.currentTarget.reset();
-      setMessage((body as Connection).status === 'connected' ? 'Vantage MT5 demo connected.' : 'Connection submitted. The broker bridge is still connecting.');
+      setMessage((body as Connection).status === 'connected' ? 'Vantage MT5 demo connected.' : 'Connection submitted. The broker connection is still starting.');
     } catch (error) { setMessage(error instanceof Error ? error.message : 'Connection failed.'); }
     finally { setBusy(false); }
   }
@@ -57,17 +57,17 @@ export function Mt5DemoConnectionPanel({ apiBaseUrl }: { apiBaseUrl: string }) {
     <div className="overview-hero">
       <p className="eyebrow">Day 22 · owner testing only</p>
       <h1 id="mt5-demo-title">Vantage MT5 demo</h1>
-      <p className="intro">Connect the Vantage demo account. Super Signals handles the broker API connection behind the scenes. This screen cannot place trades.</p>
+      <p className="intro">Connect the owner's Vantage demo account. This screen cannot place trades. Your MT5 trading password is used only for the connection request and is not stored by Super Signals.</p>
     </div>
     <div className="overview-grid">
       <article className="overview-card"><span className="status-label">Connection</span><strong>{connection?.status ?? 'Checking…'}</strong><small>{connection?.remote_state ?? 'Not configured'} · {connection?.remote_connection_status ?? 'No remote state'}</small></article>
-      <article className="overview-card"><span className="status-label">Account number</span><strong>{connection?.login_masked ?? 'Not connected'}</strong><small>{connection?.server ?? 'Vantage demo server not set'}</small></article>
+      <article className="overview-card"><span className="status-label">Account</span><strong>{connection?.login_masked ?? 'Not connected'}</strong><small>{connection?.server ?? 'Vantage demo server not set'}</small></article>
       <article className="overview-card"><span className="status-label">Trading</span><strong>Disabled</strong><small>Day 22 has no order-placement capability.</small></article>
     </div>
     {!connection?.configured && <form className="auth-form" onSubmit={connect} autoComplete="off">
       <label>Vantage MT5 account number<input name="login" inputMode="numeric" required autoComplete="off" /><small>Vantage calls this “MT5 Login” in the account email. It is the same number.</small></label>
-      <label>Vantage MT5 trading password<input name="password" type="password" required autoComplete="new-password" /><small>Use the MT5 password from the Vantage account email, not your Vantage website password.</small></label>
-      <label>Vantage MT5 server<input name="server" required autoComplete="off" placeholder="Exact server from your Vantage email" /><small>Copy the server name exactly as Vantage shows it.</small></label>
+      <label>Vantage MT5 trading password<input name="password" type="password" required autoComplete="new-password" /><small>Use the MT5 password from Vantage, not your Vantage website password.</small></label>
+      <label>Vantage MT5 server<input name="server" required autoComplete="off" placeholder="Exact server name from your Vantage email" /></label>
       <button className="button" type="submit" disabled={busy}>{busy ? 'Connecting…' : 'Connect demo account'}</button>
     </form>}
     {connection?.configured && <div className="overview-actions"><button className="button button--quiet" type="button" onClick={refresh} disabled={busy}>{busy ? 'Checking…' : 'Refresh connection'}</button></div>}
