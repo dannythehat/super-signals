@@ -107,12 +107,16 @@ def _telegram_api_credentials(environment: str) -> tuple[int | None, str | None]
         return None, None
     if raw_api_id is None or api_hash is None:
         raise RuntimeError("TELEGRAM_API_ID and TELEGRAM_API_HASH must be configured together")
+
+    # Temporary recovery guard for Day 22: if a MetaAPI JWT was accidentally
+    # pasted over TELEGRAM_API_ID, use the separately supplied numeric recovery
+    # value without ever logging or exposing the misplaced token.
+    if not raw_api_id.isdigit() and raw_api_id.startswith("eyJ"):
+        raw_api_id = os.getenv("SUPER_SIGNALS_TELEGRAM_API_ID_RECOVERY", "").strip()
+
     try:
         api_id = int(raw_api_id)
     except ValueError:
-        # Do not chain the parser exception: Python's ValueError includes the
-        # invalid raw value, which could itself be a credential pasted into the
-        # wrong environment-variable field.
         raise RuntimeError("TELEGRAM_API_ID must be a positive integer") from None
     if api_id <= 0:
         raise RuntimeError("TELEGRAM_API_ID must be a positive integer")
