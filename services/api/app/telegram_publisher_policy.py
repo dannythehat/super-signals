@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from typing import Any
 
 from sqlalchemy import text
@@ -23,6 +24,31 @@ class Day19TelegramPublisherManager(TelegramPublisherManager):
         super().__init__(**kwargs)
         self._reader_exclusion_active = reader_exclusion_active
 
+    async def start(self) -> None:
+        await super().start()
+        status = await asyncio.to_thread(self.check_connection)
+        with self._session_factory() as session:
+            session.add(
+                AuditEvent(
+                    actor_user_id=None,
+                    event_type="telegram.publisher_startup_status",
+                    entity_type="telegram_publisher",
+                    entity_id=None,
+                    payload={
+                        "publisher_version": PUBLISHER_VERSION,
+                        "configured": status.configured,
+                        "enabled": status.enabled,
+                        "destination_chat_type": status.destination_chat_type,
+                        "bot_membership_status": status.bot_membership_status,
+                        "minimum_permissions_ok": status.minimum_permissions_ok,
+                        "source_collision": status.source_collision,
+                        "reason": status.reason,
+                        "reader_exclusion_active": self._reader_exclusion_active,
+                    },
+                )
+            )
+            session.commit()
+
     @staticmethod
     def _minimum_permissions_ok(chat_type: str, membership: dict[str, Any]) -> bool:
         status = str(membership.get("status") or "")
@@ -33,9 +59,6 @@ class Day19TelegramPublisherManager(TelegramPublisherManager):
         if chat_type == "channel" and not bool(membership.get("can_post_messages")):
             return False
 
-        # Telegram reports can_manage_chat=True for every administrator; it is
-        # informational rather than an independently granted power, so it is not
-        # treated as an extra permission here. All selectable broader rights stay off.
         broad_permissions = (
             "can_change_info",
             "can_delete_messages",
@@ -53,11 +76,6 @@ class Day19TelegramPublisherManager(TelegramPublisherManager):
         return not any(bool(membership.get(name)) for name in broad_permissions)
 
     def _active_reader_source_collision(self) -> bool:
-        """Return whether the destination can still be admitted to reader ingestion."""
-
-        # The Day 19 app wires the exact publisher destination out of the reader plan
-        # before the publisher starts. In that cutover mode, a historical Testing row
-        # is harmless and does not represent an active listener collision.
         if self._reader_exclusion_active:
             return False
 
@@ -158,8 +176,6 @@ class Day19TelegramPublisherManager(TelegramPublisherManager):
         )
 
     def send_connection_test(self) -> dict[str, Any]:
-        """Call Telegram sendMessage directly and audit success/failure."""
-
         if not self._enabled:
             return {
                 "status": "blocked",
