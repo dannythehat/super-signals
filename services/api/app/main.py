@@ -15,6 +15,7 @@ from app.routes.access import router as access_router
 from app.routes.admin_accounts import router as admin_accounts_router
 from app.routes.auth import router as auth_router
 from app.routes.health import router as health_router
+from app.routes.signals import router as signals_router
 from app.routes.telegram_accounts import router as telegram_accounts_router
 from app.routes.telegram_classifications import router as telegram_classifications_router
 from app.routes.telegram_messages import router as telegram_messages_router
@@ -30,7 +31,7 @@ from app.routes.telegram_sources import (
 )
 from app.telegram_crypto import TelegramSessionCipher
 from app.telegram_listener import TelegramListenerManager
-from app.telegram_listener_day17 import build_day17_listener_manager
+from app.telegram_listener_day18 import build_day18_listener_manager
 
 
 @asynccontextmanager
@@ -42,7 +43,7 @@ async def _lifespan(application: FastAPI) -> AsyncIterator[None]:
         and settings.telegram_api_id is not None
         and settings.telegram_api_hash is not None
     ):
-        listener = build_day17_listener_manager(
+        listener = build_day18_listener_manager(
             api_id=settings.telegram_api_id,
             api_hash=settings.telegram_api_hash,
             cipher=TelegramSessionCipher(settings.telegram_session_keys),
@@ -91,7 +92,7 @@ def create_app() -> FastAPI:
         allow_headers=["Accept", "Content-Type", "X-Request-ID"],
     )
     # Day 14 reliability-aware source management remains the accepted source
-    # contract. Day 17 changes only post-classification parsing/validation review.
+    # contract. Day 18 adds only canonical post-validation Signal events.
     application.dependency_overrides[provide_telegram_source_service] = (
         provide_day14_telegram_source_service
     )
@@ -106,6 +107,7 @@ def create_app() -> FastAPI:
     application.include_router(telegram_classifications_router)
     application.include_router(telegram_parses_router)
     application.include_router(telegram_reviews_router)
+    application.include_router(signals_router)
     _mount_web_application(application)
     return application
 
