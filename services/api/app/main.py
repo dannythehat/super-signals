@@ -64,7 +64,14 @@ async def _run_day22_mt5_bootstrap(service: Mt5DemoConnectionService) -> None:
     password = os.getenv("SUPER_SIGNALS_DAY22_DEMO_PASSWORD", "")
 
     if not all((owner_id_raw, metaapi_token, login, server, password)):
-        logger.error("Day 22 MT5 bootstrap skipped: required secret/config value missing")
+        logger.error(
+            "Day 22 MT5 bootstrap missing config owner=%s token=%s login=%s server=%s password=%s",
+            bool(owner_id_raw),
+            bool(metaapi_token),
+            bool(login),
+            bool(server),
+            bool(password),
+        )
         return
 
     try:
