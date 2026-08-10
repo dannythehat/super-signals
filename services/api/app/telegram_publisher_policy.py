@@ -19,6 +19,10 @@ from app.telegram_publisher import (
 class Day19TelegramPublisherManager(TelegramPublisherManager):
     """Publisher that accepts only a normal group member or a post-only admin."""
 
+    def __init__(self, *, reader_exclusion_active: bool = False, **kwargs: Any) -> None:
+        super().__init__(**kwargs)
+        self._reader_exclusion_active = reader_exclusion_active
+
     @staticmethod
     def _minimum_permissions_ok(chat_type: str, membership: dict[str, Any]) -> bool:
         status = str(membership.get("status") or "")
@@ -49,7 +53,13 @@ class Day19TelegramPublisherManager(TelegramPublisherManager):
         return not any(bool(membership.get(name)) for name in broad_permissions)
 
     def _active_reader_source_collision(self) -> bool:
-        """Only Testing/Live sources are actively read; Paused is safe for cutover."""
+        """Return whether the destination can still be admitted to reader ingestion."""
+
+        # The Day 19 app wires the exact publisher destination out of the reader plan
+        # before the publisher starts. In that cutover mode, a historical Testing row
+        # is harmless and does not represent an active listener collision.
+        if self._reader_exclusion_active:
+            return False
 
         assert self._destination_chat_id is not None
         with self._session_factory() as session:
@@ -99,7 +109,7 @@ class Day19TelegramPublisherManager(TelegramPublisherManager):
                 bot_membership_status=None,
                 minimum_permissions_ok=False,
                 source_collision=True,
-                reason="Publishing destination cannot also be an active Testing/Live reader source. Pause the source before cutover.",
+                reason="Publishing destination is still active in the private-reader plan.",
             )
 
         try:
@@ -148,12 +158,7 @@ class Day19TelegramPublisherManager(TelegramPublisherManager):
         )
 
     def send_connection_test(self) -> dict[str, Any]:
-        """Call Telegram sendMessage directly and audit success/failure.
-
-        This deliberately does not create or mutate a Signal. It is used only to prove
-        that a real Telegram posting failure is isolated from canonical database state.
-        The configured environment destination is the only possible target.
-        """
+        """Call Telegram sendMessage directly and audit success/failure."""
 
         if not self._enabled:
             return {
@@ -173,7 +178,7 @@ class Day19TelegramPublisherManager(TelegramPublisherManager):
         if self._active_reader_source_collision():
             return {
                 "status": "blocked",
-                "reason": "Publishing destination cannot also be an active Testing/Live reader source. Pause the source before cutover.",
+                "reason": "Publishing destination is still active in the private-reader plan.",
                 "telegram_message_id": None,
             }
 
