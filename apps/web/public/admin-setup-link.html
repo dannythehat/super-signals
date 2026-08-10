@@ -1,0 +1,22 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="robots" content="noindex,nofollow" />
+  <meta name="referrer" content="no-referrer" />
+  <title>Super Signals — Secure setup</title>
+</head>
+<body>
+  <p>Opening secure Super Signals setup…</p>
+  <script>
+    const token = new URLSearchParams(window.location.search).get('token') || '';
+    if (!token) {
+      window.location.replace('/admin-setup.html');
+    } else {
+      window.history.replaceState({}, '', window.location.pathname);
+      window.location.replace('/admin-setup.html#token=' + encodeURIComponent(token));
+    }
+  </script>
+</body>
+</html>
