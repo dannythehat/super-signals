@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 
 from app.signal_lifecycle import SignalLifecycleService
-from app.standalone_lifecycle_linker import StandaloneLifecycleLinker
+from app.standalone_lifecycle_linker_v2 import StandaloneLifecycleLinkerV2
 from app.telegram_crypto import TelegramSessionCipher
 from app.telegram_listener import CapturedTelegramMessage
 from app.telegram_listener_day13 import CapturedTelegramEdit
@@ -35,10 +35,11 @@ class Day20TelegramListenerManager(Day19TelegramListenerManager):
             excluded_chat_id=excluded_chat_id,
         )
         self._lifecycle_service = SignalLifecycleService(session_factory)
-        self._standalone_lifecycle = StandaloneLifecycleLinker(session_factory)
+        self._standalone_lifecycle = StandaloneLifecycleLinkerV2(session_factory)
 
     async def start(self) -> None:
         await super().start()
+        await asyncio.to_thread(self._standalone_lifecycle.recover_recent)
         await asyncio.to_thread(self._lifecycle_service.backfill)
 
     def _persist_message(self, captured: CapturedTelegramMessage) -> bool:
