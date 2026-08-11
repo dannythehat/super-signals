@@ -1,11 +1,8 @@
 """One-shot pure-code acceptance probe for Day 26 V1 execution.
 
-This probe never contacts MetaAPI and never writes to the database. It exercises the
-real Day 23 -> Day 24 -> Day 25 -> Day 26 orchestration using deterministic fake
-broker gateways, including exact entry, in-zone market execution, TP OPEN runner and
-compensating rollback after partial submission.
-
-Enable temporarily with SUPER_SIGNALS_DAY26_CODE_PROBE=1 during a Render deploy.
+The probe never contacts MetaAPI and never writes to PostgreSQL. It exercises the
+real Day 24, Day 25 and Day 26 orchestration using deterministic fake broker readers
+and gateways. Enable temporarily with SUPER_SIGNALS_DAY26_CODE_PROBE=1.
 """
 
 from __future__ import annotations
@@ -85,6 +82,15 @@ class _FakeDay23:
 
     def __init__(self, **_: object) -> None:
         pass
+
+    @staticmethod
+    def executable_price(state: Day23LiveState, side: str) -> float:
+        normalized = side.strip().upper()
+        if normalized == "BUY":
+            return float(state.price.ask)
+        if normalized == "SELL":
+            return float(state.price.bid)
+        raise Day26ExecutionError("trade_side_invalid")
 
     async def read_owner_live_state(self, owner_user_id: UUID) -> Day23LiveState:
         _require(owner_user_id == _OWNER, "owner_mismatch")
@@ -336,7 +342,7 @@ class _AtomicHarness(AtomicDay26Mt5ExecutionService):
 
 
 async def run_day26_code_acceptance_probe() -> None:
-    """Exercise the actual V1 success, zone, runner and rollback orchestration."""
+    """Exercise exact, zone, runner and partial-failure compensation."""
     original_day23 = day26_module.Day23Mt5ReadService
     original_atomic_day23 = atomic_module.Day23Mt5ReadService
     day26_module.Day23Mt5ReadService = _FakeDay23  # type: ignore[assignment]
@@ -344,13 +350,13 @@ async def run_day26_code_acceptance_probe() -> None:
     try:
         _FakeDay23.state = _live_state(bid=3999.8, ask=4000.0)
         exact = _SuccessHarness()
-        result = await exact.execute_owner_demo_signal(
+        exact_result = await exact.execute_owner_demo_signal(
             owner_user_id=_OWNER,
             signal_id=_SIGNAL,
             risk_percent="1",
             double_lot_approved=False,
         )
-        _require(len(result.positions) == 3, "exact_position_count")
+        _require(len(exact_result.positions) == 3, "exact_position_count")
         _require(len(exact.trade.place_calls) == 3, "exact_order_count")
         _require(len(exact.margin.calls) == 1, "exact_margin_once")
 
