@@ -1,15 +1,10 @@
-"""Day 16 Telegram listener with first XAUUSD parser stage.
-
-Day 15 classification remains authoritative. Only New Trade / classified evidence
-is offered to the parser. Parser output is append-only evidence and never creates
-Signals, Positions, lot sizing or broker actions.
-"""
+"""Day 16 Telegram listener with versioned real-source XAUUSD/GOLD parsing."""
 
 from __future__ import annotations
 
 import asyncio
 
-from app.message_parser import MessageParserService
+from app.message_parser_v2 import MessageParserServiceV2
 from app.telegram_crypto import TelegramSessionCipher
 from app.telegram_listener import CapturedTelegramMessage
 from app.telegram_listener_day13 import CapturedTelegramEdit
@@ -18,7 +13,7 @@ from sqlalchemy.orm import Session, sessionmaker
 
 
 class Day16TelegramListenerManager(Day15TelegramListenerManager):
-    """Day 15 listener plus append-only XAUUSD parser evidence."""
+    """Day 15 listener plus append-only parser-v2 evidence for new messages."""
 
     def __init__(
         self,
@@ -36,11 +31,9 @@ class Day16TelegramListenerManager(Day15TelegramListenerManager):
             session_factory=session_factory,
             refresh_seconds=refresh_seconds,
         )
-        self._parser_service = MessageParserService(session_factory)
+        self._parser_service = MessageParserServiceV2(session_factory)
 
     async def start(self) -> None:
-        # Day 15 first restores any missing classifications. Once that accepted
-        # stage is live, Day 16 can safely backfill only eligible new trades.
         await super().start()
         await asyncio.to_thread(self._parser_service.backfill_eligible)
 
