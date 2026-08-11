@@ -13,6 +13,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
 from app.config import get_settings
+from app.day26_code_acceptance import run_day26_code_acceptance_probe
 from app.db import get_session_factory
 from app.metaapi_gateway import MetaApiProvisioningGateway
 from app.mt5_connection_manager import Mt5ConnectionManager
@@ -115,6 +116,9 @@ async def _lifespan(application: FastAPI) -> AsyncIterator[None]:
     settings = get_settings()
     publisher_settings = get_publisher_settings()
     session_factory = get_session_factory()
+
+    if os.getenv("SUPER_SIGNALS_DAY26_CODE_PROBE", "").strip() == "1":
+        await run_day26_code_acceptance_probe()
 
     broker_key_value = (
         os.getenv("SUPER_SIGNALS_BROKER_CREDENTIAL_KEYS")
