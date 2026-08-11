@@ -38,7 +38,7 @@ _RESULT_ONLY = re.compile(
     re.IGNORECASE,
 )
 _BREAK_EVEN = re.compile(
-    r"\b(?:MOVE\s+(?:SL|STOP(?:\s+LOSS)?)\s+TO\s+BE|SET\s+(?:SL\s+TO\s+)?BE|"
+    r"\b(?:BE|MOVE\s+(?:SL|STOP(?:\s+LOSS)?)\s+TO\s+BE|SET\s+(?:SL\s+TO\s+)?BE|"
     r"BREAKEVEN(?:\s+SET)?|BREAK\s+EVEN(?:\s+SET)?|RISK\s+FREE)\b",
     re.IGNORECASE,
 )
@@ -243,7 +243,8 @@ def apply_v1_message_policy(
         )
 
     if decision.decision == "trade_update":
-        # Provider result statements never create a new management action.
+        # Provider result statements never create a new management action. This check
+        # deliberately runs before the broad BE recognizer so "Out at BE" stays a result.
         if _RESULT_ONLY.search(text):
             return _ignore_update(decision, "provider_result_only")
 
