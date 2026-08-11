@@ -30,6 +30,7 @@ from app.publisher_config import get_publisher_settings
 from app.routes.access import router as access_router
 from app.routes.admin_accounts import router as admin_accounts_router
 from app.routes.auth import router as auth_router
+from app.routes.day26_execution import router as day26_execution_router
 from app.routes.health import router as health_router
 from app.routes.mt5_accounts import router as mt5_accounts_router
 from app.routes.signals import router as signals_router
@@ -308,6 +309,7 @@ def create_app() -> FastAPI:
     application.include_router(telegram_publisher_router)
     application.include_router(telegram_e2e_gate_router)
     application.include_router(mt5_accounts_router)
+    application.include_router(day26_execution_router)
     _mount_web_application(application)
     return application
 
