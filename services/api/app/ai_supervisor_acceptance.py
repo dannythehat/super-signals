@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
+from typing import Any
 
 from app.ai_message_supervisor import OpenAiMessageSupervisor
 from app.config import Settings
@@ -22,6 +23,9 @@ class _ProbeCase:
     raw_text: str
     decision: str
     action: str
+    source_name: str | None = None
+    recent_source_messages: tuple[dict[str, Any], ...] = ()
+    reply_context: str | None = None
     symbol: str | None = None
     side: str | None = None
     entry_low: str | None = None
@@ -37,6 +41,7 @@ _CASES = (
         raw_text="BUY GOLD @ 4371\nTP 4375\nTP 4380\nTP 4385\nSL 4360",
         decision="new_trade",
         action="execute",
+        source_name="Example Gold Provider",
         symbol="XAUUSD",
         side="BUY",
         entry_low="4371",
@@ -53,6 +58,7 @@ _CASES = (
         ),
         decision="new_trade",
         action="skip",
+        source_name="TDC V2",
         symbol="XAUUSD",
         side="BUY",
         entry_low="4391",
@@ -69,6 +75,7 @@ _CASES = (
         ),
         decision="new_trade",
         action="skip",
+        source_name="TIG’s Asia Trades",
         symbol="XAUUSD",
         side="BUY",
         entry_low="4380",
@@ -82,6 +89,7 @@ _CASES = (
         raw_text="BUY LIMIT GOLD @ 4387\nTP 4391\nTP 4396\nSL 4381",
         decision="new_trade",
         action="skip",
+        source_name="TDC V2",
         symbol="XAUUSD",
         side="BUY",
         entry_low="4387",
@@ -95,6 +103,7 @@ _CASES = (
         raw_text="BUY GOLD @ 4385\nTP 4391\nTP 4396\nTP OPEN\nSL 4371",
         decision="new_trade",
         action="skip",
+        source_name="GTMO VIP",
         symbol="XAUUSD",
         side="BUY",
         entry_low="4385",
@@ -108,12 +117,57 @@ _CASES = (
         raw_text="PREPARE FOR A BUY",
         decision="preparation",
         action="ignore",
+        source_name="TDC V2",
     ),
     _ProbeCase(
-        name="incomplete_trade_is_skipped",
+        name="obvious_trade_trigger_is_not_chatter_when_incomplete",
         raw_text="Sell Gold Now",
-        decision="non_actionable",
+        decision="new_trade",
         action="skip",
+        source_name="TDC V2",
+        symbol="XAUUSD",
+        side="SELL",
+    ),
+    _ProbeCase(
+        name="tgc_terse_entry_is_understood_from_provider_sequence",
+        raw_text="Im buying 4375",
+        decision="new_trade",
+        action="skip",
+        source_name="The Gold Club - TGC",
+        recent_source_messages=(
+            {"telegram_message_id": 2474, "text": "Im selling 4393"},
+            {"telegram_message_id": 2475, "text": "Profits from layering 💰 4395/94/93"},
+            {"telegram_message_id": 2476, "text": "TP1 ✅ / 15 pips 💷 TP2 ✅ / 35 pips 💷"},
+            {"telegram_message_id": 2477, "text": "TP3 ✅ / 55 pips 💷 TP4 ✅ / 75 pips 💷"},
+            {"telegram_message_id": 2478, "text": "Im buying 4388"},
+            {"telegram_message_id": 2481, "text": "Profits from layering 💰 4376/77/78 ✅ 80 ❌"},
+        ),
+        side="BUY",
+        entry_low="4375",
+        entry_high="4375",
+    ),
+    _ProbeCase(
+        name="tgc_target_result_is_trade_update_not_chatter",
+        raw_text="TP1 ✅ / 15 pips 💷",
+        decision="trade_update",
+        action="apply_update",
+        source_name="The Gold Club - TGC",
+        recent_source_messages=(
+            {"telegram_message_id": 2481, "text": "Profits from layering 💰 4376/77/78 ✅ 80 ❌"},
+            {"telegram_message_id": 2482, "text": "Im buying 4375"},
+        ),
+    ),
+    _ProbeCase(
+        name="marketing_remains_chatter_even_inside_active_provider",
+        raw_text="🍀 🎁 Sending $100 to best comment tonight: https://example.com/reel",
+        decision="chatter",
+        action="ignore",
+        source_name="GTMO VIP 🤴🏽",
+        recent_source_messages=(
+            {"telegram_message_id": 60495, "text": "Gold buy now 4394 - 4390 SL: 4385 TP: 4396 TP: 4398 TP: 4400 TP: 4402 TP: open"},
+            {"telegram_message_id": 60505, "text": "At Tp2 I’ll close half profits & set breakeven for zero risk"},
+            {"telegram_message_id": 60513, "text": "Another 2 TP’s quickly to stack up the winnings TP1✅ TP2✅"},
+        ),
     ),
 )
 
@@ -132,7 +186,13 @@ def run_ai_supervisor_acceptance_probe(settings: Settings) -> None:
     )
 
     for case in _CASES:
-        result = supervisor.decide(raw_text=case.raw_text, source_status="testing")
+        result = supervisor.decide(
+            raw_text=case.raw_text,
+            source_status="testing",
+            source_name=case.source_name,
+            recent_source_messages=list(case.recent_source_messages),
+            reply_context=case.reply_context,
+        )
         errors: list[str] = []
         if result.source != "openai":
             errors.append(f"source={result.source}")
