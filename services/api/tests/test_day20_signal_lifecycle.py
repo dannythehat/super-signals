@@ -1,5 +1,10 @@
 from app.signal_lifecycle import render_provider_update
-from app.telegram_publisher_day20 import apply_source_status_banner
+from app.telegram_visual_identity import (
+    decorate_lifecycle_post,
+    decorate_root_post,
+    public_signal_reference,
+    source_colour_marker,
+)
 
 
 def test_target_hit_and_break_even_render_as_one_clean_update() -> None:
@@ -61,12 +66,48 @@ def test_unsupported_update_does_not_publish_arbitrary_text() -> None:
     assert render_provider_update("random update text", ["reply_management"]) is None
 
 
-def test_testing_source_gets_visible_demo_banner() -> None:
-    text = apply_source_status_banner("SUPER SIGNALS\nXAUUSD BUY", "testing")
-    assert text.startswith("✨🧪 TESTING 🧪✨\nDEMO / NOT LIVE\n\n")
+def test_testing_source_gets_visible_banner_and_anonymous_colour() -> None:
+    text = decorate_root_post(
+        "SUPER SIGNALS\nXAUUSD BUY",
+        source_status="testing",
+        source_id="source-a",
+        signal_id="signal-a",
+    )
+    marker = source_colour_marker("source-a")
+    reference = public_signal_reference("signal-a")
+    assert text.startswith(
+        f"✨🧪 TESTING 🧪✨\nDEMO / NOT LIVE\n\n{marker} SIGNAL #{reference}\n\n"
+    )
     assert text.endswith("SUPER SIGNALS\nXAUUSD BUY")
 
 
-def test_live_source_has_no_testing_banner() -> None:
-    text = apply_source_status_banner("SUPER SIGNALS\nXAUUSD BUY", "live")
-    assert text == "SUPER SIGNALS\nXAUUSD BUY"
+def test_live_source_keeps_colour_but_has_no_testing_banner() -> None:
+    text = decorate_root_post(
+        "SUPER SIGNALS\nXAUUSD BUY",
+        source_status="live",
+        source_id="source-a",
+        signal_id="signal-a",
+    )
+    marker = source_colour_marker("source-a")
+    reference = public_signal_reference("signal-a")
+    assert "TESTING" not in text
+    assert text.startswith(f"{marker} SIGNAL #{reference}\n\n")
+
+
+def test_lifecycle_keeps_same_colour_and_signal_reference() -> None:
+    root = decorate_root_post(
+        "SUPER SIGNALS",
+        source_status="testing",
+        source_id="source-a",
+        signal_id="signal-a",
+    )
+    update = decorate_lifecycle_post(
+        "TRADE UPDATE\nTP1 reached.",
+        source_status="testing",
+        source_id="source-a",
+        signal_id="signal-a",
+    )
+    marker = source_colour_marker("source-a")
+    reference = public_signal_reference("signal-a")
+    assert f"{marker} SIGNAL #{reference}" in root
+    assert f"{marker} #{reference}" in update
