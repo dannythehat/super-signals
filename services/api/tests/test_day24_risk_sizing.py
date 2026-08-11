@@ -44,6 +44,26 @@ def test_all_user_risk_options_match_hand_calculation(
     assert result.actual_risk_per_position == expected_budget
 
 
+def test_recommended_preset_contract_is_one_percent_with_double_lot_approved() -> None:
+    result = Day24RiskSizer.size(
+        balance="1000",
+        risk_percent="1",
+        signal_entry_price="4000",
+        signal_stop_loss="4001",
+        tick_size="0.01",
+        tick_value="1",
+        take_profit_count=1,
+        volume_rules=rules(),
+        signal_requests_double_lot=True,
+        double_lot_approved=True,
+    )
+
+    assert result.base_risk_percent == Decimal("1")
+    assert result.double_lot_approved is True
+    assert result.double_lot_applied is True
+    assert result.effective_risk_percent == Decimal("2")
+
+
 def test_one_position_is_created_per_take_profit_with_full_per_position_risk() -> None:
     result = Day24RiskSizer.size(
         balance="1000",
@@ -148,8 +168,6 @@ def test_broker_volume_step_rounds_down_and_never_exceeds_risk() -> None:
         volume_rules=rules(),
     )
 
-    # Raw size is 0.0333... lots. Rounding up to 0.04 would risk $12,
-    # above the $10 instruction, so the engine must choose 0.03 and risk $9.
     assert result.raw_volume > Decimal("0.03")
     assert result.raw_volume < Decimal("0.04")
     assert result.volume == Decimal("0.03")
