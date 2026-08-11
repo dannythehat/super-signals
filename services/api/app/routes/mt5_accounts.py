@@ -131,6 +131,9 @@ def _day23_message(code: str) -> str:
         "mt5_account_not_configured": "Connect the Vantage MT5 demo account first.",
         "mt5_account_not_connected": "The Vantage MT5 demo is not connected yet. Refresh the connection before reading live state.",
         "broker_credential_decryption_failed": "The permanent broker encryption configuration needs administrator recovery.",
+        "metaapi_terminal_scope_missing": (
+            "The saved MetaAPI credential can manage the MT5 account but cannot read terminal data. Replace it once with the main MetaAPI API/admin token; Super Signals will store it encrypted and users will not manage MetaAPI credentials."
+        ),
         "metaapi_permission_denied": "MetaAPI refused the read. Check the MetaAPI balance/subscription before retrying.",
         "metaapi_timeout": "MetaAPI did not answer in time. Do not retry repeatedly.",
         "metaapi_unreachable": "MetaAPI is temporarily unreachable.",
@@ -231,6 +234,7 @@ async def owner_demo_live_state(
                 or exc.code
                 in {
                     "broker_credential_decryption_failed",
+                    "metaapi_terminal_scope_missing",
                     "metaapi_permission_denied",
                     "metaapi_region_unavailable",
                     "metaapi_terminal_data_unavailable",
