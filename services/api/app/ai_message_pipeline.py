@@ -1,14 +1,14 @@
 """Immediate AI-authoritative Telegram decision pipeline.
 
-When enabled, every Testing/Live message receives one automatic decision. There is
-no human review wait. If the model call is unavailable, the accepted deterministic
-classifier/parser is used as an automatic fallback for formats it already understands.
+Every Testing/Live message and edit receives one automatic decision. There is no
+human review wait. If the model call is unavailable, accepted deterministic rules
+make an automatic fallback decision for formats they already understand.
 """
 
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from hashlib import sha256
 from typing import Any
 from uuid import UUID
@@ -50,25 +50,48 @@ class AiMessagePipeline:
         self._lifecycle = AiLifecycleBridge(session_factory)
 
     def process_original(self, source_id: UUID, telegram_message_id: int) -> AiPipelineResult:
+        return self._process_revision(source_id, telegram_message_id, revision_index=0)
+
+    def process_latest_revision(
+        self,
+        source_id: UUID,
+        telegram_message_id: int,
+    ) -> AiPipelineResult:
         with self._session_factory() as session:
-            row = session.execute(
+            revision_index = session.execute(
                 text(
                     """
-                    SELECT
-                        m.id AS message_id,
-                        m.raw_text,
-                        m.raw_payload,
-                        s.status AS source_status
+                    SELECT COALESCE(MAX(mr.revision_index), 0)
                     FROM messages AS m
-                    JOIN sources AS s ON s.id = m.source_id
+                    LEFT JOIN message_revisions AS mr ON mr.message_id = m.id
                     WHERE m.source_id = :source_id
                       AND m.telegram_message_id = :telegram_message_id
-                      AND m.deleted_at IS NULL
-                      AND s.status IN ('testing', 'live')
                     """
                 ),
                 {"source_id": source_id, "telegram_message_id": telegram_message_id},
-            ).mappings().first()
+            ).scalar_one_or_none()
+        if revision_index is None or int(revision_index) <= 0:
+            return AiPipelineResult(False, None, None, None, None, None, "revision_not_found")
+        return self._process_revision(
+            source_id,
+            telegram_message_id,
+            revision_index=int(revision_index),
+        )
+
+    def _process_revision(
+        self,
+        source_id: UUID,
+        telegram_message_id: int,
+        *,
+        revision_index: int,
+    ) -> AiPipelineResult:
+        with self._session_factory() as session:
+            row = self._load_revision(
+                session,
+                source_id=source_id,
+                telegram_message_id=telegram_message_id,
+                revision_index=revision_index,
+            )
             if row is None:
                 return AiPipelineResult(False, None, None, None, None, None, "message_not_eligible")
 
@@ -77,10 +100,11 @@ class AiMessagePipeline:
                     """
                     SELECT decision, action, decision_source
                     FROM ai_message_decisions
-                    WHERE message_id = :message_id AND revision_index = 0
+                    WHERE message_id = :message_id
+                      AND revision_index = :revision_index
                     """
                 ),
-                {"message_id": row["message_id"]},
+                {"message_id": row["message_id"], "revision_index": revision_index},
             ).mappings().first()
             if existing is not None:
                 return AiPipelineResult(
@@ -94,28 +118,54 @@ class AiMessagePipeline:
                 )
 
             reply_context = self._reply_context(session, source_id, row["raw_payload"])
+            previous_text = self._previous_text(session, row["message_id"], revision_index)
+            existing_signal_id = session.execute(
+                text("SELECT id FROM signals WHERE source_message_id = :message_id LIMIT 1"),
+                {"message_id": row["message_id"]},
+            ).scalar_one_or_none()
 
         decision = self._decide(
             source_id=source_id,
             telegram_message_id=telegram_message_id,
+            revision_index=revision_index,
             raw_text=str(row["raw_text"] or ""),
             source_status=str(row["source_status"]),
             reply_context=reply_context,
+            previous_text=previous_text,
         )
-        self._store_decision(row["message_id"], decision)
+
+        # A revision of an already-canonical provider message is the same logical
+        # signal, never a second new trade. Preserve all extracted revised fields
+        # and route it to the lifecycle ledger for Day 27 execution handling.
+        if revision_index > 0 and existing_signal_id is not None and decision.decision == "new_trade":
+            extracted = dict(decision.extracted)
+            extracted["update_type"] = extracted.get("update_type") or "other"
+            decision = replace(
+                decision,
+                decision="trade_update",
+                action="apply_update",
+                reason="edited_existing_signal_instruction",
+                extracted=extracted,
+            )
+
+        self._store_decision(row["message_id"], revision_index, decision)
 
         signal_id: UUID | None = None
         lifecycle_event_id: UUID | None = None
         dispatch_reason = decision.reason
         if decision.decision == "new_trade" and decision.action == "execute":
             signal_result = self._signals.process(
-                message_id=row["message_id"], extracted=decision.extracted
+                message_id=row["message_id"],
+                extracted=decision.extracted,
+                revision_index=revision_index,
             )
             signal_id = signal_result.signal_id
             dispatch_reason = signal_result.reason
         elif decision.decision == "trade_update" and decision.action == "apply_update":
             lifecycle_result = self._lifecycle.process(
-                message_id=row["message_id"], extracted=decision.extracted
+                message_id=row["message_id"],
+                extracted=decision.extracted,
+                revision_index=revision_index,
             )
             signal_id = lifecycle_result.signal_id
             lifecycle_event_id = lifecycle_result.event_id
@@ -131,14 +181,51 @@ class AiMessagePipeline:
             dispatch_reason,
         )
 
+    @staticmethod
+    def _load_revision(
+        session: Session,
+        *,
+        source_id: UUID,
+        telegram_message_id: int,
+        revision_index: int,
+    ) -> Any | None:
+        return session.execute(
+            text(
+                """
+                SELECT
+                    m.id AS message_id,
+                    CASE WHEN :revision_index = 0 THEN m.raw_text ELSE mr.raw_text END AS raw_text,
+                    CASE WHEN :revision_index = 0 THEN m.raw_payload ELSE mr.raw_payload END AS raw_payload,
+                    s.status AS source_status
+                FROM messages AS m
+                JOIN sources AS s ON s.id = m.source_id
+                LEFT JOIN message_revisions AS mr
+                  ON mr.message_id = m.id
+                 AND mr.revision_index = :revision_index
+                WHERE m.source_id = :source_id
+                  AND m.telegram_message_id = :telegram_message_id
+                  AND m.deleted_at IS NULL
+                  AND s.status IN ('testing', 'live')
+                  AND (:revision_index = 0 OR mr.revision_index IS NOT NULL)
+                """
+            ),
+            {
+                "source_id": source_id,
+                "telegram_message_id": telegram_message_id,
+                "revision_index": revision_index,
+            },
+        ).mappings().first()
+
     def _decide(
         self,
         *,
         source_id: UUID,
         telegram_message_id: int,
+        revision_index: int,
         raw_text: str,
         source_status: str,
         reply_context: str | None,
+        previous_text: str | None,
     ) -> AiMessageDecision:
         if self._supervisor is not None:
             try:
@@ -146,12 +233,15 @@ class AiMessagePipeline:
                     raw_text=raw_text,
                     source_status=source_status,
                     reply_context=reply_context,
+                    previous_text=previous_text,
+                    is_edit=revision_index > 0,
                 )
             except AiSupervisorError:
                 pass
         return self._deterministic_fallback(
             source_id=source_id,
             telegram_message_id=telegram_message_id,
+            revision_index=revision_index,
             raw_text=raw_text,
         )
 
@@ -160,6 +250,7 @@ class AiMessagePipeline:
         *,
         source_id: UUID,
         telegram_message_id: int,
+        revision_index: int,
         raw_text: str,
     ) -> AiMessageDecision:
         with self._session_factory() as session:
@@ -179,14 +270,20 @@ class AiMessagePipeline:
                         mp.size_multiplier
                     FROM messages AS m
                     LEFT JOIN message_classifications AS mc
-                      ON mc.message_id = m.id AND mc.revision_index = 0
+                      ON mc.message_id = m.id
+                     AND mc.revision_index = :revision_index
                     LEFT JOIN message_parses AS mp
-                      ON mp.message_id = m.id AND mp.revision_index = 0
+                      ON mp.message_id = m.id
+                     AND mp.revision_index = :revision_index
                     WHERE m.source_id = :source_id
                       AND m.telegram_message_id = :telegram_message_id
                     """
                 ),
-                {"source_id": source_id, "telegram_message_id": telegram_message_id},
+                {
+                    "source_id": source_id,
+                    "telegram_message_id": telegram_message_id,
+                    "revision_index": revision_index,
+                },
             ).mappings().first()
 
         extracted: dict[str, Any] = {
@@ -264,7 +361,12 @@ class AiMessagePipeline:
             raw_text_sha256=sha256(raw_text.encode("utf-8")).hexdigest(),
         )
 
-    def _store_decision(self, message_id: UUID, decision: AiMessageDecision) -> None:
+    def _store_decision(
+        self,
+        message_id: UUID,
+        revision_index: int,
+        decision: AiMessageDecision,
+    ) -> None:
         with self._session_factory() as session:
             session.execute(
                 text(
@@ -285,7 +387,7 @@ class AiMessagePipeline:
                     )
                     VALUES (
                         :message_id,
-                        0,
+                        :revision_index,
                         :decision,
                         :action,
                         :confidence,
@@ -302,6 +404,7 @@ class AiMessagePipeline:
                 ),
                 {
                     "message_id": message_id,
+                    "revision_index": revision_index,
                     "decision": decision.decision,
                     "action": decision.action,
                     "confidence": decision.confidence,
@@ -339,6 +442,27 @@ class AiMessagePipeline:
                 """
             ),
             {"source_id": source_id, "telegram_message_id": reply_id},
+        ).scalar_one_or_none()
+
+    @staticmethod
+    def _previous_text(session: Session, message_id: UUID, revision_index: int) -> str | None:
+        if revision_index <= 0:
+            return None
+        if revision_index == 1:
+            return session.execute(
+                text("SELECT raw_text FROM messages WHERE id = :message_id"),
+                {"message_id": message_id},
+            ).scalar_one_or_none()
+        return session.execute(
+            text(
+                """
+                SELECT raw_text
+                FROM message_revisions
+                WHERE message_id = :message_id
+                  AND revision_index = :revision_index
+                """
+            ),
+            {"message_id": message_id, "revision_index": revision_index - 1},
         ).scalar_one_or_none()
 
     @staticmethod
