@@ -1,9 +1,14 @@
-"""Day 20 listener: attach provider updates to canonical Signals."""
+"""Day 20 listener: attach provider updates to canonical Signals.
+
+When AI supervision is enabled, legacy deterministic lifecycle interpretation stays
+available only as fallback evidence and cannot act before the AI decision.
+"""
 
 from __future__ import annotations
 
 import asyncio
 
+from app.config import get_settings
 from app.signal_lifecycle import SignalLifecycleService
 from app.standalone_lifecycle_linker_v2 import StandaloneLifecycleLinkerV2
 from app.telegram_crypto import TelegramSessionCipher
@@ -36,36 +41,40 @@ class Day20TelegramListenerManager(Day19TelegramListenerManager):
         )
         self._lifecycle_service = SignalLifecycleService(session_factory)
         self._standalone_lifecycle = StandaloneLifecycleLinkerV2(session_factory)
+        self._ai_supervisor_enabled = get_settings().ai_supervisor_enabled
 
     async def start(self) -> None:
         await super().start()
-        await asyncio.to_thread(self._standalone_lifecycle.recover_recent)
-        await asyncio.to_thread(self._lifecycle_service.backfill)
+        if not self._ai_supervisor_enabled:
+            await asyncio.to_thread(self._standalone_lifecycle.recover_recent)
+            await asyncio.to_thread(self._lifecycle_service.backfill)
 
     def _persist_message(self, captured: CapturedTelegramMessage) -> bool:
         persisted = super()._persist_message(captured)
-        handled_as_standalone = self._standalone_lifecycle.process_original(
-            captured.source_id,
-            captured.telegram_message_id,
-        )
-        if not handled_as_standalone:
-            self._lifecycle_service.process_original(
+        if not self._ai_supervisor_enabled:
+            handled_as_standalone = self._standalone_lifecycle.process_original(
                 captured.source_id,
                 captured.telegram_message_id,
             )
+            if not handled_as_standalone:
+                self._lifecycle_service.process_original(
+                    captured.source_id,
+                    captured.telegram_message_id,
+                )
         return persisted
 
     def _persist_edit(self, captured: CapturedTelegramEdit) -> bool:
         persisted = super()._persist_edit(captured)
-        handled_as_standalone = self._standalone_lifecycle.process_latest_revision(
-            captured.source_id,
-            captured.telegram_message_id,
-        )
-        if not handled_as_standalone:
-            self._lifecycle_service.process_latest_revision(
+        if not self._ai_supervisor_enabled:
+            handled_as_standalone = self._standalone_lifecycle.process_latest_revision(
                 captured.source_id,
                 captured.telegram_message_id,
             )
+            if not handled_as_standalone:
+                self._lifecycle_service.process_latest_revision(
+                    captured.source_id,
+                    captured.telegram_message_id,
+                )
         return persisted
 
 
