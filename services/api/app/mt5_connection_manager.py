@@ -17,7 +17,7 @@ class Mt5ConnectionManager:
         self,
         service: Mt5DemoConnectionService,
         *,
-        refresh_seconds: int = 300,
+        refresh_seconds: int = 3600,
     ) -> None:
         if refresh_seconds <= 0:
             raise ValueError("MT5 connection refresh interval must be positive.")
@@ -31,8 +31,8 @@ class Mt5ConnectionManager:
             return
         self._stopping.clear()
         # Reconcile once before the loop. This is the Day 22 restart/reconnect path.
-        # Day 22 has no trade engine, so idle polling stays deliberately slow to
-        # avoid unnecessary MetaAPI traffic and development spend.
+        # Day 22 has no trade engine, so idle polling is intentionally hourly to
+        # minimize MetaAPI spend. The owner can still request an explicit refresh.
         try:
             checked = await self._service.reconcile_all()
             logger.info("MT5 connection startup reconciliation checked %d account(s)", checked)
