@@ -17,6 +17,7 @@ from telethon.sessions import StringSession
 
 from app.ai_message_pipeline import AiMessagePipeline
 from app.ai_message_supervisor import OpenAiMessageSupervisor
+from app.ai_source_aware_pipeline import SourceAwareAiMessagePipeline
 from app.ai_supervisor_acceptance import run_ai_supervisor_acceptance_probe
 from app.config import get_settings
 from app.telegram_crypto import TelegramSessionCipher
@@ -63,7 +64,7 @@ class Day21TelegramListenerManager(Day20TelegramListenerManager):
                     model=settings.ai_supervisor_model,
                     timeout_seconds=settings.ai_supervisor_timeout_seconds,
                 )
-            self._ai_pipeline = AiMessagePipeline(
+            self._ai_pipeline = SourceAwareAiMessagePipeline(
                 session_factory=session_factory,
                 supervisor=supervisor,
             )
