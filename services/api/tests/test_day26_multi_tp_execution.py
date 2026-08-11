@@ -82,8 +82,9 @@ class _Harness(Day26Mt5ExecutionService):
         super().__init__(session_factory=None, cipher=None, read_gateway=self.read, margin_gateway=self.margin,
             trade_gateway=self.trade, zone_wait_seconds=zone_wait_seconds, zone_poll_seconds=zone_poll_seconds)  # type: ignore[arg-type]
         low, high = Decimal(entry_low), Decimal(entry_high)
-        if side == "BUY": stop, tps = low-10, (high+10, high+20, high+30)
-        else: stop, tps = high+10, (low-10, low-20, low-30)
+        zone_buffer = Decimal("1") if low != high else Decimal("10")
+        if side == "BUY": stop, tps = low-zone_buffer, (high+10, high+20, high+30)
+        else: stop, tps = high+zone_buffer, (low-10, low-20, low-30)
         self.signal = _SignalInput(signal_id=SIGNAL, symbol="XAUUSD", side=side, entry_low=low, entry_high=high,
             stop_loss=stop, take_profits=tps, has_open_runner=runner, signal_requests_double_lot=False,
             source_revision_index=0, source_posted_at=datetime.now(UTC))
@@ -123,26 +124,26 @@ def test_exact_mismatch_preserves_day25(monkeypatch: pytest.MonkeyPatch) -> None
 
 
 def test_buy_zone_uses_ask(monkeypatch: pytest.MonkeyPatch) -> None:
-    _patch_states(monkeypatch, _live_state(bid=4391.8, ask=4392.0)); service=_Harness(entry_low="4389", entry_high="4394")
+    _patch_states(monkeypatch, _live_state(bid=4391.8, ask=4392.0)); service=_Harness(entry_low="4391", entry_high="4394")
     result=asyncio.run(service.execute_owner_demo_signal(owner_user_id=OWNER, signal_id=SIGNAL, risk_percent="1", double_lot_approved=False))
     assert result.signal_entry_price==Decimal("4392.0") and len(service.trade.calls)==3
 
 
 def test_sell_zone_uses_bid(monkeypatch: pytest.MonkeyPatch) -> None:
-    _patch_states(monkeypatch, _live_state(bid=4392.0, ask=4394.5)); service=_Harness(entry_low="4389", entry_high="4394", side="SELL")
+    _patch_states(monkeypatch, _live_state(bid=4392.0, ask=4394.5)); service=_Harness(entry_low="4391", entry_high="4394", side="SELL")
     result=asyncio.run(service.execute_owner_demo_signal(owner_user_id=OWNER, signal_id=SIGNAL, risk_percent="1", double_lot_approved=False))
     assert result.signal_entry_price==Decimal("4392.0")
 
 
 def test_zone_waits_for_touch(monkeypatch: pytest.MonkeyPatch) -> None:
     _patch_states(monkeypatch, _live_state(bid=4396,ask=4396.2), _live_state(bid=4392.8,ask=4393))
-    service=_Harness(entry_low="4389",entry_high="4394",zone_wait_seconds=1,zone_poll_seconds=.01)
+    service=_Harness(entry_low="4391",entry_high="4394",zone_wait_seconds=1,zone_poll_seconds=.01)
     result=asyncio.run(service.execute_owner_demo_signal(owner_user_id=OWNER, signal_id=SIGNAL, risk_percent="1", double_lot_approved=False))
     assert result.signal_entry_price==Decimal("4393.0") and _FakeDay23.reads>=2
 
 
 def test_zone_expiry_skips(monkeypatch: pytest.MonkeyPatch) -> None:
-    _patch_states(monkeypatch, _live_state(bid=4396,ask=4396.2)); service=_Harness(entry_low="4389",entry_high="4394",zone_wait_seconds=0)
+    _patch_states(monkeypatch, _live_state(bid=4396,ask=4396.2)); service=_Harness(entry_low="4391",entry_high="4394",zone_wait_seconds=0)
     with pytest.raises(Day26ExecutionError, match="zone_not_reached"):
         asyncio.run(service.execute_owner_demo_signal(owner_user_id=OWNER, signal_id=SIGNAL, risk_percent="1", double_lot_approved=False))
     assert service.trade.calls==[] and service.margin.calls==[]
