@@ -9,6 +9,7 @@ from uuid import UUID
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
+from app.config import get_settings
 from app.permissions import primary_role
 from app.security import hash_token, new_token, privacy_hash, verify_password
 
@@ -173,13 +174,24 @@ def get_user_for_session(session: Session, raw_token: str) -> dict[str, Any] | N
     if identity is None:
         return None
 
+    renewed_expires_at = utc_now() + timedelta(seconds=get_settings().session_ttl_seconds)
     session.execute(
-        text("UPDATE auth_sessions SET last_seen_at = now() WHERE id = :session_id"),
-        {"session_id": active_session["session_id"]},
+        text(
+            """
+            UPDATE auth_sessions
+            SET last_seen_at = now(),
+                expires_at = :expires_at
+            WHERE id = :session_id
+            """
+        ),
+        {
+            "session_id": active_session["session_id"],
+            "expires_at": renewed_expires_at,
+        },
     )
     session.commit()
     identity["session_id"] = active_session["session_id"]
-    identity["expires_at"] = active_session["expires_at"]
+    identity["expires_at"] = renewed_expires_at
     return identity
 
 
