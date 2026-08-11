@@ -1,9 +1,9 @@
 """Narrow MetaAPI trade gateway for Day 26 demo execution.
 
-Day 26 submits one market order per provider TP. It also exposes one deliberately
-narrow close-by-position-id operation used only as compensation when a multi-TP
-submission fails part-way through. Normal provider-driven closes and modifications
-remain Day 27 scope.
+Day 26 submits one market order per provider TP and may submit one TP OPEN runner
+without a take-profit price. It also exposes one deliberately narrow close-by-position-
+id operation used only as compensation when a multi-position submission fails part-way
+through. Normal provider-driven closes/modifications remain Day 27 scope.
 """
 
 from __future__ import annotations
@@ -45,7 +45,7 @@ class MetaApiTradeGateway:
         symbol: str,
         volume: float,
         stop_loss: float,
-        take_profit: float,
+        take_profit: float | None,
         client_id: str,
     ) -> MetaApiMarketOrderResult:
         normalized_region = self._normalize_region(region)
@@ -61,10 +61,9 @@ class MetaApiTradeGateway:
         normalized_symbol = symbol.strip().upper()
         if not normalized_symbol:
             raise MetaApiGatewayError("symbol_invalid")
-        if not all(
-            self._positive_finite(value)
-            for value in (volume, stop_loss, take_profit)
-        ):
+        if not self._positive_finite(volume) or not self._positive_finite(stop_loss):
+            raise MetaApiGatewayError("trade_request_invalid")
+        if take_profit is not None and not self._positive_finite(take_profit):
             raise MetaApiGatewayError("trade_request_invalid")
         if (
             not client_id
@@ -73,20 +72,23 @@ class MetaApiTradeGateway:
         ):
             raise MetaApiGatewayError("trade_client_id_invalid")
 
+        json_body: dict[str, object] = {
+            "actionType": action_type,
+            "symbol": normalized_symbol,
+            "volume": float(volume),
+            "stopLoss": float(stop_loss),
+            "stopLossUnits": "ABSOLUTE_PRICE",
+            "clientId": client_id,
+        }
+        if take_profit is not None:
+            json_body["takeProfit"] = float(take_profit)
+            json_body["takeProfitUnits"] = "ABSOLUTE_PRICE"
+
         payload = await self._trade_request(
             token=token,
             account_id=account_id,
             region=normalized_region,
-            json_body={
-                "actionType": action_type,
-                "symbol": normalized_symbol,
-                "volume": float(volume),
-                "stopLoss": float(stop_loss),
-                "takeProfit": float(take_profit),
-                "stopLossUnits": "ABSOLUTE_PRICE",
-                "takeProfitUnits": "ABSOLUTE_PRICE",
-                "clientId": client_id,
-            },
+            json_body=json_body,
         )
         order_id = str(payload.get("orderId") or "").strip()
         if not order_id:
