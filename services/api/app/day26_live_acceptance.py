@@ -13,6 +13,7 @@ evidence. A completed acceptance version is idempotent and will not trade again.
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import logging
@@ -31,12 +32,14 @@ from app.metaapi_trade_gateway import MetaApiTradeGateway
 from app.mt5_crypto import MetaApiTokenCipher
 from app.mt5_execution_day26 import Day26ExecutionError
 from app.mt5_execution_day26_atomic import AtomicDay26Mt5ExecutionService
-from app.mt5_read_service_day23 import Day23Mt5ReadService, Day23ReadError
+from app.mt5_read_service_day23 import Day23LiveState, Day23Mt5ReadService, Day23ReadError
 
 logger = logging.getLogger(__name__)
 
 _ACCEPTANCE_VERSION = "day26-v1-live-2026-08-11"
 _TEST_SOURCE_ALIAS = "Test Signal Provider"
+_READ_ATTEMPTS = 5
+_READ_RETRY_SECONDS = 3.0
 
 
 def _money(value: Decimal) -> Decimal:
@@ -107,6 +110,31 @@ def _owner_and_source(session_factory) -> tuple[UUID, UUID, int]:
             raise RuntimeError("day26_live_acceptance_test_source_missing")
 
         return account["owner_user_id"], source["id"], int(source["chat_id"])
+
+
+async def _read_live_state_with_retry(
+    reader: Day23Mt5ReadService,
+    owner_id: UUID,
+) -> Day23LiveState:
+    """Retry only transient pre-fixture Day 23 reads; never retry a trade submission."""
+    last_error: Day23ReadError | None = None
+    for attempt in range(1, _READ_ATTEMPTS + 1):
+        try:
+            return await reader.read_owner_live_state(owner_id)
+        except Day23ReadError as exc:
+            last_error = exc
+            if not exc.retryable or attempt == _READ_ATTEMPTS:
+                break
+            logger.warning(
+                "Day 26 live acceptance Day23 read retry attempt=%s/%s code=%s",
+                attempt,
+                _READ_ATTEMPTS,
+                exc.code,
+            )
+            await asyncio.sleep(_READ_RETRY_SECONDS)
+
+    assert last_error is not None
+    raise RuntimeError(f"day26_live_acceptance_day23:{last_error.code}") from last_error
 
 
 def _insert_fixture(
@@ -265,10 +293,7 @@ async def run_day26_live_acceptance() -> None:
         cipher=cipher,
         gateway=read_gateway,
     )
-    try:
-        live = await reader.read_owner_live_state(owner_id)
-    except Day23ReadError as exc:
-        raise RuntimeError(f"day26_live_acceptance_day23:{exc.code}") from exc
+    live = await _read_live_state_with_retry(reader, owner_id)
 
     if not live.execution_ready:
         raise RuntimeError(
