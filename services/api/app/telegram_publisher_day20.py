@@ -15,18 +15,7 @@ from app.telegram_publisher import (
     render_signal_post,
 )
 from app.telegram_publisher_policy import Day19TelegramPublisherManager
-
-TESTING_BANNER = "✨🧪 TESTING 🧪✨\nDEMO / NOT LIVE\n\n"
-
-
-def apply_source_status_banner(rendered_text: str, source_status: str) -> str:
-    """Make testing posts unmistakable without exposing provider identity."""
-
-    return (
-        f"{TESTING_BANNER}{rendered_text}"
-        if source_status.strip().lower() == "testing"
-        else rendered_text
-    )
+from app.telegram_visual_identity import decorate_lifecycle_post, decorate_root_post
 
 
 @dataclass(frozen=True, slots=True)
@@ -38,9 +27,8 @@ class Day20TelegramPublisherManager(Day19TelegramPublisherManager):
     """Day 19 publisher plus one idempotent reply per stored lifecycle event."""
 
     def _seed_missing_publications(self) -> None:
-        # Day 20 replaces Day 19's signal/kind unique constraint with separate
-        # root-Signal and lifecycle-event idempotency indexes. Seed only active
-        # testing/live sources; PAUSED sources must not produce group posts.
+        # Seed only active testing/live sources. PAUSED sources must not produce
+        # user-facing posts or later execution work.
         with self._session_factory() as session:
             session.execute(
                 text(
@@ -105,6 +93,7 @@ class Day20TelegramPublisherManager(Day19TelegramPublisherManager):
                         sig.stop_loss,
                         sig.take_profits,
                         sig.risk_multiplier,
+                        src.id AS source_id,
                         src.status AS source_status
                     FROM telegram_publications AS pub
                     JOIN signals AS sig ON sig.id = pub.signal_id
@@ -122,8 +111,11 @@ class Day20TelegramPublisherManager(Day19TelegramPublisherManager):
                 session.rollback()
                 return None
 
-            rendered = apply_source_status_banner(
-                render_signal_post(row), str(row["source_status"])
+            rendered = decorate_root_post(
+                render_signal_post(row),
+                source_status=str(row["source_status"]),
+                source_id=row["source_id"],
+                signal_id=row["signal_id"],
             )
             session.execute(
                 text(
@@ -170,6 +162,7 @@ class Day20TelegramPublisherManager(Day19TelegramPublisherManager):
                         pub.signal_id,
                         ev.rendered_text,
                         root.telegram_message_id AS reply_to_message_id,
+                        src.id AS source_id,
                         src.status AS source_status
                     FROM telegram_publications AS pub
                     JOIN signal_lifecycle_events AS ev
@@ -195,8 +188,11 @@ class Day20TelegramPublisherManager(Day19TelegramPublisherManager):
                 session.rollback()
                 return None
 
-            rendered = apply_source_status_banner(
-                str(row["rendered_text"]), str(row["source_status"])
+            rendered = decorate_lifecycle_post(
+                str(row["rendered_text"]),
+                source_status=str(row["source_status"]),
+                source_id=row["source_id"],
+                signal_id=row["signal_id"],
             )
             session.execute(
                 text(
