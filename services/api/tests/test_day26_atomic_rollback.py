@@ -11,7 +11,6 @@ from app.metaapi_gateway import MetaApiGatewayError
 from app.metaapi_trade_gateway import MetaApiMarketOrderResult
 from app.mt5_execution_day26 import (
     Day26ExecutionError,
-    Day26MappedPosition,
     _AccountInput,
     _PlannedPosition,
     _SignalInput,
@@ -23,8 +22,8 @@ OWNER = UUID("ea604df2-f8ee-47d1-bc51-f0078dbf160d")
 SIGNAL = UUID("3e7ec830-9a9a-42df-b908-b331863ff6a4")
 
 
-def _live_state(price: float = 4000.0) -> Day23LiveState:
-    now = datetime(2026, 8, 11, 12, 0, tzinfo=UTC)
+def _live_state() -> Day23LiveState:
+    now = datetime.now(UTC)
     return Day23LiveState(
         local_account_id=UUID(int=99),
         metaapi_account_id="metaapi-account",
@@ -44,10 +43,10 @@ def _live_state(price: float = 4000.0) -> Day23LiveState:
         ),
         price=Day23PriceState(
             symbol="XAUUSD",
-            bid=price,
-            ask=price,
-            buy_price=price,
-            sell_price=price,
+            bid=3999.8,
+            ask=4000.0,
+            buy_price=4000.0,
+            sell_price=3999.8,
             quote_time=now,
             quote_age_seconds=0.1,
             available=True,
@@ -134,10 +133,14 @@ class _AtomicHarness(AtomicDay26Mt5ExecutionService):
             signal_id=SIGNAL,
             symbol="XAUUSD",
             side="BUY",
-            entry_price=Decimal("4000"),
+            entry_low=Decimal("4000"),
+            entry_high=Decimal("4000"),
             stop_loss=Decimal("3990"),
             take_profits=(Decimal("4010"), Decimal("4020"), Decimal("4030")),
+            has_open_runner=False,
             signal_requests_double_lot=False,
+            source_revision_index=0,
+            source_posted_at=datetime.now(UTC),
         )
         self.order_ids: dict[UUID, str] = {}
         self.rollback_persisted: tuple[dict[UUID, str], dict[UUID, str], str] | None = None
@@ -159,12 +162,16 @@ class _AtomicHarness(AtomicDay26Mt5ExecutionService):
     def _decrypt_token(self, account: _AccountInput) -> str:  # type: ignore[override]
         return "test-token-with-terminal-access"
 
+    def _assert_signal_still_current(self, owner_user_id: UUID, signal: _SignalInput) -> None:  # type: ignore[override]
+        return None
+
     def _create_planned_positions(self, **_: object):  # type: ignore[override]
         return self.planned
 
     def _record_order_id(self, local_position_id: UUID, order_id: str) -> None:
         self.order_ids[local_position_id] = order_id
         item = next(row for row in self.planned if row.local_position_id == local_position_id)
+        assert item.take_profit is not None
         self.read.positions.append(
             {
                 "id": f"broker-{item.tp_index}",
@@ -178,20 +185,8 @@ class _AtomicHarness(AtomicDay26Mt5ExecutionService):
             }
         )
 
-    def _map_broker_positions(self, *, signal, sizing, planned, order_ids, **_):  # type: ignore[override]
-        return tuple(
-            Day26MappedPosition(
-                local_position_id=item.local_position_id,
-                tp_index=item.tp_index,
-                take_profit=item.take_profit,
-                volume=sizing.volume,
-                client_id=item.client_id,
-                broker_order_id=order_ids[item.client_id],
-                broker_position_id=f"broker-{item.tp_index}",
-                broker_open_price=signal.entry_price,
-            )
-            for item in planned
-        )
+    def _map_broker_positions(self, **_: object):  # type: ignore[override]
+        raise RuntimeError("test should fail before mapping")
 
     def _audit(self, **_: object) -> None:  # type: ignore[override]
         return None
