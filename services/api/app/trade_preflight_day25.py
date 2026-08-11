@@ -23,6 +23,7 @@ class Day25PreflightResult:
     side: str
     symbol: str
     signal_entry_price: Decimal
+    signal_stop_loss: Decimal
     executable_price: Decimal | None
     entry_available: bool
     free_margin: Decimal
@@ -57,6 +58,7 @@ class Day25TradePreflightService:
 
         symbol = live_state.price.symbol.strip().upper()
         signal_entry = sizing.signal_entry_price
+        signal_stop = sizing.signal_stop_loss
         free_margin = self._decimal(live_state.account.free_margin)
         total_volume = sizing.volume * Decimal(sizing.position_count)
 
@@ -73,6 +75,7 @@ class Day25TradePreflightService:
                 side=normalized_side,
                 symbol=symbol,
                 signal_entry=signal_entry,
+                signal_stop=signal_stop,
                 executable_price=None,
                 entry_available=False,
                 free_margin=free_margin,
@@ -86,6 +89,7 @@ class Day25TradePreflightService:
         entry_available = self._entry_is_available(
             side=normalized_side,
             signal_entry=signal_entry,
+            signal_stop=signal_stop,
             executable_price=executable_price,
         )
         if not entry_available:
@@ -94,6 +98,7 @@ class Day25TradePreflightService:
                 side=normalized_side,
                 symbol=symbol,
                 signal_entry=signal_entry,
+                signal_stop=signal_stop,
                 executable_price=executable_price,
                 entry_available=False,
                 free_margin=free_margin,
@@ -110,6 +115,7 @@ class Day25TradePreflightService:
                 side=normalized_side,
                 symbol=symbol,
                 signal_entry=signal_entry,
+                signal_stop=signal_stop,
                 executable_price=executable_price,
                 entry_available=True,
                 free_margin=free_margin,
@@ -138,6 +144,7 @@ class Day25TradePreflightService:
                 side=normalized_side,
                 symbol=symbol,
                 signal_entry=signal_entry,
+                signal_stop=signal_stop,
                 executable_price=executable_price,
                 entry_available=True,
                 free_margin=free_margin,
@@ -154,6 +161,7 @@ class Day25TradePreflightService:
                 side=normalized_side,
                 symbol=symbol,
                 signal_entry=signal_entry,
+                signal_stop=signal_stop,
                 executable_price=executable_price,
                 entry_available=True,
                 free_margin=free_margin,
@@ -170,6 +178,7 @@ class Day25TradePreflightService:
             side=normalized_side,
             symbol=symbol,
             signal_entry_price=signal_entry,
+            signal_stop_loss=signal_stop,
             executable_price=executable_price,
             entry_available=True,
             free_margin=free_margin,
@@ -189,14 +198,16 @@ class Day25TradePreflightService:
         *,
         side: str,
         signal_entry: Decimal,
+        signal_stop: Decimal,
         executable_price: Decimal,
     ) -> bool:
-        # A same-or-better executable price is acceptable. A worse price means
-        # the stated entry has been missed, so the signal is skipped once with
-        # no chase or retry. BUY uses ask; SELL uses bid via Day 23.
+        # A same-or-better executable price is acceptable only while the
+        # original signal stop is still on the correct side of the market.
+        # If price has moved through the stop, the signal thesis is already
+        # invalid and the entry is treated as unavailable.
         if side == "BUY":
-            return executable_price <= signal_entry
-        return executable_price >= signal_entry
+            return signal_stop < executable_price <= signal_entry
+        return signal_entry <= executable_price < signal_stop
 
     @classmethod
     def _blocked(
@@ -206,6 +217,7 @@ class Day25TradePreflightService:
         side: str,
         symbol: str,
         signal_entry: Decimal,
+        signal_stop: Decimal,
         executable_price: Decimal | None,
         entry_available: bool,
         free_margin: Decimal,
@@ -221,6 +233,7 @@ class Day25TradePreflightService:
             side=side,
             symbol=symbol,
             signal_entry_price=signal_entry,
+            signal_stop_loss=signal_stop,
             executable_price=executable_price,
             entry_available=entry_available,
             free_margin=free_margin,
