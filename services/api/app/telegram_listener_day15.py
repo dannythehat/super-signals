@@ -1,15 +1,15 @@
 """Day 15 Telegram listener with conservative message classification.
 
-All Day 14 reliability/privacy behaviour remains intact. Day 15 classifies raw
-message evidence after it has been safely persisted. It does not parse Signals,
-create Positions or perform any trade action.
+All Day 14 reliability/privacy behaviour remains intact. New messages use the
+versioned real-source classifier correction while historical Day 15 evidence is
+left untouched.
 """
 
 from __future__ import annotations
 
 import asyncio
 
-from app.message_classifier import MessageClassificationService
+from app.message_classifier_v2 import MessageClassificationServiceV2
 from app.telegram_crypto import TelegramSessionCipher
 from app.telegram_listener import CapturedTelegramMessage
 from app.telegram_listener_day13 import CapturedTelegramEdit
@@ -36,19 +36,14 @@ class Day15TelegramListenerManager(Day14TelegramListenerManager):
             session_factory=session_factory,
             refresh_seconds=refresh_seconds,
         )
-        self._classification_service = MessageClassificationService(session_factory)
+        self._classification_service = MessageClassificationServiceV2(session_factory)
 
     async def start(self) -> None:
-        # A restart must not strand raw messages that were committed immediately
-        # before the process stopped. Backfill is idempotent because the table is
-        # unique on (message_id, revision_index).
         await asyncio.to_thread(self._classification_service.backfill_unclassified)
         await super().start()
 
     def _persist_message(self, captured: CapturedTelegramMessage) -> bool:
         persisted = super()._persist_message(captured)
-        # Ensure classification even if Telegram replays a message whose raw row
-        # was already committed but whose classification was interrupted.
         self._classification_service.classify_original(
             captured.source_id,
             captured.telegram_message_id,
@@ -57,8 +52,6 @@ class Day15TelegramListenerManager(Day14TelegramListenerManager):
 
     def _persist_edit(self, captured: CapturedTelegramEdit) -> bool:
         persisted = super()._persist_edit(captured)
-        # Classify the latest append-only revision. Earlier classification rows
-        # are never overwritten.
         self._classification_service.classify_latest_revision(
             captured.source_id,
             captured.telegram_message_id,
