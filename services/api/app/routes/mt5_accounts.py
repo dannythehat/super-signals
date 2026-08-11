@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import os
 from dataclasses import asdict
 from datetime import datetime
 from typing import Annotated, Any
@@ -51,6 +50,27 @@ def _no_store(response: Response) -> None:
     response.headers["Pragma"] = "no-cache"
 
 
+def _safe_error_message(code: str) -> str:
+    messages = {
+        "metaapi_platform_token_not_configured": (
+            "The broker platform credential is not available. An administrator must restore the permanent MT5 configuration."
+        ),
+        "broker_credential_decryption_failed": (
+            "The stored broker credential could not be opened. Do not create a new account; restore the permanent encryption-key configuration."
+        ),
+        "metaapi_permission_denied": (
+            "MetaAPI refused the request. Check the MetaAPI account balance/subscription before retrying."
+        ),
+        "metaapi_e_auth": (
+            "Vantage rejected the MT5 credentials. Re-check the MT5 login, trading password and exact server name."
+        ),
+        "mt5_account_already_bound": (
+            "This Super Signals user is already bound to a different MT5 login or server."
+        ),
+    }
+    return messages.get(code, "The MT5 demo account could not be connected.")
+
+
 @router.get("/demo/status", response_model=Mt5ConnectionResponse)
 async def owner_demo_status(
     request: Request,
@@ -70,16 +90,8 @@ async def connect_owner_demo(
     identity: OwnerIdentity,
 ) -> Mt5ConnectionResponse:
     service = require_mt5_service(request)
-    metaapi_token = os.getenv("SUPER_SIGNALS_API", "").strip()
-    if len(metaapi_token) < 20:
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail={
-                "code": "metaapi_platform_token_not_configured",
-                "message": "The Super Signals broker connection key is not available to the running service yet.",
-            },
-        )
     try:
+        metaapi_token = service.resolve_platform_token()
         view = await service.connect_owner_demo(
             owner_user_id=identity["id"],
             metaapi_token=metaapi_token,
@@ -89,10 +101,18 @@ async def connect_owner_demo(
         )
     except Mt5ConnectionError as exc:
         raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
+            status_code=(
+                status.HTTP_503_SERVICE_UNAVAILABLE
+                if exc.code
+                in {
+                    "metaapi_platform_token_not_configured",
+                    "broker_credential_decryption_failed",
+                }
+                else status.HTTP_400_BAD_REQUEST
+            ),
             detail={
                 "code": exc.code,
-                "message": "The MT5 demo account could not be connected.",
+                "message": _safe_error_message(exc.code),
             },
         ) from exc
     _no_store(response)

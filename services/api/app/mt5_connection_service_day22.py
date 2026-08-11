@@ -7,6 +7,7 @@ safe diagnostic stages and writes successful MetaAPI connection state directly.
 
 from __future__ import annotations
 
+import os
 from datetime import UTC, datetime
 from typing import Any
 from uuid import UUID
@@ -15,12 +16,55 @@ from sqlalchemy import text
 
 from app.metaapi_gateway import MetaApiGatewayError
 from app.models import AuditEvent
-from app.mt5_connection_service import Mt5ConnectionView, Mt5DemoConnectionService
+from app.mt5_connection_service import (
+    Mt5ConnectionError,
+    Mt5ConnectionView,
+    Mt5DemoConnectionService,
+)
 from app.mt5_crypto import BrokerCredentialDecryptionError
 
 
 class Day22Mt5DemoConnectionService(Mt5DemoConnectionService):
     """Day 22 service with deterministic, auditable restart reconciliation."""
+
+    def resolve_platform_token(self) -> str:
+        """Return the MetaAPI platform token without requiring repeated setup.
+
+        A temporary Render environment token may bootstrap a brand-new deployment.
+        Once any MT5 account has been registered, the encrypted token stored in
+        PostgreSQL becomes the durable source. This means future reconnects and
+        later user onboarding do not require the owner to paste or reconfigure the
+        MetaAPI token again.
+        """
+
+        environment_token = os.getenv("SUPER_SIGNALS_API", "").strip()
+        if len(environment_token) >= 20:
+            return environment_token
+
+        with self._session_factory() as session:
+            row = session.execute(
+                text(
+                    """
+                    SELECT metaapi_token_ciphertext
+                    FROM mt5_accounts
+                    WHERE status != 'revoked'
+                    ORDER BY last_connected_at DESC NULLS LAST, created_at ASC
+                    LIMIT 1
+                    """
+                )
+            ).mappings().first()
+
+        if row is None:
+            raise Mt5ConnectionError("metaapi_platform_token_not_configured")
+
+        try:
+            token = self._cipher.decrypt(bytes(row["metaapi_token_ciphertext"]))
+        except BrokerCredentialDecryptionError as exc:
+            raise Mt5ConnectionError("broker_credential_decryption_failed") from exc
+
+        if len(token.strip()) < 20:
+            raise Mt5ConnectionError("metaapi_platform_token_not_configured")
+        return token.strip()
 
     async def reconcile_all(self) -> int:
         with self._session_factory() as session:

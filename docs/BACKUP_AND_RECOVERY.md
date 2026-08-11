@@ -17,6 +17,21 @@ These targets must be tightened before broader or live-trading use if operationa
 2. **Independent logical backup** — encrypted `pg_dump` output stored outside the database provider.
 3. **Pre-migration backup** — create a verified backup immediately before a production schema migration.
 4. **Audit preservation** — backup and restore must retain append-only audit rows and their mutation-blocking triggers.
+5. **Broker decrypt-key recovery** — a database backup containing encrypted MetaAPI tokens is useless without at least one valid broker credential decryption key. The active key set must therefore be preserved separately from PostgreSQL and source control.
+
+## Broker credential recovery boundary
+
+The active MT5 decrypt key set is held in deployment secrets, never in Git, Notion, logs, screenshots or the database.
+
+For the controlled preview service:
+
+- `SUPER_SIGNALS_BROKER_CREDENTIAL_KEYS` is the primary active key set.
+- `SUPER_SIGNALS_MT5_ENCRYPTION_KEYS` is maintained as a fallback copy so accidental removal of the primary variable does not immediately make stored MetaAPI credentials unreadable.
+- both variables must be treated as permanent infrastructure secrets, not temporary Day 22 credentials.
+
+Before external launch, the same active key set must also have a separate owner-controlled secret-manager/password-manager recovery copy. Never put the plaintext key into a project document or support ticket.
+
+See `docs/MT5_METAAPI_OPERATIONS.md` before rotating or replacing broker credential keys.
 
 ## Retention baseline
 
@@ -48,11 +63,12 @@ The test contains no production data or secrets.
 3. Create a final snapshot of the damaged database when safe.
 4. Restore into a new isolated database, never over the only remaining copy.
 5. Validate migrations, row counts, role assignments, audit triggers and a sample of signals and positions.
-6. Rotate database credentials if compromise is possible.
-7. point the API to the restored database through the secret manager.
-8. run health and reconciliation checks before resuming writes.
-9. retain incident evidence and document any data-loss window.
+6. Restore the broker credential decrypt key set from the deployment secret manager before attempting MT5 reconciliation.
+7. Rotate database credentials if compromise is possible.
+8. point the API to the restored database through the secret manager.
+9. run health and MT5 reconciliation checks before resuming writes.
+10. retain incident evidence and document any data-loss window.
 
 ## Current managed environment
 
-The preview Supabase database is connected and healthy. It contains foundation schema only and no live user, Telegram or broker data. A separate production database remains a launch requirement.
+The controlled Render preview PostgreSQL database now contains the accepted Day 22 encrypted MetaAPI-backed MT5 demo connection. Live trading remains disabled. A separate production database and production-only secret set remain launch requirements.
