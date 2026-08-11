@@ -61,7 +61,7 @@ def test_supervisor_uses_strict_structured_output_and_no_storage(monkeypatch) ->
     supervisor = OpenAiMessageSupervisor(
         api_key="test-only",
         model="gpt-5-mini-2025-08-07",
-        timeout_seconds=6,
+        timeout_seconds=12,
     )
     result = supervisor.decide(
         raw_text="BUY GOLD @ 4371\nTP 4375\nTP 4380\nTP 4385\nSL 4360",
@@ -78,9 +78,16 @@ def test_supervisor_uses_strict_structured_output_and_no_storage(monkeypatch) ->
     assert isinstance(request, dict)
     assert request["store"] is False
     assert request["model"] == "gpt-5-mini-2025-08-07"
+    assert request["reasoning"] == {"effort": "minimal"}
+    assert request["max_output_tokens"] == 1200
     assert request["text"]["format"]["type"] == "json_schema"
     assert request["text"]["format"]["strict"] is True
     assert request["text"]["format"]["schema"] == AI_DECISION_SCHEMA
+    assert "unsupported_multiple_entries" in request["instructions"]
+    assert "unsupported_entry_range" in request["instructions"]
+    assert "unsupported_pending_order" in request["instructions"]
+    assert "unsupported_open_target" in request["instructions"]
+    assert captured["timeout"] == 12
 
 
 def test_edit_context_is_sent_as_same_message_revision(monkeypatch) -> None:
@@ -118,7 +125,7 @@ def test_edit_context_is_sent_as_same_message_revision(monkeypatch) -> None:
     supervisor = OpenAiMessageSupervisor(
         api_key="test-only",
         model="gpt-5-mini-2025-08-07",
-        timeout_seconds=6,
+        timeout_seconds=12,
     )
     result = supervisor.decide(
         raw_text="BUY GOLD @ 4371\nTP 4375\nTP 4380\nTP 4385\nSL 4358",
