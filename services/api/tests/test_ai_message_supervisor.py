@@ -70,6 +70,10 @@ def test_supervisor_uses_strict_structured_output_and_no_storage(monkeypatch) ->
     result = supervisor.decide(
         raw_text="BUY GOLD @ 4371\nTP 4375\nTP 4380\nTP 4385\nSL 4360",
         source_status="testing",
+        source_name="Example Gold Provider",
+        recent_source_messages=[
+            {"telegram_message_id": 10, "text": "PREPARE FOR A BUY"},
+        ],
     )
 
     assert result.decision == "new_trade"
@@ -87,10 +91,15 @@ def test_supervisor_uses_strict_structured_output_and_no_storage(monkeypatch) ->
     assert request["text"]["format"]["type"] == "json_schema"
     assert request["text"]["format"]["strict"] is True
     assert request["text"]["format"]["schema"] == AI_DECISION_SCHEMA
+    assert "SOURCE-AWARE INTERPRETATION" in request["instructions"]
+    assert "DECISION AND ACTION ARE DIFFERENT QUESTIONS" in request["instructions"]
     assert "unsupported_multiple_entries" in request["instructions"]
     assert "unsupported_entry_range" in request["instructions"]
     assert "unsupported_pending_order" in request["instructions"]
     assert "unsupported_open_target" in request["instructions"]
+    prompt = json.loads(request["input"])
+    assert prompt["source_name"] == "Example Gold Provider"
+    assert prompt["recent_source_messages"][0]["telegram_message_id"] == 10
     assert captured["timeout"] == 12
 
 
@@ -278,3 +287,19 @@ def test_execution_guard_does_not_infer_double_size_from_high_risk() -> None:
     )
     assert guarded["action"] == "execute"
     assert guarded["double_lot"] is False
+
+
+def test_execution_guard_can_use_direct_reply_but_not_ambient_history() -> None:
+    decision = _complete_trade_decision()
+    current = "BUY GOLD NOW"
+
+    without_link = _guard_execute_decision(decision, current)
+    assert without_link["action"] == "skip"
+    assert without_link["reason"] == "provider_instruction_incomplete"
+
+    with_link = _guard_execute_decision(
+        decision,
+        current,
+        linked_context="BUY GOLD @ 4371\nTP 4375\nTP 4380\nTP 4385\nSL 4360",
+    )
+    assert with_link["action"] == "execute"
