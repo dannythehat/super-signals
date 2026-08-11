@@ -1,8 +1,8 @@
-"""Day 21 Telegram listener reliability gate support.
+"""Day 21 Telegram listener reliability plus AI-authoritative message decisions.
 
-Adds a bounded, source-scoped catch-up on reader start/reconnect so short Render
-cutovers cannot silently lose Telegram messages. Catch-up reuses the accepted
-idempotent Day 20 persistence pipeline and never broadens the selected source set.
+Every newly persisted Testing/Live source message and edit is immediately passed to
+the AI Message Supervisor when enabled. Reconnect catch-up uses the same idempotent
+pipeline, so a Render cutover cannot bypass supervision.
 """
 
 from __future__ import annotations
@@ -14,6 +14,9 @@ from typing import Any
 from telethon import TelegramClient, events
 from telethon.sessions import StringSession
 
+from app.ai_message_pipeline import AiMessagePipeline
+from app.ai_message_supervisor import OpenAiMessageSupervisor
+from app.config import get_settings
 from app.telegram_crypto import TelegramSessionCipher
 from app.telegram_listener import CapturedTelegramMessage, ReaderListeningPlan
 from app.telegram_listener_day13 import CapturedTelegramEdit
@@ -25,7 +28,58 @@ _DAY21_CATCHUP_LIMIT = 25
 
 
 class Day21TelegramListenerManager(Day20TelegramListenerManager):
-    """Day 20 pipeline plus bounded reconnect catch-up for exact selected sources."""
+    """Day 20 pipeline plus catch-up and immediate AI message supervision."""
+
+    def __init__(
+        self,
+        *,
+        api_id: int,
+        api_hash: str,
+        cipher: TelegramSessionCipher,
+        session_factory: sessionmaker[Session],
+        refresh_seconds: int = 5,
+        excluded_chat_id: int | None = None,
+    ) -> None:
+        super().__init__(
+            api_id=api_id,
+            api_hash=api_hash,
+            cipher=cipher,
+            session_factory=session_factory,
+            refresh_seconds=refresh_seconds,
+            excluded_chat_id=excluded_chat_id,
+        )
+        settings = get_settings()
+        self._ai_pipeline: AiMessagePipeline | None = None
+        if settings.ai_supervisor_enabled:
+            supervisor = None
+            if settings.ai_supervisor_api_key:
+                supervisor = OpenAiMessageSupervisor(
+                    api_key=settings.ai_supervisor_api_key,
+                    model=settings.ai_supervisor_model,
+                    timeout_seconds=settings.ai_supervisor_timeout_seconds,
+                )
+            self._ai_pipeline = AiMessagePipeline(
+                session_factory=session_factory,
+                supervisor=supervisor,
+            )
+
+    def _persist_message(self, captured: CapturedTelegramMessage) -> bool:
+        persisted = super()._persist_message(captured)
+        if self._ai_pipeline is not None:
+            self._ai_pipeline.process_original(
+                captured.source_id,
+                captured.telegram_message_id,
+            )
+        return persisted
+
+    def _persist_edit(self, captured: CapturedTelegramEdit) -> bool:
+        persisted = super()._persist_edit(captured)
+        if persisted and self._ai_pipeline is not None:
+            self._ai_pipeline.process_latest_revision(
+                captured.source_id,
+                captured.telegram_message_id,
+            )
+        return persisted
 
     async def _run_reader(self, plan: ReaderListeningPlan) -> None:
         session_string = self._cipher.decrypt(plan.session_ciphertext)
@@ -112,9 +166,6 @@ class Day21TelegramListenerManager(Day20TelegramListenerManager):
             )
             client.add_event_handler(handle_deleted_message, events.MessageDeleted())
 
-            # Register live handlers first, then close the small deployment gap.
-            # Existing source/message uniqueness and lifecycle event keys make
-            # overlap between live delivery and catch-up harmless.
             await self._catch_up_recent_messages(client, plan)
 
             logger.info(
@@ -165,11 +216,6 @@ class Day21TelegramListenerManager(Day20TelegramListenerManager):
                 )
                 inserted = await asyncio.to_thread(self._persist_message, captured)
 
-                # If this message was already known before the reconnect, a fetched
-                # current Telegram edit can safely append a missing revision. If the
-                # message itself was missed and is already edited, we preserve the
-                # current Telegram text as newly recovered evidence but do not invent
-                # a historical pre-edit version that Telegram no longer provides.
                 edit_date = getattr(message, "edit_date", None)
                 if not inserted and edit_date is not None:
                     captured_edit = CapturedTelegramEdit(

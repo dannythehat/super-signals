@@ -31,6 +31,10 @@ class Settings:
     telegram_qr_ttl_seconds: int
     telegram_listener_enabled: bool
     telegram_listener_refresh_seconds: int
+    ai_supervisor_enabled: bool
+    ai_supervisor_api_key: str | None
+    ai_supervisor_model: str
+    ai_supervisor_timeout_seconds: int
 
 
 def _parse_origins(value: str) -> tuple[str, ...]:
@@ -196,6 +200,7 @@ def get_settings() -> Settings:
     if not cors_origins:
         raise RuntimeError("SUPER_SIGNALS_CORS_ORIGINS must contain at least one origin")
     telegram_api_id, telegram_api_hash = _telegram_api_credentials(environment)
+    ai_api_key = os.getenv("OPENAI_API_KEY", "").strip() or None
 
     return Settings(
         environment=environment,
@@ -224,5 +229,17 @@ def get_settings() -> Settings:
         telegram_listener_refresh_seconds=_positive_int(
             "SUPER_SIGNALS_TELEGRAM_LISTENER_REFRESH_SECONDS",
             "5",
+        ),
+        ai_supervisor_enabled=_parse_bool(
+            os.getenv("SUPER_SIGNALS_AI_SUPERVISOR_ENABLED", "true")
+        ),
+        ai_supervisor_api_key=ai_api_key,
+        ai_supervisor_model=os.getenv(
+            "SUPER_SIGNALS_AI_SUPERVISOR_MODEL",
+            "gpt-5-mini-2025-08-07",
+        ).strip(),
+        ai_supervisor_timeout_seconds=_positive_int(
+            "SUPER_SIGNALS_AI_SUPERVISOR_TIMEOUT_SECONDS",
+            "6",
         ),
     )

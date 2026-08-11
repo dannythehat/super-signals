@@ -1,9 +1,15 @@
-"""Day 17 Telegram listener with strict validation and admin review evidence."""
+"""Day 17 Telegram listener with strict validation evidence.
+
+Historical Day 17 review rows remain intact. When the AI Message Supervisor is
+enabled, new messages do not enter a human review queue because the live path must
+make an immediate automatic decision.
+"""
 
 from __future__ import annotations
 
 import asyncio
 
+from app.config import get_settings
 from app.message_review import MessageReviewService
 from app.telegram_crypto import TelegramSessionCipher
 from app.telegram_listener import CapturedTelegramMessage
@@ -13,7 +19,7 @@ from sqlalchemy.orm import Session, sessionmaker
 
 
 class Day17TelegramListenerManager(Day16TelegramListenerManager):
-    """Day 16 listener plus strict validation/review queue processing."""
+    """Day 16 listener plus legacy Day 17 validation/review processing."""
 
     def __init__(
         self,
@@ -32,27 +38,29 @@ class Day17TelegramListenerManager(Day16TelegramListenerManager):
             refresh_seconds=refresh_seconds,
         )
         self._review_service = MessageReviewService(session_factory)
+        self._ai_supervisor_enabled = get_settings().ai_supervisor_enabled
 
     async def start(self) -> None:
-        # Accepted Day 15/16 stages backfill first. Day 17 then evaluates every
-        # existing revision deterministically and idempotently.
         await super().start()
-        await asyncio.to_thread(self._review_service.backfill)
+        if not self._ai_supervisor_enabled:
+            await asyncio.to_thread(self._review_service.backfill)
 
     def _persist_message(self, captured: CapturedTelegramMessage) -> bool:
         persisted = super()._persist_message(captured)
-        self._review_service.process_original(
-            captured.source_id,
-            captured.telegram_message_id,
-        )
+        if not self._ai_supervisor_enabled:
+            self._review_service.process_original(
+                captured.source_id,
+                captured.telegram_message_id,
+            )
         return persisted
 
     def _persist_edit(self, captured: CapturedTelegramEdit) -> bool:
         persisted = super()._persist_edit(captured)
-        self._review_service.process_latest_revision(
-            captured.source_id,
-            captured.telegram_message_id,
-        )
+        if not self._ai_supervisor_enabled:
+            self._review_service.process_latest_revision(
+                captured.source_id,
+                captured.telegram_message_id,
+            )
         return persisted
 
 
