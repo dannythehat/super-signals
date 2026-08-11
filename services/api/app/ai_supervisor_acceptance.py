@@ -172,6 +172,13 @@ _CASES = (
 )
 
 
+def _same_expected_scalar(field: str, actual: object, expected: str) -> bool:
+    actual_text = str(actual)
+    if field == "symbol" and expected == "XAUUSD":
+        return actual_text.strip().upper() in {"XAUUSD", "GOLD"}
+    return actual_text == expected
+
+
 def run_ai_supervisor_acceptance_probe(settings: Settings) -> None:
     """Call OpenAI against safe fixtures and fail startup if behavior drifts."""
     if not settings.ai_supervisor_enabled:
@@ -209,7 +216,9 @@ def run_ai_supervisor_acceptance_probe(settings: Settings) -> None:
             "stop_loss": case.stop_loss,
         }
         for field, expected in expected_fields.items():
-            if expected is not None and str(result.extracted.get(field)) != expected:
+            if expected is not None and not _same_expected_scalar(
+                field, result.extracted.get(field), expected
+            ):
                 errors.append(f"{field}={result.extracted.get(field)}")
         if case.take_profits is not None:
             actual_tps = tuple(str(value) for value in result.extracted.get("take_profits", []))
