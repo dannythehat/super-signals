@@ -94,14 +94,52 @@ Classify every message immediately:
 - preparation: heads-up/watch/wait/get-ready language with no executable instruction
 - non_actionable: incomplete/unsupported/unclear instruction
 
-Use action=execute only for a mechanically complete new trade. Use apply_update only
-for an explicit trade-management/result instruction. Use ignore for chatter or
-preparation. Use skip for incomplete/unsupported/unclear instructions.
+SUPER SIGNALS V1 EXECUTION BOUNDARY
+Use action=execute ONLY when the provider message itself contains all of the following:
+1. XAUUSD/GOLD side BUY or SELL
+2. one single exact market entry price
+3. one explicit numeric stop loss
+4. one or more explicit numeric take-profit prices
+5. no second/discrete entry, no entry range, no pending/limit order, and no open-ended target
 
-Treat GOLD as XAUUSD when the provider is clearly referring to gold. Preserve entry
-ranges as entry_low/entry_high. If only one exact entry is supplied, set both to that
-same value. BUY LIMIT/SELL LIMIT are pending orders. 'High risk' is not double lot.
-Only explicit double/double lot wording sets double_lot=true.
+If a message is a genuine trade instruction but its structure is outside that exact
+V1 boundary, understand and extract what is explicit, but use decision=new_trade and
+action=skip. Use one of these stable reasons when applicable:
+- unsupported_multiple_entries: two or more separately stated entry prices, including
+  wording such as 'ENTRY ... Second entry ...'
+- unsupported_entry_range: a range/area/slash pair such as 4392-4388 or 4396/4391
+- unsupported_pending_order: BUY LIMIT, SELL LIMIT, BUY STOP, SELL STOP or equivalent
+- unsupported_open_target: TP OPEN, RUNNER, leave open, or another non-numeric target
+
+When several unsupported structures occur together, prefer the most mechanically
+fundamental reason in this order: unsupported_multiple_entries,
+unsupported_pending_order, unsupported_entry_range, unsupported_open_target.
+
+Examples of important real-world distinctions:
+- 'Ready', 'Prepare for a buy', 'Watch gold', 'Get ready' => preparation + ignore.
+- 'Buy Gold Now' or 'Sell Gold Now' with no explicit entry, SL and numeric TP values
+  in that message/context => non_actionable + skip, reason=provider_instruction_incomplete.
+- 'BUY GOLD @ 4371 / TP 4375 / TP 4380 / SL 4360' => exact market trade and may execute.
+- 'BUY GOLD @ 4396/4391 ...' => new_trade + skip, unsupported_entry_range.
+- 'ENTRY: 4385 / Second entry: 4380 ...' => new_trade + skip,
+  unsupported_multiple_entries.
+- 'BUY LIMITS GOLD ...' => new_trade + skip, unsupported_pending_order.
+- A message containing otherwise numeric TPs plus 'TP OPEN' => new_trade + skip,
+  unsupported_open_target. Preserve only explicit numeric targets in take_profits.
+
+Treat GOLD as XAUUSD when the provider is clearly referring to gold. For an explicit
+numeric range, set entry_low to the lower number and entry_high to the higher number.
+If only one exact entry is supplied, set both to that same value. BUY LIMIT/SELL LIMIT
+are pending orders. 'High risk', 'risk free', 'secure profit', large pip claims, emojis,
+or emphatic wording do NOT mean double lot. Only explicit 'double lot', 'double lots',
+'double size' or unmistakably equivalent sizing wording sets double_lot=true.
+
+For trade updates, use action=apply_update only for an explicit management or result
+instruction that can be identified from the message/context. A bare profit boast such
+as '+100 pips' with no clear linked action may be a result_report or non_actionable;
+do not invent which trade or TP it belongs to. TP1/TP2/etc HIT is a trade_update with
+update_type=tp_hit. Explicit 'move SL to 4385' is edit_stop_loss. Explicit 'close half'
+or 'take partials' is close_half. Explicit 'close/out at entry/on the rest' is close.
 
 When is_edit=true, the Telegram message is a revision of the same provider message,
 not a second trade. Compare previous_text with telegram_message. If the edit changes
@@ -110,7 +148,8 @@ return the full explicit revised trade fields plus the most specific update_type
 can identify. If there is no actionable instruction change, ignore or skip it. Never
 turn an edit into a duplicate new trade.
 
-Return only the requested structured object."""
+Use action=ignore for chatter or preparation. Use action=skip for incomplete,
+unsupported or unclear instructions. Return only the requested structured object."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -137,7 +176,7 @@ class OpenAiMessageSupervisor:
         *,
         api_key: str,
         model: str,
-        timeout_seconds: int = 6,
+        timeout_seconds: int = 12,
         base_url: str = "https://api.openai.com/v1",
     ) -> None:
         if not api_key:
@@ -167,6 +206,8 @@ class OpenAiMessageSupervisor:
         payload = {
             "model": self._model,
             "store": False,
+            "reasoning": {"effort": "minimal"},
+            "max_output_tokens": 1200,
             "instructions": _SYSTEM_INSTRUCTIONS,
             "input": json.dumps(prompt, ensure_ascii=False),
             "text": {
