@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import os
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -136,22 +135,35 @@ class Day23Mt5ReadService:
                 token=token,
                 account_id=account_id,
             )
-            account_payload, positions_payload, price_payload = await asyncio.gather(
-                self._gateway.read_account_information(
-                    token=token, account_id=account_id, region=region
-                ),
-                self._gateway.read_positions(
-                    token=token, account_id=account_id, region=region
-                ),
-                self._gateway.read_symbol_price(
-                    token=token,
-                    account_id=account_id,
-                    region=region,
-                    symbol=DAY23_SYMBOL,
-                ),
+        except MetaApiGatewayError as exc:
+            self._audit_failure(row["id"], exc.code, "resolve_region")
+            raise Day23ReadError(exc.code, retryable=exc.retryable) from exc
+
+        try:
+            account_payload = await self._gateway.read_account_information(
+                token=token, account_id=account_id, region=region
             )
         except MetaApiGatewayError as exc:
-            self._audit_failure(row["id"], exc.code, "metaapi_read")
+            self._audit_failure(row["id"], exc.code, "account_information", region=region)
+            raise Day23ReadError(exc.code, retryable=exc.retryable) from exc
+
+        try:
+            positions_payload = await self._gateway.read_positions(
+                token=token, account_id=account_id, region=region
+            )
+        except MetaApiGatewayError as exc:
+            self._audit_failure(row["id"], exc.code, "positions", region=region)
+            raise Day23ReadError(exc.code, retryable=exc.retryable) from exc
+
+        try:
+            price_payload = await self._gateway.read_symbol_price(
+                token=token,
+                account_id=account_id,
+                region=region,
+                symbol=DAY23_SYMBOL,
+            )
+        except MetaApiGatewayError as exc:
+            self._audit_failure(row["id"], exc.code, "symbol_price", region=region)
             raise Day23ReadError(exc.code, retryable=exc.retryable) from exc
 
         read_at = self._utc(now or datetime.now(UTC))
@@ -160,7 +172,7 @@ class Day23Mt5ReadService:
             positions = tuple(self._position(item) for item in positions_payload)
             price = self._price_state(price_payload, read_at=read_at)
         except Day23ReadError as exc:
-            self._audit_failure(row["id"], exc.code, "parse_response")
+            self._audit_failure(row["id"], exc.code, "parse_response", region=region)
             raise
 
         state = Day23LiveState(
@@ -319,7 +331,14 @@ class Day23Mt5ReadService:
             )
             session.commit()
 
-    def _audit_failure(self, local_account_id: UUID, code: str, stage: str) -> None:
+    def _audit_failure(
+        self,
+        local_account_id: UUID,
+        code: str,
+        stage: str,
+        *,
+        region: str | None = None,
+    ) -> None:
         with self._session_factory() as session:
             session.add(
                 AuditEvent(
@@ -329,6 +348,7 @@ class Day23Mt5ReadService:
                     entity_id=local_account_id,
                     payload={
                         "stage": stage,
+                        "region": region,
                         "error_code": code,
                         "trade_action_created": False,
                     },
