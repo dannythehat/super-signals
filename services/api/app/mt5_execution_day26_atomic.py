@@ -18,7 +18,13 @@ from uuid import UUID
 from sqlalchemy import text
 
 from app.metaapi_gateway import MetaApiGatewayError
-from app.mt5_execution_day26 import Day26ExecutionError, Day26Mt5ExecutionService
+from app.mt5_crypto import BrokerCredentialDecryptionError
+from app.mt5_execution_day26 import (
+    Day26ExecutionError,
+    Day26Mt5ExecutionService,
+    _AccountInput,
+    _SignalInput,
+)
 from app.mt5_read_service_day23 import Day23Mt5ReadService, Day23ReadError
 
 
@@ -37,6 +43,14 @@ class Day26RollbackResult:
 
 class AtomicDay26Mt5ExecutionService(Day26Mt5ExecutionService):
     """Day 26 execution with broker compensation on partial failure."""
+
+    def _load_inputs(
+        self, owner_user_id: UUID, signal_id: UUID
+    ) -> tuple[_SignalInput, _AccountInput]:
+        signal, account = super()._load_inputs(owner_user_id, signal_id)
+        if len(signal.take_profits) != 3:
+            raise Day26ExecutionError("day26_three_tps_required")
+        return signal, account
 
     async def execute_owner_demo_signal(
         self,
@@ -200,7 +214,10 @@ class AtomicDay26Mt5ExecutionService(Day26Mt5ExecutionService):
             raise Day26ExecutionError("mt5_account_not_configured")
         if str(row["account_environment"]).lower() != "demo":
             raise Day26ExecutionError("day26_demo_account_required")
-        token = self._cipher.decrypt(bytes(row["metaapi_token_ciphertext"])).strip()
+        try:
+            token = self._cipher.decrypt(bytes(row["metaapi_token_ciphertext"])).strip()
+        except BrokerCredentialDecryptionError as exc:
+            raise Day26ExecutionError("broker_credential_decryption_failed") from exc
         if len(token) < 20:
             raise Day26ExecutionError("metaapi_platform_token_not_configured")
         return str(row["metaapi_account_id"]), token
