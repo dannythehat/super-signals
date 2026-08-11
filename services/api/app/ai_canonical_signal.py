@@ -26,6 +26,19 @@ class AiSignalResult:
     reason: str
 
 
+@dataclass(frozen=True, slots=True)
+class _ParsedTrade:
+    symbol: str
+    side: str
+    order_type: str
+    entry_low: Decimal
+    entry_high: Decimal
+    stop_loss: Decimal
+    take_profits: tuple[Decimal, ...]
+    size_multiplier: Decimal
+    has_open_runner: bool
+
+
 def _decimal(value: Any) -> Decimal:
     try:
         parsed = Decimal(str(value))
@@ -52,13 +65,8 @@ class AiCanonicalSignalService:
     def __init__(self, session_factory: sessionmaker[Session]) -> None:
         self._session_factory = session_factory
 
-    def process(
-        self,
-        *,
-        message_id: UUID,
-        extracted: dict[str, Any],
-        revision_index: int = 0,
-    ) -> AiSignalResult:
+    @staticmethod
+    def _parse_extracted(extracted: dict[str, Any]) -> _ParsedTrade:
         try:
             symbol = str(extracted.get("symbol") or "").strip().upper()
             if symbol == "GOLD":
@@ -68,47 +76,78 @@ class AiCanonicalSignalService:
             entry_low = _decimal(extracted.get("entry_low"))
             entry_high = _decimal(extracted.get("entry_high"))
             stop_loss = _decimal(extracted.get("stop_loss"))
-            take_profits = [_decimal(value) for value in (extracted.get("take_profits") or [])]
-        except ValueError:
-            return AiSignalResult(False, False, None, "provider_instruction_incomplete")
+            take_profits = tuple(
+                _decimal(value) for value in (extracted.get("take_profits") or [])
+            )
+        except ValueError as exc:
+            raise ValueError("provider_instruction_incomplete") from exc
 
         if symbol != "XAUUSD" or side not in {"BUY", "SELL"}:
-            return AiSignalResult(False, False, None, "provider_instruction_unsupported")
+            raise ValueError("provider_instruction_unsupported")
         if order_type not in {"market", "pending"}:
-            return AiSignalResult(False, False, None, "provider_order_type_unsupported")
-        if entry_high < entry_low or not take_profits:
-            return AiSignalResult(False, False, None, "provider_instruction_incomplete")
+            raise ValueError("provider_order_type_unsupported")
+        if entry_low <= 0 or entry_high <= 0 or stop_loss <= 0:
+            raise ValueError("provider_instruction_incomplete")
+        if entry_high < entry_low or not take_profits or any(tp <= 0 for tp in take_profits):
+            raise ValueError("provider_instruction_incomplete")
 
         size_multiplier = Decimal("2") if bool(extracted.get("double_lot")) else Decimal("1")
+        return _ParsedTrade(
+            symbol=symbol,
+            side=side,
+            order_type=order_type,
+            entry_low=entry_low,
+            entry_high=entry_high,
+            stop_loss=stop_loss,
+            take_profits=take_profits,
+            size_multiplier=size_multiplier,
+            has_open_runner=bool(extracted.get("tp_open")),
+        )
+
+    @staticmethod
+    def _fingerprint(row: Any, trade: _ParsedTrade, revision_index: int) -> str:
+        fingerprint_payload = {
+            "provider_chat_id": int(row["provider_chat_id"]),
+            "provider_message_id": int(row["provider_message_id"]),
+            "source_revision_index": revision_index,
+            "source_posted_at": _timestamp_token(row["source_posted_at"]),
+            "symbol": trade.symbol,
+            "side": trade.side,
+            "order_type": trade.order_type,
+            "entry_low": _token(trade.entry_low),
+            "entry_high": _token(trade.entry_high),
+            "stop_loss": _token(trade.stop_loss),
+            "take_profits": [_token(value) for value in trade.take_profits],
+            "has_open_runner": trade.has_open_runner,
+            "size_multiplier": _token(trade.size_multiplier),
+        }
+        return sha256(
+            json.dumps(
+                fingerprint_payload,
+                sort_keys=True,
+                separators=(",", ":"),
+                ensure_ascii=True,
+            ).encode("utf-8")
+        ).hexdigest()
+
+    def process(
+        self,
+        *,
+        message_id: UUID,
+        extracted: dict[str, Any],
+        revision_index: int = 0,
+    ) -> AiSignalResult:
+        try:
+            trade = self._parse_extracted(extracted)
+        except ValueError as exc:
+            return AiSignalResult(False, False, None, str(exc))
 
         with self._session_factory() as session:
             row = self._message_revision_row(session, message_id, revision_index)
             if row is None:
                 return AiSignalResult(False, False, None, "message_not_eligible")
 
-            fingerprint_payload = {
-                "provider_chat_id": int(row["provider_chat_id"]),
-                "provider_message_id": int(row["provider_message_id"]),
-                "source_revision_index": revision_index,
-                "source_posted_at": _timestamp_token(row["source_posted_at"]),
-                "symbol": symbol,
-                "side": side,
-                "order_type": order_type,
-                "entry_low": _token(entry_low),
-                "entry_high": _token(entry_high),
-                "stop_loss": _token(stop_loss),
-                "take_profits": [_token(value) for value in take_profits],
-                "size_multiplier": _token(size_multiplier),
-            }
-            fingerprint = sha256(
-                json.dumps(
-                    fingerprint_payload,
-                    sort_keys=True,
-                    separators=(",", ":"),
-                    ensure_ascii=True,
-                ).encode("utf-8")
-            ).hexdigest()
-
+            fingerprint = self._fingerprint(row, trade, revision_index)
             existing = session.execute(
                 text(
                     """
@@ -162,6 +201,7 @@ class AiCanonicalSignalService:
                         entry_high,
                         stop_loss,
                         take_profits,
+                        has_open_runner,
                         parser_status,
                         skip_reason,
                         risk_multiplier,
@@ -182,6 +222,7 @@ class AiCanonicalSignalService:
                         :entry_high,
                         :stop_loss,
                         CAST(:take_profits AS jsonb),
+                        :has_open_runner,
                         'accepted',
                         NULL,
                         :risk_multiplier,
@@ -199,14 +240,15 @@ class AiCanonicalSignalService:
                     "source_revision_index": revision_index,
                     "source_posted_at": row["source_posted_at"],
                     "fingerprint": fingerprint,
-                    "symbol": symbol,
-                    "side": side,
-                    "order_type": order_type,
-                    "entry_low": entry_low,
-                    "entry_high": entry_high,
-                    "stop_loss": stop_loss,
-                    "take_profits": json.dumps([_token(value) for value in take_profits]),
-                    "risk_multiplier": size_multiplier,
+                    "symbol": trade.symbol,
+                    "side": trade.side,
+                    "order_type": trade.order_type,
+                    "entry_low": trade.entry_low,
+                    "entry_high": trade.entry_high,
+                    "stop_loss": trade.stop_loss,
+                    "take_profits": json.dumps([_token(value) for value in trade.take_profits]),
+                    "has_open_runner": trade.has_open_runner,
+                    "risk_multiplier": trade.size_multiplier,
                     "original_text": str(row["original_text"] or ""),
                 },
             ).scalar_one_or_none()
@@ -233,8 +275,9 @@ class AiCanonicalSignalService:
                         "source_message_id": str(row["message_id"]),
                         "provider_message_id": int(row["provider_message_id"]),
                         "source_revision_index": revision_index,
-                        "order_type": order_type,
-                        "entry_is_range": entry_low != entry_high,
+                        "order_type": trade.order_type,
+                        "entry_is_range": trade.entry_low != trade.entry_high,
+                        "has_open_runner": trade.has_open_runner,
                         "position_created": False,
                         "trade_action_created": False,
                     },
@@ -242,6 +285,217 @@ class AiCanonicalSignalService:
             )
             session.commit()
             return AiSignalResult(True, False, signal_id, "created")
+
+    def apply_pre_execution_revision(
+        self,
+        *,
+        message_id: UUID,
+        extracted: dict[str, Any],
+        revision_index: int,
+        execute: bool,
+        reason: str,
+    ) -> AiSignalResult:
+        """Replace one canonical signal only while no Day 26 positions exist.
+
+        A Telegram edit is the same logical provider signal. Before execution we use the
+        latest edited version. Once execution has started, the signal is immutable here.
+        """
+        if revision_index <= 0:
+            raise ValueError("revision_index_required")
+
+        with self._session_factory() as session:
+            existing = session.execute(
+                text(
+                    """
+                    SELECT id
+                    FROM signals
+                    WHERE source_message_id = :message_id
+                    FOR UPDATE
+                    """
+                ),
+                {"message_id": message_id},
+            ).scalar_one_or_none()
+
+            if existing is None:
+                pass
+            else:
+                execution_started = bool(
+                    session.execute(
+                        text(
+                            """
+                            SELECT EXISTS(
+                                SELECT 1
+                                FROM positions
+                                WHERE signal_id = :signal_id
+                            )
+                            """
+                        ),
+                        {"signal_id": existing},
+                    ).scalar_one()
+                )
+                if execution_started:
+                    return AiSignalResult(False, False, existing, "post_execution_edit")
+
+                row = self._message_revision_row(session, message_id, revision_index)
+                if row is None:
+                    return AiSignalResult(False, False, existing, "message_not_eligible")
+
+                if not execute:
+                    skip_fingerprint = sha256(
+                        (
+                            f"revision-skip:{existing}:{revision_index}:"
+                            f"{str(row['original_text'] or '')}"
+                        ).encode("utf-8")
+                    ).hexdigest()
+                    session.execute(
+                        text(
+                            """
+                            UPDATE signals
+                            SET source_revision_index = :revision_index,
+                                source_posted_at = :source_posted_at,
+                                parser_status = 'skipped',
+                                skip_reason = :skip_reason,
+                                original_text = :original_text,
+                                updated_at = now()
+                            WHERE id = :signal_id
+                            """
+                        ),
+                        {
+                            "signal_id": existing,
+                            "revision_index": revision_index,
+                            "source_posted_at": row["source_posted_at"],
+                            "skip_reason": reason[:500],
+                            "original_text": str(row["original_text"] or ""),
+                        },
+                    )
+                    self._observe(
+                        session,
+                        signal_id=existing,
+                        message_id=message_id,
+                        revision_index=revision_index,
+                        fingerprint=skip_fingerprint,
+                        disposition="canonical",
+                    )
+                    session.add(
+                        AuditEvent(
+                            actor_user_id=None,
+                            event_type="signal.revised_before_execution.ai_supervisor",
+                            entity_type="signal",
+                            entity_id=existing,
+                            payload={
+                                "source_revision_index": revision_index,
+                                "accepted": False,
+                                "skip_reason": reason,
+                                "trade_action_created": False,
+                            },
+                        )
+                    )
+                    session.commit()
+                    return AiSignalResult(False, False, existing, "revision_skipped")
+
+                try:
+                    trade = self._parse_extracted(extracted)
+                except ValueError as exc:
+                    session.execute(
+                        text(
+                            """
+                            UPDATE signals
+                            SET source_revision_index = :revision_index,
+                                source_posted_at = :source_posted_at,
+                                parser_status = 'skipped',
+                                skip_reason = :skip_reason,
+                                original_text = :original_text,
+                                updated_at = now()
+                            WHERE id = :signal_id
+                            """
+                        ),
+                        {
+                            "signal_id": existing,
+                            "revision_index": revision_index,
+                            "source_posted_at": row["source_posted_at"],
+                            "skip_reason": str(exc)[:500],
+                            "original_text": str(row["original_text"] or ""),
+                        },
+                    )
+                    session.commit()
+                    return AiSignalResult(False, False, existing, str(exc))
+
+                fingerprint = self._fingerprint(row, trade, revision_index)
+                session.execute(
+                    text(
+                        """
+                        UPDATE signals
+                        SET source_revision_index = :revision_index,
+                            source_posted_at = :source_posted_at,
+                            signal_fingerprint = :fingerprint,
+                            symbol = :symbol,
+                            side = :side,
+                            order_type = :order_type,
+                            entry_low = :entry_low,
+                            entry_high = :entry_high,
+                            stop_loss = :stop_loss,
+                            take_profits = CAST(:take_profits AS jsonb),
+                            has_open_runner = :has_open_runner,
+                            parser_status = 'accepted',
+                            skip_reason = NULL,
+                            risk_multiplier = :risk_multiplier,
+                            original_text = :original_text,
+                            updated_at = now()
+                        WHERE id = :signal_id
+                        """
+                    ),
+                    {
+                        "signal_id": existing,
+                        "revision_index": revision_index,
+                        "source_posted_at": row["source_posted_at"],
+                        "fingerprint": fingerprint,
+                        "symbol": trade.symbol,
+                        "side": trade.side,
+                        "order_type": trade.order_type,
+                        "entry_low": trade.entry_low,
+                        "entry_high": trade.entry_high,
+                        "stop_loss": trade.stop_loss,
+                        "take_profits": json.dumps(
+                            [_token(value) for value in trade.take_profits]
+                        ),
+                        "has_open_runner": trade.has_open_runner,
+                        "risk_multiplier": trade.size_multiplier,
+                        "original_text": str(row["original_text"] or ""),
+                    },
+                )
+                self._observe(
+                    session,
+                    signal_id=existing,
+                    message_id=message_id,
+                    revision_index=revision_index,
+                    fingerprint=fingerprint,
+                    disposition="canonical",
+                )
+                session.add(
+                    AuditEvent(
+                        actor_user_id=None,
+                        event_type="signal.revised_before_execution.ai_supervisor",
+                        entity_type="signal",
+                        entity_id=existing,
+                        payload={
+                            "source_revision_index": revision_index,
+                            "accepted": True,
+                            "entry_is_range": trade.entry_low != trade.entry_high,
+                            "has_open_runner": trade.has_open_runner,
+                            "trade_action_created": False,
+                        },
+                    )
+                )
+                session.commit()
+                return AiSignalResult(False, False, existing, "revision_applied")
+
+        if execute:
+            return self.process(
+                message_id=message_id,
+                extracted=extracted,
+                revision_index=revision_index,
+            )
+        return AiSignalResult(False, False, None, "no_existing_signal")
 
     @staticmethod
     def _message_revision_row(

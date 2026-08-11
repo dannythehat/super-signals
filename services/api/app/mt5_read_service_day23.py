@@ -57,6 +57,7 @@ class Day23Position:
     commission: float | None
     opened_at: datetime | None
     updated_at: datetime | None
+    client_id: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -72,6 +73,8 @@ class Day23PriceState:
     stale: bool
     execution_ready: bool
     block_reason: str | None
+    profit_tick_value: float | None = None
+    loss_tick_value: float | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -221,6 +224,8 @@ class Day23Mt5ReadService:
     ) -> Day23PriceState:
         bid = self._optional_positive_float(payload.get("bid"))
         ask = self._optional_positive_float(payload.get("ask"))
+        profit_tick_value = self._optional_positive_float(payload.get("profitTickValue"))
+        loss_tick_value = self._optional_positive_float(payload.get("lossTickValue"))
         quote_time = self._parse_datetime(payload.get("time"))
         available = bid is not None and ask is not None and quote_time is not None
         age: float | None = None
@@ -246,6 +251,8 @@ class Day23Mt5ReadService:
             stale=stale,
             execution_ready=ready,
             block_reason=block_reason,
+            profit_tick_value=profit_tick_value,
+            loss_tick_value=loss_tick_value,
         )
 
     @classmethod
@@ -285,6 +292,7 @@ class Day23Mt5ReadService:
             commission=cls._optional_float(payload.get("commission")),
             opened_at=cls._parse_datetime(payload.get("time")),
             updated_at=cls._parse_datetime(payload.get("updateTime")),
+            client_id=(str(payload.get("clientId")) if payload.get("clientId") else None),
         )
 
     def _load_row(self, owner_user_id: UUID) -> Any | None:
@@ -321,6 +329,7 @@ class Day23Mt5ReadService:
                         "trade_allowed": state.account.trade_allowed,
                         "bid": state.price.bid,
                         "ask": state.price.ask,
+                        "loss_tick_value": state.price.loss_tick_value,
                         "quote_time": (
                             state.price.quote_time.isoformat()
                             if state.price.quote_time is not None

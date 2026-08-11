@@ -66,6 +66,7 @@ def test_day23_read_gateway_has_no_trade_or_order_method() -> None:
         "read_account_information",
         "read_positions",
         "read_symbol_price",
+        "read_symbol_specification",
         "resolve_account_region",
     }
 

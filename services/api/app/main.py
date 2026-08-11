@@ -13,6 +13,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
 from app.config import get_settings
+from app.day26_code_acceptance import run_day26_code_acceptance_probe
 from app.db import get_session_factory
 from app.metaapi_gateway import MetaApiProvisioningGateway
 from app.mt5_connection_manager import Mt5ConnectionManager
@@ -29,6 +30,7 @@ from app.publisher_config import get_publisher_settings
 from app.routes.access import router as access_router
 from app.routes.admin_accounts import router as admin_accounts_router
 from app.routes.auth import router as auth_router
+from app.routes.day26_execution import router as day26_execution_router
 from app.routes.health import router as health_router
 from app.routes.mt5_accounts import router as mt5_accounts_router
 from app.routes.signals import router as signals_router
@@ -115,6 +117,9 @@ async def _lifespan(application: FastAPI) -> AsyncIterator[None]:
     settings = get_settings()
     publisher_settings = get_publisher_settings()
     session_factory = get_session_factory()
+
+    if os.getenv("SUPER_SIGNALS_DAY26_CODE_PROBE", "").strip() == "1":
+        await run_day26_code_acceptance_probe()
 
     broker_key_value = (
         os.getenv("SUPER_SIGNALS_BROKER_CREDENTIAL_KEYS")
@@ -304,6 +309,7 @@ def create_app() -> FastAPI:
     application.include_router(telegram_publisher_router)
     application.include_router(telegram_e2e_gate_router)
     application.include_router(mt5_accounts_router)
+    application.include_router(day26_execution_router)
     _mount_web_application(application)
     return application
 

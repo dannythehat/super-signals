@@ -1,8 +1,8 @@
 """Immediate AI-authoritative Telegram decision pipeline.
 
 Every Testing/Live message and edit receives one automatic decision. There is no
-human review wait. If the model call is unavailable, accepted deterministic rules
-make an automatic fallback decision for formats they already understand.
+human review wait. OpenAI provides semantic interpretation; the V1 mechanical policy
+is the final authority for what may become executable.
 """
 
 from __future__ import annotations
@@ -24,6 +24,7 @@ from app.ai_message_supervisor import (
     OpenAiMessageSupervisor,
 )
 from app.message_review import validate_parsed_trade
+from app.v1_message_policy import apply_v1_message_policy
 
 
 @dataclass(frozen=True, slots=True)
@@ -93,7 +94,9 @@ class AiMessagePipeline:
                 revision_index=revision_index,
             )
             if row is None:
-                return AiPipelineResult(False, None, None, None, None, None, "message_not_eligible")
+                return AiPipelineResult(
+                    False, None, None, None, None, None, "message_not_eligible"
+                )
 
             existing = session.execute(
                 text(
@@ -118,11 +121,30 @@ class AiMessagePipeline:
                 )
 
             reply_context = self._reply_context(session, source_id, row["raw_payload"])
-            previous_text = self._previous_text(session, row["message_id"], revision_index)
+            previous_text = self._previous_text(
+                session, row["message_id"], revision_index
+            )
             existing_signal_id = session.execute(
-                text("SELECT id FROM signals WHERE source_message_id = :message_id LIMIT 1"),
+                text(
+                    "SELECT id FROM signals "
+                    "WHERE source_message_id = :message_id LIMIT 1"
+                ),
                 {"message_id": row["message_id"]},
             ).scalar_one_or_none()
+            execution_started = False
+            if existing_signal_id is not None:
+                execution_started = bool(
+                    session.execute(
+                        text(
+                            """
+                            SELECT EXISTS(
+                                SELECT 1 FROM positions WHERE signal_id = :signal_id
+                            )
+                            """
+                        ),
+                        {"signal_id": existing_signal_id},
+                    ).scalar_one()
+                )
 
         decision = self._decide(
             source_id=source_id,
@@ -134,26 +156,57 @@ class AiMessagePipeline:
             previous_text=previous_text,
         )
 
-        # A revision of an already-canonical provider message is the same logical
-        # signal, never a second new trade. Preserve all extracted revised fields
-        # and route it to the lifecycle ledger for Day 27 execution handling.
-        if revision_index > 0 and existing_signal_id is not None and decision.decision == "new_trade":
-            extracted = dict(decision.extracted)
-            extracted["update_type"] = extracted.get("update_type") or "other"
-            decision = replace(
-                decision,
-                decision="trade_update",
-                action="apply_update",
-                reason="edited_existing_signal_instruction",
-                extracted=extracted,
-            )
+        raw_text = str(row["raw_text"] or "")
 
+        if revision_index > 0 and existing_signal_id is not None:
+            if execution_started:
+                # Once Day 26 has created any position record the trade is frozen.
+                # Post-execution edits are evidence only in V1.
+                decision = replace(
+                    decision,
+                    decision="non_actionable",
+                    action="skip",
+                    reason="post_execution_edit",
+                )
+            else:
+                # Telegram edits contain the full current message. Treat that full
+                # edited message as the replacement candidate for the same logical
+                # signal, then apply the same one-message V1 gate.
+                decision = replace(
+                    decision,
+                    decision="new_trade",
+                    action="execute",
+                )
+
+        decision = apply_v1_message_policy(
+            decision,
+            raw_text=raw_text,
+            is_edit=revision_index > 0,
+        )
         self._store_decision(row["message_id"], revision_index, decision)
 
         signal_id: UUID | None = None
         lifecycle_event_id: UUID | None = None
         dispatch_reason = decision.reason
-        if decision.decision == "new_trade" and decision.action == "execute":
+
+        if revision_index > 0 and existing_signal_id is not None:
+            if execution_started:
+                signal_id = existing_signal_id
+                dispatch_reason = "post_execution_edit"
+            else:
+                revision_result = self._signals.apply_pre_execution_revision(
+                    message_id=row["message_id"],
+                    extracted=decision.extracted,
+                    revision_index=revision_index,
+                    execute=(
+                        decision.decision == "new_trade"
+                        and decision.action == "execute"
+                    ),
+                    reason=decision.reason,
+                )
+                signal_id = revision_result.signal_id
+                dispatch_reason = revision_result.reason
+        elif decision.decision == "new_trade" and decision.action == "execute":
             signal_result = self._signals.process(
                 message_id=row["message_id"],
                 extracted=decision.extracted,
@@ -161,7 +214,10 @@ class AiMessagePipeline:
             )
             signal_id = signal_result.signal_id
             dispatch_reason = signal_result.reason
-        elif decision.decision == "trade_update" and decision.action == "apply_update":
+        elif (
+            decision.decision == "trade_update"
+            and decision.action == "apply_update"
+        ):
             lifecycle_result = self._lifecycle.process(
                 message_id=row["message_id"],
                 extracted=decision.extracted,
@@ -194,8 +250,10 @@ class AiMessagePipeline:
                 """
                 SELECT
                     m.id AS message_id,
-                    CASE WHEN :revision_index = 0 THEN m.raw_text ELSE mr.raw_text END AS raw_text,
-                    CASE WHEN :revision_index = 0 THEN m.raw_payload ELSE mr.raw_payload END AS raw_payload,
+                    CASE WHEN :revision_index = 0
+                         THEN m.raw_text ELSE mr.raw_text END AS raw_text,
+                    CASE WHEN :revision_index = 0
+                         THEN m.raw_payload ELSE mr.raw_payload END AS raw_payload,
                     s.status AS source_status
                 FROM messages AS m
                 JOIN sources AS s ON s.id = m.source_id
@@ -308,10 +366,22 @@ class AiMessagePipeline:
         if row is not None:
             classification = str(row["classification"] or "")
             status = str(row["decision_status"] or "")
-            if classification == "new_trade" and status == "classified" and row["parse_status"] == "parsed":
+            if (
+                classification == "new_trade"
+                and status == "classified"
+                and row["parse_status"] == "parsed"
+            ):
                 validation = validate_parsed_trade(
-                    symbol=str(row["symbol"]) if row["symbol"] is not None else None,
-                    direction=str(row["direction"]) if row["direction"] is not None else None,
+                    symbol=(
+                        str(row["symbol"])
+                        if row["symbol"] is not None
+                        else None
+                    ),
+                    direction=(
+                        str(row["direction"])
+                        if row["direction"] is not None
+                        else None
+                    ),
                     entry_price=row["entry_price"],
                     stop_loss=row["stop_loss"],
                     take_profits=list(row["take_profits"] or []),
@@ -327,16 +397,24 @@ class AiMessagePipeline:
                             "entry_low": entry,
                             "entry_high": entry,
                             "stop_loss": str(row["stop_loss"]),
-                            "take_profits": [str(value) for value in (row["take_profits"] or [])],
-                            "double_lot": str(row["size_multiplier"]) in {"2", "2.0", "2.0000"},
+                            "take_profits": [
+                                str(value)
+                                for value in (row["take_profits"] or [])
+                            ],
+                            "double_lot": str(row["size_multiplier"])
+                            in {"2", "2.0", "2.0000"},
                         }
                     )
                     decision = "new_trade"
                     action = "execute"
-                    reason = "deterministic_fallback_confirmed_known_trade_format"
+                    reason = (
+                        "deterministic_fallback_confirmed_known_trade_format"
+                    )
                     confidence = 0.99
             elif classification == "trade_update" and status == "classified":
-                update_type = self._fallback_update_type(row["classification_rules"] or [])
+                update_type = self._fallback_update_type(
+                    row["classification_rules"] or []
+                )
                 extracted["update_type"] = update_type
                 decision = "trade_update"
                 action = "apply_update" if update_type is not None else "skip"
@@ -420,7 +498,11 @@ class AiMessagePipeline:
             session.commit()
 
     @staticmethod
-    def _reply_context(session: Session, source_id: UUID, payload: Any) -> str | None:
+    def _reply_context(
+        session: Session,
+        source_id: UUID,
+        payload: Any,
+    ) -> str | None:
         if not isinstance(payload, dict):
             return None
         reply_value = payload.get("reply_to_message_id")
@@ -445,7 +527,11 @@ class AiMessagePipeline:
         ).scalar_one_or_none()
 
     @staticmethod
-    def _previous_text(session: Session, message_id: UUID, revision_index: int) -> str | None:
+    def _previous_text(
+        session: Session,
+        message_id: UUID,
+        revision_index: int,
+    ) -> str | None:
         if revision_index <= 0:
             return None
         if revision_index == 1:
@@ -462,7 +548,10 @@ class AiMessagePipeline:
                   AND revision_index = :revision_index
                 """
             ),
-            {"message_id": message_id, "revision_index": revision_index - 1},
+            {
+                "message_id": message_id,
+                "revision_index": revision_index - 1,
+            },
         ).scalar_one_or_none()
 
     @staticmethod
