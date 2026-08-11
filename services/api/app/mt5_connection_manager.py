@@ -4,10 +4,35 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 
 from app.mt5_connection_service import Mt5DemoConnectionService
 
 logger = logging.getLogger(__name__)
+
+DEFAULT_REFRESH_SECONDS = 3600
+MINIMUM_REFRESH_SECONDS = 300
+
+
+def _configured_refresh_seconds() -> int:
+    raw = os.getenv("SUPER_SIGNALS_MT5_RECONCILE_SECONDS", "").strip()
+    if not raw:
+        return DEFAULT_REFRESH_SECONDS
+    try:
+        seconds = int(raw)
+    except ValueError:
+        logger.warning(
+            "Invalid SUPER_SIGNALS_MT5_RECONCILE_SECONDS; using %d seconds",
+            DEFAULT_REFRESH_SECONDS,
+        )
+        return DEFAULT_REFRESH_SECONDS
+    if seconds < MINIMUM_REFRESH_SECONDS:
+        logger.warning(
+            "SUPER_SIGNALS_MT5_RECONCILE_SECONDS below safe minimum; using %d seconds",
+            MINIMUM_REFRESH_SECONDS,
+        )
+        return MINIMUM_REFRESH_SECONDS
+    return seconds
 
 
 class Mt5ConnectionManager:
@@ -17,12 +42,15 @@ class Mt5ConnectionManager:
         self,
         service: Mt5DemoConnectionService,
         *,
-        refresh_seconds: int = 3600,
+        refresh_seconds: int | None = None,
     ) -> None:
-        if refresh_seconds <= 0:
+        resolved_refresh_seconds = (
+            _configured_refresh_seconds() if refresh_seconds is None else refresh_seconds
+        )
+        if resolved_refresh_seconds <= 0:
             raise ValueError("MT5 connection refresh interval must be positive.")
         self._service = service
-        self._refresh_seconds = refresh_seconds
+        self._refresh_seconds = resolved_refresh_seconds
         self._task: asyncio.Task[None] | None = None
         self._stopping = asyncio.Event()
 
@@ -30,12 +58,17 @@ class Mt5ConnectionManager:
         if self._task is not None and not self._task.done():
             return
         self._stopping.clear()
-        # Reconcile once before the loop. This is the Day 22 restart/reconnect path.
-        # Day 22 has no trade engine, so idle polling is intentionally hourly to
-        # minimize MetaAPI spend. The owner can still request an explicit refresh.
+        # Reconcile once before the loop. This is the restart/reconnect path.
+        # The idle interval is deliberately conservative while Super Signals is
+        # not yet using a continuous broker stream. Manual owner refresh remains
+        # available and future trading days can deliberately tune the interval.
         try:
             checked = await self._service.reconcile_all()
-            logger.info("MT5 connection startup reconciliation checked %d account(s)", checked)
+            logger.info(
+                "MT5 startup reconciliation checked %d account(s); idle interval=%ds",
+                checked,
+                self._refresh_seconds,
+            )
         except Exception:
             logger.exception("MT5 connection startup reconciliation failed")
         self._task = asyncio.create_task(self._run(), name="super-signals-mt5-connection-monitor")
