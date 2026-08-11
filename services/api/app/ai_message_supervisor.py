@@ -1,4 +1,4 @@
-"""Immediate AI interpretation for Telegram source messages.
+"""Immediate AI interpretation for Telegram source messages and edits.
 
 The supervisor answers only what the provider explicitly instructed. It never invents
 entry, stop loss, take profit, sizing, or an exit. Every call returns a strict
@@ -103,6 +103,13 @@ ranges as entry_low/entry_high. If only one exact entry is supplied, set both to
 same value. BUY LIMIT/SELL LIMIT are pending orders. 'High risk' is not double lot.
 Only explicit double/double lot wording sets double_lot=true.
 
+When is_edit=true, the Telegram message is a revision of the same provider message,
+not a second trade. Compare previous_text with telegram_message. If the edit changes
+an existing signal instruction, classify it as trade_update/action=apply_update and
+return the full explicit revised trade fields plus the most specific update_type you
+can identify. If there is no actionable instruction change, ignore or skip it. Never
+turn an edit into a duplicate new trade.
+
 Return only the requested structured object."""
 
 
@@ -146,12 +153,16 @@ class OpenAiMessageSupervisor:
         raw_text: str,
         source_status: str,
         reply_context: str | None = None,
+        previous_text: str | None = None,
+        is_edit: bool = False,
     ) -> AiMessageDecision:
         started = time.perf_counter()
         prompt = {
             "source_status": source_status,
             "telegram_message": raw_text,
             "reply_context": reply_context,
+            "is_edit": is_edit,
+            "previous_text": previous_text,
         }
         payload = {
             "model": self._model,
