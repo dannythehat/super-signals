@@ -19,6 +19,7 @@ from app.mt5_connection_manager import Mt5ConnectionManager
 from app.mt5_connection_service import Mt5ConnectionError, Mt5DemoConnectionService
 from app.mt5_connection_service_day22 import Day22Mt5DemoConnectionService
 from app.mt5_crypto import MetaApiTokenCipher
+from app.mt5_day23_acceptance import run_day23_acceptance_probe
 from app.mt5_recovery import (
     probe_existing_metaapi_account,
     reencrypt_existing_metaapi_token,
@@ -195,6 +196,10 @@ async def _lifespan(application: FastAPI) -> AsyncIterator[None]:
         mt5_bootstrap_task = asyncio.create_task(
             _run_day22_mt5_bootstrap(mt5_connection_service),
             name="super-signals-day22-mt5-bootstrap",
+        )
+        await run_day23_acceptance_probe(
+            session_factory=session_factory,
+            cipher=broker_cipher,
         )
 
     publisher_destination_excluded = bool(

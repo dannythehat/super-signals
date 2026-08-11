@@ -111,6 +111,18 @@ def _session_token(request: Request, settings: Settings) -> str:
     return token
 
 
+def _set_session_cookie(response: Response, settings: Settings, token: str) -> None:
+    response.set_cookie(
+        key=settings.session_cookie_name,
+        value=token,
+        max_age=settings.session_ttl_seconds,
+        httponly=True,
+        secure=settings.session_cookie_secure,
+        samesite="strict",
+        path="/",
+    )
+
+
 @router.post("/login", response_model=AccountResponse)
 def login(
     payload: LoginRequest,
@@ -134,15 +146,7 @@ def login(
         ip_address=_client_ip(request),
         fingerprint_secret=settings.session_fingerprint_secret,
     )
-    response.set_cookie(
-        key=settings.session_cookie_name,
-        value=raw_token,
-        max_age=settings.session_ttl_seconds,
-        httponly=True,
-        secure=settings.session_cookie_secure,
-        samesite="strict",
-        path="/",
-    )
+    _set_session_cookie(response, settings, raw_token)
     response.headers["Cache-Control"] = "no-store"
     return account_response(identity)
 
@@ -239,15 +243,19 @@ def complete_admin_setup(
 @router.get("/me", response_model=AccountResponse)
 def me(
     request: Request,
+    response: Response,
     session: DbSession,
     settings: AppSettings,
 ) -> AccountResponse:
-    identity = get_user_for_session(session, _session_token(request, settings))
+    raw_token = _session_token(request, settings)
+    identity = get_user_for_session(session, raw_token)
     if identity is None:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Authentication required.",
         )
+    _set_session_cookie(response, settings, raw_token)
+    response.headers["Cache-Control"] = "no-store"
     return account_response(identity)
 
 
