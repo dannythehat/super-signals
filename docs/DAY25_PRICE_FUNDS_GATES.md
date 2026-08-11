@@ -8,13 +8,14 @@ The gate consumes one fresh Day 23 quote snapshot. It does not poll, wait, chase
 
 - BUY uses the executable ask.
 - SELL uses the executable bid.
-- BUY is available when ask is equal to or below the signal entry.
-- SELL is available when bid is equal to or above the signal entry.
-- A same-or-better price may proceed.
+- BUY is available when ask is equal to or below the signal entry **and still strictly above the signal stop loss**.
+- SELL is available when bid is equal to or above the signal entry **and still strictly below the signal stop loss**.
+- A same-or-better price may proceed only while the original signal geometry remains valid.
 - If price has moved through the stated entry against the user, the signal is blocked once with `entry_price_unavailable`.
+- If a superficially better price has already moved to or through the signal stop, the signal is also blocked with `entry_price_unavailable` rather than resurrecting a stopped-out setup.
 - Stale or unavailable quotes remain blocked by Day 23 before margin is checked.
 
-Using only same-or-better prices means Day 25 never increases stop distance beyond the Day 24 risk calculation that used the signal's stated entry.
+Using only same-or-better prices while preserving the stop boundary means Day 25 never increases stop distance beyond the Day 24 risk calculation that used the signal's stated entry.
 
 ## All-or-nothing funds rule
 
