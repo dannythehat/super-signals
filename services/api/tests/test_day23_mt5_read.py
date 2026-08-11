@@ -1,9 +1,12 @@
+import base64
+import json
 from datetime import UTC, datetime, timedelta
 from uuid import uuid4
 
 import pytest
 
 from app.metaapi_read_gateway import MetaApiReadGateway
+from app.metaapi_token_scope import inspect_metaapi_token_scope
 from app.mt5_read_service_day23 import (
     Day23AccountState,
     Day23LiveState,
@@ -47,6 +50,14 @@ def _state(price: Day23PriceState) -> Day23LiveState:
     )
 
 
+def _synthetic_jwt(payload: dict[str, object]) -> str:
+    def encoded(value: dict[str, object]) -> str:
+        raw = json.dumps(value, separators=(",", ":")).encode("utf-8")
+        return base64.urlsafe_b64encode(raw).decode("ascii").rstrip("=")
+
+    return f"{encoded({'alg': 'none'})}.{encoded(payload)}.signature"
+
+
 def test_day23_read_gateway_has_no_trade_or_order_method() -> None:
     public_names = {
         name for name in dir(MetaApiReadGateway) if not name.startswith("_")
@@ -57,6 +68,46 @@ def test_day23_read_gateway_has_no_trade_or_order_method() -> None:
         "read_symbol_price",
         "resolve_account_region",
     }
+
+
+def test_management_only_token_is_detected_before_terminal_reads() -> None:
+    token = _synthetic_jwt(
+        {
+            "accessRules": [
+                {
+                    "id": "trading-account-management-api",
+                    "roles": ["reader", "writer"],
+                    "resources": [{"entity": "account", "id": "redacted"}],
+                }
+            ]
+        }
+    )
+
+    scope = inspect_metaapi_token_scope(token)
+
+    assert scope.jwt_payload_decoded is True
+    assert scope.is_explicitly_narrowed is True
+    assert scope.has_terminal_access is False
+    assert scope.access_rule_ids == ("trading-account-management-api",)
+
+
+def test_metaapi_rest_token_is_terminal_capable() -> None:
+    token = _synthetic_jwt(
+        {
+            "accessRules": [
+                {
+                    "id": "metaapi-rest-api",
+                    "roles": ["reader"],
+                    "resources": [{"entity": "account", "id": "redacted"}],
+                }
+            ]
+        }
+    )
+
+    scope = inspect_metaapi_token_scope(token)
+
+    assert scope.is_explicitly_narrowed is True
+    assert scope.has_terminal_access is True
 
 
 def test_buy_uses_ask_and_sell_uses_bid() -> None:
