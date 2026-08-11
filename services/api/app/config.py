@@ -45,8 +45,8 @@ def _positive_int(variable_name: str, default: str) -> int:
     raw_value = os.getenv(variable_name, default)
     try:
         value = int(raw_value)
-    except ValueError as exc:
-        raise RuntimeError(f"{variable_name} must be a positive integer") from exc
+    except ValueError:
+        raise RuntimeError(f"{variable_name} must be a positive integer") from None
     if value <= 0:
         raise RuntimeError(f"{variable_name} must be a positive integer")
     return value
@@ -107,10 +107,17 @@ def _telegram_api_credentials(environment: str) -> tuple[int | None, str | None]
         return None, None
     if raw_api_id is None or api_hash is None:
         raise RuntimeError("TELEGRAM_API_ID and TELEGRAM_API_HASH must be configured together")
+
+    # Temporary recovery guard for Day 22: if a MetaAPI JWT was accidentally
+    # pasted over TELEGRAM_API_ID, use the separately supplied numeric recovery
+    # value without ever logging or exposing the misplaced token.
+    if not raw_api_id.isdigit() and raw_api_id.startswith("eyJ"):
+        raw_api_id = os.getenv("SUPER_SIGNALS_TELEGRAM_API_ID_RECOVERY", "").strip()
+
     try:
         api_id = int(raw_api_id)
-    except ValueError as exc:
-        raise RuntimeError("TELEGRAM_API_ID must be a positive integer") from exc
+    except ValueError:
+        raise RuntimeError("TELEGRAM_API_ID must be a positive integer") from None
     if api_id <= 0:
         raise RuntimeError("TELEGRAM_API_ID must be a positive integer")
     if not _TELEGRAM_API_HASH_PATTERN.fullmatch(api_hash):
