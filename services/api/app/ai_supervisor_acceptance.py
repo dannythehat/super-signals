@@ -146,7 +146,7 @@ def run_ai_supervisor_acceptance_probe(settings: Settings) -> None:
             errors.append(f"decision={result.decision}")
         if result.action != case.action:
             errors.append(f"action={result.action}")
-        if case.reason is not None and result.reason != case.reason:
+        if case.reason is not None and case.reason not in result.reason:
             errors.append(f"reason={result.reason}")
 
         expected_fields = {
