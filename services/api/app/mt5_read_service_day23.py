@@ -155,9 +155,14 @@ class Day23Mt5ReadService:
             raise Day23ReadError(exc.code, retryable=exc.retryable) from exc
 
         read_at = self._utc(now or datetime.now(UTC))
-        account = self._account_state(account_payload)
-        positions = tuple(self._position(item) for item in positions_payload)
-        price = self._price_state(price_payload, read_at=read_at)
+        try:
+            account = self._account_state(account_payload)
+            positions = tuple(self._position(item) for item in positions_payload)
+            price = self._price_state(price_payload, read_at=read_at)
+        except Day23ReadError as exc:
+            self._audit_failure(row["id"], exc.code, "parse_response")
+            raise
+
         state = Day23LiveState(
             local_account_id=row["id"],
             metaapi_account_id=account_id,
@@ -237,7 +242,13 @@ class Day23Mt5ReadService:
     @classmethod
     def _position(cls, payload: dict[str, object]) -> Day23Position:
         raw_type = str(payload.get("type") or "")
-        side = "BUY" if raw_type == "POSITION_TYPE_BUY" else "SELL" if raw_type == "POSITION_TYPE_SELL" else raw_type
+        side = (
+            "BUY"
+            if raw_type == "POSITION_TYPE_BUY"
+            else "SELL"
+            if raw_type == "POSITION_TYPE_SELL"
+            else raw_type
+        )
         return Day23Position(
             position_id=str(payload.get("id") or ""),
             symbol=str(payload.get("symbol") or ""),
@@ -280,6 +291,20 @@ class Day23Mt5ReadService:
                     payload={
                         "symbol": state.price.symbol,
                         "region": state.region,
+                        "currency": state.account.currency,
+                        "balance": state.account.balance,
+                        "equity": state.account.equity,
+                        "margin": state.account.margin,
+                        "free_margin": state.account.free_margin,
+                        "trade_allowed": state.account.trade_allowed,
+                        "bid": state.price.bid,
+                        "ask": state.price.ask,
+                        "quote_time": (
+                            state.price.quote_time.isoformat()
+                            if state.price.quote_time is not None
+                            else None
+                        ),
+                        "quote_age_seconds": state.price.quote_age_seconds,
                         "price_available": state.price.available,
                         "price_stale": state.price.stale,
                         "execution_ready": state.execution_ready,
