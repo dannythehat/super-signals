@@ -314,7 +314,7 @@ class Position(TimestampMixin, Base):
         ),
         CheckConstraint("tp_index > 0", name="ck_positions_tp_index"),
         CheckConstraint(
-            "planned_risk_percent IN (0.5, 1.0, 2.0)",
+            "planned_risk_percent IN (0.5, 1.0, 1.5, 2.0, 3.0, 4.0)",
             name="ck_positions_risk_percent",
         ),
         CheckConstraint(
@@ -326,6 +326,12 @@ class Position(TimestampMixin, Base):
             "broker_position_id",
             unique=True,
             postgresql_where=text("broker_position_id IS NOT NULL"),
+        ),
+        Index(
+            "uq_positions_broker_client_id",
+            "broker_client_id",
+            unique=True,
+            postgresql_where=text("broker_client_id IS NOT NULL"),
         ),
     )
 
@@ -341,7 +347,11 @@ class Position(TimestampMixin, Base):
     tp_index: Mapped[int] = mapped_column(SmallInteger, nullable=False)
     take_profit: Mapped[Decimal | None] = mapped_column(Numeric(24, 10))
     planned_risk_percent: Mapped[Decimal] = mapped_column(Numeric(5, 2), nullable=False)
+    volume: Mapped[Decimal | None] = mapped_column(Numeric(18, 8))
+    stop_loss: Mapped[Decimal | None] = mapped_column(Numeric(24, 10))
+    broker_order_id: Mapped[str | None] = mapped_column(String(120))
     broker_position_id: Mapped[str | None] = mapped_column(String(120))
+    broker_client_id: Mapped[str | None] = mapped_column(String(31))
     status: Mapped[str] = mapped_column(String(20), nullable=False, server_default="planned")
     entry_price: Mapped[Decimal | None] = mapped_column(Numeric(24, 10))
     exit_price: Mapped[Decimal | None] = mapped_column(Numeric(24, 10))
