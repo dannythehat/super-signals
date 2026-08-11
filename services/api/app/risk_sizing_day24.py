@@ -1,8 +1,9 @@
 """Day 24 deterministic per-position risk sizing.
 
-The engine is deliberately broker-agnostic. Callers supply the broker-reported
-symbol tick size/value and volume constraints. No order placement or MetaAPI
-network request exists in this module.
+The parsed Telegram signal supplies the entry and stop loss. This module never
+invents, changes or optimizes either value. It only calculates a broker-valid
+position volume from the user's selected risk and broker-reported symbol/volume
+rules. No order placement or MetaAPI network request exists in this module.
 """
 
 from __future__ import annotations
@@ -12,7 +13,12 @@ from decimal import Decimal, ROUND_FLOOR
 from typing import TypeAlias
 
 DecimalInput: TypeAlias = Decimal | str | int | float
-_ALLOWED_BASE_RISK_PERCENTS = (Decimal("0.5"), Decimal("1"))
+_ALLOWED_BASE_RISK_PERCENTS = (
+    Decimal("0.5"),
+    Decimal("1"),
+    Decimal("1.5"),
+    Decimal("2"),
+)
 _DOUBLE_LOT_MULTIPLIER = Decimal("2")
 _ONE_HUNDRED = Decimal("100")
 _ZERO = Decimal("0")
@@ -68,9 +74,11 @@ class Day24RiskSizingResult:
     balance: Decimal
     base_risk_percent: Decimal
     effective_risk_percent: Decimal
-    double_lot: bool
-    entry_price: Decimal
-    stop_loss: Decimal
+    signal_requests_double_lot: bool
+    double_lot_approved: bool
+    double_lot_applied: bool
+    signal_entry_price: Decimal
+    signal_stop_loss: Decimal
     stop_distance: Decimal
     tick_size: Decimal
     tick_value: Decimal
@@ -94,18 +102,19 @@ class Day24RiskSizer:
         *,
         balance: DecimalInput,
         risk_percent: DecimalInput,
-        entry_price: DecimalInput,
-        stop_loss: DecimalInput,
+        signal_entry_price: DecimalInput,
+        signal_stop_loss: DecimalInput,
         tick_size: DecimalInput,
         tick_value: DecimalInput,
         take_profit_count: int,
         volume_rules: BrokerVolumeRules,
-        double_lot: bool = False,
+        signal_requests_double_lot: bool = False,
+        double_lot_approved: bool = False,
     ) -> Day24RiskSizingResult:
         balance_value = _decimal(balance)
         base_risk = _decimal(risk_percent)
-        entry = _decimal(entry_price)
-        stop = _decimal(stop_loss)
+        entry = _decimal(signal_entry_price)
+        stop = _decimal(signal_stop_loss)
         tick_size_value = _decimal(tick_size)
         tick_value_value = _decimal(tick_value)
 
@@ -120,7 +129,9 @@ class Day24RiskSizer:
             volume_rules=volume_rules,
         )
 
-        effective_risk = base_risk * (_DOUBLE_LOT_MULTIPLIER if double_lot else Decimal("1"))
+        double_lot_applied = signal_requests_double_lot and double_lot_approved
+        multiplier = _DOUBLE_LOT_MULTIPLIER if double_lot_applied else Decimal("1")
+        effective_risk = base_risk * multiplier
         risk_budget = balance_value * effective_risk / _ONE_HUNDRED
         stop_distance = abs(entry - stop)
         ticks_to_stop = stop_distance / tick_size_value
@@ -132,8 +143,8 @@ class Day24RiskSizer:
         volume = cls._round_volume_down(raw_volume, volume_rules)
         actual_risk = volume * loss_per_lot
 
-        # This invariant is the central Day 24 safety rule. Broker rounding must
-        # never increase a position above the instructed per-position risk.
+        # Broker rounding must never increase a position above the user's
+        # effective per-position risk instruction.
         if actual_risk > risk_budget:
             raise Day24RiskSizingError("risk_budget_exceeded")
 
@@ -152,9 +163,11 @@ class Day24RiskSizer:
             balance=balance_value,
             base_risk_percent=base_risk,
             effective_risk_percent=effective_risk,
-            double_lot=double_lot,
-            entry_price=entry,
-            stop_loss=stop,
+            signal_requests_double_lot=signal_requests_double_lot,
+            double_lot_approved=double_lot_approved,
+            double_lot_applied=double_lot_applied,
+            signal_entry_price=entry,
+            signal_stop_loss=stop,
             stop_distance=stop_distance,
             tick_size=tick_size_value,
             tick_value=tick_value_value,
@@ -181,8 +194,6 @@ class Day24RiskSizer:
         )
         volume = rules.minimum + (steps_from_minimum * rules.step)
 
-        # A non-aligned broker maximum is rounded down to the nearest valid
-        # volume based on minimum + n*step, never upward.
         if volume > rules.maximum:
             max_steps = ((rules.maximum - rules.minimum) / rules.step).to_integral_value(
                 rounding=ROUND_FLOOR
@@ -210,7 +221,7 @@ class Day24RiskSizer:
         if base_risk not in _ALLOWED_BASE_RISK_PERCENTS:
             raise Day24RiskSizingError("risk_percent_invalid")
         if entry <= _ZERO or stop <= _ZERO or entry == stop:
-            raise Day24RiskSizingError("entry_stop_invalid")
+            raise Day24RiskSizingError("signal_entry_stop_invalid")
         if tick_size <= _ZERO:
             raise Day24RiskSizingError("tick_size_invalid")
         if tick_value <= _ZERO:
@@ -225,7 +236,7 @@ def _decimal(value: DecimalInput) -> Decimal:
         raise Day24RiskSizingError("decimal_input_invalid")
     try:
         result = value if isinstance(value, Decimal) else Decimal(str(value))
-    except Exception as exc:  # Decimal raises multiple numeric conversion errors.
+    except Exception as exc:
         raise Day24RiskSizingError("decimal_input_invalid") from exc
     if not result.is_finite():
         raise Day24RiskSizingError("decimal_input_invalid")
