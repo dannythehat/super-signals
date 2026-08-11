@@ -1,8 +1,10 @@
-"""One-shot pure-code acceptance probe for Day 26 execution.
+"""One-shot pure-code acceptance probe for Day 26 V1 execution.
 
 This probe never contacts MetaAPI and never writes to the database. It exercises the
 real Day 23 -> Day 24 -> Day 25 -> Day 26 orchestration using deterministic fake
-broker gateways, including compensating rollback after partial multi-TP submission.
+broker gateways, including exact entry, in-zone market execution, TP OPEN runner and
+compensating rollback after partial submission.
+
 Enable temporarily with SUPER_SIGNALS_DAY26_CODE_PROBE=1 during a Render deploy.
 """
 
@@ -38,8 +40,8 @@ def _require(condition: bool, code: str) -> None:
         raise RuntimeError(f"day26_code_probe_failed:{code}")
 
 
-def _live_state(price: float = 4000.0) -> Day23LiveState:
-    now = datetime(2026, 8, 11, 12, 0, tzinfo=UTC)
+def _live_state(*, bid: float = 3999.8, ask: float = 4000.0) -> Day23LiveState:
+    now = datetime.now(UTC)
     return Day23LiveState(
         local_account_id=UUID(int=99),
         metaapi_account_id="probe-metaapi-account",
@@ -59,10 +61,10 @@ def _live_state(price: float = 4000.0) -> Day23LiveState:
         ),
         price=Day23PriceState(
             symbol="XAUUSD",
-            bid=price,
-            ask=price,
-            buy_price=price,
-            sell_price=price,
+            bid=bid,
+            ask=ask,
+            buy_price=ask,
+            sell_price=bid,
             quote_time=now,
             quote_age_seconds=0.1,
             available=True,
@@ -79,12 +81,14 @@ def _live_state(price: float = 4000.0) -> Day23LiveState:
 
 
 class _FakeDay23:
+    state = _live_state()
+
     def __init__(self, **_: object) -> None:
         pass
 
     async def read_owner_live_state(self, owner_user_id: UUID) -> Day23LiveState:
         _require(owner_user_id == _OWNER, "owner_mismatch")
-        return _live_state()
+        return self.__class__.state
 
 
 class _ReadGateway:
@@ -140,7 +144,13 @@ class _TradeGateway:
 
 
 class _SuccessHarness(Day26Mt5ExecutionService):
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        *,
+        entry_low: Decimal = Decimal("4000"),
+        entry_high: Decimal = Decimal("4000"),
+        runner: bool = False,
+    ) -> None:
         self.read = _ReadGateway()
         self.margin = _MarginGateway()
         self.trade = _TradeGateway()
@@ -150,15 +160,24 @@ class _SuccessHarness(Day26Mt5ExecutionService):
             read_gateway=self.read,  # type: ignore[arg-type]
             margin_gateway=self.margin,  # type: ignore[arg-type]
             trade_gateway=self.trade,  # type: ignore[arg-type]
+            zone_wait_seconds=0,
         )
         self.signal = _SignalInput(
             signal_id=_SIGNAL,
             symbol="XAUUSD",
             side="BUY",
-            entry_price=Decimal("4000"),
-            stop_loss=Decimal("3990"),
-            take_profits=(Decimal("4010"), Decimal("4020"), Decimal("4030")),
+            entry_low=entry_low,
+            entry_high=entry_high,
+            stop_loss=entry_low - Decimal("10"),
+            take_profits=(
+                entry_high + Decimal("10"),
+                entry_high + Decimal("20"),
+                entry_high + Decimal("30"),
+            ),
+            has_open_runner=runner,
             signal_requests_double_lot=False,
+            source_revision_index=0,
+            source_posted_at=datetime.now(UTC),
         )
         self.order_ids: list[str] = []
 
@@ -169,7 +188,13 @@ class _SuccessHarness(Day26Mt5ExecutionService):
     def _decrypt_token(self, account: _AccountInput) -> str:  # type: ignore[override]
         return "probe-token-with-terminal-access"
 
+    def _assert_signal_still_current(self, owner_user_id: UUID, signal: _SignalInput) -> None:  # type: ignore[override]
+        _require(owner_user_id == _OWNER and signal.signal_id == _SIGNAL, "freeze_check")
+
     def _create_planned_positions(self, *, signal, **_: object):  # type: ignore[override]
+        targets: list[Decimal | None] = list(signal.take_profits)
+        if signal.has_open_runner:
+            targets.append(None)
         return tuple(
             _PlannedPosition(
                 local_position_id=UUID(int=index),
@@ -177,13 +202,21 @@ class _SuccessHarness(Day26Mt5ExecutionService):
                 take_profit=tp,
                 client_id=f"SS_{index:012d}_{index}",
             )
-            for index, tp in enumerate(signal.take_profits, start=1)
+            for index, tp in enumerate(targets, start=1)
         )
 
     def _record_order_id(self, local_position_id: UUID, order_id: str) -> None:
         self.order_ids.append(order_id)
 
-    def _map_broker_positions(self, *, signal, sizing, planned, order_ids, **_):  # type: ignore[override]
+    def _map_broker_positions(
+        self,
+        *,
+        sizing,
+        execution_entry,
+        planned,
+        order_ids,
+        **_,
+    ):  # type: ignore[override]
         return tuple(
             Day26MappedPosition(
                 local_position_id=item.local_position_id,
@@ -193,7 +226,7 @@ class _SuccessHarness(Day26Mt5ExecutionService):
                 client_id=item.client_id,
                 broker_order_id=order_ids[item.client_id],
                 broker_position_id=f"probe-position-{item.tp_index}",
-                broker_open_price=signal.entry_price,
+                broker_open_price=execution_entry,
             )
             for item in planned
         )
@@ -218,10 +251,14 @@ class _AtomicHarness(AtomicDay26Mt5ExecutionService):
             signal_id=_SIGNAL,
             symbol="XAUUSD",
             side="BUY",
-            entry_price=Decimal("4000"),
+            entry_low=Decimal("4000"),
+            entry_high=Decimal("4000"),
             stop_loss=Decimal("3990"),
             take_profits=(Decimal("4010"), Decimal("4020"), Decimal("4030")),
+            has_open_runner=False,
             signal_requests_double_lot=False,
+            source_revision_index=0,
+            source_posted_at=datetime.now(UTC),
         )
         self.planned = tuple(
             _PlannedPosition(
@@ -241,12 +278,16 @@ class _AtomicHarness(AtomicDay26Mt5ExecutionService):
     def _decrypt_token(self, account: _AccountInput) -> str:  # type: ignore[override]
         return "probe-token-with-terminal-access"
 
+    def _assert_signal_still_current(self, owner_user_id: UUID, signal: _SignalInput) -> None:  # type: ignore[override]
+        return None
+
     def _create_planned_positions(self, **_: object):  # type: ignore[override]
         return self.planned
 
     def _record_order_id(self, local_position_id: UUID, order_id: str) -> None:
         self.order_ids[local_position_id] = order_id
         item = next(row for row in self.planned if row.local_position_id == local_position_id)
+        _require(item.take_profit is not None, "rollback_numeric_tp")
         self.read.positions.append(
             {
                 "id": f"probe-position-{item.tp_index}",
@@ -295,35 +336,49 @@ class _AtomicHarness(AtomicDay26Mt5ExecutionService):
 
 
 async def run_day26_code_acceptance_probe() -> None:
-    """Exercise the actual Day 26 success and failure-atomic orchestration."""
+    """Exercise the actual V1 success, zone, runner and rollback orchestration."""
     original_day23 = day26_module.Day23Mt5ReadService
     original_atomic_day23 = atomic_module.Day23Mt5ReadService
     day26_module.Day23Mt5ReadService = _FakeDay23  # type: ignore[assignment]
     atomic_module.Day23Mt5ReadService = _FakeDay23  # type: ignore[assignment]
     try:
-        success = _SuccessHarness()
-        result = await success.execute_owner_demo_signal(
+        _FakeDay23.state = _live_state(bid=3999.8, ask=4000.0)
+        exact = _SuccessHarness()
+        result = await exact.execute_owner_demo_signal(
             owner_user_id=_OWNER,
             signal_id=_SIGNAL,
             risk_percent="1",
             double_lot_approved=False,
         )
-        _require(len(result.positions) == 3, "success_position_count")
-        _require(len(success.trade.place_calls) == 3, "success_order_count")
-        _require(len(success.margin.calls) == 1, "margin_must_be_checked_once")
-        _require(
-            [row["take_profit"] for row in success.trade.place_calls]
-            == [4010.0, 4020.0, 4030.0],
-            "provider_tp_mapping",
+        _require(len(result.positions) == 3, "exact_position_count")
+        _require(len(exact.trade.place_calls) == 3, "exact_order_count")
+        _require(len(exact.margin.calls) == 1, "exact_margin_once")
+
+        _FakeDay23.state = _live_state(bid=4391.8, ask=4392.0)
+        zone = _SuccessHarness(
+            entry_low=Decimal("4389"),
+            entry_high=Decimal("4394"),
         )
-        _require(
-            {row["stop_loss"] for row in success.trade.place_calls} == {3990.0},
-            "shared_stop_loss",
+        zone_result = await zone.execute_owner_demo_signal(
+            owner_user_id=_OWNER,
+            signal_id=_SIGNAL,
+            risk_percent="1",
+            double_lot_approved=False,
         )
-        _require(
-            len({row["client_id"] for row in success.trade.place_calls}) == 3,
-            "unique_client_ids",
+        _require(zone_result.signal_entry_price == Decimal("4392.0"), "zone_live_ask")
+        _require(len(zone.trade.place_calls) == 3, "zone_order_count")
+
+        _FakeDay23.state = _live_state(bid=3999.8, ask=4000.0)
+        runner = _SuccessHarness(runner=True)
+        runner_result = await runner.execute_owner_demo_signal(
+            owner_user_id=_OWNER,
+            signal_id=_SIGNAL,
+            risk_percent="1",
+            double_lot_approved=False,
         )
+        _require(len(runner_result.positions) == 4, "runner_position_count")
+        _require(runner.trade.place_calls[-1]["take_profit"] is None, "runner_no_tp")
+        _require(runner.margin.calls[0]["volume"] == 0.04, "runner_margin_full_set")
 
         second = _AtomicHarness(fail_on=2)
         try:
@@ -378,7 +433,7 @@ async def run_day26_code_acceptance_probe() -> None:
             raise RuntimeError("day26_code_probe_failed:rollback_failure_not_raised")
 
         logger.info(
-            "Day 26 code acceptance PASSED success_orders=3 rollback_tp2=1 rollback_tp3=2"
+            "Day 26 V1 code acceptance PASSED exact=3 zone=3 runner=4 rollback_tp2=1 rollback_tp3=2"
         )
     finally:
         day26_module.Day23Mt5ReadService = original_day23
