@@ -1,8 +1,8 @@
 """One-time Day 22 recovery helpers for stored MetaAPI credentials.
 
-This module never calls MetaAPI and never handles a Vantage password. It exists
-only to re-encrypt and locally verify an already configured MetaAPI token when
-the preview-environment encryption key has been lost or rotated.
+This module never handles a Vantage password. Recovery functions do not call
+MetaAPI. The diagnostic probe performs one read-only MetaAPI account request and
+records only sanitized result metadata.
 """
 
 from __future__ import annotations
@@ -13,6 +13,7 @@ from uuid import UUID
 from sqlalchemy import text
 from sqlalchemy.orm import Session, sessionmaker
 
+from app.metaapi_gateway import MetaApiGatewayError, MetaApiProvisioningGateway
 from app.models import AuditEvent
 from app.mt5_crypto import BrokerCredentialDecryptionError, MetaApiTokenCipher
 
@@ -166,3 +167,94 @@ def verify_existing_metaapi_token(
         session.commit()
 
     return verified
+
+
+async def probe_existing_metaapi_account(
+    *,
+    session_factory: sessionmaker[Session],
+    gateway: MetaApiProvisioningGateway,
+    owner_user_id: UUID,
+    metaapi_token: str,
+) -> None:
+    """Perform exactly one read-only MetaAPI account request for diagnosis."""
+
+    token = metaapi_token.strip()
+    with session_factory() as session:
+        row = session.execute(
+            text(
+                """
+                SELECT id, metaapi_account_id
+                FROM mt5_accounts
+                WHERE owner_user_id = :owner_user_id
+                LIMIT 1
+                """
+            ),
+            {"owner_user_id": owner_user_id},
+        ).mappings().first()
+
+    if row is None or len(token) < 20:
+        with session_factory() as session:
+            session.add(
+                AuditEvent(
+                    actor_user_id=owner_user_id,
+                    event_type="mt5.metaapi_read_probe",
+                    entity_type="mt5_account",
+                    entity_id=(row["id"] if row is not None else None),
+                    payload={
+                        "attempted": False,
+                        "account_found": row is not None,
+                        "token_present": len(token) >= 20,
+                        "metaapi_request_count": 0,
+                        "trade_action_created": False,
+                    },
+                )
+            )
+            session.commit()
+        return
+
+    account_id = row["id"]
+    payload: dict[str, object] = {
+        "attempted": True,
+        "metaapi_request_count": 1,
+        "trade_action_created": False,
+    }
+    try:
+        remote = await gateway.read_account(
+            token=token,
+            account_id=str(row["metaapi_account_id"]),
+        )
+        payload.update(
+            {
+                "success": True,
+                "remote_state": remote.state,
+                "remote_connection_status": remote.connection_status,
+            }
+        )
+    except MetaApiGatewayError as exc:
+        payload.update(
+            {
+                "success": False,
+                "error_kind": "MetaApiGatewayError",
+                "error_code": exc.code,
+                "retryable": exc.retryable,
+            }
+        )
+    except Exception as exc:
+        payload.update(
+            {
+                "success": False,
+                "error_kind": type(exc).__name__,
+            }
+        )
+
+    with session_factory() as session:
+        session.add(
+            AuditEvent(
+                actor_user_id=owner_user_id,
+                event_type="mt5.metaapi_read_probe",
+                entity_type="mt5_account",
+                entity_id=account_id,
+                payload=payload,
+            )
+        )
+        session.commit()
