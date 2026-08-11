@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import os
 
 from sqlalchemy import text
@@ -70,13 +69,6 @@ def main() -> None:
 
     status = "created or rotated" if changed else "already configured"
     print(f"Owner account {status}: {email}")
-
-    # Explicit, temporary acceptance switch only. The live fixture is idempotent and
-    # uses the connected Vantage demo account; normal deployments leave this disabled.
-    if os.getenv("SUPER_SIGNALS_DAY26_LIVE_ACCEPTANCE", "").strip() == "1":
-        from app.day26_live_acceptance import run_day26_live_acceptance
-
-        asyncio.run(run_day26_live_acceptance())
 
 
 if __name__ == "__main__":
