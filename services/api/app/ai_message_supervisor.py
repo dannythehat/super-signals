@@ -8,8 +8,10 @@ machine-readable decision so the live path never waits for human review.
 from __future__ import annotations
 
 import json
+import re
 import time
 from dataclasses import dataclass
+from decimal import Decimal, InvalidOperation
 from hashlib import sha256
 from typing import Any
 
@@ -151,6 +153,17 @@ turn an edit into a duplicate new trade.
 Use action=ignore for chatter or preparation. Use action=skip for incomplete,
 unsupported or unclear instructions. Return only the requested structured object."""
 
+_NUMBER_TOKEN = re.compile(r"(?<![A-Za-z0-9_.])\d+(?:\.\d+)?(?![A-Za-z0-9_.])")
+_OPEN_TARGET = re.compile(
+    r"\b(?:TP\s*\d*\s*[:=-]?\s*OPEN|TP\s+OPEN|RUNNER|LEAVE\s+(?:IT\s+)?OPEN)\b",
+    re.IGNORECASE,
+)
+_SECOND_ENTRY = re.compile(r"\b(?:SECOND|2ND)\s+ENTRY\b", re.IGNORECASE)
+_DOUBLE_SIZE = re.compile(
+    r"\b(?:DOUBLE\s+(?:LOT|LOTS|SIZE)|2X\s+(?:LOT|LOTS|SIZE))\b",
+    re.IGNORECASE,
+)
+
 
 @dataclass(frozen=True, slots=True)
 class AiMessageDecision:
@@ -168,6 +181,126 @@ class AiMessageDecision:
 
 class AiSupervisorError(RuntimeError):
     pass
+
+
+def _decimal(value: Any) -> Decimal | None:
+    if value is None:
+        return None
+    try:
+        parsed = Decimal(str(value))
+    except (InvalidOperation, ValueError, TypeError):
+        return None
+    if not parsed.is_finite() or parsed <= 0:
+        return None
+    return parsed
+
+
+def _literal_numbers(raw_text: str) -> set[Decimal]:
+    values: set[Decimal] = set()
+    for token in _NUMBER_TOKEN.findall(raw_text):
+        parsed = _decimal(token)
+        if parsed is not None:
+            values.add(parsed.normalize())
+    return values
+
+
+def _guard_execute_decision(parsed: dict[str, Any], raw_text: str) -> dict[str, Any]:
+    """Mechanically enforce the V1 execution boundary after the model responds.
+
+    This guard is intentionally redundant with the prompt. AI understanding may decide
+    what a message means, but a model response cannot bypass literal-value verification,
+    exact-entry scope, strict directional validation, or explicit double-size consent.
+    """
+    guarded = dict(parsed)
+
+    # Double-size handling is mechanical: no explicit double wording means normal size,
+    # even if the model incorrectly inferred risk from phrases such as HIGH RISK.
+    if bool(guarded.get("double_lot")) and not _DOUBLE_SIZE.search(raw_text):
+        guarded["double_lot"] = False
+
+    if guarded.get("decision") != "new_trade" or guarded.get("action") != "execute":
+        return guarded
+
+    upper_text = raw_text.upper()
+    symbol = str(guarded.get("symbol") or "").strip().upper()
+    if symbol == "GOLD":
+        symbol = "XAUUSD"
+        guarded["symbol"] = symbol
+    side = str(guarded.get("side") or "").strip().upper()
+    order_type = str(guarded.get("order_type") or "").strip().lower()
+
+    if symbol != "XAUUSD" or not ("XAUUSD" in upper_text or "GOLD" in upper_text):
+        guarded["action"] = "skip"
+        guarded["reason"] = "provider_instruction_incomplete"
+        return guarded
+    if side not in {"BUY", "SELL"} or side not in upper_text:
+        guarded["action"] = "skip"
+        guarded["reason"] = "provider_instruction_incomplete"
+        return guarded
+    if order_type != "market":
+        guarded["action"] = "skip"
+        guarded["reason"] = "unsupported_pending_order"
+        return guarded
+    if _SECOND_ENTRY.search(raw_text):
+        guarded["action"] = "skip"
+        guarded["reason"] = "unsupported_multiple_entries"
+        return guarded
+    if _OPEN_TARGET.search(raw_text):
+        guarded["action"] = "skip"
+        guarded["reason"] = "unsupported_open_target"
+        return guarded
+
+    entry_low = _decimal(guarded.get("entry_low"))
+    entry_high = _decimal(guarded.get("entry_high"))
+    stop_loss = _decimal(guarded.get("stop_loss"))
+    take_profits = tuple(_decimal(value) for value in (guarded.get("take_profits") or []))
+    if (
+        entry_low is None
+        or entry_high is None
+        or stop_loss is None
+        or not take_profits
+        or any(value is None for value in take_profits)
+    ):
+        guarded["action"] = "skip"
+        guarded["reason"] = "provider_instruction_incomplete"
+        return guarded
+    if entry_low != entry_high:
+        guarded["action"] = "skip"
+        guarded["reason"] = "unsupported_entry_range"
+        return guarded
+
+    literals = _literal_numbers(raw_text)
+    required_literals = {
+        entry_low.normalize(),
+        entry_high.normalize(),
+        stop_loss.normalize(),
+        *(value.normalize() for value in take_profits if value is not None),
+    }
+    if not required_literals.issubset(literals):
+        guarded["action"] = "skip"
+        guarded["reason"] = "literal_value_verification_failed"
+        return guarded
+
+    concrete_targets = tuple(value for value in take_profits if value is not None)
+    entry = entry_low
+    if side == "BUY":
+        valid_direction = (
+            stop_loss < entry
+            and all(target > entry for target in concrete_targets)
+            and all(right > left for left, right in zip(concrete_targets, concrete_targets[1:]))
+        )
+    else:
+        valid_direction = (
+            stop_loss > entry
+            and all(target < entry for target in concrete_targets)
+            and all(right < left for left, right in zip(concrete_targets, concrete_targets[1:]))
+        )
+    if not valid_direction:
+        guarded["action"] = "skip"
+        guarded["reason"] = "strict_directional_validation_failed"
+        return guarded
+
+    return guarded
 
 
 class OpenAiMessageSupervisor:
@@ -235,6 +368,7 @@ class OpenAiMessageSupervisor:
         except (httpx.HTTPError, ValueError, KeyError, TypeError, json.JSONDecodeError) as exc:
             raise AiSupervisorError("ai_supervisor_unavailable") from exc
 
+        parsed = _guard_execute_decision(parsed, raw_text)
         latency_ms = int((time.perf_counter() - started) * 1000)
         return AiMessageDecision(
             decision=str(parsed["decision"]),
