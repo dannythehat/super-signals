@@ -179,6 +179,20 @@ def _telegram_session_keys(environment: str) -> tuple[str, ...]:
     return keys
 
 
+def _openai_api_key() -> str | None:
+    """Read the standard OpenAI key, with the existing Render `Open` name as fallback.
+
+    `OPENAI_API_KEY` remains the canonical name. The temporary alias lets the deployed
+    service immediately use the secret that was already saved in Render without
+    copying or exposing that value through another tool or log.
+    """
+    return (
+        os.getenv("OPENAI_API_KEY", "").strip()
+        or os.getenv("Open", "").strip()
+        or None
+    )
+
+
 @lru_cache
 def get_settings() -> Settings:
     environment = os.getenv("SUPER_SIGNALS_ENV", "development").strip().lower()
@@ -200,7 +214,7 @@ def get_settings() -> Settings:
     if not cors_origins:
         raise RuntimeError("SUPER_SIGNALS_CORS_ORIGINS must contain at least one origin")
     telegram_api_id, telegram_api_hash = _telegram_api_credentials(environment)
-    ai_api_key = os.getenv("OPENAI_API_KEY", "").strip() or None
+    ai_api_key = _openai_api_key()
 
     return Settings(
         environment=environment,
@@ -240,6 +254,6 @@ def get_settings() -> Settings:
         ).strip(),
         ai_supervisor_timeout_seconds=_positive_int(
             "SUPER_SIGNALS_AI_SUPERVISOR_TIMEOUT_SECONDS",
-            "6",
+            "12",
         ),
     )
