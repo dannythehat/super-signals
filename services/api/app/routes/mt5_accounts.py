@@ -3,14 +3,17 @@
 from __future__ import annotations
 
 from dataclasses import asdict
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from pydantic import BaseModel, Field
+from sqlalchemy import text
 
 from app.access_control import require_permission
 from app.metaapi_read_gateway import MetaApiReadGateway
+from app.metaapi_token_scope import inspect_metaapi_token_scope
+from app.models import AuditEvent
 from app.mt5_connection_service import Mt5ConnectionError, Mt5ConnectionView
 from app.mt5_read_service_day23 import Day23Mt5ReadService, Day23ReadError
 from app.mt5_runtime import require_mt5_service
@@ -23,6 +26,10 @@ class ConnectOwnerDemoRequest(BaseModel):
     login: str = Field(min_length=1, max_length=32)
     password: str = Field(min_length=1, max_length=256)
     server: str = Field(min_length=2, max_length=160)
+
+
+class ReplaceMetaApiTokenRequest(BaseModel):
+    token: str = Field(min_length=20, max_length=8192)
 
 
 class Mt5ConnectionResponse(BaseModel):
@@ -100,6 +107,20 @@ def _response(view: Mt5ConnectionView) -> Mt5ConnectionResponse:
     return Mt5ConnectionResponse(**data)
 
 
+def _day23_response(state: Any) -> Day23LiveStateResponse:
+    return Day23LiveStateResponse(
+        login_masked=state.login_masked,
+        server=state.server,
+        region=state.region,
+        read_at=state.read_at,
+        account=Day23AccountResponse(**asdict(state.account)),
+        price=Day23PriceResponse(**asdict(state.price)),
+        positions=[Day23PositionResponse(**asdict(item)) for item in state.positions],
+        execution_ready=state.execution_ready,
+        execution_block_reason=state.execution_block_reason,
+    )
+
+
 def _no_store(response: Response) -> None:
     response.headers["Cache-Control"] = "no-store"
     response.headers["Pragma"] = "no-cache"
@@ -142,6 +163,25 @@ def _day23_message(code: str) -> str:
         "metaapi_region_unavailable": "MetaAPI did not report a valid deployment region for this account.",
     }
     return messages.get(code, "The live MT5 account state could not be read.")
+
+
+def _raise_day23(exc: Day23ReadError) -> None:
+    raise HTTPException(
+        status_code=(
+            status.HTTP_503_SERVICE_UNAVAILABLE
+            if exc.retryable
+            or exc.code
+            in {
+                "broker_credential_decryption_failed",
+                "metaapi_terminal_scope_missing",
+                "metaapi_permission_denied",
+                "metaapi_region_unavailable",
+                "metaapi_terminal_data_unavailable",
+            }
+            else status.HTTP_400_BAD_REQUEST
+        ),
+        detail={"code": exc.code, "message": _day23_message(exc.code)},
+    ) from exc
 
 
 def _day23_service(request: Request) -> Day23Mt5ReadService:
@@ -218,6 +258,88 @@ async def refresh_owner_demo(
     return _response(view)
 
 
+@router.post("/demo/metaapi-token", response_model=Day23LiveStateResponse)
+async def replace_owner_metaapi_token(
+    payload: ReplaceMetaApiTokenRequest,
+    request: Request,
+    response: Response,
+    identity: OwnerIdentity,
+) -> Day23LiveStateResponse:
+    token = payload.token.strip()
+    scope = inspect_metaapi_token_scope(token)
+    if scope.is_explicitly_narrowed and not scope.has_terminal_access:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail={
+                "code": "metaapi_terminal_scope_missing",
+                "message": _day23_message("metaapi_terminal_scope_missing"),
+            },
+        )
+
+    service = require_mt5_service(request)
+    now = datetime.now(UTC)
+    with service._session_factory() as session:
+        row = session.execute(
+            text(
+                """
+                SELECT id
+                FROM mt5_accounts
+                WHERE owner_user_id = :owner_user_id
+                LIMIT 1
+                FOR UPDATE
+                """
+            ),
+            {"owner_user_id": identity["id"]},
+        ).mappings().first()
+        if row is None:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail={
+                    "code": "mt5_account_not_configured",
+                    "message": _day23_message("mt5_account_not_configured"),
+                },
+            )
+        session.execute(
+            text(
+                """
+                UPDATE mt5_accounts
+                SET metaapi_token_ciphertext = :ciphertext,
+                    metaapi_token_fingerprint = :fingerprint,
+                    last_error_code = NULL,
+                    updated_at = :updated_at
+                WHERE id = :id
+                """
+            ),
+            {
+                "id": row["id"],
+                "ciphertext": service._cipher.encrypt(token),
+                "fingerprint": service._cipher.fingerprint(token),
+                "updated_at": now,
+            },
+        )
+        session.add(
+            AuditEvent(
+                actor_user_id=identity["id"],
+                event_type="mt5.metaapi_token_replaced",
+                entity_type="mt5_account",
+                entity_id=row["id"],
+                payload={
+                    "terminal_access": scope.has_terminal_access,
+                    "token_encrypted": True,
+                    "trade_action_created": False,
+                },
+            )
+        )
+        session.commit()
+
+    try:
+        state = await _day23_service(request).read_owner_live_state(identity["id"])
+    except Day23ReadError as exc:
+        _raise_day23(exc)
+    _no_store(response)
+    return _day23_response(state)
+
+
 @router.get("/demo/live-state", response_model=Day23LiveStateResponse)
 async def owner_demo_live_state(
     request: Request,
@@ -227,32 +349,6 @@ async def owner_demo_live_state(
     try:
         state = await _day23_service(request).read_owner_live_state(identity["id"])
     except Day23ReadError as exc:
-        raise HTTPException(
-            status_code=(
-                status.HTTP_503_SERVICE_UNAVAILABLE
-                if exc.retryable
-                or exc.code
-                in {
-                    "broker_credential_decryption_failed",
-                    "metaapi_terminal_scope_missing",
-                    "metaapi_permission_denied",
-                    "metaapi_region_unavailable",
-                    "metaapi_terminal_data_unavailable",
-                }
-                else status.HTTP_400_BAD_REQUEST
-            ),
-            detail={"code": exc.code, "message": _day23_message(exc.code)},
-        ) from exc
-
+        _raise_day23(exc)
     _no_store(response)
-    return Day23LiveStateResponse(
-        login_masked=state.login_masked,
-        server=state.server,
-        region=state.region,
-        read_at=state.read_at,
-        account=Day23AccountResponse(**asdict(state.account)),
-        price=Day23PriceResponse(**asdict(state.price)),
-        positions=[Day23PositionResponse(**asdict(item)) for item in state.positions],
-        execution_ready=state.execution_ready,
-        execution_block_reason=state.execution_block_reason,
-    )
+    return _day23_response(state)
