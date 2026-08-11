@@ -1,18 +1,18 @@
-"""Day 26 exact provider-following multi-TP demo execution.
+"""Day 26 fail-closed XAUUSD demo execution for exact and simple-zone signals.
 
-The input is an already-canonical Signal produced by Days 15-18. This module
-reuses Day 23 broker state, Day 24 risk sizing and Day 25 price/funds gates,
-then submits one market order per provider TP to the owner's Vantage demo.
+The input is an already-canonical V1 Signal. This service reuses Day 23 broker state,
+Day 24 risk sizing and the Day 25 exact-price/funds preflight, then submits one market
+position per numeric provider TP plus an optional TP OPEN runner.
 
-It does not classify, parse, reinterpret, chase, modify, close or retry trades.
-Day 27 owns follow-up trade management and Day 28 owns automatic end-to-end
-Telegram-to-broker execution.
+V1 deliberately does not place pending orders, chase a zone edge, choose a midpoint,
+use TIG's second entry, or reinterpret missing provider values.
 """
 
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal, InvalidOperation
 from typing import Any
 from uuid import UUID, uuid4
@@ -26,7 +26,11 @@ from app.metaapi_read_gateway import MetaApiReadGateway
 from app.metaapi_trade_gateway import MetaApiTradeGateway
 from app.models import AuditEvent
 from app.mt5_crypto import BrokerCredentialDecryptionError, MetaApiTokenCipher
-from app.mt5_read_service_day23 import Day23Mt5ReadService, Day23ReadError
+from app.mt5_read_service_day23 import (
+    Day23LiveState,
+    Day23Mt5ReadService,
+    Day23ReadError,
+)
 from app.risk_sizing_day24 import (
     BrokerVolumeRules,
     Day24RiskSizer,
@@ -48,7 +52,7 @@ class Day26ExecutionError(RuntimeError):
 class Day26MappedPosition:
     local_position_id: UUID
     tp_index: int
-    take_profit: Decimal
+    take_profit: Decimal | None
     volume: Decimal
     client_id: str
     broker_order_id: str
@@ -75,10 +79,22 @@ class _SignalInput:
     signal_id: UUID
     symbol: str
     side: str
-    entry_price: Decimal
+    entry_low: Decimal
+    entry_high: Decimal
     stop_loss: Decimal
     take_profits: tuple[Decimal, ...]
+    has_open_runner: bool
     signal_requests_double_lot: bool
+    source_revision_index: int
+    source_posted_at: datetime
+
+    @property
+    def is_zone(self) -> bool:
+        return self.entry_low != self.entry_high
+
+    @property
+    def position_count(self) -> int:
+        return len(self.take_profits) + (1 if self.has_open_runner else 0)
 
 
 @dataclass(frozen=True, slots=True)
@@ -92,12 +108,12 @@ class _AccountInput:
 class _PlannedPosition:
     local_position_id: UUID
     tp_index: int
-    take_profit: Decimal
+    take_profit: Decimal | None
     client_id: str
 
 
 class Day26Mt5ExecutionService:
-    """Execute one canonical signal on the owner's connected demo account."""
+    """Execute one accepted V1 signal on the owner's connected demo account."""
 
     def __init__(
         self,
@@ -107,12 +123,16 @@ class Day26Mt5ExecutionService:
         read_gateway: MetaApiReadGateway,
         margin_gateway: MetaApiMarginGateway,
         trade_gateway: MetaApiTradeGateway,
+        zone_wait_seconds: float = 300.0,
+        zone_poll_seconds: float = 2.0,
     ) -> None:
         self._session_factory = session_factory
         self._cipher = cipher
         self._read_gateway = read_gateway
         self._margin_gateway = margin_gateway
         self._trade_gateway = trade_gateway
+        self._zone_wait_seconds = max(0.0, float(zone_wait_seconds))
+        self._zone_poll_seconds = max(0.05, float(zone_poll_seconds))
 
     async def execute_owner_demo_signal(
         self,
@@ -135,6 +155,13 @@ class Day26Mt5ExecutionService:
         except Day23ReadError as exc:
             raise Day26ExecutionError(exc.code) from exc
 
+        execution_entry, live_state = await self._resolve_entry(
+            owner_user_id=owner_user_id,
+            signal=signal,
+            day23=day23,
+            initial_state=live_state,
+        )
+
         try:
             specification = await self._read_gateway.read_symbol_specification(
                 token=token,
@@ -147,6 +174,7 @@ class Day26Mt5ExecutionService:
 
         sizing = self._size_signal(
             signal=signal,
+            execution_entry=execution_entry,
             balance=live_state.account.balance,
             price_loss_tick_value=live_state.price.loss_tick_value,
             specification=specification,
@@ -154,9 +182,11 @@ class Day26Mt5ExecutionService:
             double_lot_approved=double_lot_approved,
         )
 
-        preflight = Day25TradePreflightService(
-            margin_gateway=self._margin_gateway
-        )
+        # Day 25 remains unchanged. For an exact signal, sizing carries the provider's
+        # exact price. For a zone, the deterministic zone gate has already authorized
+        # the current executable broker price, so that actual in-zone price is passed
+        # through the same one-shot price/funds preflight.
+        preflight = Day25TradePreflightService(margin_gateway=self._margin_gateway)
         day25_result = await preflight.evaluate(
             live_state=live_state,
             side=signal.side,
@@ -173,10 +203,15 @@ class Day26Mt5ExecutionService:
                 day25_result.block_reason or "day25_preflight_blocked"
             )
 
+        # Freeze-check immediately before any local position is created. An edit or
+        # cancellation arriving during a zone wait must stop the trade.
+        self._assert_signal_still_current(owner_user_id, signal)
+
         planned = self._create_planned_positions(
             owner_user_id=owner_user_id,
             signal=signal,
             sizing=sizing,
+            execution_entry=execution_entry,
         )
 
         order_ids: dict[str, str] = {}
@@ -190,7 +225,11 @@ class Day26Mt5ExecutionService:
                     symbol=signal.symbol,
                     volume=float(sizing.volume),
                     stop_loss=float(signal.stop_loss),
-                    take_profit=float(item.take_profit),
+                    take_profit=(
+                        float(item.take_profit)
+                        if item.take_profit is not None
+                        else None
+                    ),
                     client_id=item.client_id,
                 )
                 order_ids[item.client_id] = result.order_id
@@ -223,6 +262,7 @@ class Day26Mt5ExecutionService:
             owner_user_id=owner_user_id,
             signal=signal,
             sizing=sizing,
+            execution_entry=execution_entry,
             planned=planned,
             order_ids=order_ids,
             broker_positions=broker_positions,
@@ -231,6 +271,7 @@ class Day26Mt5ExecutionService:
             owner_user_id=owner_user_id,
             signal=signal,
             sizing=sizing,
+            execution_entry=execution_entry,
             mapped=mapped,
         )
         return Day26ExecutionResult(
@@ -238,7 +279,7 @@ class Day26Mt5ExecutionService:
             user_id=owner_user_id,
             symbol=signal.symbol,
             side=signal.side,
-            signal_entry_price=signal.entry_price,
+            signal_entry_price=execution_entry,
             stop_loss=signal.stop_loss,
             base_risk_percent=sizing.base_risk_percent,
             effective_risk_percent=sizing.effective_risk_percent,
@@ -246,15 +287,63 @@ class Day26Mt5ExecutionService:
             positions=mapped,
         )
 
+    async def _resolve_entry(
+        self,
+        *,
+        owner_user_id: UUID,
+        signal: _SignalInput,
+        day23: Day23Mt5ReadService,
+        initial_state: Day23LiveState,
+    ) -> tuple[Decimal, Day23LiveState]:
+        if not signal.is_zone:
+            return signal.entry_low, initial_state
+
+        posted_at = signal.source_posted_at
+        if posted_at.tzinfo is None:
+            posted_at = posted_at.replace(tzinfo=UTC)
+        deadline = posted_at.astimezone(UTC) + timedelta(seconds=self._zone_wait_seconds)
+
+        state = initial_state
+        while True:
+            self._assert_signal_still_current(owner_user_id, signal)
+            try:
+                executable = Decimal(
+                    str(Day23Mt5ReadService.executable_price(state, signal.side))
+                )
+            except Day23ReadError as exc:
+                raise Day26ExecutionError(exc.code) from exc
+
+            if signal.entry_low <= executable <= signal.entry_high:
+                return executable, state
+
+            now = datetime.now(UTC)
+            if self._zone_wait_seconds <= 0 or now >= deadline:
+                self._audit_blocked(
+                    owner_user_id=owner_user_id,
+                    signal_id=signal.signal_id,
+                    code="zone_not_reached",
+                )
+                raise Day26ExecutionError("zone_not_reached")
+
+            remaining = max(0.0, (deadline - now).total_seconds())
+            await asyncio.sleep(min(self._zone_poll_seconds, remaining))
+            try:
+                state = await day23.read_owner_live_state(owner_user_id)
+            except Day23ReadError as exc:
+                raise Day26ExecutionError(exc.code) from exc
+
     def _load_inputs(
-        self, owner_user_id: UUID, signal_id: UUID
+        self,
+        owner_user_id: UUID,
+        signal_id: UUID,
     ) -> tuple[_SignalInput, _AccountInput]:
         with self._session_factory() as session:
             signal_row = session.execute(
                 text(
                     """
                     SELECT id, symbol, side, order_type, entry_low, entry_high,
-                           stop_loss, take_profits, parser_status, risk_multiplier
+                           stop_loss, take_profits, has_open_runner, parser_status,
+                           risk_multiplier, source_revision_index, source_posted_at
                     FROM signals
                     WHERE id = :signal_id
                     FOR UPDATE
@@ -281,6 +370,24 @@ class Day26Mt5ExecutionService:
             ).scalar_one()
             if int(existing_count) != 0:
                 raise Day26ExecutionError("signal_execution_already_started")
+
+            cancelled = bool(
+                session.execute(
+                    text(
+                        """
+                        SELECT EXISTS(
+                            SELECT 1
+                            FROM signal_lifecycle_events
+                            WHERE signal_id = :signal_id
+                              AND event_type = 'cancel'
+                        )
+                        """
+                    ),
+                    {"signal_id": signal_id},
+                ).scalar_one()
+            )
+            if cancelled:
+                raise Day26ExecutionError("signal_cancelled")
 
             account_row = session.execute(
                 text(
@@ -309,27 +416,48 @@ class Day26Mt5ExecutionService:
         if side not in {"BUY", "SELL"}:
             raise Day26ExecutionError("trade_side_invalid")
 
-        entry_low = self._required_decimal(signal_row["entry_low"], "signal_entry_invalid")
-        entry_high = self._required_decimal(signal_row["entry_high"], "signal_entry_invalid")
-        if entry_low != entry_high:
-            raise Day26ExecutionError("day26_exact_entry_required")
+        entry_low = self._required_decimal(
+            signal_row["entry_low"], "signal_entry_invalid"
+        )
+        entry_high = self._required_decimal(
+            signal_row["entry_high"], "signal_entry_invalid"
+        )
+        if entry_high < entry_low:
+            raise Day26ExecutionError("signal_entry_invalid")
         stop_loss = self._required_decimal(
             signal_row["stop_loss"], "signal_stop_loss_invalid"
         )
         take_profits = self._take_profits(signal_row["take_profits"])
+        has_open_runner = bool(signal_row["has_open_runner"])
+        if not self._directionally_valid(
+            side=side,
+            entry_low=entry_low,
+            entry_high=entry_high,
+            stop_loss=stop_loss,
+            take_profits=take_profits,
+        ):
+            raise Day26ExecutionError("strict_directional_validation_failed")
+
         risk_multiplier = self._required_decimal(
             signal_row["risk_multiplier"], "signal_risk_multiplier_invalid"
         )
+        source_posted_at = signal_row["source_posted_at"]
+        if not isinstance(source_posted_at, datetime):
+            raise Day26ExecutionError("signal_posted_at_invalid")
 
         return (
             _SignalInput(
                 signal_id=signal_id,
                 symbol=symbol,
                 side=side,
-                entry_price=entry_low,
+                entry_low=entry_low,
+                entry_high=entry_high,
                 stop_loss=stop_loss,
                 take_profits=take_profits,
+                has_open_runner=has_open_runner,
                 signal_requests_double_lot=risk_multiplier > Decimal("1"),
+                source_revision_index=int(signal_row["source_revision_index"]),
+                source_posted_at=source_posted_at,
             ),
             _AccountInput(
                 local_account_id=account_row["id"],
@@ -337,6 +465,62 @@ class Day26Mt5ExecutionService:
                 token_ciphertext=bytes(account_row["metaapi_token_ciphertext"]),
             ),
         )
+
+    def _assert_signal_still_current(
+        self,
+        owner_user_id: UUID,
+        signal: _SignalInput,
+    ) -> None:
+        with self._session_factory() as session:
+            row = session.execute(
+                text(
+                    """
+                    SELECT parser_status, source_revision_index
+                    FROM signals
+                    WHERE id = :signal_id
+                    """
+                ),
+                {"signal_id": signal.signal_id},
+            ).mappings().first()
+            if row is None:
+                raise Day26ExecutionError("signal_not_found")
+            if str(row["parser_status"]) != "accepted":
+                raise Day26ExecutionError("signal_no_longer_accepted")
+            if int(row["source_revision_index"]) != signal.source_revision_index:
+                raise Day26ExecutionError("signal_changed_before_execution")
+
+            existing = int(
+                session.execute(
+                    text(
+                        """
+                        SELECT COUNT(*)
+                        FROM positions
+                        WHERE signal_id = :signal_id AND user_id = :user_id
+                        """
+                    ),
+                    {"signal_id": signal.signal_id, "user_id": owner_user_id},
+                ).scalar_one()
+            )
+            if existing:
+                raise Day26ExecutionError("signal_execution_already_started")
+
+            cancelled = bool(
+                session.execute(
+                    text(
+                        """
+                        SELECT EXISTS(
+                            SELECT 1
+                            FROM signal_lifecycle_events
+                            WHERE signal_id = :signal_id
+                              AND event_type = 'cancel'
+                        )
+                        """
+                    ),
+                    {"signal_id": signal.signal_id},
+                ).scalar_one()
+            )
+            if cancelled:
+                raise Day26ExecutionError("signal_cancelled")
 
     def _decrypt_token(self, account: _AccountInput) -> str:
         try:
@@ -351,6 +535,7 @@ class Day26Mt5ExecutionService:
         self,
         *,
         signal: _SignalInput,
+        execution_entry: Decimal,
         balance: float,
         price_loss_tick_value: float | None,
         specification: dict[str, object],
@@ -368,11 +553,11 @@ class Day26Mt5ExecutionService:
             return Day24RiskSizer.size(
                 balance=balance,
                 risk_percent=risk_percent,
-                signal_entry_price=signal.entry_price,
+                signal_entry_price=execution_entry,
                 signal_stop_loss=signal.stop_loss,
                 tick_size=specification.get("tickSize"),
                 tick_value=price_loss_tick_value,
-                take_profit_count=len(signal.take_profits),
+                take_profit_count=signal.position_count,
                 volume_rules=rules,
                 signal_requests_double_lot=signal.signal_requests_double_lot,
                 double_lot_approved=double_lot_approved,
@@ -386,10 +571,15 @@ class Day26Mt5ExecutionService:
         owner_user_id: UUID,
         signal: _SignalInput,
         sizing: Day24RiskSizingResult,
+        execution_entry: Decimal,
     ) -> tuple[_PlannedPosition, ...]:
+        targets: list[Decimal | None] = list(signal.take_profits)
+        if signal.has_open_runner:
+            targets.append(None)
+
         planned: list[_PlannedPosition] = []
         with self._session_factory() as session:
-            for tp_index, take_profit in enumerate(signal.take_profits, start=1):
+            for tp_index, take_profit in enumerate(targets, start=1):
                 local_id = uuid4()
                 client_id = f"SS_{local_id.hex[:12]}_{tp_index}"
                 session.execute(
@@ -416,7 +606,7 @@ class Day26Mt5ExecutionService:
                         "volume": sizing.volume,
                         "stop_loss": signal.stop_loss,
                         "client_id": client_id,
-                        "entry_price": signal.entry_price,
+                        "entry_price": execution_entry,
                     },
                 )
                 planned.append(
@@ -450,6 +640,7 @@ class Day26Mt5ExecutionService:
         owner_user_id: UUID,
         signal: _SignalInput,
         sizing: Day24RiskSizingResult,
+        execution_entry: Decimal,
         planned: tuple[_PlannedPosition, ...],
         order_ids: dict[str, str],
         broker_positions: list[dict[str, object]],
@@ -523,7 +714,7 @@ class Day26Mt5ExecutionService:
         *,
         broker: dict[str, object],
         signal: _SignalInput,
-        take_profit: Decimal,
+        take_profit: Decimal | None,
         volume: Decimal,
     ) -> None:
         raw_type = str(broker.get("type") or "")
@@ -546,13 +737,20 @@ class Day26Mt5ExecutionService:
             broker.get("stopLoss"), "broker_position_mapping_invalid"
         ) != signal.stop_loss:
             raise Day26ExecutionError("broker_position_mapping_invalid")
-        if self._required_decimal(
-            broker.get("takeProfit"), "broker_position_mapping_invalid"
-        ) != take_profit:
+
+        broker_tp = self._optional_decimal(broker.get("takeProfit"))
+        if take_profit is None:
+            if broker_tp is not None and broker_tp != Decimal("0"):
+                raise Day26ExecutionError("broker_position_mapping_invalid")
+        elif broker_tp != take_profit:
             raise Day26ExecutionError("broker_position_mapping_invalid")
 
     def _audit_blocked(
-        self, *, owner_user_id: UUID, signal_id: UUID, code: str
+        self,
+        *,
+        owner_user_id: UUID,
+        signal_id: UUID,
+        code: str,
     ) -> None:
         self._audit(
             owner_user_id=owner_user_id,
@@ -586,6 +784,7 @@ class Day26Mt5ExecutionService:
         owner_user_id: UUID,
         signal: _SignalInput,
         sizing: Day24RiskSizingResult,
+        execution_entry: Decimal,
         mapped: tuple[Day26MappedPosition, ...],
     ) -> None:
         self._audit(
@@ -595,7 +794,12 @@ class Day26Mt5ExecutionService:
             payload={
                 "symbol": signal.symbol,
                 "side": signal.side,
+                "provider_entry_low": str(signal.entry_low),
+                "provider_entry_high": str(signal.entry_high),
+                "execution_entry": str(execution_entry),
+                "entry_is_zone": signal.is_zone,
                 "position_count": len(mapped),
+                "open_runner": signal.has_open_runner,
                 "base_risk_percent": str(sizing.base_risk_percent),
                 "effective_risk_percent": str(sizing.effective_risk_percent),
                 "double_lot_applied": sizing.double_lot_applied,
@@ -629,8 +833,50 @@ class Day26Mt5ExecutionService:
         if not isinstance(value, (list, tuple)) or not value:
             raise Day26ExecutionError("signal_take_profits_invalid")
         return tuple(
-            cls._required_decimal(item, "signal_take_profits_invalid") for item in value
+            cls._required_decimal(item, "signal_take_profits_invalid")
+            for item in value
         )
+
+    @staticmethod
+    def _directionally_valid(
+        *,
+        side: str,
+        entry_low: Decimal,
+        entry_high: Decimal,
+        stop_loss: Decimal,
+        take_profits: tuple[Decimal, ...],
+    ) -> bool:
+        if side == "BUY":
+            return (
+                stop_loss < entry_low
+                and all(tp > entry_high for tp in take_profits)
+                and all(
+                    right > left
+                    for left, right in zip(take_profits, take_profits[1:])
+                )
+            )
+        return (
+            stop_loss > entry_high
+            and all(tp < entry_low for tp in take_profits)
+            and all(
+                right < left
+                for left, right in zip(take_profits, take_profits[1:])
+            )
+        )
+
+    @staticmethod
+    def _optional_decimal(value: object) -> Decimal | None:
+        if value in {None, ""}:
+            return None
+        if isinstance(value, bool):
+            raise Day26ExecutionError("broker_position_mapping_invalid")
+        try:
+            result = value if isinstance(value, Decimal) else Decimal(str(value))
+        except (InvalidOperation, ValueError, TypeError) as exc:
+            raise Day26ExecutionError("broker_position_mapping_invalid") from exc
+        if not result.is_finite():
+            raise Day26ExecutionError("broker_position_mapping_invalid")
+        return result
 
     @staticmethod
     def _required_decimal(value: object, code: str) -> Decimal:
