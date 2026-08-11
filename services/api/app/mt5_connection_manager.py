@@ -31,8 +31,8 @@ class Mt5ConnectionManager:
             return
         self._stopping.clear()
         # Reconcile once before the loop. This is the Day 22 restart/reconnect path.
-        # The periodic Day 22 monitor is deliberately slow while no trade engine is
-        # active, avoiding unnecessary MetaAPI status traffic during development.
+        # Day 22 has no trade engine, so idle polling stays deliberately slow to
+        # avoid unnecessary MetaAPI traffic and development spend.
         try:
             checked = await self._service.reconcile_all()
             logger.info("MT5 connection startup reconciliation checked %d account(s)", checked)
