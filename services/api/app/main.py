@@ -17,6 +17,7 @@ from app.db import get_session_factory
 from app.metaapi_gateway import MetaApiProvisioningGateway
 from app.mt5_connection_manager import Mt5ConnectionManager
 from app.mt5_connection_service import Mt5ConnectionError, Mt5DemoConnectionService
+from app.mt5_connection_service_day22 import Day22Mt5DemoConnectionService
 from app.mt5_crypto import MetaApiTokenCipher
 from app.mt5_recovery import (
     probe_existing_metaapi_account,
@@ -129,7 +130,7 @@ async def _lifespan(application: FastAPI) -> AsyncIterator[None]:
     if broker_keys:
         broker_cipher = MetaApiTokenCipher(broker_keys)
         gateway = MetaApiProvisioningGateway()
-        mt5_connection_service = Mt5DemoConnectionService(
+        mt5_connection_service = Day22Mt5DemoConnectionService(
             session_factory=session_factory,
             cipher=broker_cipher,
             gateway=gateway,
