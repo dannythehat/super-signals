@@ -75,8 +75,10 @@ export function Mt5DemoConnectionPanel({ apiBaseUrl }: { apiBaseUrl: string }) {
   const [liveState, setLiveState] = useState<LiveState | null>(null);
   const [busy, setBusy] = useState(false);
   const [liveBusy, setLiveBusy] = useState(false);
+  const [tokenBusy, setTokenBusy] = useState(false);
   const [message, setMessage] = useState('');
   const [liveMessage, setLiveMessage] = useState('');
+  const [tokenMessage, setTokenMessage] = useState('');
 
   async function load() {
     const response = await fetch(`${apiBaseUrl}/owner/mt5/demo/status`, { credentials: 'include', headers: { Accept: 'application/json' } });
@@ -101,6 +103,25 @@ export function Mt5DemoConnectionPanel({ apiBaseUrl }: { apiBaseUrl: string }) {
       setMessage((body as Connection).status === 'connected' ? 'Vantage MT5 demo connected.' : 'Connection submitted. The broker connection is still starting.');
     } catch (error) { setMessage(error instanceof Error ? error.message : 'Connection failed.'); }
     finally { setBusy(false); }
+  }
+
+  async function replaceMetaApiToken(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault(); setTokenBusy(true); setTokenMessage(''); setLiveMessage('');
+    const form = new FormData(event.currentTarget);
+    try {
+      const response = await fetch(`${apiBaseUrl}/owner/mt5/demo/metaapi-token`, {
+        method: 'POST', credentials: 'include', headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+        body: JSON.stringify({ token: form.get('token') }),
+      });
+      const body = await response.json() as LiveState | { detail?: { message?: string } };
+      if (!response.ok) throw new Error('detail' in body ? body.detail?.message ?? 'MetaAPI update failed.' : 'MetaAPI update failed.');
+      setLiveState(body as LiveState);
+      event.currentTarget.reset();
+      setTokenMessage('DAY 23 SUCCESS — MetaAPI updated and live MT5 state read successfully.');
+      setLiveMessage((body as LiveState).execution_ready ? 'Fresh executable XAUUSD quote received.' : `Execution blocked: ${(body as LiveState).execution_block_reason ?? 'price unavailable'}.`);
+      await load();
+    } catch (error) { setTokenMessage(error instanceof Error ? error.message : 'MetaAPI update failed.'); }
+    finally { setTokenBusy(false); }
   }
 
   async function refresh() {
@@ -142,6 +163,15 @@ export function Mt5DemoConnectionPanel({ apiBaseUrl }: { apiBaseUrl: string }) {
       <article className="overview-card"><span className="status-label">Trading</span><strong>Disabled</strong><small>Day 23 reads broker state only. It cannot place orders.</small></article>
     </div>
     {help && <p role="status">{help}</p>}
+
+    {connection?.configured && <form className="auth-form" onSubmit={replaceMetaApiToken} autoComplete="off">
+      <p><strong>Day 23 — replace MetaAPI access</strong></p>
+      <p>Paste the new MetaAPI token with all API permissions enabled. This replaces the older management-only token for the same connected Vantage account and immediately runs the Day 23 live-state test.</p>
+      <label>New MetaAPI token<input name="token" type="password" required autoComplete="off" /></label>
+      <button className="button" type="submit" disabled={tokenBusy}>{tokenBusy ? 'Updating & testing…' : 'Update MetaAPI & test Day 23'}</button>
+      {tokenMessage && <p role="status"><strong>{tokenMessage}</strong></p>}
+    </form>}
+
     {connection?.configured && <div className="overview-actions"><button className="button button--quiet" type="button" onClick={refresh} disabled={busy}>{busy ? 'Checking…' : 'Refresh connection'}</button>{connection.status === 'connected' && <button className="button" type="button" onClick={readLiveState} disabled={liveBusy}>{liveBusy ? 'Reading MT5…' : 'Read live MT5 state'}</button>}</div>}
 
     {liveState && <div className="overview-section" aria-label="Live MT5 state">
