@@ -25,12 +25,12 @@ class FakeMarginGateway:
         return self.margin
 
 
-def sizing(*, entry: str = "4000", tps: int = 3):
+def sizing(*, entry: str = "4000", stop: str = "3990", tps: int = 3):
     return Day24RiskSizer.size(
         balance="1000",
         risk_percent="1",
         signal_entry_price=entry,
-        signal_stop_loss="3990",
+        signal_stop_loss=stop,
         tick_size="0.01",
         tick_value="1",
         take_profit_count=tps,
@@ -89,11 +89,12 @@ def state(
 
 def run_preflight(*, live_state: Day23LiveState, side: str, gateway: FakeMarginGateway):
     service = Day25TradePreflightService(margin_gateway=gateway)  # type: ignore[arg-type]
+    stop = "3990" if side.upper() == "BUY" else "4010"
     return asyncio.run(
         service.evaluate(
             live_state=live_state,
             side=side,
-            sizing=sizing(),
+            sizing=sizing(stop=stop),
             token="test-token",
         )
     )
@@ -155,6 +156,28 @@ def test_sell_after_entry_has_been_missed_skips_once_without_margin_call() -> No
     gateway = FakeMarginGateway(margin=100)
     result = run_preflight(
         live_state=state(bid=3999.99, ask=4000.2), side="SELL", gateway=gateway
+    )
+
+    assert result.proceed is False
+    assert result.block_reason == "entry_price_unavailable"
+    assert result.positions_allowed == 0
+    assert gateway.calls == []
+
+
+def test_buy_price_at_or_beyond_signal_stop_is_not_a_valid_better_entry() -> None:
+    gateway = FakeMarginGateway(margin=100)
+    result = run_preflight(live_state=state(ask=3990.0), side="BUY", gateway=gateway)
+
+    assert result.proceed is False
+    assert result.block_reason == "entry_price_unavailable"
+    assert result.positions_allowed == 0
+    assert gateway.calls == []
+
+
+def test_sell_price_at_or_beyond_signal_stop_is_not_a_valid_better_entry() -> None:
+    gateway = FakeMarginGateway(margin=100)
+    result = run_preflight(
+        live_state=state(bid=4010.0, ask=4010.2), side="SELL", gateway=gateway
     )
 
     assert result.proceed is False
