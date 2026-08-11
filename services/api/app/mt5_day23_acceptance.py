@@ -21,6 +21,7 @@ from app.metaapi_read_gateway import MetaApiReadGateway
 from app.models import AuditEvent
 from app.mt5_crypto import BrokerCredentialDecryptionError, MetaApiTokenCipher
 from app.mt5_read_service_day23 import Day23Mt5ReadService, Day23ReadError
+from app.mt5_recovery import reencrypt_existing_metaapi_token, verify_existing_metaapi_token
 
 logger = logging.getLogger(__name__)
 
@@ -187,6 +188,50 @@ def _record_scope_only(
     )
 
 
+def _one_shot_token_from_env() -> str | None:
+    chunks = [
+        os.getenv(f"SUPER_SIGNALS_DAY23_TOKEN_B64_{index}", "").strip()
+        for index in range(1, 6)
+    ]
+    if not any(chunks):
+        return None
+    if not all(chunks):
+        raise RuntimeError("Day 23 one-shot token chunks are incomplete")
+    encoded = "".join(chunks)
+    try:
+        padding = "=" * (-len(encoded) % 4)
+        return base64.urlsafe_b64decode((encoded + padding).encode("ascii")).decode("utf-8")
+    except (ValueError, UnicodeDecodeError) as exc:
+        raise RuntimeError("Day 23 one-shot token could not be decoded") from exc
+
+
+def _replace_token_from_env(
+    *,
+    session_factory: sessionmaker[Session],
+    cipher: MetaApiTokenCipher,
+    owner_user_id: UUID,
+) -> bool:
+    token = _one_shot_token_from_env()
+    if token is None:
+        return False
+    recovered = reencrypt_existing_metaapi_token(
+        session_factory=session_factory,
+        cipher=cipher,
+        owner_user_id=owner_user_id,
+        metaapi_token=token,
+    )
+    verified = recovered and verify_existing_metaapi_token(
+        session_factory=session_factory,
+        cipher=cipher,
+        owner_user_id=owner_user_id,
+        expected_token=token,
+    )
+    if not verified:
+        raise RuntimeError("Day 23 one-shot token replacement did not verify")
+    logger.info("Day 23 one-shot MetaAPI token replacement completed local_verification=true")
+    return True
+
+
 async def run_day23_acceptance_probe(
     *,
     session_factory: sessionmaker[Session],
@@ -200,6 +245,16 @@ async def run_day23_acceptance_probe(
         owner_user_id = UUID(owner_id_raw)
     except ValueError:
         logger.error("Day 23 acceptance probe skipped: owner id is invalid")
+        return
+
+    try:
+        _replace_token_from_env(
+            session_factory=session_factory,
+            cipher=cipher,
+            owner_user_id=owner_user_id,
+        )
+    except RuntimeError as exc:
+        logger.error("Day 23 one-shot token replacement failed: %s", str(exc))
         return
 
     if os.getenv("SUPER_SIGNALS_DAY23_SCOPE_ONLY", "").strip() == "1":
