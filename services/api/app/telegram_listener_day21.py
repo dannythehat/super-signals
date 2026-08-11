@@ -1,8 +1,8 @@
 """Day 21 Telegram listener reliability plus AI-authoritative message decisions.
 
-Every newly persisted Testing/Live source message is immediately passed to the AI
-Message Supervisor when enabled. The accepted reconnect catch-up path uses the same
-idempotent decision pipeline, so a short Render cutover cannot bypass supervision.
+Every newly persisted Testing/Live source message and edit is immediately passed to
+the AI Message Supervisor when enabled. Reconnect catch-up uses the same idempotent
+pipeline, so a Render cutover cannot bypass supervision.
 """
 
 from __future__ import annotations
@@ -67,6 +67,15 @@ class Day21TelegramListenerManager(Day20TelegramListenerManager):
         persisted = super()._persist_message(captured)
         if self._ai_pipeline is not None:
             self._ai_pipeline.process_original(
+                captured.source_id,
+                captured.telegram_message_id,
+            )
+        return persisted
+
+    def _persist_edit(self, captured: CapturedTelegramEdit) -> bool:
+        persisted = super()._persist_edit(captured)
+        if persisted and self._ai_pipeline is not None:
+            self._ai_pipeline.process_latest_revision(
                 captured.source_id,
                 captured.telegram_message_id,
             )
