@@ -119,8 +119,14 @@ class MetaApiMarginGateway:
         raise MetaApiGatewayError("metaapi_margin_check_rejected")
 
     @staticmethod
-    def _positive_finite(value: float) -> bool:
-        return not isinstance(value, bool) and math.isfinite(float(value)) and float(value) > 0
+    def _positive_finite(value: object) -> bool:
+        if isinstance(value, bool):
+            return False
+        try:
+            parsed = float(value)  # type: ignore[arg-type]
+        except (TypeError, ValueError):
+            return False
+        return math.isfinite(parsed) and parsed > 0
 
     @staticmethod
     def _json(response: httpx.Response) -> object:
