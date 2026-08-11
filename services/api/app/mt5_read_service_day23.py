@@ -13,6 +13,7 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from app.metaapi_gateway import MetaApiGatewayError
 from app.metaapi_read_gateway import MetaApiReadGateway
+from app.metaapi_token_scope import inspect_metaapi_token_scope
 from app.models import AuditEvent
 from app.mt5_crypto import BrokerCredentialDecryptionError, MetaApiTokenCipher
 
@@ -128,6 +129,15 @@ class Day23Mt5ReadService:
         except BrokerCredentialDecryptionError as exc:
             self._audit_failure(row["id"], "broker_credential_decryption_failed", "decrypt")
             raise Day23ReadError("broker_credential_decryption_failed") from exc
+
+        scope = inspect_metaapi_token_scope(token)
+        if (
+            scope.jwt_payload_decoded
+            and scope.is_explicitly_narrowed
+            and not scope.has_terminal_access
+        ):
+            self._audit_failure(row["id"], "metaapi_terminal_scope_missing", "token_scope")
+            raise Day23ReadError("metaapi_terminal_scope_missing")
 
         account_id = str(row["metaapi_account_id"])
         try:
