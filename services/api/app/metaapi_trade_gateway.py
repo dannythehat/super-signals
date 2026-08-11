@@ -1,8 +1,9 @@
-"""Narrow MetaAPI market-order gateway for Day 26 demo execution.
+"""Narrow MetaAPI trade gateway for Day 26 demo execution.
 
-Day 26 needs one capability only: submit a broker market order carrying the
-provider's SL/TP and a Super Signals clientId. Follow-up modification/close
-commands belong to Day 27 and are intentionally absent here.
+Day 26 submits one market order per provider TP. It also exposes one deliberately
+narrow close-by-position-id operation used only as compensation when a multi-TP
+submission fails part-way through. Normal provider-driven closes and modifications
+remain Day 27 scope.
 """
 
 from __future__ import annotations
@@ -29,7 +30,7 @@ class MetaApiMarketOrderResult:
 
 
 class MetaApiTradeGateway:
-    """MetaAPI client exposing market entry only for the Day 26 demo gate."""
+    """MetaAPI client exposing Day 26 market entry plus failure compensation."""
 
     def __init__(self, *, timeout_seconds: float = 30.0) -> None:
         self._timeout = httpx.Timeout(timeout_seconds)
@@ -47,9 +48,7 @@ class MetaApiTradeGateway:
         take_profit: float,
         client_id: str,
     ) -> MetaApiMarketOrderResult:
-        normalized_region = region.strip().lower()
-        if not _REGION.fullmatch(normalized_region):
-            raise MetaApiGatewayError("metaapi_region_unavailable")
+        normalized_region = self._normalize_region(region)
 
         normalized_side = side.strip().upper()
         if normalized_side == "BUY":
@@ -74,13 +73,10 @@ class MetaApiTradeGateway:
         ):
             raise MetaApiGatewayError("trade_client_id_invalid")
 
-        response = await self._request(
-            "POST",
-            (
-                f"https://mt-client-api-v1.{normalized_region}.agiliumtrade.ai"
-                f"/users/current/accounts/{account_id}/trade"
-            ),
+        payload = await self._trade_request(
             token=token,
+            account_id=account_id,
+            region=normalized_region,
             json_body={
                 "actionType": action_type,
                 "symbol": normalized_symbol,
@@ -92,26 +88,6 @@ class MetaApiTradeGateway:
                 "clientId": client_id,
             },
         )
-        payload = self._json(response)
-        if not isinstance(payload, dict):
-            raise MetaApiGatewayError("metaapi_invalid_response")
-
-        raw_numeric_code = payload.get("numericCode")
-        numeric_code: int | None
-        if raw_numeric_code is None:
-            numeric_code = None
-        elif isinstance(raw_numeric_code, bool):
-            raise MetaApiGatewayError("metaapi_invalid_response")
-        else:
-            try:
-                numeric_code = int(raw_numeric_code)  # type: ignore[arg-type]
-            except (TypeError, ValueError) as exc:
-                raise MetaApiGatewayError("metaapi_invalid_response") from exc
-
-        string_code = str(payload.get("stringCode") or "").strip()
-        if string_code != "TRADE_RETCODE_DONE" and numeric_code != 10009:
-            raise MetaApiGatewayError("metaapi_trade_rejected")
-
         order_id = str(payload.get("orderId") or "").strip()
         if not order_id:
             raise MetaApiGatewayError("metaapi_trade_result_missing_order")
@@ -120,9 +96,79 @@ class MetaApiTradeGateway:
         return MetaApiMarketOrderResult(
             order_id=order_id,
             position_id=position_id_raw or None,
-            numeric_code=numeric_code,
-            string_code=string_code or "TRADE_RETCODE_DONE",
+            numeric_code=self._numeric_code(payload),
+            string_code=str(payload.get("stringCode") or "").strip()
+            or "TRADE_RETCODE_DONE",
         )
+
+    async def close_position(
+        self,
+        *,
+        token: str,
+        account_id: str,
+        region: str,
+        position_id: str,
+    ) -> None:
+        """Fully close one known broker position as Day 26 rollback compensation."""
+        normalized_region = self._normalize_region(region)
+        normalized_position_id = position_id.strip()
+        if not normalized_position_id:
+            raise MetaApiGatewayError("broker_position_id_invalid")
+        await self._trade_request(
+            token=token,
+            account_id=account_id,
+            region=normalized_region,
+            json_body={
+                "actionType": "POSITION_CLOSE_ID",
+                "positionId": normalized_position_id,
+            },
+        )
+
+    async def _trade_request(
+        self,
+        *,
+        token: str,
+        account_id: str,
+        region: str,
+        json_body: dict[str, object],
+    ) -> dict[str, object]:
+        response = await self._request(
+            "POST",
+            (
+                f"https://mt-client-api-v1.{region}.agiliumtrade.ai"
+                f"/users/current/accounts/{account_id}/trade"
+            ),
+            token=token,
+            json_body=json_body,
+        )
+        payload = self._json(response)
+        if not isinstance(payload, dict):
+            raise MetaApiGatewayError("metaapi_invalid_response")
+
+        numeric_code = self._numeric_code(payload)
+        string_code = str(payload.get("stringCode") or "").strip()
+        if string_code != "TRADE_RETCODE_DONE" and numeric_code != 10009:
+            raise MetaApiGatewayError("metaapi_trade_rejected")
+        return payload
+
+    @staticmethod
+    def _numeric_code(payload: dict[str, object]) -> int | None:
+        raw_numeric_code = payload.get("numericCode")
+        if raw_numeric_code is None:
+            return None
+        if isinstance(raw_numeric_code, bool):
+            raise MetaApiGatewayError("metaapi_invalid_response")
+        try:
+            return int(raw_numeric_code)  # type: ignore[arg-type]
+        except (TypeError, ValueError) as exc:
+            raise MetaApiGatewayError("metaapi_invalid_response") from exc
+
+    @staticmethod
+    def _normalize_region(region: str) -> str:
+        normalized_region = region.strip().lower()
+        if not _REGION.fullmatch(normalized_region):
+            raise MetaApiGatewayError("metaapi_region_unavailable")
+        return normalized_region
 
     async def _request(
         self,
