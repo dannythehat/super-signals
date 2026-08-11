@@ -83,44 +83,74 @@ AI_DECISION_SCHEMA: dict[str, Any] = {
 }
 
 _SYSTEM_INSTRUCTIONS = """You are the Super Signals Telegram message interpreter.
-Your only job is to determine what the signal provider explicitly instructed.
+Your only job is to determine what the signal provider explicitly means and instructs.
 Never make a trading recommendation. Never decide whether a setup is good or bad.
-Never invent, infer, improve, adjust, or substitute a numeric entry, stop loss,
-take profit, lot size, or exit that is not explicitly present in the supplied
-message/context.
+Never invent, improve, adjust, or substitute a numeric entry, stop loss, take profit,
+lot size, or exit that the provider did not explicitly state in the supplied evidence.
 
-Classify every message immediately:
-- new_trade: an instruction to open/place a trade
-- trade_update: an instruction/result relating to an existing signal
-- chatter: conversation, celebration, marketing, commentary, greetings
-- preparation: heads-up/watch/wait/get-ready language with no executable instruction
-- non_actionable: incomplete/unsupported/unclear instruction
+SOURCE-AWARE INTERPRETATION
+You receive source_name plus a bounded recent_source_messages history from that SAME
+Telegram source. Use that history to learn how this provider communicates: how they
+prepare, open trades, layer entries, report targets, cancel, edit, close, celebrate,
+and chat. Different providers use different grammar. Do not assume every provider
+posts a complete trade in one message and do not treat a genuine provider trade trigger
+as chatter merely because its SL/TP are elsewhere or not yet supplied.
+
+recent_source_messages is context for SEMANTIC UNDERSTANDING and lifecycle linking. It
+is not permission to invent or silently carry forward old numeric trade parameters.
+For action=execute, numeric execution evidence may come only from telegram_message and
+a directly linked reply_context (or the current edited message itself). Do not pull a
+price, SL or TP from unrelated ambient history just because it looks plausible.
+
+DECISION AND ACTION ARE DIFFERENT QUESTIONS
+First decide what the current provider message IS. Then decide what the system may DO.
+- new_trade: provider is actually opening/placing/activating a new trade. This remains
+  new_trade even when the instruction is incomplete or unsupported; use action=skip.
+- trade_update: provider is managing, reporting or closing an existing trade.
+- chatter: conversation, celebration unrelated to a specific trade, marketing, social
+  prompts, general commentary or greetings.
+- preparation: heads-up/watch/wait/get-ready language before an actual entry trigger.
+- non_actionable: truly unclear content where the evidence does not establish a trade,
+  update, preparation or ordinary chatter.
+
+Examples of semantic intent:
+- In a provider whose recent pattern repeatedly uses 'I'm buying 4399' / 'I'm selling
+  4391' as actual entries followed by TP result posts, a fresh 'I'm buying 4375' is a
+  new_trade, not chatter. If no explicit SL/TP evidence is directly linked, action=skip
+  with reason=provider_instruction_incomplete.
+- 'Buy Gold Now' from a source that uses that phrase as an entry trigger is new_trade.
+  Missing required execution parameters changes action to skip, not decision to chatter.
+- 'WHO IS READYY?', 'Get Ready', 'Prepare for a buy' are preparation/chatter unless the
+  current message itself actually activates an entry.
+- Promotional posts, giveaways, requests for comments/screenshots and general market
+  discussion are chatter even if nearby messages contain a trade.
+- 'TP1 HIT', 'SL HIT', 'close 3 layers', 'set breakeven', 'out at entry' are trade_update
+  when context/reply evidence identifies them as lifecycle messages.
 
 SUPER SIGNALS V1 EXECUTION BOUNDARY
-Use action=execute ONLY when the provider message itself contains all of the following:
+Use action=execute ONLY when explicit execution evidence contains all of the following:
 1. XAUUSD/GOLD side BUY or SELL
 2. one single exact market entry price
 3. one explicit numeric stop loss
 4. one or more explicit numeric take-profit prices
 5. no second/discrete entry, no entry range, no pending/limit order, and no open-ended target
 
-If a message is a genuine trade instruction but its structure is outside that exact
-V1 boundary, understand and extract what is explicit, but use decision=new_trade and
-action=skip. Use one of these stable reasons when applicable:
+If a genuine trade instruction is outside that exact V1 boundary, understand and
+extract what is explicit, keep decision=new_trade, but use action=skip. Use one of
+these stable reasons when applicable:
 - unsupported_multiple_entries: two or more separately stated entry prices, including
   wording such as 'ENTRY ... Second entry ...'
 - unsupported_entry_range: a range/area/slash pair such as 4392-4388 or 4396/4391
 - unsupported_pending_order: BUY LIMIT, SELL LIMIT, BUY STOP, SELL STOP or equivalent
 - unsupported_open_target: TP OPEN, RUNNER, leave open, or another non-numeric target
+- provider_instruction_incomplete: genuine entry instruction but required explicit
+  execution values are absent from telegram_message/direct reply evidence
 
 When several unsupported structures occur together, prefer the most mechanically
 fundamental reason in this order: unsupported_multiple_entries,
 unsupported_pending_order, unsupported_entry_range, unsupported_open_target.
 
-Examples of important real-world distinctions:
-- 'Ready', 'Prepare for a buy', 'Watch gold', 'Get ready' => preparation + ignore.
-- 'Buy Gold Now' or 'Sell Gold Now' with no explicit entry, SL and numeric TP values
-  in that message/context => non_actionable + skip, reason=provider_instruction_incomplete.
+Examples of execution scope:
 - 'BUY GOLD @ 4371 / TP 4375 / TP 4380 / SL 4360' => exact market trade and may execute.
 - 'BUY GOLD @ 4396/4391 ...' => new_trade + skip, unsupported_entry_range.
 - 'ENTRY: 4385 / Second entry: 4380 ...' => new_trade + skip,
@@ -129,19 +159,20 @@ Examples of important real-world distinctions:
 - A message containing otherwise numeric TPs plus 'TP OPEN' => new_trade + skip,
   unsupported_open_target. Preserve only explicit numeric targets in take_profits.
 
-Treat GOLD as XAUUSD when the provider is clearly referring to gold. For an explicit
+Treat GOLD as XAUUSD when the provider/context clearly refers to gold. For an explicit
 numeric range, set entry_low to the lower number and entry_high to the higher number.
 If only one exact entry is supplied, set both to that same value. BUY LIMIT/SELL LIMIT
 are pending orders. 'High risk', 'risk free', 'secure profit', large pip claims, emojis,
 or emphatic wording do NOT mean double lot. Only explicit 'double lot', 'double lots',
 'double size' or unmistakably equivalent sizing wording sets double_lot=true.
 
-For trade updates, use action=apply_update only for an explicit management or result
-instruction that can be identified from the message/context. A bare profit boast such
-as '+100 pips' with no clear linked action may be a result_report or non_actionable;
-do not invent which trade or TP it belongs to. TP1/TP2/etc HIT is a trade_update with
-update_type=tp_hit. Explicit 'move SL to 4385' is edit_stop_loss. Explicit 'close half'
-or 'take partials' is close_half. Explicit 'close/out at entry/on the rest' is close.
+For trade updates, use action=apply_update for an explicit management/result event
+that can be linked from reply_context or the same source's recent sequence without
+inventing a target or trade. TP1/TP2/etc HIT is update_type=tp_hit. SL HIT is a
+result_report. Explicit 'move SL to 4385' is edit_stop_loss. Explicit 'close half' or
+'close 3 layers' is close_half. Explicit 'close/out at entry/on the rest' is close.
+A bare '+100 pips' may be a result_report when the provider sequence clearly links it;
+otherwise do not invent which trade or TP it belongs to.
 
 When is_edit=true, the Telegram message is a revision of the same provider message,
 not a second trade. Compare previous_text with telegram_message. If the edit changes
@@ -151,7 +182,7 @@ can identify. If there is no actionable instruction change, ignore or skip it. N
 turn an edit into a duplicate new trade.
 
 Use action=ignore for chatter or preparation. Use action=skip for incomplete,
-unsupported or unclear instructions. Return only the requested structured object."""
+unsupported or truly unclear instructions. Return only the requested structured object."""
 
 _NUMBER_TOKEN = re.compile(r"(?<![A-Za-z0-9_.])\d+(?:\.\d+)?(?![A-Za-z0-9_.])")
 _OPEN_TARGET = re.compile(
@@ -204,24 +235,30 @@ def _literal_numbers(raw_text: str) -> set[Decimal]:
     return values
 
 
-def _guard_execute_decision(parsed: dict[str, Any], raw_text: str) -> dict[str, Any]:
+def _guard_execute_decision(
+    parsed: dict[str, Any],
+    raw_text: str,
+    *,
+    linked_context: str | None = None,
+) -> dict[str, Any]:
     """Mechanically enforce the V1 execution boundary after the model responds.
 
-    This guard is intentionally redundant with the prompt. AI understanding may decide
-    what a message means, but a model response cannot bypass literal-value verification,
-    exact-entry scope, strict directional validation, or explicit double-size consent.
+    AI may use recent same-source history to understand provider grammar, but ambient
+    history can never satisfy execution evidence. Only the current provider message and
+    its directly linked reply are accepted by this mechanical guard.
     """
     guarded = dict(parsed)
+    evidence_text = raw_text
+    if linked_context:
+        evidence_text = f"{raw_text}\n\nDIRECT REPLY CONTEXT:\n{linked_context}"
 
-    # Double-size handling is mechanical: no explicit double wording means normal size,
-    # even if the model incorrectly inferred risk from phrases such as HIGH RISK.
-    if bool(guarded.get("double_lot")) and not _DOUBLE_SIZE.search(raw_text):
+    if bool(guarded.get("double_lot")) and not _DOUBLE_SIZE.search(evidence_text):
         guarded["double_lot"] = False
 
     if guarded.get("decision") != "new_trade" or guarded.get("action") != "execute":
         return guarded
 
-    upper_text = raw_text.upper()
+    upper_text = evidence_text.upper()
     symbol = str(guarded.get("symbol") or "").strip().upper()
     if symbol == "GOLD":
         symbol = "XAUUSD"
@@ -241,11 +278,11 @@ def _guard_execute_decision(parsed: dict[str, Any], raw_text: str) -> dict[str, 
         guarded["action"] = "skip"
         guarded["reason"] = "unsupported_pending_order"
         return guarded
-    if _SECOND_ENTRY.search(raw_text):
+    if _SECOND_ENTRY.search(evidence_text):
         guarded["action"] = "skip"
         guarded["reason"] = "unsupported_multiple_entries"
         return guarded
-    if _OPEN_TARGET.search(raw_text):
+    if _OPEN_TARGET.search(evidence_text):
         guarded["action"] = "skip"
         guarded["reason"] = "unsupported_open_target"
         return guarded
@@ -269,7 +306,7 @@ def _guard_execute_decision(parsed: dict[str, Any], raw_text: str) -> dict[str, 
         guarded["reason"] = "unsupported_entry_range"
         return guarded
 
-    literals = _literal_numbers(raw_text)
+    literals = _literal_numbers(evidence_text)
     required_literals = {
         entry_low.normalize(),
         entry_high.normalize(),
@@ -324,13 +361,17 @@ class OpenAiMessageSupervisor:
         *,
         raw_text: str,
         source_status: str,
+        source_name: str | None = None,
+        recent_source_messages: list[dict[str, Any]] | None = None,
         reply_context: str | None = None,
         previous_text: str | None = None,
         is_edit: bool = False,
     ) -> AiMessageDecision:
         started = time.perf_counter()
         prompt = {
+            "source_name": source_name,
             "source_status": source_status,
+            "recent_source_messages": recent_source_messages or [],
             "telegram_message": raw_text,
             "reply_context": reply_context,
             "is_edit": is_edit,
@@ -368,7 +409,7 @@ class OpenAiMessageSupervisor:
         except (httpx.HTTPError, ValueError, KeyError, TypeError, json.JSONDecodeError) as exc:
             raise AiSupervisorError("ai_supervisor_unavailable") from exc
 
-        parsed = _guard_execute_decision(parsed, raw_text)
+        parsed = _guard_execute_decision(parsed, raw_text, linked_context=reply_context)
         latency_ms = int((time.perf_counter() - started) * 1000)
         return AiMessageDecision(
             decision=str(parsed["decision"]),
