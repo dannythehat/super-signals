@@ -18,6 +18,7 @@ from app.metaapi_gateway import MetaApiProvisioningGateway
 from app.mt5_connection_manager import Mt5ConnectionManager
 from app.mt5_connection_service import Mt5ConnectionError, Mt5DemoConnectionService
 from app.mt5_crypto import MetaApiTokenCipher
+from app.mt5_recovery import reencrypt_existing_metaapi_token
 from app.publisher_config import get_publisher_settings
 from app.routes.access import router as access_router
 from app.routes.admin_accounts import router as admin_accounts_router
@@ -122,13 +123,40 @@ async def _lifespan(application: FastAPI) -> AsyncIterator[None]:
     mt5_connection_manager: Mt5ConnectionManager | None = None
     mt5_bootstrap_task: asyncio.Task[None] | None = None
     if broker_keys:
+        broker_cipher = MetaApiTokenCipher(broker_keys)
         mt5_connection_service = Mt5DemoConnectionService(
             session_factory=session_factory,
-            cipher=MetaApiTokenCipher(broker_keys),
+            cipher=broker_cipher,
             gateway=MetaApiProvisioningGateway(),
         )
-        mt5_connection_manager = Mt5ConnectionManager(mt5_connection_service)
         application.state.mt5_connection_service = mt5_connection_service
+
+        if os.getenv("SUPER_SIGNALS_DAY22_REKEY_EXISTING_TOKEN", "").strip() == "1":
+            owner_id_raw = os.getenv("SUPER_SIGNALS_DAY22_OWNER_ID", "").strip()
+            metaapi_token = os.getenv("SUPER_SIGNALS_API", "").strip()
+            if not owner_id_raw or len(metaapi_token) < 20:
+                logger.error(
+                    "Day 22 MetaAPI token recovery skipped owner=%s token=%s",
+                    bool(owner_id_raw),
+                    len(metaapi_token) >= 20,
+                )
+            else:
+                try:
+                    owner_user_id = UUID(owner_id_raw)
+                    recovered = reencrypt_existing_metaapi_token(
+                        session_factory=session_factory,
+                        cipher=broker_cipher,
+                        owner_user_id=owner_user_id,
+                        metaapi_token=metaapi_token,
+                    )
+                    logger.info(
+                        "Day 22 MetaAPI token recovery completed existing_account=%s",
+                        recovered,
+                    )
+                except (ValueError, RuntimeError):
+                    logger.exception("Day 22 MetaAPI token recovery failed safely")
+
+        mt5_connection_manager = Mt5ConnectionManager(mt5_connection_service)
         await mt5_connection_manager.start()
         mt5_bootstrap_task = asyncio.create_task(
             _run_day22_mt5_bootstrap(mt5_connection_service),
