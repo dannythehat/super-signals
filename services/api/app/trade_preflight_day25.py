@@ -1,8 +1,9 @@
 """Day 25 one-time price and all-or-nothing funds preflight.
 
-Day 25 never places a trade. It consumes one already-fresh Day 23 live-state
-snapshot, applies the one-time entry rule, and if that passes asks the broker for
-one aggregate margin calculation covering the entire TP set sized by Day 24.
+Super Signals is a signal follower. Day 25 does not reinterpret a provider's
+entry, stop loss, take profit or trade thesis. It consumes one already-fresh Day
+23 live-state snapshot, checks the stated entry once, then checks whether the
+complete Day 24-sized TP set can be funded. It never places a trade.
 """
 
 from __future__ import annotations
@@ -23,7 +24,6 @@ class Day25PreflightResult:
     side: str
     symbol: str
     signal_entry_price: Decimal
-    signal_stop_loss: Decimal
     executable_price: Decimal | None
     entry_available: bool
     free_margin: Decimal
@@ -39,7 +39,7 @@ class Day25PreflightResult:
 
 
 class Day25TradePreflightService:
-    """Gate a complete signal without chasing price or permitting partial entry."""
+    """Apply only the locked one-time entry and whole-signal funds gates."""
 
     def __init__(self, *, margin_gateway: MetaApiMarginGateway) -> None:
         self._margin_gateway = margin_gateway
@@ -58,7 +58,6 @@ class Day25TradePreflightService:
 
         symbol = live_state.price.symbol.strip().upper()
         signal_entry = sizing.signal_entry_price
-        signal_stop = sizing.signal_stop_loss
         free_margin = self._decimal(live_state.account.free_margin)
         total_volume = sizing.volume * Decimal(sizing.position_count)
 
@@ -75,7 +74,6 @@ class Day25TradePreflightService:
                 side=normalized_side,
                 symbol=symbol,
                 signal_entry=signal_entry,
-                signal_stop=signal_stop,
                 executable_price=None,
                 entry_available=False,
                 free_margin=free_margin,
@@ -86,19 +84,16 @@ class Day25TradePreflightService:
                 margin_check_count=0,
             )
 
-        entry_available = self._entry_is_available(
-            side=normalized_side,
-            signal_entry=signal_entry,
-            signal_stop=signal_stop,
-            executable_price=executable_price,
-        )
+        # Literal provider-following rule: the stated entry is checked once.
+        # A different executable price is not labelled better/worse and is not
+        # substituted. It simply means the stated entry is unavailable now.
+        entry_available = executable_price == signal_entry
         if not entry_available:
             return self._blocked(
                 reason="entry_price_unavailable",
                 side=normalized_side,
                 symbol=symbol,
                 signal_entry=signal_entry,
-                signal_stop=signal_stop,
                 executable_price=executable_price,
                 entry_available=False,
                 free_margin=free_margin,
@@ -115,7 +110,6 @@ class Day25TradePreflightService:
                 side=normalized_side,
                 symbol=symbol,
                 signal_entry=signal_entry,
-                signal_stop=signal_stop,
                 executable_price=executable_price,
                 entry_available=True,
                 free_margin=free_margin,
@@ -144,7 +138,6 @@ class Day25TradePreflightService:
                 side=normalized_side,
                 symbol=symbol,
                 signal_entry=signal_entry,
-                signal_stop=signal_stop,
                 executable_price=executable_price,
                 entry_available=True,
                 free_margin=free_margin,
@@ -161,7 +154,6 @@ class Day25TradePreflightService:
                 side=normalized_side,
                 symbol=symbol,
                 signal_entry=signal_entry,
-                signal_stop=signal_stop,
                 executable_price=executable_price,
                 entry_available=True,
                 free_margin=free_margin,
@@ -178,7 +170,6 @@ class Day25TradePreflightService:
             side=normalized_side,
             symbol=symbol,
             signal_entry_price=signal_entry,
-            signal_stop_loss=signal_stop,
             executable_price=executable_price,
             entry_available=True,
             free_margin=free_margin,
@@ -193,22 +184,6 @@ class Day25TradePreflightService:
             trade_action_created=False,
         )
 
-    @staticmethod
-    def _entry_is_available(
-        *,
-        side: str,
-        signal_entry: Decimal,
-        signal_stop: Decimal,
-        executable_price: Decimal,
-    ) -> bool:
-        # A same-or-better executable price is acceptable only while the
-        # original signal stop is still on the correct side of the market.
-        # If price has moved through the stop, the signal thesis is already
-        # invalid and the entry is treated as unavailable.
-        if side == "BUY":
-            return signal_stop < executable_price <= signal_entry
-        return signal_entry <= executable_price < signal_stop
-
     @classmethod
     def _blocked(
         cls,
@@ -217,7 +192,6 @@ class Day25TradePreflightService:
         side: str,
         symbol: str,
         signal_entry: Decimal,
-        signal_stop: Decimal,
         executable_price: Decimal | None,
         entry_available: bool,
         free_margin: Decimal,
@@ -233,7 +207,6 @@ class Day25TradePreflightService:
             side=side,
             symbol=symbol,
             signal_entry_price=signal_entry,
-            signal_stop_loss=signal_stop,
             executable_price=executable_price,
             entry_available=entry_available,
             free_margin=free_margin,
