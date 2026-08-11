@@ -42,7 +42,7 @@ def sizing(*, entry: str = "4000", stop: str = "3990", tps: int = 3):
 
 def state(
     *,
-    bid: float = 3999.8,
+    bid: float = 4000.0,
     ask: float = 4000.0,
     free_margin: float = 1000.0,
     trade_allowed: bool = True,
@@ -100,12 +100,13 @@ def run_preflight(*, live_state: Day23LiveState, side: str, gateway: FakeMarginG
     )
 
 
-def test_buy_at_signal_entry_proceeds_once_and_checks_whole_signal_margin_once() -> None:
+def test_buy_exact_stated_entry_proceeds_once_and_checks_whole_signal_margin_once() -> None:
     gateway = FakeMarginGateway(margin=250)
     result = run_preflight(live_state=state(ask=4000.0), side="BUY", gateway=gateway)
 
     assert result.proceed is True
     assert result.entry_available is True
+    assert result.executable_price == Decimal("4000.0")
     assert result.price_check_count == 1
     assert result.margin_check_count == 1
     assert result.position_count == 3
@@ -119,28 +120,19 @@ def test_buy_at_signal_entry_proceeds_once_and_checks_whole_signal_margin_once()
     assert gateway.calls[0]["open_price"] == 4000.0
 
 
-def test_buy_at_better_price_proceeds_without_chasing() -> None:
-    gateway = FakeMarginGateway(margin=100)
-    result = run_preflight(live_state=state(ask=3999.5), side="BUY", gateway=gateway)
-
-    assert result.proceed is True
-    assert result.executable_price == Decimal("3999.5")
-    assert result.entry_available is True
-    assert len(gateway.calls) == 1
-
-
-def test_sell_at_better_price_proceeds_using_bid() -> None:
+def test_sell_exact_stated_entry_uses_bid_and_proceeds() -> None:
     gateway = FakeMarginGateway(margin=100)
     result = run_preflight(
-        live_state=state(bid=4000.5, ask=4000.7), side="SELL", gateway=gateway
+        live_state=state(bid=4000.0, ask=4000.3), side="SELL", gateway=gateway
     )
 
     assert result.proceed is True
-    assert result.executable_price == Decimal("4000.5")
-    assert gateway.calls[0]["open_price"] == 4000.5
+    assert result.executable_price == Decimal("4000.0")
+    assert len(gateway.calls) == 1
+    assert gateway.calls[0]["open_price"] == 4000.0
 
 
-def test_buy_after_entry_has_been_missed_skips_once_without_margin_call() -> None:
+def test_buy_different_higher_price_is_unavailable_and_never_substituted() -> None:
     gateway = FakeMarginGateway(margin=100)
     result = run_preflight(live_state=state(ask=4000.01), side="BUY", gateway=gateway)
 
@@ -152,11 +144,9 @@ def test_buy_after_entry_has_been_missed_skips_once_without_margin_call() -> Non
     assert gateway.calls == []
 
 
-def test_sell_after_entry_has_been_missed_skips_once_without_margin_call() -> None:
+def test_buy_different_lower_price_is_also_unavailable_not_labelled_better() -> None:
     gateway = FakeMarginGateway(margin=100)
-    result = run_preflight(
-        live_state=state(bid=3999.99, ask=4000.2), side="SELL", gateway=gateway
-    )
+    result = run_preflight(live_state=state(ask=3999.99), side="BUY", gateway=gateway)
 
     assert result.proceed is False
     assert result.block_reason == "entry_price_unavailable"
@@ -164,20 +154,10 @@ def test_sell_after_entry_has_been_missed_skips_once_without_margin_call() -> No
     assert gateway.calls == []
 
 
-def test_buy_price_at_or_beyond_signal_stop_is_not_a_valid_better_entry() -> None:
-    gateway = FakeMarginGateway(margin=100)
-    result = run_preflight(live_state=state(ask=3990.0), side="BUY", gateway=gateway)
-
-    assert result.proceed is False
-    assert result.block_reason == "entry_price_unavailable"
-    assert result.positions_allowed == 0
-    assert gateway.calls == []
-
-
-def test_sell_price_at_or_beyond_signal_stop_is_not_a_valid_better_entry() -> None:
+def test_sell_different_price_is_unavailable_and_never_substituted() -> None:
     gateway = FakeMarginGateway(margin=100)
     result = run_preflight(
-        live_state=state(bid=4010.0, ask=4010.2), side="SELL", gateway=gateway
+        live_state=state(bid=4000.01, ask=4000.2), side="SELL", gateway=gateway
     )
 
     assert result.proceed is False
@@ -189,10 +169,7 @@ def test_sell_price_at_or_beyond_signal_stop_is_not_a_valid_better_entry() -> No
 def test_stale_price_blocks_before_margin_check() -> None:
     gateway = FakeMarginGateway(margin=100)
     result = run_preflight(
-        live_state=state(
-            execution_ready=False,
-            block_reason="price_stale",
-        ),
+        live_state=state(execution_ready=False, block_reason="price_stale"),
         side="BUY",
         gateway=gateway,
     )
@@ -217,6 +194,7 @@ def test_insufficient_funds_blocks_entire_tp_set_not_partial_signal() -> None:
     assert result.position_count == 3
     assert result.positions_allowed == 0
     assert result.all_or_nothing is True
+    assert result.trade_action_created is False
     assert len(gateway.calls) == 1
 
 
