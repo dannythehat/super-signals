@@ -98,30 +98,71 @@ def verify_existing_metaapi_token(
     """Round-trip the stored ciphertext locally; never contacts MetaAPI."""
 
     expected = expected_token.strip()
-    if len(expected) < 20:
-        return False
+    expected_usable = len(expected) >= 20
+    account_id = None
+    ciphertext_present = False
+    decrypted = False
+    token_match = False
+    fingerprint_match = False
+
+    if expected_usable:
+        with session_factory() as session:
+            row = session.execute(
+                text(
+                    """
+                    SELECT id, metaapi_token_ciphertext, metaapi_token_fingerprint
+                    FROM mt5_accounts
+                    WHERE owner_user_id = :owner_user_id
+                    LIMIT 1
+                    """
+                ),
+                {"owner_user_id": owner_user_id},
+            ).mappings().first()
+
+        if row is not None:
+            account_id = row["id"]
+            ciphertext = row["metaapi_token_ciphertext"]
+            ciphertext_present = ciphertext is not None and len(bytes(ciphertext)) > 0
+            if ciphertext_present:
+                try:
+                    recovered = cipher.decrypt(bytes(ciphertext))
+                    decrypted = True
+                    token_match = recovered == expected
+                except BrokerCredentialDecryptionError:
+                    decrypted = False
+            fingerprint_match = (
+                str(row["metaapi_token_fingerprint"]) == cipher.fingerprint(expected)
+            )
+
+    verified = bool(
+        expected_usable
+        and account_id is not None
+        and ciphertext_present
+        and decrypted
+        and token_match
+        and fingerprint_match
+    )
 
     with session_factory() as session:
-        row = session.execute(
-            text(
-                """
-                SELECT metaapi_token_ciphertext, metaapi_token_fingerprint
-                FROM mt5_accounts
-                WHERE owner_user_id = :owner_user_id
-                LIMIT 1
-                """
-            ),
-            {"owner_user_id": owner_user_id},
-        ).mappings().first()
-    if row is None:
-        return False
+        session.add(
+            AuditEvent(
+                actor_user_id=owner_user_id,
+                event_type="mt5.metaapi_token_local_verification",
+                entity_type="mt5_account",
+                entity_id=account_id,
+                payload={
+                    "expected_token_present": expected_usable,
+                    "account_found": account_id is not None,
+                    "ciphertext_present": ciphertext_present,
+                    "decrypted": decrypted,
+                    "token_match": token_match,
+                    "fingerprint_match": fingerprint_match,
+                    "verified": verified,
+                    "metaapi_request_created": False,
+                    "trade_action_created": False,
+                },
+            )
+        )
+        session.commit()
 
-    try:
-        recovered = cipher.decrypt(bytes(row["metaapi_token_ciphertext"]))
-    except BrokerCredentialDecryptionError:
-        return False
-
-    return (
-        recovered == expected
-        and str(row["metaapi_token_fingerprint"]) == cipher.fingerprint(expected)
-    )
+    return verified
