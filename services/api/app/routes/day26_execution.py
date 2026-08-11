@@ -1,4 +1,4 @@
-"""Owner-only Day 26 exact-entry multi-TP demo execution route."""
+"""Owner-only Day 26 V1 exact/zone multi-position demo execution route."""
 
 from __future__ import annotations
 
@@ -30,7 +30,7 @@ class Day26ExecuteRequest(BaseModel):
 class Day26PositionResponse(BaseModel):
     local_position_id: UUID
     tp_index: int
-    take_profit: Decimal
+    take_profit: Decimal | None
     volume: Decimal
     client_id: str
     broker_order_id: str
@@ -69,12 +69,14 @@ def _service(request: Request) -> AtomicDay26Mt5ExecutionService:
 
 def _safe_message(code: str) -> str:
     messages = {
-        "day26_exact_entry_required": "Day 26 supports only one exact provider entry price.",
-        "day26_market_order_required": "Day 26 supports only exact-entry market signals.",
-        "day26_three_tps_required": "Day 26 acceptance requires exactly three numeric take-profit targets.",
+        "day26_market_signal_required": "Day 26 V1 supports market signals only; pending orders are skipped.",
         "day26_demo_account_required": "Day 26 can execute only on the connected Vantage demo account.",
-        "day25_entry_price_mismatch": "The live XAUUSD price no longer matches the provider's exact entry, so no order was sent.",
-        "insufficient_free_margin": "The broker-reported free margin is insufficient for the full three-position set.",
+        "entry_price_unavailable": "The live XAUUSD price does not equal the provider's exact entry, so no order was sent.",
+        "zone_not_reached": "The live XAUUSD price did not enter the provider's zone within the five-minute V1 window.",
+        "signal_changed_before_execution": "The provider edited the signal before execution; this attempt was stopped so the latest version can be used.",
+        "signal_no_longer_accepted": "The provider's latest signal version is no longer execution-eligible.",
+        "signal_cancelled": "The provider cancelled the setup before execution.",
+        "insufficient_funds": "The broker-reported free margin is insufficient for the complete position set.",
         "day26_partial_execution_rollback_failed": "A partial submission could not be fully compensated. Trading is blocked until the broker state is reconciled.",
         "mt5_account_not_configured": "The Vantage demo account is not configured.",
         "mt5_account_not_connected": "The Vantage demo account is not connected.",
@@ -97,7 +99,7 @@ async def execute_day26_demo_signal(
     response: Response,
     identity: OwnerIdentity,
 ) -> Day26ExecutionResponse:
-    """Execute one existing canonical signal through Days 23-26 on demo only."""
+    """Execute one existing canonical V1 signal through Days 23-26 on demo only."""
     try:
         result = await _service(request).execute_owner_demo_signal(
             owner_user_id=identity["id"],
