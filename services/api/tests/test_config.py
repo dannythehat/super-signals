@@ -202,3 +202,32 @@ def test_production_accepts_complete_explicit_configuration(
     assert settings.telegram_api_hash == "0123456789abcdef0123456789abcdef"
     assert settings.telegram_session_keys == (TEST_TELEGRAM_KEY,)
     _clear_settings()
+
+
+def test_render_open_alias_supplies_ai_supervisor_key(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _set_complete_production_environment(monkeypatch)
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.setenv("Open", "render-open-key")
+    _clear_settings()
+
+    settings = get_settings()
+
+    assert settings.ai_supervisor_api_key == "render-open-key"
+    assert settings.ai_supervisor_timeout_seconds == 12
+    _clear_settings()
+
+
+def test_standard_openai_key_takes_precedence_over_render_alias(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _set_complete_production_environment(monkeypatch)
+    monkeypatch.setenv("OPENAI_API_KEY", "canonical-key")
+    monkeypatch.setenv("Open", "legacy-render-key")
+    _clear_settings()
+
+    settings = get_settings()
+
+    assert settings.ai_supervisor_api_key == "canonical-key"
+    _clear_settings()
