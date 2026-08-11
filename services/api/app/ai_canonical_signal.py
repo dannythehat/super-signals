@@ -1,4 +1,4 @@
-"""Promote an AI-understood provider trade into the existing canonical Signal ledger."""
+"""Promote an AI-understood provider trade into the canonical Signal ledger."""
 
 from __future__ import annotations
 
@@ -57,6 +57,7 @@ class AiCanonicalSignalService:
         *,
         message_id: UUID,
         extracted: dict[str, Any],
+        revision_index: int = 0,
     ) -> AiSignalResult:
         try:
             symbol = str(extracted.get("symbol") or "").strip().upper()
@@ -81,31 +82,14 @@ class AiCanonicalSignalService:
         size_multiplier = Decimal("2") if bool(extracted.get("double_lot")) else Decimal("1")
 
         with self._session_factory() as session:
-            row = session.execute(
-                text(
-                    """
-                    SELECT
-                        m.id AS message_id,
-                        m.source_id,
-                        s.chat_id AS provider_chat_id,
-                        m.telegram_message_id AS provider_message_id,
-                        m.posted_at AS source_posted_at,
-                        m.raw_text AS original_text
-                    FROM messages AS m
-                    JOIN sources AS s ON s.id = m.source_id
-                    WHERE m.id = :message_id
-                      AND m.deleted_at IS NULL
-                      AND s.status IN ('testing', 'live')
-                    """
-                ),
-                {"message_id": message_id},
-            ).mappings().first()
+            row = self._message_revision_row(session, message_id, revision_index)
             if row is None:
                 return AiSignalResult(False, False, None, "message_not_eligible")
 
             fingerprint_payload = {
                 "provider_chat_id": int(row["provider_chat_id"]),
                 "provider_message_id": int(row["provider_message_id"]),
+                "source_revision_index": revision_index,
                 "source_posted_at": _timestamp_token(row["source_posted_at"]),
                 "symbol": symbol,
                 "side": side,
@@ -153,6 +137,7 @@ class AiCanonicalSignalService:
                     session,
                     signal_id=existing["id"],
                     message_id=row["message_id"],
+                    revision_index=revision_index,
                     fingerprint=fingerprint,
                     disposition="canonical" if same_message else "duplicate",
                 )
@@ -187,7 +172,7 @@ class AiCanonicalSignalService:
                         :source_id,
                         :provider_chat_id,
                         :provider_message_id,
-                        0,
+                        :source_revision_index,
                         :source_posted_at,
                         :fingerprint,
                         :symbol,
@@ -211,6 +196,7 @@ class AiCanonicalSignalService:
                     "source_id": row["source_id"],
                     "provider_chat_id": int(row["provider_chat_id"]),
                     "provider_message_id": int(row["provider_message_id"]),
+                    "source_revision_index": revision_index,
                     "source_posted_at": row["source_posted_at"],
                     "fingerprint": fingerprint,
                     "symbol": symbol,
@@ -232,6 +218,7 @@ class AiCanonicalSignalService:
                 session,
                 signal_id=signal_id,
                 message_id=row["message_id"],
+                revision_index=revision_index,
                 fingerprint=fingerprint,
                 disposition="canonical",
             )
@@ -245,6 +232,7 @@ class AiCanonicalSignalService:
                         "signal_event_version": AI_SIGNAL_VERSION,
                         "source_message_id": str(row["message_id"]),
                         "provider_message_id": int(row["provider_message_id"]),
+                        "source_revision_index": revision_index,
                         "order_type": order_type,
                         "entry_is_range": entry_low != entry_high,
                         "position_created": False,
@@ -256,11 +244,42 @@ class AiCanonicalSignalService:
             return AiSignalResult(True, False, signal_id, "created")
 
     @staticmethod
+    def _message_revision_row(
+        session: Session,
+        message_id: UUID,
+        revision_index: int,
+    ) -> Any | None:
+        return session.execute(
+            text(
+                """
+                SELECT
+                    m.id AS message_id,
+                    m.source_id,
+                    s.chat_id AS provider_chat_id,
+                    m.telegram_message_id AS provider_message_id,
+                    CASE WHEN :revision_index = 0 THEN m.posted_at ELSE mr.edited_at END AS source_posted_at,
+                    CASE WHEN :revision_index = 0 THEN m.raw_text ELSE mr.raw_text END AS original_text
+                FROM messages AS m
+                JOIN sources AS s ON s.id = m.source_id
+                LEFT JOIN message_revisions AS mr
+                  ON mr.message_id = m.id
+                 AND mr.revision_index = :revision_index
+                WHERE m.id = :message_id
+                  AND m.deleted_at IS NULL
+                  AND s.status IN ('testing', 'live')
+                  AND (:revision_index = 0 OR mr.revision_index IS NOT NULL)
+                """
+            ),
+            {"message_id": message_id, "revision_index": revision_index},
+        ).mappings().first()
+
+    @staticmethod
     def _observe(
         session: Session,
         *,
         signal_id: UUID,
         message_id: UUID,
+        revision_index: int,
         fingerprint: str,
         disposition: str,
     ) -> None:
@@ -274,13 +293,14 @@ class AiCanonicalSignalService:
                     disposition,
                     observed_fingerprint
                 )
-                VALUES (:signal_id, :message_id, 0, :disposition, :fingerprint)
+                VALUES (:signal_id, :message_id, :revision_index, :disposition, :fingerprint)
                 ON CONFLICT (message_id, revision_index) DO NOTHING
                 """
             ),
             {
                 "signal_id": signal_id,
                 "message_id": message_id,
+                "revision_index": revision_index,
                 "disposition": disposition,
                 "fingerprint": fingerprint,
             },
