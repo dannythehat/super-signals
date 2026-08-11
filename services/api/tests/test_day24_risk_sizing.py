@@ -13,49 +13,43 @@ def rules(*, minimum: str = "0.01", maximum: str = "100", step: str = "0.01") ->
     return BrokerVolumeRules.from_values(minimum=minimum, maximum=maximum, step=step)
 
 
-def test_half_percent_risk_matches_hand_calculation() -> None:
+@pytest.mark.parametrize(
+    ("risk_percent", "expected_budget", "expected_volume"),
+    [
+        ("0.5", Decimal("5"), Decimal("0.05")),
+        ("1", Decimal("10"), Decimal("0.10")),
+        ("1.5", Decimal("15"), Decimal("0.15")),
+        ("2", Decimal("20"), Decimal("0.20")),
+    ],
+)
+def test_all_user_risk_options_match_hand_calculation(
+    risk_percent: str,
+    expected_budget: Decimal,
+    expected_volume: Decimal,
+) -> None:
     result = Day24RiskSizer.size(
         balance="1000",
-        risk_percent="0.5",
-        entry_price="4000",
-        stop_loss="4001",
+        risk_percent=risk_percent,
+        signal_entry_price="4000",
+        signal_stop_loss="4001",
         tick_size="0.01",
         tick_value="1",
         take_profit_count=1,
         volume_rules=rules(),
     )
 
-    # $5 risk budget / $100 loss per 1.00 lot = 0.05 lots.
-    assert result.risk_budget_per_position == Decimal("5")
+    assert result.risk_budget_per_position == expected_budget
     assert result.loss_per_lot_at_stop == Decimal("100")
-    assert result.raw_volume == Decimal("0.05")
-    assert result.volume == Decimal("0.05")
-    assert result.actual_risk_per_position == Decimal("5.00")
-
-
-def test_one_percent_risk_matches_hand_calculation() -> None:
-    result = Day24RiskSizer.size(
-        balance="1000",
-        risk_percent="1",
-        entry_price="4000",
-        stop_loss="4001",
-        tick_size="0.01",
-        tick_value="1",
-        take_profit_count=1,
-        volume_rules=rules(),
-    )
-
-    assert result.risk_budget_per_position == Decimal("10")
-    assert result.volume == Decimal("0.10")
-    assert result.actual_risk_per_position == Decimal("10.00")
+    assert result.volume == expected_volume
+    assert result.actual_risk_per_position == expected_budget
 
 
 def test_one_position_is_created_per_take_profit_with_full_per_position_risk() -> None:
     result = Day24RiskSizer.size(
         balance="1000",
-        risk_percent="0.5",
-        entry_price="4000",
-        stop_loss="4001",
+        risk_percent="1",
+        signal_entry_price="4000",
+        signal_stop_loss="4001",
         tick_size="0.01",
         tick_value="1",
         take_profit_count=3,
@@ -64,10 +58,10 @@ def test_one_position_is_created_per_take_profit_with_full_per_position_risk() -
 
     assert result.position_count == 3
     assert [item.take_profit_number for item in result.positions] == [1, 2, 3]
-    assert all(item.volume == Decimal("0.05") for item in result.positions)
-    assert all(item.risk_budget == Decimal("5") for item in result.positions)
-    assert result.total_risk_budget == Decimal("15")
-    assert result.total_actual_risk == Decimal("15.00")
+    assert all(item.volume == Decimal("0.10") for item in result.positions)
+    assert all(item.risk_budget == Decimal("10") for item in result.positions)
+    assert result.total_risk_budget == Decimal("30")
+    assert result.total_actual_risk == Decimal("30.00")
 
 
 @pytest.mark.parametrize(
@@ -75,9 +69,11 @@ def test_one_position_is_created_per_take_profit_with_full_per_position_risk() -
     [
         ("0.5", Decimal("1.0"), Decimal("0.10")),
         ("1", Decimal("2"), Decimal("0.20")),
+        ("1.5", Decimal("3.0"), Decimal("0.30")),
+        ("2", Decimal("4"), Decimal("0.40")),
     ],
 )
-def test_double_lot_instruction_doubles_risk_per_position(
+def test_double_lot_applies_only_when_signal_requests_it_and_user_approves(
     base_risk: str,
     expected_effective_risk: Decimal,
     expected_volume: Decimal,
@@ -85,25 +81,67 @@ def test_double_lot_instruction_doubles_risk_per_position(
     result = Day24RiskSizer.size(
         balance="1000",
         risk_percent=base_risk,
-        entry_price="4000",
-        stop_loss="4001",
+        signal_entry_price="4000",
+        signal_stop_loss="4001",
         tick_size="0.01",
         tick_value="1",
         take_profit_count=2,
         volume_rules=rules(),
-        double_lot=True,
+        signal_requests_double_lot=True,
+        double_lot_approved=True,
     )
 
+    assert result.double_lot_applied is True
     assert result.effective_risk_percent == expected_effective_risk
     assert result.volume == expected_volume
+
+
+def test_double_lot_signal_stays_at_normal_risk_when_user_has_turned_it_off() -> None:
+    result = Day24RiskSizer.size(
+        balance="1000",
+        risk_percent="1",
+        signal_entry_price="4000",
+        signal_stop_loss="4001",
+        tick_size="0.01",
+        tick_value="1",
+        take_profit_count=3,
+        volume_rules=rules(),
+        signal_requests_double_lot=True,
+        double_lot_approved=False,
+    )
+
+    assert result.signal_requests_double_lot is True
+    assert result.double_lot_approved is False
+    assert result.double_lot_applied is False
+    assert result.effective_risk_percent == Decimal("1")
+    assert result.volume == Decimal("0.10")
+
+
+def test_user_approval_does_not_double_a_normal_signal() -> None:
+    result = Day24RiskSizer.size(
+        balance="1000",
+        risk_percent="1",
+        signal_entry_price="4000",
+        signal_stop_loss="4001",
+        tick_size="0.01",
+        tick_value="1",
+        take_profit_count=1,
+        volume_rules=rules(),
+        signal_requests_double_lot=False,
+        double_lot_approved=True,
+    )
+
+    assert result.double_lot_applied is False
+    assert result.effective_risk_percent == Decimal("1")
+    assert result.volume == Decimal("0.10")
 
 
 def test_broker_volume_step_rounds_down_and_never_exceeds_risk() -> None:
     result = Day24RiskSizer.size(
         balance="1000",
         risk_percent="1",
-        entry_price="4000",
-        stop_loss="4003",
+        signal_entry_price="4000",
+        signal_stop_loss="4003",
         tick_size="0.01",
         tick_value="1",
         take_profit_count=1,
@@ -124,8 +162,8 @@ def test_broker_minimum_is_not_forced_when_it_would_exceed_risk() -> None:
         Day24RiskSizer.size(
             balance="1000",
             risk_percent="0.5",
-            entry_price="4000",
-            stop_loss="4010",
+            signal_entry_price="4000",
+            signal_stop_loss="4010",
             tick_size="0.01",
             tick_value="1",
             take_profit_count=1,
@@ -137,8 +175,8 @@ def test_broker_maximum_caps_volume_without_exceeding_risk() -> None:
     result = Day24RiskSizer.size(
         balance="1000000",
         risk_percent="1",
-        entry_price="4000",
-        stop_loss="4001",
+        signal_entry_price="4000",
+        signal_stop_loss="4001",
         tick_size="0.01",
         tick_value="1",
         take_profit_count=1,
@@ -155,28 +193,27 @@ def test_non_zero_minimum_and_step_are_respected() -> None:
     result = Day24RiskSizer.size(
         balance="1000",
         risk_percent="1",
-        entry_price="4000",
-        stop_loss="4001",
+        signal_entry_price="4000",
+        signal_stop_loss="4001",
         tick_size="0.01",
         tick_value="1",
         take_profit_count=1,
         volume_rules=rules(minimum="0.05", maximum="1", step="0.02"),
     )
 
-    # Raw is 0.10, but valid broker volumes are 0.05, 0.07, 0.09, 0.11...
     assert result.raw_volume == Decimal("0.1")
     assert result.volume == Decimal("0.09")
     assert result.actual_risk_per_position == Decimal("9.00")
 
 
-@pytest.mark.parametrize("risk_percent", ["0.25", "0.75", "2"])
+@pytest.mark.parametrize("risk_percent", ["0.25", "0.75", "2.5", "3"])
 def test_only_locked_user_risk_options_are_accepted(risk_percent: str) -> None:
     with pytest.raises(Day24RiskSizingError, match="risk_percent_invalid"):
         Day24RiskSizer.size(
             balance="1000",
             risk_percent=risk_percent,
-            entry_price="4000",
-            stop_loss="4001",
+            signal_entry_price="4000",
+            signal_stop_loss="4001",
             tick_size="0.01",
             tick_value="1",
             take_profit_count=1,
@@ -184,13 +221,13 @@ def test_only_locked_user_risk_options_are_accepted(risk_percent: str) -> None:
         )
 
 
-def test_entry_and_stop_must_differ() -> None:
-    with pytest.raises(Day24RiskSizingError, match="entry_stop_invalid"):
+def test_signal_entry_and_stop_must_differ() -> None:
+    with pytest.raises(Day24RiskSizingError, match="signal_entry_stop_invalid"):
         Day24RiskSizer.size(
             balance="1000",
             risk_percent="1",
-            entry_price="4000",
-            stop_loss="4000",
+            signal_entry_price="4000",
+            signal_stop_loss="4000",
             tick_size="0.01",
             tick_value="1",
             take_profit_count=1,
