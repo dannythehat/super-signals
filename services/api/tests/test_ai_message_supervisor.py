@@ -2,7 +2,11 @@ import json
 
 import httpx
 
-from app.ai_message_supervisor import AI_DECISION_SCHEMA, OpenAiMessageSupervisor
+from app.ai_message_supervisor import (
+    AI_DECISION_SCHEMA,
+    OpenAiMessageSupervisor,
+    _guard_execute_decision,
+)
 
 
 class FakeResponse:
@@ -183,3 +187,94 @@ def test_response_output_parser_reads_responses_api_message_content() -> None:
         ]
     }
     assert json.loads(OpenAiMessageSupervisor._output_text(body))["decision"] == "chatter"
+
+
+def test_execution_guard_keeps_literal_exact_market_trade_executable() -> None:
+    decision = _complete_trade_decision()
+    guarded = _guard_execute_decision(
+        decision,
+        "BUY GOLD @ 4371\nTP 4375\nTP 4380\nTP 4385\nSL 4360",
+    )
+    assert guarded["action"] == "execute"
+    assert guarded["double_lot"] is False
+
+
+def test_execution_guard_rejects_model_hallucinated_numeric_value() -> None:
+    decision = _complete_trade_decision()
+    decision["take_profits"] = ["4375", "4380", "4390"]
+    guarded = _guard_execute_decision(
+        decision,
+        "BUY GOLD @ 4371\nTP 4375\nTP 4380\nTP 4385\nSL 4360",
+    )
+    assert guarded["action"] == "skip"
+    assert guarded["reason"] == "literal_value_verification_failed"
+
+
+def test_execution_guard_rejects_invalid_buy_stop_direction() -> None:
+    decision = _complete_trade_decision()
+    decision["stop_loss"] = "4372"
+    guarded = _guard_execute_decision(
+        decision,
+        "BUY GOLD @ 4371\nTP 4375\nTP 4380\nTP 4385\nSL 4372",
+    )
+    assert guarded["action"] == "skip"
+    assert guarded["reason"] == "strict_directional_validation_failed"
+
+
+def test_execution_guard_rejects_entry_range_even_if_model_says_execute() -> None:
+    decision = _complete_trade_decision()
+    decision.update({"entry_low": "4391", "entry_high": "4396", "stop_loss": "4390"})
+    decision["take_profits"] = ["4399", "4403", "4408"]
+    guarded = _guard_execute_decision(
+        decision,
+        "BUY GOLD @ 4396/4391\nTP 4399\nTP 4403\nTP 4408\nSL 4390",
+    )
+    assert guarded["action"] == "skip"
+    assert guarded["reason"] == "unsupported_entry_range"
+
+
+def test_execution_guard_rejects_second_entry_even_if_model_says_execute() -> None:
+    decision = _complete_trade_decision()
+    decision.update({"entry_low": "4380", "entry_high": "4385", "stop_loss": "4371"})
+    decision["take_profits"] = ["4391", "4396", "4400"]
+    guarded = _guard_execute_decision(
+        decision,
+        "BUY XAUUSD\nENTRY: 4385\nSecond entry: 4380\nSL: 4371\nTP1: 4391\nTP2: 4396\nTP3: 4400",
+    )
+    assert guarded["action"] == "skip"
+    assert guarded["reason"] == "unsupported_multiple_entries"
+
+
+def test_execution_guard_rejects_pending_order_even_if_model_says_execute() -> None:
+    decision = _complete_trade_decision()
+    decision.update({"order_type": "pending", "entry_low": "4387", "entry_high": "4387", "stop_loss": "4381"})
+    decision["take_profits"] = ["4391", "4396"]
+    guarded = _guard_execute_decision(
+        decision,
+        "BUY LIMIT GOLD @ 4387\nTP 4391\nTP 4396\nSL 4381",
+    )
+    assert guarded["action"] == "skip"
+    assert guarded["reason"] == "unsupported_pending_order"
+
+
+def test_execution_guard_rejects_open_target_even_if_model_says_execute() -> None:
+    decision = _complete_trade_decision()
+    decision.update({"entry_low": "4385", "entry_high": "4385", "stop_loss": "4371"})
+    decision["take_profits"] = ["4391", "4396"]
+    guarded = _guard_execute_decision(
+        decision,
+        "BUY GOLD @ 4385\nTP 4391\nTP 4396\nTP OPEN\nSL 4371",
+    )
+    assert guarded["action"] == "skip"
+    assert guarded["reason"] == "unsupported_open_target"
+
+
+def test_execution_guard_does_not_infer_double_size_from_high_risk() -> None:
+    decision = _complete_trade_decision()
+    decision["double_lot"] = True
+    guarded = _guard_execute_decision(
+        decision,
+        "BUY GOLD @ 4371\nTP 4375\nTP 4380\nTP 4385\nSL 4360\nHIGH RISK TRADE",
+    )
+    assert guarded["action"] == "execute"
+    assert guarded["double_lot"] is False
