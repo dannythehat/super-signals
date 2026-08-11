@@ -2,7 +2,7 @@
 
 The live probe is disabled by default and performs no trades. A scope-only mode
 can inspect the encrypted stored MetaAPI token locally without making a MetaAPI
-request; only safe application/role names are persisted, never the token itself.
+request; only safe permission metadata is persisted, never the token or resource ids.
 """
 
 from __future__ import annotations
@@ -38,9 +38,13 @@ def _decode_jwt_payload(token: str) -> dict[str, Any] | None:
     return value if isinstance(value, dict) else None
 
 
-def _safe_scope_names(claims: dict[str, Any]) -> tuple[list[str], list[str], bool]:
+def _safe_scope_names(
+    claims: dict[str, Any],
+) -> tuple[list[str], list[str], bool, list[str], list[str]]:
     applications: set[str] = set()
     roles: set[str] = set()
+    rule_ids: set[str] = set()
+    services: set[str] = set()
     resource_rules_present = False
 
     def walk(value: Any, key: str | None = None) -> None:
@@ -64,7 +68,29 @@ def _safe_scope_names(claims: dict[str, Any]) -> tuple[list[str], list[str], boo
             roles.add(value)
 
     walk(claims)
-    return sorted(applications), sorted(roles), resource_rules_present
+
+    access_rules = claims.get("accessRules")
+    if isinstance(access_rules, list):
+        for rule in access_rules:
+            if not isinstance(rule, dict):
+                continue
+            rule_id = rule.get("id")
+            application = rule.get("application")
+            service = rule.get("service")
+            if isinstance(rule_id, str) and len(rule_id) <= 128:
+                rule_ids.add(rule_id)
+            if isinstance(application, str) and len(application) <= 128:
+                applications.add(application)
+            if isinstance(service, str) and len(service) <= 64:
+                services.add(service)
+
+    return (
+        sorted(applications),
+        sorted(roles),
+        resource_rules_present,
+        sorted(rule_ids),
+        sorted(services),
+    )
 
 
 def _record_scope_only(
@@ -100,9 +126,19 @@ def _record_scope_only(
     claims = _decode_jwt_payload(token)
     applications: list[str] = []
     roles: list[str] = []
+    rule_ids: list[str] = []
+    services: list[str] = []
     resource_rules_present = False
+    top_level_keys: list[str] = []
     if claims is not None:
-        applications, roles, resource_rules_present = _safe_scope_names(claims)
+        top_level_keys = sorted(str(key) for key in claims.keys())
+        (
+            applications,
+            roles,
+            resource_rules_present,
+            rule_ids,
+            services,
+        ) = _safe_scope_names(claims)
 
     with session_factory() as session:
         session.add(
@@ -113,19 +149,27 @@ def _record_scope_only(
                 entity_id=row["id"],
                 payload={
                     "jwt_payload_decoded": claims is not None,
+                    "top_level_keys": top_level_keys,
                     "applications": applications,
+                    "access_rule_ids": rule_ids,
+                    "services": services,
                     "roles": roles,
                     "resource_rules_present": resource_rules_present,
                     "has_trading_account_management_api": (
                         "trading-account-management-api" in applications
+                        or "trading-account-management-api" in rule_ids
                     ),
                     "has_metaapi_rest_api": any(
-                        value in applications
+                        value in applications or value in rule_ids
                         for value in {"metaapi-rest-api", "metaapi-api"}
                     ),
-                    "has_metaapi_rpc_api": "metaapi-rpc-api" in applications,
+                    "has_metaapi_rpc_api": (
+                        "metaapi-rpc-api" in applications
+                        or "metaapi-rpc-api" in rule_ids
+                    ),
                     "has_metaapi_real_time_streaming_api": (
                         "metaapi-real-time-streaming-api" in applications
+                        or "metaapi-real-time-streaming-api" in rule_ids
                     ),
                     "metaapi_request_created": False,
                     "trade_action_created": False,
@@ -135,9 +179,10 @@ def _record_scope_only(
         session.commit()
 
     logger.info(
-        "Day 23 token scope inspected locally jwt=%s applications=%d roles=%d metaapi_request_created=false trade_action_created=false",
+        "Day 23 token scope inspected locally jwt=%s applications=%d rules=%d roles=%d metaapi_request_created=false trade_action_created=false",
         claims is not None,
         len(applications),
+        len(rule_ids),
         len(roles),
     )
 
