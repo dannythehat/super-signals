@@ -1,4 +1,5 @@
 from app.signal_lifecycle import render_provider_update
+from app.telegram_publisher_day20 import apply_source_status_banner
 
 
 def test_target_hit_and_break_even_render_as_one_clean_update() -> None:
@@ -58,3 +59,14 @@ def test_stop_hit_is_clean_and_provider_free() -> None:
 
 def test_unsupported_update_does_not_publish_arbitrary_text() -> None:
     assert render_provider_update("random update text", ["reply_management"]) is None
+
+
+def test_testing_source_gets_visible_demo_banner() -> None:
+    text = apply_source_status_banner("SUPER SIGNALS\nXAUUSD BUY", "testing")
+    assert text.startswith("✨🧪 TESTING 🧪✨\nDEMO / NOT LIVE\n\n")
+    assert text.endswith("SUPER SIGNALS\nXAUUSD BUY")
+
+
+def test_live_source_has_no_testing_banner() -> None:
+    text = apply_source_status_banner("SUPER SIGNALS\nXAUUSD BUY", "live")
+    assert text == "SUPER SIGNALS\nXAUUSD BUY"
