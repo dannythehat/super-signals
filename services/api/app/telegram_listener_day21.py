@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 from typing import Any
 
 from telethon import TelegramClient, events
@@ -16,6 +17,7 @@ from telethon.sessions import StringSession
 
 from app.ai_message_pipeline import AiMessagePipeline
 from app.ai_message_supervisor import OpenAiMessageSupervisor
+from app.ai_supervisor_acceptance import run_ai_supervisor_acceptance_probe
 from app.config import get_settings
 from app.telegram_crypto import TelegramSessionCipher
 from app.telegram_listener import CapturedTelegramMessage, ReaderListeningPlan
@@ -49,6 +51,9 @@ class Day21TelegramListenerManager(Day20TelegramListenerManager):
             excluded_chat_id=excluded_chat_id,
         )
         settings = get_settings()
+        if os.getenv("SUPER_SIGNALS_AI_ACCEPTANCE_PROBE", "").strip() == "1":
+            run_ai_supervisor_acceptance_probe(settings)
+
         self._ai_pipeline: AiMessagePipeline | None = None
         if settings.ai_supervisor_enabled:
             supervisor = None
