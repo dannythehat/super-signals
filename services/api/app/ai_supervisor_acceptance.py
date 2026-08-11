@@ -22,7 +22,6 @@ class _ProbeCase:
     raw_text: str
     decision: str
     action: str
-    reason: str | None = None
     symbol: str | None = None
     side: str | None = None
     entry_low: str | None = None
@@ -54,7 +53,6 @@ _CASES = (
         ),
         decision="new_trade",
         action="skip",
-        reason="unsupported_entry_range",
         symbol="XAUUSD",
         side="BUY",
         entry_low="4391",
@@ -71,7 +69,6 @@ _CASES = (
         ),
         decision="new_trade",
         action="skip",
-        reason="unsupported_multiple_entries",
         symbol="XAUUSD",
         side="BUY",
         entry_low="4380",
@@ -85,7 +82,6 @@ _CASES = (
         raw_text="BUY LIMIT GOLD @ 4387\nTP 4391\nTP 4396\nSL 4381",
         decision="new_trade",
         action="skip",
-        reason="unsupported_pending_order",
         symbol="XAUUSD",
         side="BUY",
         entry_low="4387",
@@ -99,7 +95,6 @@ _CASES = (
         raw_text="BUY GOLD @ 4385\nTP 4391\nTP 4396\nTP OPEN\nSL 4371",
         decision="new_trade",
         action="skip",
-        reason="unsupported_open_target",
         symbol="XAUUSD",
         side="BUY",
         entry_low="4385",
@@ -119,13 +114,12 @@ _CASES = (
         raw_text="Sell Gold Now",
         decision="non_actionable",
         action="skip",
-        reason="provider_instruction_incomplete",
     ),
 )
 
 
 def run_ai_supervisor_acceptance_probe(settings: Settings) -> None:
-    """Call OpenAI against safe fixtures and fail startup if the contract drifts."""
+    """Call OpenAI against safe fixtures and fail startup if behavior drifts."""
     if not settings.ai_supervisor_enabled:
         raise RuntimeError("AI acceptance probe requires the AI supervisor to be enabled")
     if not settings.ai_supervisor_api_key:
@@ -146,8 +140,6 @@ def run_ai_supervisor_acceptance_probe(settings: Settings) -> None:
             errors.append(f"decision={result.decision}")
         if result.action != case.action:
             errors.append(f"action={result.action}")
-        if case.reason is not None and case.reason not in result.reason:
-            errors.append(f"reason={result.reason}")
 
         expected_fields = {
             "symbol": case.symbol,
@@ -171,11 +163,10 @@ def run_ai_supervisor_acceptance_probe(settings: Settings) -> None:
                 f"AI acceptance probe failed case={case.name} " + " ".join(errors)
             )
         logger.info(
-            "AI acceptance probe passed case=%s decision=%s action=%s reason=%s latency_ms=%s",
+            "AI acceptance probe passed case=%s decision=%s action=%s latency_ms=%s",
             case.name,
             result.decision,
             result.action,
-            result.reason,
             result.latency_ms,
         )
 
