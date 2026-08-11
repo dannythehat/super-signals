@@ -118,8 +118,9 @@ Examples of semantic intent:
   4391' as actual entries followed by TP result posts, a fresh 'I'm buying 4375' is a
   new_trade, not chatter. If no explicit SL/TP evidence is directly linked, action=skip
   with reason=provider_instruction_incomplete.
-- 'Buy Gold Now' from a source that uses that phrase as an entry trigger is new_trade.
-  Missing required execution parameters changes action to skip, not decision to chatter.
+- 'Buy Gold Now' or 'Sell Gold Now' is an entry activation, not preparation. If required
+  execution parameters are absent, classify new_trade + skip; do not call it chatter
+  or preparation.
 - 'WHO IS READYY?', 'Get Ready', 'Prepare for a buy' are preparation/chatter unless the
   current message itself actually activates an entry.
 - Promotional posts, giveaways, requests for comments/screenshots and general market
@@ -194,6 +195,14 @@ _DOUBLE_SIZE = re.compile(
     r"\b(?:DOUBLE\s+(?:LOT|LOTS|SIZE)|2X\s+(?:LOT|LOTS|SIZE))\b",
     re.IGNORECASE,
 )
+_ACTIVE_GOLD_NOW = re.compile(
+    r"^\s*(?:(BUY|SELL)\s+(?:GOLD|XAUUSD)\s+NOW|(?:GOLD|XAUUSD)\s+(BUY|SELL)\s+NOW)\s*[!✅🔥🚀]*\s*$",
+    re.IGNORECASE,
+)
+_TERSE_PRICE_ENTRY = re.compile(
+    r"^\s*I[’']?M\s+(BUYING|SELLING)\s+(\d+(?:\.\d+)?)\s*[!✅🔥🚀]*\s*$",
+    re.IGNORECASE,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -233,6 +242,47 @@ def _literal_numbers(raw_text: str) -> set[Decimal]:
         if parsed is not None:
             values.add(parsed.normalize())
     return values
+
+
+def _guard_provider_intent(
+    parsed: dict[str, Any],
+    raw_text: str,
+    *,
+    is_edit: bool,
+) -> dict[str, Any]:
+    """Prevent explicit entry activations from being downgraded to chatter/preparation.
+
+    This guard asserts semantic intent only. It does not make an incomplete trade
+    executable and it does not import numeric values from ambient source history.
+    """
+    guarded = dict(parsed)
+    if is_edit:
+        return guarded
+
+    active = _ACTIVE_GOLD_NOW.fullmatch(raw_text)
+    terse = _TERSE_PRICE_ENTRY.fullmatch(raw_text)
+    if active is None and terse is None:
+        return guarded
+
+    guarded["decision"] = "new_trade"
+    if guarded.get("action") != "execute":
+        guarded["action"] = "skip"
+        guarded["reason"] = "provider_instruction_incomplete"
+
+    if active is not None:
+        side = (active.group(1) or active.group(2) or "").upper()
+        guarded["side"] = side
+        guarded["symbol"] = "XAUUSD"
+        guarded["order_type"] = guarded.get("order_type") or "market"
+        return guarded
+
+    assert terse is not None
+    guarded["side"] = "BUY" if terse.group(1).upper() == "BUYING" else "SELL"
+    entry = terse.group(2)
+    guarded["entry_low"] = entry
+    guarded["entry_high"] = entry
+    guarded["order_type"] = guarded.get("order_type") or "market"
+    return guarded
 
 
 def _guard_execute_decision(
@@ -409,6 +459,7 @@ class OpenAiMessageSupervisor:
         except (httpx.HTTPError, ValueError, KeyError, TypeError, json.JSONDecodeError) as exc:
             raise AiSupervisorError("ai_supervisor_unavailable") from exc
 
+        parsed = _guard_provider_intent(parsed, raw_text, is_edit=is_edit)
         parsed = _guard_execute_decision(parsed, raw_text, linked_context=reply_context)
         latency_ms = int((time.perf_counter() - started) * 1000)
         return AiMessageDecision(
