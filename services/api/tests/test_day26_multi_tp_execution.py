@@ -281,6 +281,23 @@ def test_trade_gateway_sends_provider_sl_tp_and_client_id() -> None:
     }
 
 
-def test_day26_trade_gateway_has_no_modify_close_or_retry_surface() -> None:
+def test_trade_gateway_compensating_close_uses_position_id() -> None:
+    gateway = _CaptureTradeGateway()
+    asyncio.run(
+        gateway.close_position(
+            token="test-token",
+            account_id="account-1",
+            region="london",
+            position_id="position-123",
+        )
+    )
+    assert gateway.payload is not None
+    assert gateway.payload["json"] == {
+        "actionType": "POSITION_CLOSE_ID",
+        "positionId": "position-123",
+    }
+
+
+def test_day26_trade_gateway_surface_is_entry_plus_compensation_only() -> None:
     public_names = {name for name in dir(MetaApiTradeGateway) if not name.startswith("_")}
-    assert public_names == {"place_market_order"}
+    assert public_names == {"place_market_order", "close_position"}
