@@ -1,8 +1,7 @@
-"""One-shot, opt-in Day 23 acceptance diagnostics.
+"""One-shot, opt-in MT5 acceptance diagnostics.
 
-The live probe is disabled by default and performs no trades. A scope-only mode
-can inspect the encrypted stored MetaAPI token locally without making a MetaAPI
-request; only safe permission metadata is persisted, never the token or resource ids.
+The live probes are disabled by default and perform no trades. Credential values are
+never logged. The temporary Day 33 hook is removed after acceptance.
 """
 
 from __future__ import annotations
@@ -17,6 +16,7 @@ from uuid import UUID
 from sqlalchemy import text
 from sqlalchemy.orm import Session, sessionmaker
 
+from app.day33_return_acceptance import run_day33_return_acceptance
 from app.metaapi_read_gateway import MetaApiReadGateway
 from app.models import AuditEvent
 from app.mt5_crypto import BrokerCredentialDecryptionError, MetaApiTokenCipher
@@ -192,14 +192,26 @@ async def run_day23_acceptance_probe(
     session_factory: sessionmaker[Session],
     cipher: MetaApiTokenCipher,
 ) -> None:
-    if os.getenv("SUPER_SIGNALS_DAY23_ACCEPTANCE_PROBE", "").strip() != "1":
+    day23_enabled = os.getenv("SUPER_SIGNALS_DAY23_ACCEPTANCE_PROBE", "").strip() == "1"
+    day33_enabled = os.getenv("SUPER_SIGNALS_DAY33_RETURN_ACCEPTANCE", "").strip() == "1"
+    if not day23_enabled and not day33_enabled:
         return
 
     owner_id_raw = os.getenv("SUPER_SIGNALS_DAY23_OWNER_ID", "").strip()
     try:
         owner_user_id = UUID(owner_id_raw)
     except ValueError:
-        logger.error("Day 23 acceptance probe skipped: owner id is invalid")
+        logger.error("MT5 acceptance probe skipped: owner id is invalid")
+        return
+
+    if day33_enabled:
+        await run_day33_return_acceptance(
+            session_factory=session_factory,
+            cipher=cipher,
+            owner_user_id=owner_user_id,
+        )
+
+    if not day23_enabled:
         return
 
     if os.getenv("SUPER_SIGNALS_DAY23_SCOPE_ONLY", "").strip() == "1":
