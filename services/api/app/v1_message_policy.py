@@ -14,6 +14,7 @@ from decimal import Decimal, InvalidOperation
 from typing import Any
 
 from app.ai_message_supervisor import AiMessageDecision
+from app.day27_management_policy import extract_day27_management_actions
 
 _NUMBER_TOKEN = re.compile(r"(?<![A-Za-z0-9_.])\d+(?:\.\d+)?(?![A-Za-z0-9_.])")
 _INSTRUMENT = re.compile(r"\b(?:XAUUSD|GOLD)\b", re.IGNORECASE)
@@ -37,18 +38,6 @@ _RESULT_ONLY = re.compile(
     r"|(?:^|\s)[+-]\s*\d+(?:\.\d+)?\s*PIPS?\b",
     re.IGNORECASE,
 )
-_BREAK_EVEN = re.compile(
-    r"\b(?:BE|MOVE\s+(?:SL|STOP(?:\s+LOSS)?)\s+TO\s+BE|SET\s+(?:SL\s+TO\s+)?BE|"
-    r"BREAKEVEN(?:\s+SET)?|BREAK\s+EVEN(?:\s+SET)?|RISK\s+FREE)\b",
-    re.IGNORECASE,
-)
-_CLOSE_ALL = re.compile(r"\b(?:CLOSE(?:D)?\s+ALL|CLOSE\s+EVERYTHING)\b", re.IGNORECASE)
-_EXPLICIT_OUT = re.compile(
-    r"\b(?:I[’']?M|WE[’']?RE|GET|CLOSE)\s+OUT\b|"
-    r"\bOUT\s+(?:NOW|AT\s+ENTRY|ON\s+THE\s+REST|OF\s+THE\s+REST)\b",
-    re.IGNORECASE,
-)
-_CANCEL = re.compile(r"\bCANCEL(?:LED|ED|ING)?\b", re.IGNORECASE)
 
 
 def _decimal(value: Any) -> Decimal | None:
@@ -93,6 +82,7 @@ def _ignore_update(
     extracted["update_type"] = None
     extracted["update_target"] = None
     extracted["update_value"] = None
+    extracted["management_actions"] = []
     return replace(
         decision,
         decision="trade_update",
@@ -175,6 +165,7 @@ def apply_v1_message_policy(
 
     Context can help the AI classify semantics, but cannot make a trade executable.
     The current message alone must contain instrument, side, entry, SL and >=1 numeric TP.
+    Day 27 management is similarly current-message-only and fail-closed.
     """
     text = raw_text or ""
 
@@ -243,42 +234,31 @@ def apply_v1_message_policy(
         )
 
     if decision.decision == "trade_update":
+        policy = extract_day27_management_actions(text)
+        if policy.actions:
+            extracted = dict(decision.extracted)
+            actions = [dict(action) for action in policy.actions]
+            extracted["management_actions"] = actions
+            first = actions[0]
+            extracted["update_type"] = first.get("type")
+            extracted["update_target"] = first.get("target")
+            extracted["update_value"] = first.get("value")
+            return replace(
+                decision,
+                decision="trade_update",
+                action="apply_update",
+                reason=policy.reason,
+                extracted=extracted,
+            )
+
+        if policy.reason in {"optional_management_instruction", "provider_result_only"}:
+            return _ignore_update(decision, policy.reason)
+
         # Provider result statements never create a new management action. This check
-        # deliberately runs before the broad BE recognizer so "Out at BE" stays a result.
+        # deliberately runs after the Day 27 extractor so a combined explicit command
+        # such as "TP1 hit, move SL to 4385" may still produce the explicit SL action.
         if _RESULT_ONLY.search(text):
             return _ignore_update(decision, "provider_result_only")
-
-        extracted = dict(decision.extracted)
-        if _BREAK_EVEN.search(text):
-            extracted["update_type"] = "move_to_break_even"
-            extracted["update_target"] = None
-            extracted["update_value"] = None
-            return replace(
-                decision,
-                action="apply_update",
-                reason="v1_break_even_instruction",
-                extracted=extracted,
-            )
-        if _CLOSE_ALL.search(text) or _EXPLICIT_OUT.search(text):
-            extracted["update_type"] = "close"
-            extracted["update_target"] = "all"
-            extracted["update_value"] = None
-            return replace(
-                decision,
-                action="apply_update",
-                reason="v1_close_instruction",
-                extracted=extracted,
-            )
-        if _CANCEL.search(text):
-            extracted["update_type"] = "cancel_pending"
-            extracted["update_target"] = None
-            extracted["update_value"] = None
-            return replace(
-                decision,
-                action="apply_update",
-                reason="v1_cancel_instruction",
-                extracted=extracted,
-            )
         return _ignore_update(decision)
 
     # Chatter, preparation and genuinely unclear messages remain non-executable.
