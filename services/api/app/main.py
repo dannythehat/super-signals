@@ -16,6 +16,8 @@ from app.broker_settlement_day34 import Day34BrokerSettlementManager
 from app.config import get_settings
 from app.day26_code_acceptance import run_day26_code_acceptance_probe
 from app.day27_code_acceptance import run_day27_code_acceptance_probe
+from app.day34_code_acceptance import run_day34_code_acceptance_probe
+from app.day34_live_acceptance import run_day34_live_acceptance_safely
 from app.db import get_session_factory
 from app.metaapi_gateway import MetaApiProvisioningGateway
 from app.metaapi_read_gateway import MetaApiReadGateway
@@ -131,6 +133,8 @@ async def _lifespan(application: FastAPI) -> AsyncIterator[None]:
         await run_day26_code_acceptance_probe()
     if os.getenv("SUPER_SIGNALS_DAY27_CODE_PROBE", "").strip() == "1":
         await run_day27_code_acceptance_probe()
+    if os.getenv("SUPER_SIGNALS_DAY34_CODE_PROBE", "").strip() == "1":
+        run_day34_code_acceptance_probe()
 
     day34_reference_raw = (
         os.getenv("SUPER_SIGNALS_DAY34_REFERENCE_USER_ID", "").strip()
@@ -155,6 +159,7 @@ async def _lifespan(application: FastAPI) -> AsyncIterator[None]:
     mt5_connection_manager: Mt5ConnectionManager | None = None
     mt5_bootstrap_task: asyncio.Task[None] | None = None
     day34_settlement_manager: Day34BrokerSettlementManager | None = None
+    day34_live_acceptance_task: asyncio.Task[None] | None = None
     if broker_keys:
         broker_cipher = MetaApiTokenCipher(broker_keys)
         gateway = MetaApiProvisioningGateway()
@@ -315,9 +320,24 @@ async def _lifespan(application: FastAPI) -> AsyncIterator[None]:
         await push_manager.start()
     await publisher.start()
 
+    if os.getenv("SUPER_SIGNALS_DAY34_LIVE_ACCEPTANCE", "").strip() == "1":
+        day34_live_acceptance_task = asyncio.create_task(
+            run_day34_live_acceptance_safely(
+                settlement_manager=day34_settlement_manager,
+            ),
+            name="day34-live-acceptance",
+        )
+
     try:
         yield
     finally:
+        if day34_live_acceptance_task is not None:
+            if not day34_live_acceptance_task.done():
+                day34_live_acceptance_task.cancel()
+            try:
+                await day34_live_acceptance_task
+            except asyncio.CancelledError:
+                pass
         await publisher.stop()
         if push_manager is not None:
             await push_manager.stop()
