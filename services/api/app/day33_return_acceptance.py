@@ -1,6 +1,8 @@
 """Temporary Day 33 acceptance for return baselines and timeline privacy.
 
-No trade gateway is imported or available here.
+No trade gateway is imported or available here. This verifier deliberately makes
+no broker request: it proves the accepted immutable deal ledger and append-only
+pre-trade balance evidence can regenerate the same outcome independently.
 """
 
 from __future__ import annotations
@@ -28,7 +30,16 @@ async def run_day33_return_acceptance(
         cipher=cipher,
         gateway=MetaApiReadGateway(),
     )
-    sync = await service.sync_user(owner_user_id)
+    account = service._account(owner_user_id)
+    if account is None:
+        raise RuntimeError("day33_owner_mt5_account_missing")
+
+    snapshots_added = service._backfill_account_snapshots_from_audit(
+        user_id=owner_user_id,
+        mt5_account_id=account["id"],
+    )
+    outcomes_rebuilt = service.rebuild_outcomes(owner_user_id)
+    summaries_rebuilt = service.rebuild_summaries(owner_user_id)
     windows = {item.key: item for item in service.read_windows(owner_user_id)}
     admin_timeline = service.read_timeline(owner_user_id, viewer_role="owner", limit=250)
     invited_timeline = service.read_timeline(owner_user_id, viewer_role="user", limit=250)
@@ -69,7 +80,8 @@ async def run_day33_return_acceptance(
     )
     admin_source_visible = any(item.source_label for item in admin_timeline.trades)
     skipped_contract_ok = (
-        len(skipped_admin) == len(skipped_invited)
+        len(skipped_admin) > 0
+        and len(skipped_admin) == len(skipped_invited)
         and all(item.status_color == "amber" for item in skipped_admin)
         and all(item.close_reason for item in skipped_admin)
     )
@@ -84,11 +96,13 @@ async def run_day33_return_acceptance(
         and admin_source_visible
         and skipped_contract_ok
         and len(live_board) == 0
-        and sync.broker_trade_action_created is False
     )
     payload = {
         "passed": passed,
+        "snapshots_added_this_run": snapshots_added,
         "snapshot_count": snapshot_count,
+        "outcomes_rebuilt": outcomes_rebuilt,
+        "summaries_rebuilt": summaries_rebuilt,
         "all_time_window": asdict(all_window) if all_window else None,
         "stored_all_time_summary": (
             {key: str(value) if value is not None else None for key, value in all_time_summary.items()}
@@ -104,6 +118,7 @@ async def run_day33_return_acceptance(
         "shared_live_board_count": len(live_board),
         "shared_open_count": sum(1 for row in live_board if int(row["open_positions"]) > 0),
         "shared_pending_count": sum(1 for row in live_board if int(row["pending_positions"]) > 0),
+        "metaapi_request_created": False,
         "broker_trade_action_created": False,
     }
     with session_factory() as session:
