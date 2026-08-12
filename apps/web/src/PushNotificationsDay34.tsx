@@ -39,17 +39,17 @@ async function ensureServiceWorker(): Promise<ServiceWorkerRegistration> {
   const registration = await withTimeout(
     navigator.serviceWorker.register('/sw.js', { scope: '/' }),
     10000,
-    'The notification service could not start in this browser. Open Super Signals in Chrome and try again.',
+    'The notification service could not start in this browser. Open Super Signals directly in Chrome and try again.',
   );
   await withTimeout(
     registration.update(),
     10000,
-    'The notification service could not update in this browser. Open Super Signals in Chrome and try again.',
+    'The notification service could not update in this browser. Open Super Signals directly in Chrome and try again.',
   );
   return withTimeout(
     navigator.serviceWorker.ready,
     10000,
-    'The notification service did not become ready. Open Super Signals in Chrome and try again.',
+    'The notification service did not become ready. Open Super Signals directly in Chrome and try again.',
   );
 }
 
@@ -128,7 +128,7 @@ export function PushNotificationsDay34({ apiBaseUrl }: PushNotificationsDay34Pro
       const permission = await withTimeout(
         Notification.requestPermission(),
         15000,
-        'Your browser did not open the notification permission prompt. Open Super Signals in Chrome and try again.',
+        'Your browser did not open the notification permission prompt. Open Super Signals directly in Chrome and try again.',
       );
       if (permission !== 'granted') {
         setState(permission === 'denied' ? 'blocked' : 'off');
@@ -151,7 +151,7 @@ export function PushNotificationsDay34({ apiBaseUrl }: PushNotificationsDay34Pro
             applicationServerKey: urlBase64ToUint8Array(publicKey),
           }),
           20000,
-          'This browser could not create a push subscription. Open Super Signals in Chrome and try again.',
+          'This browser could not create a push subscription. Open Super Signals directly in Chrome and try again.',
         );
       }
 
