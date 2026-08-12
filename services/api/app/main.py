@@ -39,6 +39,7 @@ from app.routes.day27_management import router as day27_management_router
 from app.routes.health import router as health_router
 from app.routes.mt5_accounts import router as mt5_accounts_router
 from app.routes.mt5_approvals_day30 import router as mt5_approvals_day30_router
+from app.routes.notifications_day34 import router as notifications_day34_router
 from app.routes.signals import router as signals_router
 from app.routes.telegram_accounts import router as telegram_accounts_router
 from app.routes.telegram_classifications import router as telegram_classifications_router
@@ -358,6 +359,7 @@ def create_app() -> FastAPI:
     application.include_router(user_mt5_accounts_router)
     application.include_router(day26_execution_router)
     application.include_router(day27_management_router)
+    application.include_router(notifications_day34_router)
     _mount_web_application(application)
     return application
 
