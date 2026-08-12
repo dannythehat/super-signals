@@ -1,9 +1,9 @@
-"""Narrow MetaAPI trade gateway for Day 26 demo execution.
+"""Narrow MetaAPI trade gateway for Super Signals demo execution and management.
 
-Day 26 submits one market order per provider TP and may submit one TP OPEN runner
-without a take-profit price. It also exposes one deliberately narrow close-by-position-
-id operation used only as compensation when a multi-position submission fails part-way
-through. Normal provider-driven closes/modifications remain Day 27 scope.
+Day 26 submits market positions and uses close-by-position-id for failure compensation.
+Day 27 adds only the broker mutations required by explicit provider follow-ups:
+position close, position SL/TP modify and pending-order cancel. All mutations address a
+known broker position/order ID; there is no symbol-wide close or discretionary action.
 """
 
 from __future__ import annotations
@@ -30,7 +30,7 @@ class MetaApiMarketOrderResult:
 
 
 class MetaApiTradeGateway:
-    """MetaAPI client exposing Day 26 market entry plus failure compensation."""
+    """MetaAPI client exposing the project's deliberately narrow trade mutations."""
 
     def __init__(self, *, timeout_seconds: float = 30.0) -> None:
         self._timeout = httpx.Timeout(timeout_seconds)
@@ -111,7 +111,7 @@ class MetaApiTradeGateway:
         region: str,
         position_id: str,
     ) -> None:
-        """Fully close one known broker position as Day 26 rollback compensation."""
+        """Fully close one known broker position by its immutable broker ID."""
         normalized_region = self._normalize_region(region)
         normalized_position_id = position_id.strip()
         if not normalized_position_id:
@@ -123,6 +123,69 @@ class MetaApiTradeGateway:
             json_body={
                 "actionType": "POSITION_CLOSE_ID",
                 "positionId": normalized_position_id,
+            },
+        )
+
+    async def modify_position(
+        self,
+        *,
+        token: str,
+        account_id: str,
+        region: str,
+        position_id: str,
+        stop_loss: float | None = None,
+        take_profit: float | None = None,
+    ) -> None:
+        """Modify SL and/or TP on one known broker position."""
+        normalized_region = self._normalize_region(region)
+        normalized_position_id = position_id.strip()
+        if not normalized_position_id:
+            raise MetaApiGatewayError("broker_position_id_invalid")
+        if stop_loss is None and take_profit is None:
+            raise MetaApiGatewayError("trade_request_invalid")
+        if stop_loss is not None and not self._positive_finite(stop_loss):
+            raise MetaApiGatewayError("trade_request_invalid")
+        if take_profit is not None and not self._positive_finite(take_profit):
+            raise MetaApiGatewayError("trade_request_invalid")
+
+        body: dict[str, object] = {
+            "actionType": "POSITION_MODIFY",
+            "positionId": normalized_position_id,
+        }
+        if stop_loss is not None:
+            body["stopLoss"] = float(stop_loss)
+            body["stopLossUnits"] = "ABSOLUTE_PRICE"
+        if take_profit is not None:
+            body["takeProfit"] = float(take_profit)
+            body["takeProfitUnits"] = "ABSOLUTE_PRICE"
+
+        await self._trade_request(
+            token=token,
+            account_id=account_id,
+            region=normalized_region,
+            json_body=body,
+        )
+
+    async def cancel_order(
+        self,
+        *,
+        token: str,
+        account_id: str,
+        region: str,
+        order_id: str,
+    ) -> None:
+        """Cancel one known active broker order by ID."""
+        normalized_region = self._normalize_region(region)
+        normalized_order_id = order_id.strip()
+        if not normalized_order_id:
+            raise MetaApiGatewayError("broker_order_id_invalid")
+        await self._trade_request(
+            token=token,
+            account_id=account_id,
+            region=normalized_region,
+            json_body={
+                "actionType": "ORDER_CANCEL",
+                "orderId": normalized_order_id,
             },
         )
 
