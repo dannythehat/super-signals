@@ -7,7 +7,6 @@ pre-trade balance evidence can regenerate the same outcome independently.
 
 from __future__ import annotations
 
-from dataclasses import asdict
 from uuid import UUID
 
 from sqlalchemy import text
@@ -17,6 +16,10 @@ from app.metaapi_read_gateway import MetaApiReadGateway
 from app.models import AuditEvent
 from app.mt5_crypto import MetaApiTokenCipher
 from app.performance_ledger_day33_v2 import Day33PerformanceLedgerServiceV2
+
+
+def _string_or_none(value: object | None) -> str | None:
+    return None if value is None else str(value)
 
 
 async def run_day33_return_acceptance(
@@ -97,15 +100,33 @@ async def run_day33_return_acceptance(
         and skipped_contract_ok
         and len(live_board) == 0
     )
+    all_time_window = (
+        {
+            "cash_pnl": _string_or_none(all_window.cash_pnl),
+            "return_percent": _string_or_none(all_window.return_percent),
+            "model_500_pnl": _string_or_none(all_window.model_500_pnl),
+            "model_500_return_percent": _string_or_none(all_window.model_500_return_percent),
+            "closed_trades": all_window.closed_trades,
+            "wins": all_window.wins,
+            "losses": all_window.losses,
+            "breakeven": all_window.breakeven,
+            "open_trades": all_window.open_trades,
+            "win_rate_percent": _string_or_none(all_window.win_rate_percent),
+            "net_pips": _string_or_none(all_window.net_pips),
+            "mixed_instrument_pips": all_window.mixed_instrument_pips,
+        }
+        if all_window
+        else None
+    )
     payload = {
         "passed": passed,
         "snapshots_added_this_run": snapshots_added,
         "snapshot_count": snapshot_count,
         "outcomes_rebuilt": outcomes_rebuilt,
         "summaries_rebuilt": summaries_rebuilt,
-        "all_time_window": asdict(all_window) if all_window else None,
+        "all_time_window": all_time_window,
         "stored_all_time_summary": (
-            {key: str(value) if value is not None else None for key, value in all_time_summary.items()}
+            {key: _string_or_none(value) for key, value in all_time_summary.items()}
             if all_time_summary is not None
             else None
         ),
