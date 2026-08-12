@@ -9,8 +9,6 @@ trading if Telegram is unavailable.
 from __future__ import annotations
 
 import hashlib
-import json
-from datetime import UTC, datetime
 from typing import Any
 
 from sqlalchemy import text
@@ -20,7 +18,6 @@ from app.telegram_publisher import TelegramPublishError, _bot_api_call
 from app.telegram_publisher_day20 import Day20TelegramPublisherManager
 
 DAY34_PUBLISHER_VERSION = "day34-publisher-v1"
-_TERMINAL_OUTCOMES = {"won", "lost", "breakeven", "closed_unknown"}
 
 
 class Day34TelegramPublisherManager(Day20TelegramPublisherManager):
@@ -244,7 +241,7 @@ class Day34TelegramPublisherManager(Day20TelegramPublisherManager):
                 },
             )
             message_id = int(result["message_id"])
-            self._record_board_message(message_id, rendered, digest)
+            self._record_board_message(message_id, rendered, digest, created=True)
             needs_pin = True
         elif digest_changed:
             _bot_api_call(
@@ -257,7 +254,7 @@ class Day34TelegramPublisherManager(Day20TelegramPublisherManager):
                     "disable_web_page_preview": "true",
                 },
             )
-            self._record_board_message(message_id, rendered, digest)
+            self._record_board_message(message_id, rendered, digest, created=False)
 
         if needs_pin:
             _bot_api_call(
@@ -321,9 +318,7 @@ class Day34TelegramPublisherManager(Day20TelegramPublisherManager):
     @staticmethod
     def _render_live_board(rows: list[Any]) -> str:
         open_count = sum(1 for row in rows if row["open_tp_indices"])
-        pending_count = sum(
-            1 for row in rows if not row["open_tp_indices"] and row["pending_tp_indices"]
-        )
+        pending_count = sum(1 for row in rows if row["pending_tp_indices"])
         lines = [
             "📌 SUPER SIGNALS · LIVE TRADES",
             f"OPEN {open_count} · PENDING {pending_count}",
@@ -338,13 +333,12 @@ class Day34TelegramPublisherManager(Day20TelegramPublisherManager):
             side = str(row["side"] or "").upper()
             open_indices = [int(value) for value in (row["open_tp_indices"] or [])]
             pending_indices = [int(value) for value in (row["pending_tp_indices"] or [])]
+            states: list[str] = []
             if open_indices:
-                legs = "/".join(f"TP{index}" for index in open_indices)
-                state = f"{legs} open"
-            else:
-                legs = "/".join(f"TP{index}" for index in pending_indices)
-                state = f"{legs} pending"
-            lines.append(f"{symbol} {side} · {state}")
+                states.append("/".join(f"TP{index}" for index in open_indices) + " open")
+            if pending_indices:
+                states.append("/".join(f"TP{index}" for index in pending_indices) + " pending")
+            lines.append(f"{symbol} {side} · {' · '.join(states)}")
         return "\n".join(lines)
 
     def _mark_board_attempt(self) -> None:
@@ -365,7 +359,14 @@ class Day34TelegramPublisherManager(Day20TelegramPublisherManager):
             )
             session.commit()
 
-    def _record_board_message(self, message_id: int, rendered: str, digest: str) -> None:
+    def _record_board_message(
+        self,
+        message_id: int,
+        rendered: str,
+        digest: str,
+        *,
+        created: bool,
+    ) -> None:
         with self._session_factory() as session:
             session.execute(
                 text(
@@ -398,7 +399,8 @@ class Day34TelegramPublisherManager(Day20TelegramPublisherManager):
                     payload={
                         "publisher_version": DAY34_PUBLISHER_VERSION,
                         "telegram_message_id": message_id,
-                        "same_message_reused": True,
+                        "board_message_created": created,
+                        "same_message_reused": not created,
                         "provider_identity_exposed": False,
                         "private_balance_exposed": False,
                         "trade_action_created": False,
