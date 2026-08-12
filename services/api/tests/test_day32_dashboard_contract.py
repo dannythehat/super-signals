@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from types import SimpleNamespace
 
 from app.routes.dashboard_day32 import (
     AccountResponse,
@@ -11,6 +12,7 @@ from app.routes.dashboard_day32 import (
     PerformanceResponse,
     TradingResponse,
     WinLossResponse,
+    _safe_open_profit,
 )
 
 
@@ -109,6 +111,19 @@ def test_unverified_performance_is_unknown_not_fake_zero() -> None:
     assert period.provisional_until_day33 is True
     assert period.known_position_count == 0
     assert period.amount is None
+
+
+def test_unavailable_open_position_profit_is_unknown_not_fake_zero() -> None:
+    view = SimpleNamespace(
+        open_positions=(SimpleNamespace(profit=None),),
+        open_profit=0.0,
+    )
+    assert _safe_open_profit(view) is None
+
+
+def test_no_open_positions_can_report_zero_open_profit() -> None:
+    view = SimpleNamespace(open_positions=(), open_profit=0.0)
+    assert _safe_open_profit(view) == 0.0
 
 
 def test_dashboard_numbers_are_json_numbers_not_decimal_strings() -> None:
