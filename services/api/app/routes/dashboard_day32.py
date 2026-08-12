@@ -20,9 +20,6 @@ from app.routes.performance_day33 import (
     router as performance_day33_router,
 )
 
-# Included by the existing /account/mt5 router, so the final endpoint is
-# /account/mt5/dashboard. Day 33 performance routes nest below this router as
-# /account/mt5/dashboard/performance/* without adding an application-level router.
 router = APIRouter(prefix="/dashboard", tags=["dashboard-day32"])
 router.include_router(performance_day33_router)
 Identity = Annotated[dict[str, Any], Depends(get_current_identity)]
@@ -129,7 +126,7 @@ class DashboardResponse(BaseModel):
     win_loss: WinLossResponse
     activity: tuple[ActivityResponse, ...]
     reconciled_external_positions: int
-    canonical_performance_ready: bool = True
+    canonical_performance_ready: bool
     performance_basis: str = "broker_deal_ledger"
     broker_trade_action_created: bool = False
 
@@ -138,7 +135,6 @@ def _service(request: Request) -> Day32DashboardService:
     existing = getattr(request.app.state, "day32_dashboard_service", None)
     if isinstance(existing, Day32DashboardService):
         return existing
-
     base = require_mt5_service(request)
     if not isinstance(base, Day30Mt5ConnectionService):
         raise HTTPException(
@@ -180,18 +176,21 @@ async def account_dashboard(
 ) -> DashboardResponse:
     view = await _service(request).read(identity["id"])
     ledger = _performance_service(request)
-    windows = {item.key: item for item in ledger.read_windows(identity["id"])}
+    ready = ledger.ledger_ready(identity["id"])
+    windows = {item.key: item for item in ledger.read_windows(identity["id"])} if ready else {}
+
+    period_labels = (("today", "Today"), ("7d", "7 days"), ("30d", "30 days"))
     canonical_periods = tuple(
         PerformanceResponse(
             key=key,
-            label=windows[key].label,
-            amount=float(windows[key].cash_pnl),
-            known_position_count=windows[key].closed_trades,
+            label=(windows[key].label if key in windows else label),
+            amount=(float(windows[key].cash_pnl) if key in windows else None),
+            known_position_count=(windows[key].closed_trades if key in windows else 0),
             provisional_until_day33=False,
         )
-        for key in ("today", "7d", "30d")
-        if key in windows
+        for key, label in period_labels
     )
+
     all_time = windows.get("all")
     win_loss = (
         WinLossResponse(
@@ -206,7 +205,13 @@ async def account_dashboard(
             ),
         )
         if all_time is not None
-        else WinLossResponse(wins=0, losses=0, breakeven=0, known_results=0, win_rate_percent=None)
+        else WinLossResponse(
+            wins=0,
+            losses=0,
+            breakeven=0,
+            known_results=0,
+            win_rate_percent=None,
+        )
     )
     _no_store(response)
     return DashboardResponse(
@@ -221,4 +226,5 @@ async def account_dashboard(
         win_loss=win_loss,
         activity=tuple(ActivityResponse(**asdict(item)) for item in view.activity),
         reconciled_external_positions=view.reconciled_external_positions,
+        canonical_performance_ready=ready,
     )
