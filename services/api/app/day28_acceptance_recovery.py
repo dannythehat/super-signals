@@ -1,8 +1,8 @@
 """Acceptance-only recovery for the Day 28 same-account Telegram harness.
 
-The one-shot sender uses the same Telegram identity as the reader.  Telegram did not
+The one-shot sender uses the same Telegram identity as the reader. Telegram did not
 fan the sender's outgoing ``Close all`` reply back to the already-running reader, so
-that reply was not a live event.  On the next bounded catch-up the normal Day 21 AI/V1
+that reply was not a live event. On the next bounded catch-up the normal Day 21 AI/V1
 pipeline will persist and classify the real Telegram reply, but Day 28 deliberately
 never executes catch-up messages.
 
@@ -145,12 +145,18 @@ async def run_day28_acceptance_recovery(
             telegram_message_id=telegram_message_id,
             revision_index=revision_index,
         )
-        logger.info(
-            "Day 28 acceptance recovery result outcome=%s signal=%s close_message_id=%d broker_actions=%d",
+        # Day 27 returns the counters from the original successful event when it
+        # detects an already-applied replay. For this invocation, the broker action
+        # count is mechanically zero because _existing_success returns before any
+        # broker state read or mutation. Make that distinction explicit in evidence.
+        replay_broker_actions = 0 if result.already_applied else result.broker_actions_sent
+        logger.warning(
+            "Day 28 replay acceptance outcome=%s already_applied=%s signal=%s close_message_id=%d replay_broker_actions=%d",
             result.outcome,
+            result.already_applied,
             result.signal_id,
             telegram_message_id,
-            result.broker_actions_sent,
+            replay_broker_actions,
         )
     except Exception:
         logger.exception("Day 28 acceptance recovery failed")
