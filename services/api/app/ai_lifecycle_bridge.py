@@ -11,6 +11,7 @@ from sqlalchemy import text
 from sqlalchemy.orm import Session, sessionmaker
 
 from app.models import AuditEvent
+from app.provider_pips_day34 import normalize_provider_pips
 from app.standalone_lifecycle_linker_v2 import StandaloneLifecycleLinkerV2
 
 AI_LIFECYCLE_VERSION = "ai-supervisor-lifecycle-v1"
@@ -40,6 +41,9 @@ class AiLifecycleBridge:
         event_type, rendered_text = self._render(update_type, extracted)
         if event_type is None:
             return AiLifecycleResult(False, False, None, None, "provider_update_unsupported")
+
+        raw_provider_pips = extracted.get("provider_claimed_pips")
+        normalized_pips = normalize_provider_pips(raw_provider_pips)
 
         with self._session_factory() as session:
             row = self._message_revision_row(session, message_id, revision_index)
@@ -89,14 +93,17 @@ class AiLifecycleBridge:
                     "event_type": event_type,
                     "event_key": event_key,
                     "rendered_text": rendered_text,
-                    "pips": extracted.get("provider_claimed_pips"),
+                    "pips": normalized_pips,
                     "aggregate_result": json.dumps(
                         {
                             "ai_supervisor": True,
                             "source_revision_index": revision_index,
                             "update_target": extracted.get("update_target"),
                             "update_value": extracted.get("update_value"),
-                            "provider_claimed_pips": extracted.get("provider_claimed_pips"),
+                            "provider_claimed_pips": raw_provider_pips,
+                            "provider_claimed_pips_normalized": (
+                                str(normalized_pips) if normalized_pips is not None else None
+                            ),
                             "revised_instruction": extracted,
                         }
                     ),
@@ -122,6 +129,10 @@ class AiLifecycleBridge:
                         "event_type": event_type,
                         "source_message_id": str(row["message_id"]),
                         "source_revision_index": revision_index,
+                        "provider_claimed_pips_raw": raw_provider_pips,
+                        "provider_claimed_pips_normalized": (
+                            str(normalized_pips) if normalized_pips is not None else None
+                        ),
                         "trade_action_created": False,
                     },
                 )
@@ -230,7 +241,7 @@ class AiLifecycleBridge:
             return "cancel", "TRADE UPDATE\nPending order cancellation instructed."
         if update_type == "result_report":
             pips = extracted.get("provider_claimed_pips")
-            suffix = f" ({pips} pips stated by provider)" if pips is not None else ""
+            suffix = f" ({pips} stated by provider)" if pips is not None else ""
             return "provider_result_report", f"TRADE RESULT UPDATE{suffix}."
         if update_type == "other":
             return "provider_update", "TRADE UPDATE\nProvider instruction revised or updated."
