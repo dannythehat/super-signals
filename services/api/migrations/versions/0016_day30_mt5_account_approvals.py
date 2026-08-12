@@ -61,6 +61,7 @@ def upgrade() -> None:
         sa.CheckConstraint("account_environment = 'live'", name="ck_mt5_account_approvals_environment"),
         sa.CheckConstraint("status IN ('active', 'revoked')", name="ck_mt5_account_approvals_status"),
         sa.UniqueConstraint("user_id", name="uq_mt5_account_approvals_user"),
+        sa.UniqueConstraint("login", "server", name="uq_mt5_account_approvals_login_server"),
     )
     op.create_index(
         "ix_mt5_account_approvals_status",
