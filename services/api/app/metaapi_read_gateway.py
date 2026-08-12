@@ -1,7 +1,7 @@
 """Read-only MetaAPI terminal data gateway for Day 23+ trading gates.
 
-This module exposes account-state, position, quote and symbol-specification
-reads only. There is no trade/order method here.
+This module exposes account-state, position, open-order, quote and symbol-specification
+reads only. There is no trade/order mutation method here.
 """
 
 from __future__ import annotations
@@ -63,6 +63,19 @@ class MetaApiReadGateway:
             token=token,
             region=region,
             path=f"/users/current/accounts/{account_id}/positions",
+        )
+        if not isinstance(payload, list) or any(not isinstance(item, dict) for item in payload):
+            raise MetaApiGatewayError("metaapi_invalid_response")
+        return payload
+
+    async def read_orders(
+        self, *, token: str, account_id: str, region: str
+    ) -> list[dict[str, object]]:
+        """Read currently active terminal orders for Day 27 pending-order cancellation."""
+        payload = await self._read_terminal_json(
+            token=token,
+            region=region,
+            path=f"/users/current/accounts/{account_id}/orders",
         )
         if not isinstance(payload, list) or any(not isinstance(item, dict) for item in payload):
             raise MetaApiGatewayError("metaapi_invalid_response")
