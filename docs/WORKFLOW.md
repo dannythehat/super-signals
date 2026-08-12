@@ -4,6 +4,16 @@
 
 GitHub `main` is the source of truth for the application code. Notion records the product blueprint, daily build plan, decisions and acceptance evidence.
 
+## Permanent rule — no GitHub Actions
+
+Super Signals must not use GitHub Actions for CI, testing, deployment, migration, acceptance, preview, release or scheduled work unless the Owner explicitly reverses this decision.
+
+- Do not create, restore, enable or depend on `.github/workflows/*`.
+- Historical references to manual-only Actions, `workflow_dispatch`, milestone CI or temporary Actions validation are superseded.
+- Run repository/development-environment checks directly and record the exact commands/results in Notion.
+- Use deliberate Render preview/runtime validation where deployed evidence is required.
+- Render auto-deploy remains off; deployment is an explicit controlled step.
+
 ## Branches
 
 Use a short-lived branch for each contained change:
@@ -26,7 +36,7 @@ Every meaningful change should explain:
 - how it was tested
 - whether secrets, permissions, trading logic or audit behaviour are affected
 
-A pull request must not merge while its required checks are failing.
+A pull request must not merge while known required validation is failing. GitHub Actions checks are not part of the Super Signals validation model.
 
 ## Main branch
 
@@ -42,7 +52,8 @@ At the end of each build day, record the following in Notion:
 
 - branch and pull request
 - merged commit SHA
-- tests and checks run
+- tests and checks run directly in the development environment
+- Render preview/runtime evidence where relevant
 - screenshots or URLs where relevant
 - acceptance result
 - unresolved blockers
