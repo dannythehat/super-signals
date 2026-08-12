@@ -7,7 +7,6 @@ logged or persisted outside the normal SHA-256 invitation hash.
 from __future__ import annotations
 
 import logging
-from datetime import UTC, datetime
 from uuid import uuid4
 
 from fastapi import HTTPException
@@ -69,15 +68,24 @@ def run_day29_live_acceptance() -> None:
             logger.info("Day 29 live acceptance already completed recently; skipping")
             return
 
-        owner = session.scalar(
-            select(User)
-            .join(text("user_roles ur"), text("ur.user_id = users.id"))
-            .join(text("roles r"), text("r.id = ur.role_id"))
-            .where(text("r.name = 'owner'"))
-            .limit(1)
+        owner_id = session.scalar(
+            text(
+                """
+                SELECT u.id
+                FROM users AS u
+                JOIN user_roles AS ur ON ur.user_id = u.id
+                JOIN roles AS r ON r.id = ur.role_id
+                WHERE r.name = 'owner'
+                ORDER BY u.created_at ASC
+                LIMIT 1
+                """
+            )
         )
-        if owner is None:
+        if owner_id is None:
             raise RuntimeError("Day 29 acceptance requires an owner account")
+        owner = session.get(User, owner_id)
+        if owner is None:
+            raise RuntimeError("Day 29 acceptance could not load the owner account")
         user_role = session.scalar(select(Role).where(Role.name == "user"))
         if user_role is None:
             raise RuntimeError("Day 29 acceptance requires the user role")
