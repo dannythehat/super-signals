@@ -14,7 +14,8 @@ from app.access_control import get_current_identity
 from app.metaapi_read_gateway import MetaApiReadGateway
 from app.mt5_connection_service_day30 import Day30Mt5ConnectionService
 from app.mt5_runtime import require_mt5_service
-from app.performance_ledger_day33 import Day33LedgerError, Day33PerformanceLedgerService
+from app.performance_ledger_day33 import Day33LedgerError
+from app.performance_ledger_day33_v2 import Day33PerformanceLedgerServiceV2
 
 router = APIRouter(prefix="/performance", tags=["performance-day33"])
 Identity = Annotated[dict[str, Any], Depends(get_current_identity)]
@@ -27,6 +28,12 @@ class SyncResponse(BaseModel):
     outcomes_rebuilt: int
     summaries_rebuilt: int
     broker_trade_action_created: bool
+
+
+class ReadinessResponse(BaseModel):
+    canonical_performance_ready: bool
+    performance_basis: str = "broker_deal_ledger"
+    broker_trade_action_created: bool = False
 
 
 class PerformanceWindowResponse(BaseModel):
@@ -95,9 +102,9 @@ class LiveBoardResponse(BaseModel):
     broker_trade_action_created: bool = False
 
 
-def _service(request: Request) -> Day33PerformanceLedgerService:
+def _service(request: Request) -> Day33PerformanceLedgerServiceV2:
     existing = getattr(request.app.state, "day33_performance_service", None)
-    if isinstance(existing, Day33PerformanceLedgerService):
+    if isinstance(existing, Day33PerformanceLedgerServiceV2):
         return existing
     base = require_mt5_service(request)
     if not isinstance(base, Day30Mt5ConnectionService):
@@ -108,7 +115,7 @@ def _service(request: Request) -> Day33PerformanceLedgerService:
                 "message": "Performance data is temporarily unavailable.",
             },
         )
-    service = Day33PerformanceLedgerService(
+    service = Day33PerformanceLedgerServiceV2(
         session_factory=base._session_factory,
         cipher=base._cipher,
         gateway=MetaApiReadGateway(),
@@ -126,7 +133,14 @@ def _raise_ledger(exc: Day33LedgerError) -> None:
     raise HTTPException(
         status_code=(
             status.HTTP_503_SERVICE_UNAVAILABLE
-            if exc.retryable or exc.code in {"mt5_account_not_connected", "broker_credential_decryption_failed"}
+            if exc.retryable
+            or exc.code
+            in {
+                "mt5_account_not_connected",
+                "broker_credential_decryption_failed",
+                "metaapi_permission_denied",
+                "metaapi_token_invalid",
+            }
             else status.HTTP_400_BAD_REQUEST
         ),
         detail={
@@ -137,13 +151,29 @@ def _raise_ledger(exc: Day33LedgerError) -> None:
 
 
 @router.post("/sync", response_model=SyncResponse)
-async def sync_performance(request: Request, response: Response, identity: Identity) -> SyncResponse:
+async def sync_performance(
+    request: Request,
+    response: Response,
+    identity: Identity,
+) -> SyncResponse:
     try:
         result = await _service(request).sync_user(identity["id"])
     except Day33LedgerError as exc:
         _raise_ledger(exc)
     _no_store(response)
     return SyncResponse(**asdict(result))
+
+
+@router.get("/readiness", response_model=ReadinessResponse)
+async def performance_readiness(
+    request: Request,
+    response: Response,
+    identity: Identity,
+) -> ReadinessResponse:
+    _no_store(response)
+    return ReadinessResponse(
+        canonical_performance_ready=_service(request).ledger_ready(identity["id"])
+    )
 
 
 @router.get("/windows", response_model=tuple[PerformanceWindowResponse, ...])
