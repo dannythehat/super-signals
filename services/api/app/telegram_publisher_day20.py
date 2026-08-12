@@ -25,13 +25,9 @@ class Day20TelegramPublisherManager(Day19TelegramPublisherManager):
     """Day 19 publisher plus one idempotent reply per stored lifecycle event."""
 
     def _seed_missing_publications(self) -> None:
-        # Root publication is one-per-logical-trade, not merely one-per-source row.
-        # Some provider channels mirror the exact same post into a second Telegram
-        # group a few seconds later.  When the wording AND all executable fields are
-        # identical and the two canonical rows were posted within two minutes, keep
-        # the later Signal as audit evidence but suppress its member-facing duplicate.
-        # Same-source repeats are intentionally not collapsed because a provider may
-        # legitimately re-enter the same levels later.
+        # Day 20 replaces Day 19's signal/kind unique constraint with separate
+        # root-Signal and lifecycle-event idempotency indexes. Seed against those
+        # indexes directly instead of using the old conflict target.
         with self._session_factory() as session:
             session.execute(
                 text(
@@ -41,31 +37,7 @@ class Day20TelegramPublisherManager(Day19TelegramPublisherManager):
                         publication_kind,
                         status
                     )
-                    SELECT
-                        sig.id,
-                        'signal_created',
-                        CASE
-                            WHEN EXISTS (
-                                SELECT 1
-                                FROM signals AS earlier
-                                WHERE earlier.source_id <> sig.source_id
-                                  AND earlier.created_at < sig.created_at
-                                  AND ABS(EXTRACT(EPOCH FROM (
-                                      earlier.source_posted_at - sig.source_posted_at
-                                  ))) <= 120
-                                  AND earlier.symbol = sig.symbol
-                                  AND earlier.side = sig.side
-                                  AND earlier.order_type = sig.order_type
-                                  AND earlier.entry_low = sig.entry_low
-                                  AND earlier.entry_high = sig.entry_high
-                                  AND earlier.stop_loss = sig.stop_loss
-                                  AND earlier.take_profits = sig.take_profits
-                                  AND earlier.has_open_runner = sig.has_open_runner
-                                  AND earlier.risk_multiplier = sig.risk_multiplier
-                                  AND earlier.original_text = sig.original_text
-                            ) THEN 'suppressed'
-                            ELSE 'pending'
-                        END
+                    SELECT sig.id, 'signal_created', 'pending'
                     FROM signals AS sig
                     LEFT JOIN telegram_publications AS pub
                       ON pub.signal_id = sig.id
@@ -76,9 +48,6 @@ class Day20TelegramPublisherManager(Day19TelegramPublisherManager):
                     """
                 )
             )
-            # Lifecycle rows beneath a suppressed mirrored root are suppressed too;
-            # otherwise they would remain pending forever waiting for a root Telegram
-            # message that deliberately does not exist.
             session.execute(
                 text(
                     """
@@ -92,15 +61,8 @@ class Day20TelegramPublisherManager(Day19TelegramPublisherManager):
                         ev.signal_id,
                         ev.id,
                         'lifecycle_event',
-                        CASE WHEN root.status = 'suppressed'
-                             THEN 'suppressed'
-                             ELSE 'pending'
-                        END
+                        'pending'
                     FROM signal_lifecycle_events AS ev
-                    JOIN telegram_publications AS root
-                      ON root.signal_id = ev.signal_id
-                     AND root.publication_kind = 'signal_created'
-                     AND root.lifecycle_event_id IS NULL
                     LEFT JOIN telegram_publications AS pub
                       ON pub.lifecycle_event_id = ev.id
                     WHERE pub.id IS NULL
