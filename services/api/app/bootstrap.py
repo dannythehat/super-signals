@@ -72,9 +72,11 @@ def main() -> None:
     print(f"Owner account {status}: {email}")
 
     if os.getenv("SUPER_SIGNALS_DAY27_LIVE_ACCEPTANCE", "").strip() == "1":
-        from app.day27_live_acceptance import run_day27_live_acceptance
+        from app.day27_live_acceptance_retry import (
+            run_day27_live_acceptance_with_read_retries,
+        )
 
-        asyncio.run(run_day27_live_acceptance())
+        asyncio.run(run_day27_live_acceptance_with_read_retries())
 
 
 if __name__ == "__main__":
