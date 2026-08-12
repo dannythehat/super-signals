@@ -160,6 +160,12 @@ def _no_store(response: Response) -> None:
     response.headers["Pragma"] = "no-cache"
 
 
+def _safe_open_profit(view: Any) -> float | None:
+    if view.open_positions and all(item.profit is None for item in view.open_positions):
+        return None
+    return view.open_profit
+
+
 @router.get("", response_model=DashboardResponse)
 async def account_dashboard(
     request: Request,
@@ -172,7 +178,7 @@ async def account_dashboard(
         connection=ConnectionResponse(**asdict(view.connection)),
         account=(AccountResponse(**asdict(view.account)) if view.account is not None else None),
         trading=TradingResponse(**asdict(view.trading)),
-        open_profit=view.open_profit,
+        open_profit=_safe_open_profit(view),
         open_positions=tuple(OpenPositionResponse(**asdict(item)) for item in view.open_positions),
         latest_signal=(LatestSignalResponse(**asdict(view.latest_signal)) if view.latest_signal is not None else None),
         recent_completed=tuple(CompletedPositionResponse(**asdict(item)) for item in view.recent_completed),
