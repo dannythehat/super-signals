@@ -148,12 +148,11 @@ class SourceAwareAiMessagePipeline(AiMessagePipeline):
     def _active_trade_context(self, *, source_id: UUID) -> list[dict[str, Any]]:
         """Return a privacy-safe Active Trade Watch for one logical Telegram source.
 
-        A local ``positions.status='open'`` row with a mapped broker position ID exists
-        only after confirmed broker placement. Day 27/32 reconciliation removes it from
-        this active set when broker truth says the position no longer exists. Pending
-        state is additionally read from the Day 33 broker-backed outcome model so this
-        method is ready for a future supported pending-order path without treating
-        ordinary price waiting as pending.
+        A mapped local position becomes active only after confirmed broker placement.
+        Day 33 broker-derived terminal outcomes immediately retire it from this context,
+        even if a local reconciliation write is a few seconds behind. Pending state is
+        taken only from the broker-backed Day 33 outcome model, so ordinary price waiting
+        is never mislabelled as a pending order.
 
         The context deliberately contains no user/account IDs, balances, P&L, provider
         credentials or another source's trades. It is semantic context only; the Day 27
@@ -179,15 +178,22 @@ class SourceAwareAiMessagePipeline(AiMessagePipeline):
                                 FILTER (
                                     WHERE p.status = 'open'
                                       AND p.broker_position_id IS NOT NULL
+                                      AND COALESCE(o.status, 'open') NOT IN (
+                                          'won', 'lost', 'breakeven', 'closed_unknown'
+                                      )
                                 ) AS open_tp_indices,
                             ARRAY_AGG(DISTINCT p.stop_loss ORDER BY p.stop_loss)
                                 FILTER (
                                     WHERE p.status = 'open'
                                       AND p.broker_position_id IS NOT NULL
                                       AND p.stop_loss IS NOT NULL
+                                      AND COALESCE(o.status, 'open') NOT IN (
+                                          'won', 'lost', 'breakeven', 'closed_unknown'
+                                      )
                                 ) AS current_stop_losses
                         FROM signals AS s
                         JOIN positions AS p ON p.signal_id = s.id
+                        LEFT JOIN performance_trade_outcomes AS o ON o.position_id = p.id
                         WHERE s.source_id = :source_id
                         GROUP BY
                             s.id, s.symbol, s.side, s.order_type, s.entry_low,
