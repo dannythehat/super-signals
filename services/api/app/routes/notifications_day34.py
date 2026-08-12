@@ -283,14 +283,18 @@ def subscribe_push(
             """
             INSERT INTO push_subscriptions (
                 user_id, endpoint, endpoint_hash, p256dh, auth, enabled,
-                failure_count, updated_at
+                failure_count, active_since, updated_at
             )
             VALUES (
-                :user_id, :endpoint, :endpoint_hash, :p256dh, :auth, true, 0, now()
+                :user_id, :endpoint, :endpoint_hash, :p256dh, :auth, true, 0, now(), now()
             )
             ON CONFLICT (endpoint_hash) DO UPDATE
                 SET p256dh=EXCLUDED.p256dh,
                     auth=EXCLUDED.auth,
+                    active_since=CASE
+                        WHEN push_subscriptions.enabled=false THEN now()
+                        ELSE push_subscriptions.active_since
+                    END,
                     enabled=true,
                     failure_count=0,
                     updated_at=now()
