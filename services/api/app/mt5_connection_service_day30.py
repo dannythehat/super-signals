@@ -126,9 +126,6 @@ class Day30Mt5ConnectionService(Day22Mt5DemoConnectionService):
                 },
             ).scalar_one()
 
-            # A changed approval intentionally invalidates the previous local binding.
-            # No remote account is deleted or recreated here; the user must reconnect
-            # with the newly approved login/server.
             changed = previous is not None and (
                 str(previous["login"]) != normalized_login
                 or str(previous["server"]).casefold() != normalized_server.casefold()
@@ -229,8 +226,6 @@ class Day30Mt5ConnectionService(Day22Mt5DemoConnectionService):
             self._audit_user_failure(user_id, "mt5_account_not_approved")
             raise Mt5ConnectionError("mt5_account_not_approved")
 
-        # The central MetaAPI credential is resolved entirely server-side. It is
-        # neither accepted from nor returned to the normal user.
         token = self.resolve_platform_token()
         try:
             remote = await self._gateway.find_account(
@@ -262,7 +257,10 @@ class Day30Mt5ConnectionService(Day22Mt5DemoConnectionService):
                 remote=remote,
                 max_wait_seconds=75,
             )
-            self._update_remote_state(local_account_id, remote, error_code=None)
+            # Reuse the auditable Day 22 writer. Besides preserving the established
+            # restart behavior, it avoids the older base helper's psycopg parameter
+            # type ambiguity when persisting a newly connected user account.
+            self._write_remote_state(local_account_id, remote)
         except MetaApiGatewayError as exc:
             if exc.code in self._TRANSIENT_CODES:
                 self._mark_disconnected(local_account_id, exc.code)
