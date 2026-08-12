@@ -28,6 +28,10 @@ CORE_TABLES = {
     "signals",
     "positions",
     "audit_events",
+    "broker_deals",
+    "performance_account_snapshots",
+    "performance_trade_outcomes",
+    "performance_summaries",
 }
 
 
@@ -77,12 +81,16 @@ def test_relationships_and_key_unique_constraints_exist(migrated_engine) -> None
     position_unique_names = {
         constraint["name"] for constraint in inspector.get_unique_constraints("positions")
     }
+    broker_deal_unique_names = {
+        constraint["name"] for constraint in inspector.get_unique_constraints("broker_deals")
+    }
 
     assert source_foreign_keys == {"telegram_accounts", "users"}
     assert position_foreign_keys == {"signals", "users"}
     assert role_permission_foreign_keys == {"roles", "permissions"}
     assert "uq_messages_source_telegram_id" in message_unique_names
     assert "uq_positions_signal_user_tp" in position_unique_names
+    assert "uq_broker_deals_account_deal" in broker_deal_unique_names
 
 
 def test_permission_matrix_is_seeded(migrated_engine) -> None:
