@@ -238,6 +238,7 @@ export function PushNotificationsDay34({ apiBaseUrl }: PushNotificationsDay34Pro
         Get plain-English Super Signals updates on this device when a trade opens, changes or closes.
         Private balances and account details are never included in push alerts.
       </p>
+      {busy && phase && <p className="form-note" role="status">{busyLabel}</p>}
       {state === 'blocked' && (
         <p className="form-note">Notifications are blocked in your browser settings for this site.</p>
       )}
