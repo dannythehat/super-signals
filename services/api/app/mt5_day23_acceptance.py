@@ -1,7 +1,8 @@
-"""One-shot, opt-in MT5 acceptance diagnostics.
+"""One-shot, opt-in Day 23 acceptance diagnostics.
 
-The probes are disabled by default and perform no trades. Credential values are
-never logged. The temporary Day 33 hook is removed after acceptance.
+The live probe is disabled by default and performs no trades. A scope-only mode
+can inspect the encrypted stored MetaAPI token locally without making a MetaAPI
+request; only safe permission metadata is persisted, never the token or resource ids.
 """
 
 from __future__ import annotations
@@ -16,7 +17,6 @@ from uuid import UUID
 from sqlalchemy import text
 from sqlalchemy.orm import Session, sessionmaker
 
-from app.day33_live_acceptance import run_day33_live_acceptance
 from app.metaapi_read_gateway import MetaApiReadGateway
 from app.models import AuditEvent
 from app.mt5_crypto import BrokerCredentialDecryptionError, MetaApiTokenCipher
@@ -192,53 +192,45 @@ async def run_day23_acceptance_probe(
     session_factory: sessionmaker[Session],
     cipher: MetaApiTokenCipher,
 ) -> None:
-    day23_enabled = os.getenv("SUPER_SIGNALS_DAY23_ACCEPTANCE_PROBE", "").strip() == "1"
-    day33_enabled = os.getenv("SUPER_SIGNALS_DAY33_ACCEPTANCE_PROBE", "").strip() == "1"
-    if not day23_enabled and not day33_enabled:
+    if os.getenv("SUPER_SIGNALS_DAY23_ACCEPTANCE_PROBE", "").strip() != "1":
         return
 
     owner_id_raw = os.getenv("SUPER_SIGNALS_DAY23_OWNER_ID", "").strip()
     try:
         owner_user_id = UUID(owner_id_raw)
     except ValueError:
-        logger.error("MT5 acceptance probe skipped: owner id is invalid")
+        logger.error("Day 23 acceptance probe skipped: owner id is invalid")
         return
 
-    if day23_enabled:
-        if os.getenv("SUPER_SIGNALS_DAY23_SCOPE_ONLY", "").strip() == "1":
-            _record_scope_only(
-                session_factory=session_factory,
-                cipher=cipher,
-                owner_user_id=owner_user_id,
-            )
-        else:
-            service = Day23Mt5ReadService(
-                session_factory=session_factory,
-                cipher=cipher,
-                gateway=MetaApiReadGateway(),
-            )
-            try:
-                state = await service.read_owner_live_state(owner_user_id)
-            except Day23ReadError as exc:
-                logger.error(
-                    "Day 23 acceptance probe failed code=%s retryable=%s",
-                    exc.code,
-                    exc.retryable,
-                )
-            else:
-                logger.info(
-                    "Day 23 acceptance probe completed symbol=%s region=%s positions=%d price_available=%s price_stale=%s execution_ready=%s trade_action_created=false",
-                    state.price.symbol,
-                    state.region,
-                    len(state.positions),
-                    state.price.available,
-                    state.price.stale,
-                    state.execution_ready,
-                )
-
-    if day33_enabled:
-        await run_day33_live_acceptance(
+    if os.getenv("SUPER_SIGNALS_DAY23_SCOPE_ONLY", "").strip() == "1":
+        _record_scope_only(
             session_factory=session_factory,
             cipher=cipher,
             owner_user_id=owner_user_id,
         )
+        return
+
+    service = Day23Mt5ReadService(
+        session_factory=session_factory,
+        cipher=cipher,
+        gateway=MetaApiReadGateway(),
+    )
+    try:
+        state = await service.read_owner_live_state(owner_user_id)
+    except Day23ReadError as exc:
+        logger.error(
+            "Day 23 acceptance probe failed code=%s retryable=%s",
+            exc.code,
+            exc.retryable,
+        )
+        return
+
+    logger.info(
+        "Day 23 acceptance probe completed symbol=%s region=%s positions=%d price_available=%s price_stale=%s execution_ready=%s trade_action_created=false",
+        state.price.symbol,
+        state.region,
+        len(state.positions),
+        state.price.available,
+        state.price.stale,
+        state.execution_ready,
+    )
