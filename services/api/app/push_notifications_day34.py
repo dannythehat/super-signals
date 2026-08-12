@@ -20,6 +20,7 @@ from sqlalchemy.orm import Session, sessionmaker
 
 logger = logging.getLogger(__name__)
 _MAX_ATTEMPTS = 5
+_STALE_SENDING_SECONDS = 120
 
 
 @dataclass(frozen=True, slots=True)
@@ -57,6 +58,7 @@ class Day34PushNotificationManager:
         if self._task is not None:
             return
         self._stop_event.clear()
+        self._recover_stale_sending()
         self._task = asyncio.create_task(self._run(), name="day34-web-push")
 
     async def stop(self) -> None:
@@ -77,6 +79,7 @@ class Day34PushNotificationManager:
                 continue
 
     async def deliver_once(self) -> PushDeliveryResult:
+        self._recover_stale_sending()
         seeded = self._seed_deliveries()
         sent = 0
         failed = 0
@@ -98,6 +101,36 @@ class Day34PushNotificationManager:
             failed=failed,
             suppressed=suppressed,
         )
+
+    def _recover_stale_sending(self) -> int:
+        """Recover a worker crash without inventing a new logical notification.
+
+        A process can die after claiming a row. The unique notification/subscription
+        key ensures there is still only one logical delivery row. Retrying a stale claim
+        may cause a network-level duplicate if the push service accepted the first send
+        immediately before the crash, so the PWA service worker uses notification_id as
+        a stable display tag and replaces the same visible notification.
+        """
+        with self._session_factory() as session:
+            rows = session.execute(
+                text(
+                    """
+                    UPDATE push_notification_deliveries
+                    SET status='failed',
+                        failure_code='push_delivery_recovered_after_restart',
+                        failure_reason='Recovered stale sending state after worker restart.',
+                        updated_at=now()
+                    WHERE status='sending'
+                      AND sent_at IS NULL
+                      AND attempted_at IS NOT NULL
+                      AND attempted_at < now() - make_interval(secs => :stale_seconds)
+                    RETURNING id
+                    """
+                ),
+                {"stale_seconds": _STALE_SENDING_SECONDS},
+            ).all()
+            session.commit()
+            return len(rows)
 
     def _seed_deliveries(self) -> int:
         with self._session_factory() as session:
