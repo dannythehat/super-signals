@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import UTC, datetime
+from decimal import Decimal
 from typing import Any
 from uuid import UUID
 
@@ -13,8 +15,11 @@ from app.mt5_crypto import BrokerCredentialDecryptionError
 from app.performance_ledger_day33 import (
     Day33LedgerError,
     Day33PerformanceLedgerService,
+    Day33PerformanceWindow,
     Day33SyncResult,
     Day33TimelineTrade,
+    _d,
+    _pct,
     stable_color_index,
     trader_stream_for,
 )
@@ -71,12 +76,7 @@ class Day33PerformanceLedgerServiceV2(Day33PerformanceLedgerService):
         user_id: UUID,
         mt5_account_id: UUID,
     ) -> int:
-        """Reuse the immutable Day 23 pre-trade account reads as balance evidence.
-
-        Day 26/28 already reads MT5 state before any order is sent. Those append-only
-        audit events retain balance/equity/currency, so Day 33 can reproduce return
-        percentages without adding a new write or failure mode to the trading engine.
-        """
+        """Reuse immutable Day 23 pre-trade account reads as balance evidence."""
         with self._session_factory() as session:
             result = session.execute(
                 text(
@@ -106,6 +106,91 @@ class Day33PerformanceLedgerServiceV2(Day33PerformanceLedgerService):
             ).all()
             session.commit()
             return len(result)
+
+    def _period_return_percent(
+        self,
+        user_id: UUID,
+        period_start: datetime,
+        cash_pnl: Decimal,
+    ) -> Decimal | None:
+        """Use only balance evidence captured before the first trade in a period.
+
+        Prefer a snapshot at/before the period boundary. If none exists, use the
+        earliest snapshot after the boundary only when it was captured no later
+        than the first mapped trade. This avoids reverse-engineering returns from a
+        later balance while still recovering historical periods from Day 23's
+        immutable pre-trade reads.
+        """
+        with self._session_factory() as session:
+            baseline = session.execute(
+                text(
+                    """
+                    SELECT balance
+                    FROM performance_account_snapshots
+                    WHERE user_id=:user_id AND captured_at<=:period_start
+                    ORDER BY captured_at DESC
+                    LIMIT 1
+                    """
+                ),
+                {"user_id": user_id, "period_start": period_start},
+            ).scalar_one_or_none()
+            if baseline is None:
+                first_trade_at = session.execute(
+                    text(
+                        """
+                        SELECT MIN(opened_at)
+                        FROM performance_trade_outcomes
+                        WHERE user_id=:user_id
+                          AND opened_at IS NOT NULL
+                          AND opened_at>=:period_start
+                        """
+                    ),
+                    {"user_id": user_id, "period_start": period_start},
+                ).scalar_one_or_none()
+                if first_trade_at is not None:
+                    baseline = session.execute(
+                        text(
+                            """
+                            SELECT balance
+                            FROM performance_account_snapshots
+                            WHERE user_id=:user_id
+                              AND captured_at>=:period_start
+                              AND captured_at<=:first_trade_at
+                            ORDER BY captured_at ASC
+                            LIMIT 1
+                            """
+                        ),
+                        {
+                            "user_id": user_id,
+                            "period_start": period_start,
+                            "first_trade_at": first_trade_at,
+                        },
+                    ).scalar_one_or_none()
+        if baseline is None or _d(baseline) <= 0:
+            return None
+        return _pct(cash_pnl / _d(baseline) * Decimal("100"))
+
+    def read_windows(
+        self,
+        user_id: UUID,
+        *,
+        now: datetime | None = None,
+    ) -> tuple[Day33PerformanceWindow, ...]:
+        windows = super().read_windows(user_id, now=now)
+        all_time_start = datetime(1970, 1, 1, tzinfo=UTC)
+        return tuple(
+            replace(
+                item,
+                return_percent=self._period_return_percent(
+                    user_id,
+                    all_time_start,
+                    item.cash_pnl,
+                ),
+            )
+            if item.key == "all"
+            else item
+            for item in windows
+        )
 
     def read_shared_live_board(self) -> list[Any]:
         """Return one provider-hidden row per currently open/pending Signal.
@@ -140,12 +225,7 @@ class Day33PerformanceLedgerServiceV2(Day33PerformanceLedgerService):
             )
 
     def _timeline_rows(self, user_id: UUID) -> list[Any]:
-        """Return executed broker outcomes plus real execution-block evidence.
-
-        A skipped row comes only from a persisted execution-block audit event for
-        this user and is suppressed if the same Signal subsequently acquired an
-        outcome. It is observability only and never enters the live Telegram board.
-        """
+        """Return executed broker outcomes plus real execution-block evidence."""
         with self._session_factory() as session:
             return list(
                 session.execute(
@@ -299,8 +379,6 @@ class Day33PerformanceLedgerServiceV2(Day33PerformanceLedgerService):
         except MetaApiGatewayError as exc:
             raise Day33LedgerError(exc.code, retryable=exc.retryable) from exc
 
-        # Import the pre-trade Day 23 reads before deriving returns. This does not
-        # contact the broker and does not change any trading state.
         self._backfill_account_snapshots_from_audit(
             user_id=user_id,
             mt5_account_id=account["id"],
@@ -324,8 +402,6 @@ class Day33PerformanceLedgerServiceV2(Day33PerformanceLedgerService):
                 )
             except MetaApiGatewayError as exc:
                 if exc.code == "metaapi_terminal_data_unavailable":
-                    # Old/synthetic acceptance IDs may genuinely not exist at the
-                    # broker. Keep them unresolved; never manufacture P/L.
                     payloads = []
                 else:
                     raise Day33LedgerError(exc.code, retryable=exc.retryable) from exc
