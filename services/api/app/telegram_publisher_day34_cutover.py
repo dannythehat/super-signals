@@ -14,6 +14,7 @@ from typing import Any
 
 from sqlalchemy import text
 
+from app.telegram_publisher import TelegramPublishError, _bot_api_call
 from app.telegram_publisher_day34 import Day34TelegramPublisherManager
 
 _BOARD_PIN_RETRY_BACKOFF = timedelta(minutes=1)
@@ -177,6 +178,11 @@ class Day34CutoverTelegramPublisherManager(Day34TelegramPublisherManager):
         the publisher retry every poll. We still edit the board immediately whenever its
         broker-backed digest changes; only an unchanged board whose sole outstanding work
         is a recently failed pin receives this one-minute backoff.
+
+        Telegram can also migrate a basic group to a supergroup. In that case the old
+        board message ID may no longer exist in the new chat. Only that explicit
+        message-not-found condition is allowed to create one replacement board; all
+        other failures remain fail-safe and cannot create duplicates.
         """
         rows = self._live_board_rows()
         rendered = self._render_live_board(rows)
@@ -207,7 +213,55 @@ class Day34CutoverTelegramPublisherManager(Day34TelegramPublisherManager):
             if now - attempt < _BOARD_PIN_RETRY_BACKOFF:
                 return
 
-        super()._sync_live_board()
+        try:
+            super()._sync_live_board()
+        except TelegramPublishError as exc:
+            if not self._is_missing_board_message(exc):
+                raise
+            self._replace_missing_live_board(rendered, desired_digest)
+
+    @staticmethod
+    def _is_missing_board_message(exc: TelegramPublishError) -> bool:
+        if exc.code != "telegram_http_400":
+            return False
+        reason = exc.reason.lower()
+        return (
+            "message to pin not found" in reason
+            or "message to edit not found" in reason
+            or "message not found" in reason
+        )
+
+    def _replace_missing_live_board(self, rendered: str, digest: str) -> None:
+        """Create one new board only after Telegram proves the stored one is gone."""
+        assert self._bot_token is not None
+        assert self._destination_chat_id is not None
+
+        result = _bot_api_call(
+            self._bot_token,
+            "sendMessage",
+            {
+                "chat_id": self._destination_chat_id,
+                "text": rendered,
+                "disable_web_page_preview": "true",
+            },
+        )
+        replacement_id = int(result["message_id"])
+        self._record_board_message(
+            replacement_id,
+            rendered,
+            digest,
+            created=True,
+        )
+        _bot_api_call(
+            self._bot_token,
+            "pinChatMessage",
+            {
+                "chat_id": self._destination_chat_id,
+                "message_id": replacement_id,
+                "disable_notification": "true",
+            },
+        )
+        self._record_board_pinned(replacement_id)
 
     @staticmethod
     def _seed_in_app_notifications_after_cutover(
