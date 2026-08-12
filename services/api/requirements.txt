@@ -7,3 +7,4 @@ cryptography>=46,<51
 Telethon>=1.44,<2
 qrcode>=8,<9
 httpx>=0.27,<1
+pywebpush==2.3.0
