@@ -114,6 +114,47 @@ def upgrade() -> None:
     op.execute("ALTER TABLE notification_reads ENABLE ROW LEVEL SECURITY")
 
     op.create_table(
+        "telegram_notification_deliveries",
+        sa.Column(
+            "id",
+            postgresql.UUID(as_uuid=True),
+            primary_key=True,
+            server_default=sa.text("gen_random_uuid()"),
+        ),
+        sa.Column(
+            "notification_id",
+            postgresql.UUID(as_uuid=True),
+            sa.ForeignKey("notification_events.id", ondelete="CASCADE"),
+            nullable=False,
+            unique=True,
+        ),
+        sa.Column("status", sa.String(length=16), nullable=False, server_default="pending"),
+        sa.Column("rendered_text", sa.Text(), nullable=True),
+        sa.Column("destination_chat_id", sa.BigInteger(), nullable=True),
+        sa.Column("telegram_message_id", sa.BigInteger(), nullable=True),
+        sa.Column("attempt_count", sa.Integer(), nullable=False, server_default=sa.text("0")),
+        sa.Column("failure_code", sa.String(length=80), nullable=True),
+        sa.Column("failure_reason", sa.Text(), nullable=True),
+        sa.Column("attempted_at", sa.DateTime(timezone=True), nullable=True),
+        sa.Column("sent_at", sa.DateTime(timezone=True), nullable=True),
+        sa.Column("created_at", sa.DateTime(timezone=True), nullable=False, server_default=sa.func.now()),
+        sa.Column("updated_at", sa.DateTime(timezone=True), nullable=False, server_default=sa.func.now()),
+        sa.CheckConstraint(
+            "status IN ('pending','sending','sent','failed','suppressed')",
+            name="ck_telegram_notification_deliveries_status",
+        ),
+        sa.CheckConstraint(
+            "attempt_count >= 0",
+            name="ck_telegram_notification_deliveries_attempt_count",
+        ),
+    )
+    op.create_index(
+        "ix_telegram_notification_deliveries_status_created",
+        "telegram_notification_deliveries",
+        ["status", "created_at"],
+    )
+
+    op.create_table(
         "push_subscriptions",
         sa.Column(
             "id",
@@ -201,6 +242,11 @@ def downgrade() -> None:
     op.drop_table("push_notification_deliveries")
     op.drop_index("ix_push_subscriptions_user_enabled", table_name="push_subscriptions")
     op.drop_table("push_subscriptions")
+    op.drop_index(
+        "ix_telegram_notification_deliveries_status_created",
+        table_name="telegram_notification_deliveries",
+    )
+    op.drop_table("telegram_notification_deliveries")
     op.drop_table("notification_reads")
     op.drop_index("ix_notification_events_signal_created", table_name="notification_events")
     op.drop_index("ix_notification_events_user_created", table_name="notification_events")
