@@ -1,8 +1,9 @@
-"""One-shot, opt-in Day 23 acceptance diagnostics.
+"""One-shot, opt-in MT5 acceptance diagnostics.
 
-The live probe is disabled by default and performs no trades. A scope-only mode
-can inspect the encrypted stored MetaAPI token locally without making a MetaAPI
-request; only safe permission metadata is persisted, never the token or resource ids.
+Day 23 diagnostics remain available. Day 32 temporarily reuses this existing startup
+hook to prove the dashboard's broker-authoritative reconciliation path without adding
+an unauthenticated HTTP endpoint. All probes are disabled by default and create no
+broker trade actions.
 """
 
 from __future__ import annotations
@@ -17,6 +18,7 @@ from uuid import UUID
 from sqlalchemy import text
 from sqlalchemy.orm import Session, sessionmaker
 
+from app.dashboard_day32 import Day32DashboardService, QuietDay23Mt5ReadService
 from app.metaapi_read_gateway import MetaApiReadGateway
 from app.models import AuditEvent
 from app.mt5_crypto import BrokerCredentialDecryptionError, MetaApiTokenCipher
@@ -187,11 +189,48 @@ def _record_scope_only(
     )
 
 
+async def _run_day32_dashboard_acceptance(
+    *,
+    session_factory: sessionmaker[Session],
+    cipher: MetaApiTokenCipher,
+) -> None:
+    owner_id_raw = os.getenv("SUPER_SIGNALS_DAY32_OWNER_ID", "").strip()
+    try:
+        owner_user_id = UUID(owner_id_raw)
+    except ValueError:
+        logger.error("Day 32 dashboard acceptance skipped: owner id is invalid")
+        return
+
+    service = Day32DashboardService(
+        session_factory=session_factory,
+        read_service=QuietDay23Mt5ReadService(
+            session_factory=session_factory,
+            cipher=cipher,
+            gateway=MetaApiReadGateway(),
+        ),
+    )
+    view = await service.read(owner_user_id)
+    logger.info(
+        "Day 32 dashboard acceptance completed connection=%s account_state_available=%s broker_confirmed_open_positions=%d reconciled_external_positions=%d broker_trade_action_created=false",
+        view.connection.status,
+        view.account is not None,
+        len(view.open_positions),
+        view.reconciled_external_positions,
+    )
+
+
 async def run_day23_acceptance_probe(
     *,
     session_factory: sessionmaker[Session],
     cipher: MetaApiTokenCipher,
 ) -> None:
+    if os.getenv("SUPER_SIGNALS_DAY32_ACCEPTANCE_PROBE", "").strip() == "1":
+        await _run_day32_dashboard_acceptance(
+            session_factory=session_factory,
+            cipher=cipher,
+        )
+        return
+
     if os.getenv("SUPER_SIGNALS_DAY23_ACCEPTANCE_PROBE", "").strip() != "1":
         return
 
