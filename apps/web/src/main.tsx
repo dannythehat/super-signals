@@ -9,6 +9,7 @@ import './onboarding.css';
 import './trading-controls.css';
 import './dashboard-day32.css';
 import './settings-day32.css';
+import './trade-timeline-day33.css';
 
 ReactDOM.createRoot(document.getElementById('root')!).render(
   <React.StrictMode>
