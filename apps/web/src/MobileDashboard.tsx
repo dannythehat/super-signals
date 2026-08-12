@@ -1,5 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 
+import { TradeTimeline } from './TradeTimeline';
+
 type DashboardConnection = {
   configured: boolean;
   status: string;
@@ -186,10 +188,13 @@ export function MobileDashboard({ apiBaseUrl, displayName, roleLabel, onOpenSett
     void refresh(true);
     const interval = window.setInterval(() => void refresh(true), 30000);
     const onFocus = () => void refresh(true);
+    const onLedgerSynced = () => void refresh(true);
     window.addEventListener('focus', onFocus);
+    window.addEventListener('super-signals-ledger-synced', onLedgerSynced);
     return () => {
       window.clearInterval(interval);
       window.removeEventListener('focus', onFocus);
+      window.removeEventListener('super-signals-ledger-synced', onLedgerSynced);
     };
   }, [refresh]);
 
@@ -240,8 +245,10 @@ export function MobileDashboard({ apiBaseUrl, displayName, roleLabel, onOpenSett
     </section>
 
     <div className="day32-performance-grid" aria-label="Performance summary">
-      {data.performance.map((period) => <article className="day32-performance-card" key={period.key}><span>{period.label}</span><strong className={pnlClass(period.amount)}>{money(period.amount, currency)}</strong><small>{period.amount === null ? 'No verified closed result yet' : `${period.known_position_count} recorded closed position${period.known_position_count === 1 ? '' : 's'}`}</small></article>)}
+      {data.performance.map((period) => <article className="day32-performance-card" key={period.key}><span>{period.label}</span><strong className={pnlClass(period.amount)}>{money(period.amount, currency)}</strong><small>{!data.canonical_performance_ready ? 'Syncing canonical broker history' : period.known_position_count === 0 ? 'No broker-verified closed trade yet' : `${period.known_position_count} broker-verified closed position${period.known_position_count === 1 ? '' : 's'}`}</small></article>)}
     </div>
+
+    <TradeTimeline apiBaseUrl={apiBaseUrl} currency={currency} />
 
     <section className="day32-risk-strip" aria-label="Selected trading risk">
       <div><span>Selected risk</span><strong>{riskText}</strong>{doubleLotText && <small>{doubleLotText}</small>}</div>
@@ -260,13 +267,13 @@ export function MobileDashboard({ apiBaseUrl, displayName, roleLabel, onOpenSett
     <div className="day32-two-column">
       <section className="day32-section" aria-labelledby="latest-signal-title"><div className="day32-section-head"><div><span>Most recent</span><h2 id="latest-signal-title">Latest signal</h2></div></div>{data.latest_signal ? <article className="day32-latest-signal"><div><span className={`day32-side day32-side--${data.latest_signal.side.toLowerCase()}`}>{data.latest_signal.side}</span><strong>{data.latest_signal.symbol}</strong></div><p>{data.latest_signal.status === 'active' ? `${data.latest_signal.open_positions} of ${data.latest_signal.position_count} positions active` : data.latest_signal.status === 'closed' ? 'All mapped positions closed' : 'Processing'}</p><small>{shortTime(data.latest_signal.created_at)}</small></article> : <div className="day32-empty day32-empty--compact"><strong>No executed signal yet</strong><span>Your latest Super Signals trade will appear here.</span></div>}</section>
 
-      <section className="day32-section" aria-labelledby="snapshot-title"><div className="day32-section-head"><div><span>Recorded outcomes</span><h2 id="snapshot-title">Win / loss snapshot</h2></div></div><div className="day32-winloss"><div><strong>{data.win_loss.wins}</strong><span>Wins</span></div><div><strong>{data.win_loss.losses}</strong><span>Losses</span></div><div><strong>{data.win_loss.win_rate_percent === null ? '—' : `${data.win_loss.win_rate_percent}%`}</strong><span>Win rate</span></div></div>{!data.canonical_performance_ready && <small className="day32-ledger-note">Only outcomes with a recorded P/L are counted. The canonical broker performance ledger will replace this provisional summary.</small>}</section>
+      <section className="day32-section" aria-labelledby="snapshot-title"><div className="day32-section-head"><div><span>Broker-backed outcomes</span><h2 id="snapshot-title">Win / loss snapshot</h2></div></div><div className="day32-winloss"><div><strong>{data.canonical_performance_ready ? data.win_loss.wins : '—'}</strong><span>Wins</span></div><div><strong>{data.canonical_performance_ready ? data.win_loss.losses : '—'}</strong><span>Losses</span></div><div><strong>{!data.canonical_performance_ready || data.win_loss.win_rate_percent === null ? '—' : `${data.win_loss.win_rate_percent}%`}</strong><span>Win rate</span></div></div>{!data.canonical_performance_ready && <small className="day32-ledger-note">Canonical broker history is not ready yet. Super Signals will not substitute provisional P/L.</small>}</section>
     </div>
 
     <section className="day32-section" aria-labelledby="recent-trades-title"><div className="day32-section-head"><div><span>Account history</span><h2 id="recent-trades-title">Recent completed positions</h2></div></div>{data.recent_completed.length === 0 ? <div className="day32-empty day32-empty--compact"><strong>No completed Super Signals positions yet</strong></div> : <div className="day32-completed-list">{data.recent_completed.map((item) => <article key={item.position_id}><div><span className={`day32-side day32-side--${item.side.toLowerCase()}`}>{item.side}</span><strong>{item.symbol}</strong><small>TP{item.tp_index} · {shortTime(item.closed_at)}</small></div><strong className={pnlClass(item.pnl_amount)}>{item.pnl_amount === null ? 'Closed' : money(item.pnl_amount, currency)}</strong></article>)}</div>}</section>
 
     <section className="day32-section" aria-labelledby="activity-title"><div className="day32-section-head"><div><span>Super Signals</span><h2 id="activity-title">Recent activity</h2></div></div>{data.activity.length === 0 ? <div className="day32-empty day32-empty--compact"><strong>No account activity to show yet</strong></div> : <ol className="day32-activity-list">{data.activity.map((item, index) => <li key={`${item.event_type}-${item.created_at}-${index}`}><i className={`day32-activity-dot day32-activity-dot--${item.tone}`} /><div><strong>{item.label}</strong><small>{shortTime(item.created_at)}</small></div></li>)}</ol>}</section>
 
-    <p className="day32-data-note">Broker state is authoritative. Manual MT5 positions and private signal-provider identities are not shown on this dashboard.</p>
+    <p className="day32-data-note">Broker state and the Day 33 deal ledger are authoritative. Manual MT5 positions are excluded. Private provider identities are visible only to authorised administrators.</p>
   </section>;
 }
