@@ -23,6 +23,11 @@ from app.models import AuditEvent
 
 PUBLISHER_VERSION = "day19-publisher-v1"
 
+# Telegram upgrades basic groups to supergroups by assigning a new chat ID. The Bot
+# API returns that authoritative ID in parameters.migrate_to_chat_id. Keep a
+# process-local map so every publishing path automatically follows the migration.
+_MIGRATED_CHAT_IDS: dict[int, int] = {}
+
 
 @dataclass(frozen=True, slots=True)
 class PublisherConnectionStatus:
@@ -72,8 +77,47 @@ def render_signal_post(row: Any) -> str:
     return "\n".join(lines)
 
 
-def _bot_api_call(token: str, method: str, payload: dict[str, Any]) -> dict[str, Any]:
-    body = urlencode(payload).encode("utf-8")
+def _resolved_bot_chat_id(chat_id: int) -> int:
+    """Return Telegram's current authoritative chat ID after any known migration."""
+    resolved = int(chat_id)
+    visited: set[int] = set()
+    while resolved in _MIGRATED_CHAT_IDS and resolved not in visited:
+        visited.add(resolved)
+        resolved = int(_MIGRATED_CHAT_IDS[resolved])
+    return resolved
+
+
+def _telegram_migration_target(response_body: Any) -> int | None:
+    if not isinstance(response_body, dict):
+        return None
+    parameters = response_body.get("parameters")
+    if not isinstance(parameters, dict):
+        return None
+    raw = parameters.get("migrate_to_chat_id")
+    try:
+        return int(raw) if raw is not None else None
+    except (TypeError, ValueError):
+        return None
+
+
+def _bot_api_call(
+    token: str,
+    method: str,
+    payload: dict[str, Any],
+    *,
+    _allow_migration_retry: bool = True,
+) -> dict[str, Any]:
+    effective_payload = dict(payload)
+    original_chat_id: int | None = None
+    if "chat_id" in effective_payload:
+        try:
+            original_chat_id = int(effective_payload["chat_id"])
+        except (TypeError, ValueError):
+            original_chat_id = None
+        if original_chat_id is not None:
+            effective_payload["chat_id"] = _resolved_bot_chat_id(original_chat_id)
+
+    body = urlencode(effective_payload).encode("utf-8")
     request = Request(
         f"https://api.telegram.org/bot{token}/{method}",
         data=body,
@@ -88,9 +132,30 @@ def _bot_api_call(token: str, method: str, payload: dict[str, Any]) -> dict[str,
             payload_body = json.loads(exc.read().decode("utf-8"))
             description = str(payload_body.get("description") or "Telegram rejected the request.")
             error_code = str(payload_body.get("error_code") or exc.code)
+            migration_target = _telegram_migration_target(payload_body)
         except Exception:
+            payload_body = None
             description = "Telegram rejected the request."
             error_code = str(exc.code)
+            migration_target = None
+
+        if (
+            _allow_migration_retry
+            and migration_target is not None
+            and original_chat_id is not None
+        ):
+            old_chat_id = int(effective_payload.get("chat_id", original_chat_id))
+            _MIGRATED_CHAT_IDS[old_chat_id] = migration_target
+            _MIGRATED_CHAT_IDS[original_chat_id] = migration_target
+            retry_payload = dict(payload)
+            retry_payload["chat_id"] = migration_target
+            return _bot_api_call(
+                token,
+                method,
+                retry_payload,
+                _allow_migration_retry=False,
+            )
+
         raise TelegramPublishError(f"telegram_http_{error_code}", description[:300]) from None
     except (URLError, TimeoutError, OSError):
         raise TelegramPublishError(
@@ -104,6 +169,23 @@ def _bot_api_call(token: str, method: str, payload: dict[str, Any]) -> dict[str,
         ) from None
 
     if not parsed.get("ok"):
+        migration_target = _telegram_migration_target(parsed)
+        if (
+            _allow_migration_retry
+            and migration_target is not None
+            and original_chat_id is not None
+        ):
+            old_chat_id = int(effective_payload.get("chat_id", original_chat_id))
+            _MIGRATED_CHAT_IDS[old_chat_id] = migration_target
+            _MIGRATED_CHAT_IDS[original_chat_id] = migration_target
+            retry_payload = dict(payload)
+            retry_payload["chat_id"] = migration_target
+            return _bot_api_call(
+                token,
+                method,
+                retry_payload,
+                _allow_migration_retry=False,
+            )
         raise TelegramPublishError(
             f"telegram_api_{parsed.get('error_code', 'error')}",
             str(parsed.get("description") or "Telegram rejected the request.")[:300],
@@ -188,6 +270,31 @@ class TelegramPublisherManager:
         assert self._bot_token is not None
         assert self._destination_chat_id is not None
 
+        try:
+            me = _bot_api_call(self._bot_token, "getMe", {})
+            chat = _bot_api_call(
+                self._bot_token,
+                "getChat",
+                {"chat_id": self._destination_chat_id},
+            )
+            self._destination_chat_id = _resolved_bot_chat_id(self._destination_chat_id)
+            membership = _bot_api_call(
+                self._bot_token,
+                "getChatMember",
+                {"chat_id": self._destination_chat_id, "user_id": int(me["id"])},
+            )
+        except (TelegramPublishError, KeyError, TypeError, ValueError) as exc:
+            reason = exc.reason if isinstance(exc, TelegramPublishError) else "Telegram bot identity could not be verified."
+            return PublisherConnectionStatus(
+                configured=True,
+                enabled=True,
+                destination_chat_type=None,
+                bot_membership_status=None,
+                minimum_permissions_ok=False,
+                source_collision=False,
+                reason=reason,
+            )
+
         with self._session_factory() as session:
             source_collision = bool(
                 session.execute(
@@ -211,30 +318,6 @@ class TelegramPublisherManager:
                 minimum_permissions_ok=False,
                 source_collision=True,
                 reason="Publishing destination cannot also be an active reader source.",
-            )
-
-        try:
-            me = _bot_api_call(self._bot_token, "getMe", {})
-            chat = _bot_api_call(
-                self._bot_token,
-                "getChat",
-                {"chat_id": self._destination_chat_id},
-            )
-            membership = _bot_api_call(
-                self._bot_token,
-                "getChatMember",
-                {"chat_id": self._destination_chat_id, "user_id": int(me["id"])},
-            )
-        except (TelegramPublishError, KeyError, TypeError, ValueError) as exc:
-            reason = exc.reason if isinstance(exc, TelegramPublishError) else "Telegram bot identity could not be verified."
-            return PublisherConnectionStatus(
-                configured=True,
-                enabled=True,
-                destination_chat_type=None,
-                bot_membership_status=None,
-                minimum_permissions_ok=False,
-                source_collision=False,
-                reason=reason,
             )
 
         chat_type = str(chat.get("type") or "")
