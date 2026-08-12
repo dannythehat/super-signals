@@ -12,11 +12,15 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
+from app.broker_settlement_day34 import Day34BrokerSettlementManager
 from app.config import get_settings
 from app.day26_code_acceptance import run_day26_code_acceptance_probe
 from app.day27_code_acceptance import run_day27_code_acceptance_probe
+from app.day34_code_acceptance import run_day34_code_acceptance_probe
+from app.day34_live_acceptance import run_day34_live_acceptance_safely
 from app.db import get_session_factory
 from app.metaapi_gateway import MetaApiProvisioningGateway
+from app.metaapi_read_gateway import MetaApiReadGateway
 from app.mt5_connection_manager import Mt5ConnectionManager
 from app.mt5_connection_service import Mt5ConnectionError, Mt5DemoConnectionService
 from app.mt5_connection_service_day30 import Day30Mt5ConnectionService
@@ -27,7 +31,9 @@ from app.mt5_recovery import (
     reencrypt_existing_metaapi_token,
     verify_existing_metaapi_token,
 )
+from app.performance_ledger_day33_v2 import Day33PerformanceLedgerServiceV2
 from app.publisher_config import get_publisher_settings
+from app.push_notifications_day34 import Day34PushNotificationManager
 from app.routes.access import router as access_router
 from app.routes.admin_accounts import router as admin_accounts_router
 from app.routes.auth import router as auth_router
@@ -36,6 +42,7 @@ from app.routes.day27_management import router as day27_management_router
 from app.routes.health import router as health_router
 from app.routes.mt5_accounts import router as mt5_accounts_router
 from app.routes.mt5_approvals_day30 import router as mt5_approvals_day30_router
+from app.routes.notifications_day34 import router as notifications_day34_router
 from app.routes.signals import router as signals_router
 from app.routes.telegram_accounts import router as telegram_accounts_router
 from app.routes.telegram_classifications import router as telegram_classifications_router
@@ -56,7 +63,7 @@ from app.routes.user_mt5_accounts import router as user_mt5_accounts_router
 from app.telegram_crypto import TelegramSessionCipher
 from app.telegram_listener import TelegramListenerManager
 from app.telegram_listener_day28 import build_day28_listener_manager
-from app.telegram_publisher_day20 import Day20TelegramPublisherManager
+from app.telegram_publisher_day34_cutover import Day34CutoverTelegramPublisherManager
 
 logger = logging.getLogger(__name__)
 
@@ -126,19 +133,33 @@ async def _lifespan(application: FastAPI) -> AsyncIterator[None]:
         await run_day26_code_acceptance_probe()
     if os.getenv("SUPER_SIGNALS_DAY27_CODE_PROBE", "").strip() == "1":
         await run_day27_code_acceptance_probe()
+    if os.getenv("SUPER_SIGNALS_DAY34_CODE_PROBE", "").strip() == "1":
+        run_day34_code_acceptance_probe()
+
+    day34_reference_raw = (
+        os.getenv("SUPER_SIGNALS_DAY34_REFERENCE_USER_ID", "").strip()
+        or os.getenv("SUPER_SIGNALS_DAY28_OWNER_ID", "").strip()
+        or os.getenv("SUPER_SIGNALS_DAY22_OWNER_ID", "").strip()
+    )
+    day34_reference_user_id: UUID | None = None
+    if day34_reference_raw:
+        try:
+            day34_reference_user_id = UUID(day34_reference_raw)
+        except ValueError:
+            logger.error(
+                "Day 34 reference user is invalid; shared summaries/settlement watch are disabled"
+            )
 
     broker_key_value = (
         os.getenv("SUPER_SIGNALS_BROKER_CREDENTIAL_KEYS")
         or os.getenv("SUPER_SIGNALS_MT5_ENCRYPTION_KEYS")
         or ""
     )
-    broker_keys = tuple(
-        value.strip()
-        for value in broker_key_value.split(",")
-        if value.strip()
-    )
+    broker_keys = tuple(value.strip() for value in broker_key_value.split(",") if value.strip())
     mt5_connection_manager: Mt5ConnectionManager | None = None
     mt5_bootstrap_task: asyncio.Task[None] | None = None
+    day34_settlement_manager: Day34BrokerSettlementManager | None = None
+    day34_live_acceptance_task: asyncio.Task[None] | None = None
     if broker_keys:
         broker_cipher = MetaApiTokenCipher(broker_keys)
         gateway = MetaApiProvisioningGateway()
@@ -149,10 +170,36 @@ async def _lifespan(application: FastAPI) -> AsyncIterator[None]:
         )
         application.state.mt5_connection_service = mt5_connection_service
 
-        allow_mt5_manager = True
-        diagnostic_probe = (
-            os.getenv("SUPER_SIGNALS_DAY22_DIAGNOSTIC_PROBE", "").strip() == "1"
+        day33_performance_service = Day33PerformanceLedgerServiceV2(
+            session_factory=session_factory,
+            cipher=broker_cipher,
+            gateway=MetaApiReadGateway(),
         )
+        application.state.day33_performance_service = day33_performance_service
+
+        if os.getenv("SUPER_SIGNALS_DAY34_SETTLEMENT_WATCH_ENABLED", "").strip() == "1":
+            if day34_reference_user_id is None:
+                logger.error(
+                    "Day 34 settlement watch disabled: reference user is missing or invalid"
+                )
+            else:
+                try:
+                    poll_seconds = int(
+                        os.getenv("SUPER_SIGNALS_DAY34_SETTLEMENT_POLL_SECONDS", "15").strip()
+                        or "15"
+                    )
+                    day34_settlement_manager = Day34BrokerSettlementManager(
+                        session_factory=session_factory,
+                        performance_service=day33_performance_service,
+                        reference_user_id=day34_reference_user_id,
+                        poll_seconds=poll_seconds,
+                    )
+                    application.state.day34_settlement_manager = day34_settlement_manager
+                except (ValueError, TypeError):
+                    logger.error("Day 34 settlement watch disabled: poll interval is invalid")
+
+        allow_mt5_manager = True
+        diagnostic_probe = os.getenv("SUPER_SIGNALS_DAY22_DIAGNOSTIC_PROBE", "").strip() == "1"
         if os.getenv("SUPER_SIGNALS_DAY22_REKEY_EXISTING_TOKEN", "").strip() == "1":
             allow_mt5_manager = False
             owner_id_raw = os.getenv("SUPER_SIGNALS_DAY22_OWNER_ID", "").strip()
@@ -213,17 +260,36 @@ async def _lifespan(application: FastAPI) -> AsyncIterator[None]:
             cipher=broker_cipher,
         )
 
+    push_manager: Day34PushNotificationManager | None = None
+    vapid_private_key = os.getenv("SUPER_SIGNALS_WEB_PUSH_VAPID_PRIVATE_KEY", "").strip()
+    vapid_subject = os.getenv("SUPER_SIGNALS_WEB_PUSH_VAPID_SUBJECT", "").strip()
+    if vapid_private_key and vapid_subject:
+        try:
+            push_poll_seconds = int(
+                os.getenv("SUPER_SIGNALS_DAY34_PUSH_POLL_SECONDS", "3").strip() or "3"
+            )
+            push_manager = Day34PushNotificationManager(
+                session_factory=session_factory,
+                vapid_private_key=vapid_private_key,
+                vapid_subject=vapid_subject,
+                poll_seconds=push_poll_seconds,
+            )
+            application.state.day34_push_manager = push_manager
+        except (ValueError, TypeError):
+            logger.error("Day 34 Web Push disabled: VAPID or poll configuration is invalid")
+
     publisher_destination_excluded = bool(
         publisher_settings.enabled and publisher_settings.destination_chat_id is not None
     )
 
-    publisher = Day20TelegramPublisherManager(
+    publisher = Day34CutoverTelegramPublisherManager(
         session_factory=session_factory,
         enabled=publisher_settings.enabled,
         bot_token=publisher_settings.bot_token,
         destination_chat_id=publisher_settings.destination_chat_id,
         poll_seconds=publisher_settings.poll_seconds,
         reader_exclusion_active=publisher_destination_excluded,
+        reference_user_id=day34_reference_user_id,
     )
     application.state.telegram_publisher = publisher
 
@@ -248,12 +314,35 @@ async def _lifespan(application: FastAPI) -> AsyncIterator[None]:
         application.state.telegram_listener = listener
         await listener.start()
 
+    if day34_settlement_manager is not None:
+        await day34_settlement_manager.start()
+    if push_manager is not None:
+        await push_manager.start()
     await publisher.start()
+
+    if os.getenv("SUPER_SIGNALS_DAY34_LIVE_ACCEPTANCE", "").strip() == "1":
+        day34_live_acceptance_task = asyncio.create_task(
+            run_day34_live_acceptance_safely(
+                settlement_manager=day34_settlement_manager,
+            ),
+            name="day34-live-acceptance",
+        )
 
     try:
         yield
     finally:
+        if day34_live_acceptance_task is not None:
+            if not day34_live_acceptance_task.done():
+                day34_live_acceptance_task.cancel()
+            try:
+                await day34_live_acceptance_task
+            except asyncio.CancelledError:
+                pass
         await publisher.stop()
+        if push_manager is not None:
+            await push_manager.stop()
+        if day34_settlement_manager is not None:
+            await day34_settlement_manager.stop()
         if listener is not None:
             await listener.stop()
         if mt5_bootstrap_task is not None and not mt5_bootstrap_task.done():
@@ -319,6 +408,7 @@ def create_app() -> FastAPI:
     application.include_router(user_mt5_accounts_router)
     application.include_router(day26_execution_router)
     application.include_router(day27_management_router)
+    application.include_router(notifications_day34_router)
     _mount_web_application(application)
     return application
 

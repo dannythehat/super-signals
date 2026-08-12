@@ -11,6 +11,8 @@ from sqlalchemy import text
 from sqlalchemy.orm import Session, sessionmaker
 
 from app.models import AuditEvent
+from app.provider_pips_day34 import normalize_provider_pips
+from app.standalone_lifecycle_linker import extract_update_symbol
 from app.standalone_lifecycle_linker_v2 import StandaloneLifecycleLinkerV2
 
 AI_LIFECYCLE_VERSION = "ai-supervisor-lifecycle-v1"
@@ -41,14 +43,21 @@ class AiLifecycleBridge:
         if event_type is None:
             return AiLifecycleResult(False, False, None, None, "provider_update_unsupported")
 
+        raw_provider_pips = extracted.get("provider_claimed_pips")
+        normalized_pips = normalize_provider_pips(raw_provider_pips)
+
         with self._session_factory() as session:
             row = self._message_revision_row(session, message_id, revision_index)
             if row is None:
                 return AiLifecycleResult(False, False, None, None, "message_not_eligible")
 
-            signal = self._resolve_signal(session, row, revision_index=revision_index)
+            signal, link_reason = self._resolve_signal(
+                session,
+                row,
+                revision_index=revision_index,
+            )
             if signal is None:
-                return AiLifecycleResult(False, False, None, None, "signal_link_unresolved")
+                return AiLifecycleResult(False, False, None, None, link_reason)
 
             event_key = f"ai-provider:{message_id}:{revision_index}"
             event_id = session.execute(
@@ -89,14 +98,18 @@ class AiLifecycleBridge:
                     "event_type": event_type,
                     "event_key": event_key,
                     "rendered_text": rendered_text,
-                    "pips": extracted.get("provider_claimed_pips"),
+                    "pips": normalized_pips,
                     "aggregate_result": json.dumps(
                         {
                             "ai_supervisor": True,
                             "source_revision_index": revision_index,
+                            "lifecycle_link_reason": link_reason,
                             "update_target": extracted.get("update_target"),
                             "update_value": extracted.get("update_value"),
-                            "provider_claimed_pips": extracted.get("provider_claimed_pips"),
+                            "provider_claimed_pips": raw_provider_pips,
+                            "provider_claimed_pips_normalized": (
+                                str(normalized_pips) if normalized_pips is not None else None
+                            ),
                             "revised_instruction": extracted,
                         }
                     ),
@@ -120,8 +133,13 @@ class AiLifecycleBridge:
                         "lifecycle_version": AI_LIFECYCLE_VERSION,
                         "lifecycle_event_id": str(event_id),
                         "event_type": event_type,
+                        "lifecycle_link_reason": link_reason,
                         "source_message_id": str(row["message_id"]),
                         "source_revision_index": revision_index,
+                        "provider_claimed_pips_raw": raw_provider_pips,
+                        "provider_claimed_pips_normalized": (
+                            str(normalized_pips) if normalized_pips is not None else None
+                        ),
                         "trade_action_created": False,
                     },
                 )
@@ -165,7 +183,7 @@ class AiLifecycleBridge:
         row: Any,
         *,
         revision_index: int,
-    ) -> Any | None:
+    ) -> tuple[Any | None, str]:
         # An edit to the original provider signal is always the same logical Signal.
         if revision_index > 0:
             original_signal = session.execute(
@@ -180,8 +198,11 @@ class AiLifecycleBridge:
                 {"message_id": row["message_id"]},
             ).mappings().first()
             if original_signal is not None:
-                return original_signal
+                return original_signal, "original_signal_edit"
 
+        # Explicit Telegram reply linkage remains the strongest association evidence,
+        # even when the referenced trade is already closed and the provider is merely
+        # reporting the result afterwards.
         payload = row["raw_payload"] if isinstance(row["raw_payload"], dict) else {}
         reply_value = payload.get("reply_to_message_id")
         if reply_value is not None:
@@ -203,10 +224,64 @@ class AiLifecycleBridge:
                     {"source_id": row["source_id"], "provider_message_id": reply_id},
                 ).mappings().first()
                 if signal is not None:
-                    return signal
+                    return signal, "explicit_telegram_reply"
 
-        candidate, _method, _reason = StandaloneLifecycleLinkerV2._resolve_candidate(session, row)
-        return candidate
+        # Day 34 Active Trade Watch: for a standalone management message, broker-backed
+        # active state takes priority over the older chat-recency heuristic. This keeps
+        # historical Signals in the audit ledger without letting them make a clear
+        # `BE now` / `close gold` instruction ambiguous when only one real trade remains
+        # open. The query is source-scoped and contains no user balance/P&L data.
+        symbol_hint = extract_update_symbol(str(row["raw_text"] or ""))
+        active = session.execute(
+            text(
+                """
+                SELECT DISTINCT
+                    s.id,
+                    s.symbol,
+                    s.provider_message_id,
+                    s.source_posted_at
+                FROM signals AS s
+                JOIN positions AS p ON p.signal_id = s.id
+                LEFT JOIN performance_trade_outcomes AS o ON o.position_id = p.id
+                WHERE s.source_id = :source_id
+                  AND s.source_posted_at <= :occurred_at
+                  AND (
+                      CAST(:symbol_hint AS text) IS NULL
+                      OR UPPER(s.symbol) = CAST(:symbol_hint AS text)
+                  )
+                  AND (
+                      (
+                          p.status = 'open'
+                          AND p.broker_position_id IS NOT NULL
+                          AND COALESCE(o.status, 'open') NOT IN (
+                              'won', 'lost', 'breakeven', 'closed_unknown'
+                          )
+                      )
+                      OR o.status = 'pending'
+                  )
+                ORDER BY s.source_posted_at DESC, s.provider_message_id DESC
+                """
+            ),
+            {
+                "source_id": row["source_id"],
+                "occurred_at": row["occurred_at"],
+                "symbol_hint": symbol_hint,
+            },
+        ).mappings().all()
+
+        if len(active) == 1:
+            return active[0], "active_broker_unique"
+        if len(active) > 1:
+            return None, "active_trade_target_ambiguous"
+
+        # No broker-backed active candidate exists. Preserve the passed Day 20 fallback
+        # for pre-execution lifecycle messages and historical provider result context.
+        candidate, method, reason = StandaloneLifecycleLinkerV2._resolve_candidate(session, row)
+        if candidate is not None:
+            return candidate, method or "standalone_legacy_unique"
+        if "ambiguous" in reason.lower():
+            return None, "signal_link_ambiguous"
+        return None, "signal_link_unresolved"
 
     @staticmethod
     def _render(update_type: str, extracted: dict[str, Any]) -> tuple[str | None, str]:
@@ -230,7 +305,7 @@ class AiLifecycleBridge:
             return "cancel", "TRADE UPDATE\nPending order cancellation instructed."
         if update_type == "result_report":
             pips = extracted.get("provider_claimed_pips")
-            suffix = f" ({pips} pips stated by provider)" if pips is not None else ""
+            suffix = f" ({pips} stated by provider)" if pips is not None else ""
             return "provider_result_report", f"TRADE RESULT UPDATE{suffix}."
         if update_type == "other":
             return "provider_update", "TRADE UPDATE\nProvider instruction revised or updated."

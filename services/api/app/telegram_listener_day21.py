@@ -16,7 +16,7 @@ from telethon import TelegramClient, events
 from telethon.sessions import StringSession
 
 from app.ai_message_pipeline import AiMessagePipeline
-from app.ai_message_supervisor import OpenAiMessageSupervisor
+from app.ai_message_supervisor_day34 import Day34OpenAiMessageSupervisor
 from app.ai_source_aware_pipeline import SourceAwareAiMessagePipeline
 from app.ai_supervisor_acceptance import run_ai_supervisor_acceptance_probe
 from app.config import get_settings
@@ -59,7 +59,7 @@ class Day21TelegramListenerManager(Day20TelegramListenerManager):
         if settings.ai_supervisor_enabled:
             supervisor = None
             if settings.ai_supervisor_api_key:
-                supervisor = OpenAiMessageSupervisor(
+                supervisor = Day34OpenAiMessageSupervisor(
                     api_key=settings.ai_supervisor_api_key,
                     model=settings.ai_supervisor_model,
                     timeout_seconds=settings.ai_supervisor_timeout_seconds,
