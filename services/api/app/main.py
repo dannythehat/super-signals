@@ -61,7 +61,7 @@ from app.routes.user_mt5_accounts import router as user_mt5_accounts_router
 from app.telegram_crypto import TelegramSessionCipher
 from app.telegram_listener import TelegramListenerManager
 from app.telegram_listener_day28 import build_day28_listener_manager
-from app.telegram_publisher_day34 import Day34TelegramPublisherManager
+from app.telegram_publisher_day34_cutover import Day34CutoverTelegramPublisherManager
 
 logger = logging.getLogger(__name__)
 
@@ -142,18 +142,16 @@ async def _lifespan(application: FastAPI) -> AsyncIterator[None]:
         try:
             day34_reference_user_id = UUID(day34_reference_raw)
         except ValueError:
-            logger.error("Day 34 reference user is invalid; shared summaries/settlement watch are disabled")
+            logger.error(
+                "Day 34 reference user is invalid; shared summaries/settlement watch are disabled"
+            )
 
     broker_key_value = (
         os.getenv("SUPER_SIGNALS_BROKER_CREDENTIAL_KEYS")
         or os.getenv("SUPER_SIGNALS_MT5_ENCRYPTION_KEYS")
         or ""
     )
-    broker_keys = tuple(
-        value.strip()
-        for value in broker_key_value.split(",")
-        if value.strip()
-    )
+    broker_keys = tuple(value.strip() for value in broker_key_value.split(",") if value.strip())
     mt5_connection_manager: Mt5ConnectionManager | None = None
     mt5_bootstrap_task: asyncio.Task[None] | None = None
     day34_settlement_manager: Day34BrokerSettlementManager | None = None
@@ -176,7 +174,9 @@ async def _lifespan(application: FastAPI) -> AsyncIterator[None]:
 
         if os.getenv("SUPER_SIGNALS_DAY34_SETTLEMENT_WATCH_ENABLED", "").strip() == "1":
             if day34_reference_user_id is None:
-                logger.error("Day 34 settlement watch disabled: reference user is missing or invalid")
+                logger.error(
+                    "Day 34 settlement watch disabled: reference user is missing or invalid"
+                )
             else:
                 try:
                     poll_seconds = int(
@@ -194,9 +194,7 @@ async def _lifespan(application: FastAPI) -> AsyncIterator[None]:
                     logger.error("Day 34 settlement watch disabled: poll interval is invalid")
 
         allow_mt5_manager = True
-        diagnostic_probe = (
-            os.getenv("SUPER_SIGNALS_DAY22_DIAGNOSTIC_PROBE", "").strip() == "1"
-        )
+        diagnostic_probe = os.getenv("SUPER_SIGNALS_DAY22_DIAGNOSTIC_PROBE", "").strip() == "1"
         if os.getenv("SUPER_SIGNALS_DAY22_REKEY_EXISTING_TOKEN", "").strip() == "1":
             allow_mt5_manager = False
             owner_id_raw = os.getenv("SUPER_SIGNALS_DAY22_OWNER_ID", "").strip()
@@ -279,7 +277,7 @@ async def _lifespan(application: FastAPI) -> AsyncIterator[None]:
         publisher_settings.enabled and publisher_settings.destination_chat_id is not None
     )
 
-    publisher = Day34TelegramPublisherManager(
+    publisher = Day34CutoverTelegramPublisherManager(
         session_factory=session_factory,
         enabled=publisher_settings.enabled,
         bot_token=publisher_settings.bot_token,
