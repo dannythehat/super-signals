@@ -10,12 +10,47 @@ interface PushConfig {
 }
 
 type PushState = 'checking' | 'unsupported' | 'unavailable' | 'off' | 'on' | 'blocked';
+type EnablePhase = 'permission' | 'service-worker' | 'subscription' | 'server' | null;
 
 function urlBase64ToUint8Array(value: string): Uint8Array {
   const padding = '='.repeat((4 - (value.length % 4)) % 4);
   const base64 = (value + padding).replace(/-/g, '+').replace(/_/g, '/');
   const raw = window.atob(base64);
   return Uint8Array.from(raw, (character) => character.charCodeAt(0));
+}
+
+function withTimeout<T>(promise: Promise<T>, timeoutMs: number, message: string): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = window.setTimeout(() => reject(new Error(message)), timeoutMs);
+    promise.then(
+      (value) => {
+        window.clearTimeout(timer);
+        resolve(value);
+      },
+      (error) => {
+        window.clearTimeout(timer);
+        reject(error);
+      },
+    );
+  });
+}
+
+async function ensureServiceWorker(): Promise<ServiceWorkerRegistration> {
+  const registration = await withTimeout(
+    navigator.serviceWorker.register('/sw.js', { scope: '/' }),
+    10000,
+    'The notification service could not start in this browser. Open Super Signals in Chrome and try again.',
+  );
+  await withTimeout(
+    registration.update(),
+    10000,
+    'The notification service could not update in this browser. Open Super Signals in Chrome and try again.',
+  );
+  return withTimeout(
+    navigator.serviceWorker.ready,
+    10000,
+    'The notification service did not become ready. Open Super Signals in Chrome and try again.',
+  );
 }
 
 async function readJson<T>(response: Response): Promise<T> {
@@ -37,6 +72,7 @@ async function readJson<T>(response: Response): Promise<T> {
 export function PushNotificationsDay34({ apiBaseUrl }: PushNotificationsDay34Props) {
   const [state, setState] = useState<PushState>('checking');
   const [busy, setBusy] = useState(false);
+  const [phase, setPhase] = useState<EnablePhase>(null);
   const [message, setMessage] = useState<string | null>(null);
   const [publicKey, setPublicKey] = useState<string | null>(null);
 
@@ -63,11 +99,18 @@ export function PushNotificationsDay34({ apiBaseUrl }: PushNotificationsDay34Pro
           setState('blocked');
           return;
         }
-        const registration = await navigator.serviceWorker.ready;
-        const subscription = await registration.pushManager.getSubscription();
+        const registration = await ensureServiceWorker();
+        const subscription = await withTimeout(
+          registration.pushManager.getSubscription(),
+          10000,
+          'The browser could not read the notification subscription.',
+        );
         if (!cancelled) setState(subscription ? 'on' : 'off');
-      } catch {
-        if (!cancelled) setState('unavailable');
+      } catch (error) {
+        if (!cancelled) {
+          setState('unavailable');
+          setMessage(error instanceof Error ? error.message : 'Trade alerts are not available in this browser.');
+        }
       }
     }
     void check();
@@ -81,32 +124,55 @@ export function PushNotificationsDay34({ apiBaseUrl }: PushNotificationsDay34Pro
     setBusy(true);
     setMessage(null);
     try {
-      const permission = await Notification.requestPermission();
+      setPhase('permission');
+      const permission = await withTimeout(
+        Notification.requestPermission(),
+        15000,
+        'Your browser did not open the notification permission prompt. Open Super Signals in Chrome and try again.',
+      );
       if (permission !== 'granted') {
         setState(permission === 'denied' ? 'blocked' : 'off');
         setMessage('Trade alerts were not enabled. You can change this later.');
         return;
       }
-      const registration = await navigator.serviceWorker.ready;
-      let subscription = await registration.pushManager.getSubscription();
+
+      setPhase('service-worker');
+      const registration = await ensureServiceWorker();
+      let subscription = await withTimeout(
+        registration.pushManager.getSubscription(),
+        10000,
+        'The browser could not read its notification subscription.',
+      );
       if (!subscription) {
-        subscription = await registration.pushManager.subscribe({
-          userVisibleOnly: true,
-          applicationServerKey: urlBase64ToUint8Array(publicKey),
-        });
+        setPhase('subscription');
+        subscription = await withTimeout(
+          registration.pushManager.subscribe({
+            userVisibleOnly: true,
+            applicationServerKey: urlBase64ToUint8Array(publicKey),
+          }),
+          20000,
+          'This browser could not create a push subscription. Open Super Signals in Chrome and try again.',
+        );
       }
-      const response = await fetch(`${apiBaseUrl}/notifications/push/subscribe`, {
-        method: 'POST',
-        credentials: 'include',
-        headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
-        body: JSON.stringify(subscription.toJSON()),
-      });
+
+      setPhase('server');
+      const response = await withTimeout(
+        fetch(`${apiBaseUrl}/notifications/push/subscribe`, {
+          method: 'POST',
+          credentials: 'include',
+          headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+          body: JSON.stringify(subscription.toJSON()),
+        }),
+        15000,
+        'Super Signals could not save this device notification subscription.',
+      );
       await readJson<{ enabled: boolean }>(response);
       setState('on');
       setMessage('Trade alerts are on for this device.');
     } catch (error) {
       setMessage(error instanceof Error ? error.message : 'Trade alerts could not be enabled.');
     } finally {
+      setPhase(null);
       setBusy(false);
     }
   }
@@ -115,8 +181,12 @@ export function PushNotificationsDay34({ apiBaseUrl }: PushNotificationsDay34Pro
     setBusy(true);
     setMessage(null);
     try {
-      const registration = await navigator.serviceWorker.ready;
-      const subscription = await registration.pushManager.getSubscription();
+      const registration = await ensureServiceWorker();
+      const subscription = await withTimeout(
+        registration.pushManager.getSubscription(),
+        10000,
+        'The browser could not read its notification subscription.',
+      );
       if (subscription) {
         const response = await fetch(`${apiBaseUrl}/notifications/push/unsubscribe`, {
           method: 'POST',
@@ -149,6 +219,17 @@ export function PushNotificationsDay34({ apiBaseUrl }: PushNotificationsDay34Pro
               ? 'Not available yet'
               : 'Checking…';
 
+  const busyLabel =
+    phase === 'permission'
+      ? 'Waiting for permission…'
+      : phase === 'service-worker'
+        ? 'Starting notifications…'
+        : phase === 'subscription'
+          ? 'Registering this device…'
+          : phase === 'server'
+            ? 'Saving this device…'
+            : 'Turning on…';
+
   return (
     <article className="settings-card" aria-labelledby="trade-alerts-heading">
       <span className="status-label">Device notifications · {statusLabel}</span>
@@ -164,7 +245,7 @@ export function PushNotificationsDay34({ apiBaseUrl }: PushNotificationsDay34Pro
       <div className="settings-actions">
         {state === 'off' && (
           <button className="button" type="button" onClick={() => void enable()} disabled={busy}>
-            {busy ? 'Turning on…' : 'Turn on trade alerts'}
+            {busy ? busyLabel : 'Turn on trade alerts'}
           </button>
         )}
         {state === 'on' && (
