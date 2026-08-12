@@ -10,5 +10,6 @@ from . import invitations as _invitations  # noqa: F401
 from . import registration as _registration  # noqa: F401
 from . import user_mt5_accounts as _user_mt5_accounts
 from . import trading_controls_day31 as _trading_controls_day31
+from . import day31_acceptance_startup as _day31_acceptance_startup  # noqa: F401
 
 _user_mt5_accounts.router.include_router(_trading_controls_day31.router)
