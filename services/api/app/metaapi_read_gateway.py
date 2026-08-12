@@ -1,12 +1,13 @@
 """Read-only MetaAPI terminal data gateway for Day 23+ trading gates.
 
-This module exposes account-state, position, open-order, quote and symbol-specification
-reads only. There is no trade/order mutation method here.
+This module exposes account-state, position, open-order, quote, symbol-specification
+and broker-history reads only. There is no trade/order mutation method here.
 """
 
 from __future__ import annotations
 
 import re
+from datetime import datetime
 from urllib.parse import quote
 
 import httpx
@@ -76,6 +77,56 @@ class MetaApiReadGateway:
             token=token,
             region=region,
             path=f"/users/current/accounts/{account_id}/orders",
+        )
+        if not isinstance(payload, list) or any(not isinstance(item, dict) for item in payload):
+            raise MetaApiGatewayError("metaapi_invalid_response")
+        return payload
+
+    async def read_deals_by_position(
+        self,
+        *,
+        token: str,
+        account_id: str,
+        region: str,
+        position_id: str,
+    ) -> list[dict[str, object]]:
+        """Read immutable MT5 deal history for one broker position."""
+        encoded_position = quote(position_id, safe="")
+        payload = await self._read_terminal_json(
+            token=token,
+            region=region,
+            path=(
+                f"/users/current/accounts/{account_id}/history-deals/"
+                f"position/{encoded_position}"
+            ),
+        )
+        if not isinstance(payload, list) or any(not isinstance(item, dict) for item in payload):
+            raise MetaApiGatewayError("metaapi_invalid_response")
+        return payload
+
+    async def read_deals_by_time_range(
+        self,
+        *,
+        token: str,
+        account_id: str,
+        region: str,
+        start_time: datetime,
+        end_time: datetime,
+        offset: int = 0,
+        limit: int = 1000,
+    ) -> list[dict[str, object]]:
+        """Read broker deal history for a time window, with MetaAPI REST pagination."""
+        if offset < 0 or not 1 <= limit <= 1000:
+            raise ValueError("Invalid MetaAPI history pagination.")
+        start = quote(start_time.isoformat().replace("+00:00", "Z"), safe=":-T.Z+")
+        end = quote(end_time.isoformat().replace("+00:00", "Z"), safe=":-T.Z+")
+        payload = await self._read_terminal_json(
+            token=token,
+            region=region,
+            path=(
+                f"/users/current/accounts/{account_id}/history-deals/time/{start}/{end}"
+                f"?offset={offset}&limit={limit}"
+            ),
         )
         if not isinstance(payload, list) or any(not isinstance(item, dict) for item in payload):
             raise MetaApiGatewayError("metaapi_invalid_response")

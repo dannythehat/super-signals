@@ -1,0 +1,241 @@
+import { useCallback, useEffect, useMemo, useState } from 'react';
+
+type TimelineTrade = {
+  signal_id: string;
+  symbol: string;
+  side: string;
+  status: string;
+  status_label: string;
+  status_color: string;
+  source_label: string | null;
+  trader_stream: string | null;
+  source_color_index: number | null;
+  opened_at: string | null;
+  closed_at: string | null;
+  position_count: number;
+  open_positions: number;
+  pending_positions: number;
+  closed_positions: number;
+  cash_pnl: number | null;
+  net_pips: number | null;
+  model_500_pnl: number | null;
+  close_reason: string | null;
+};
+
+type TimelineData = {
+  trades: TimelineTrade[];
+  open_count: number;
+  pending_count: number;
+  provider_identity_visible: boolean;
+  broker_trade_action_created: boolean;
+};
+
+type FilterKey = 'all' | 'open' | 'pending' | 'closed' | 'won' | 'lost' | 'breakeven' | 'skipped';
+
+type Props = {
+  apiBaseUrl: string;
+  currency: string;
+};
+
+async function readJson<T>(response: Response): Promise<T> {
+  const body = (await response.json()) as T;
+  if (!response.ok) {
+    const detail = typeof body === 'object' && body !== null && 'detail' in body ? (body as { detail: unknown }).detail : null;
+    const message = typeof detail === 'object' && detail !== null && 'message' in detail
+      ? String((detail as { message: unknown }).message)
+      : 'Trade history is temporarily unavailable.';
+    throw new Error(message);
+  }
+  return body;
+}
+
+function money(value: number | null, currency: string): string {
+  if (value === null || !Number.isFinite(value)) return '—';
+  try {
+    return new Intl.NumberFormat(undefined, {
+      style: 'currency',
+      currency: currency || 'USD',
+      minimumFractionDigits: 2,
+      maximumFractionDigits: 2,
+    }).format(value);
+  } catch {
+    return `${currency || '$'} ${value.toFixed(2)}`;
+  }
+}
+
+function shortTime(value: string | null): string {
+  if (!value) return '—';
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) return '—';
+  return new Intl.DateTimeFormat(undefined, {
+    month: 'short',
+    day: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+  }).format(parsed);
+}
+
+function statusIcon(status: string): string {
+  if (status === 'open') return '●';
+  if (status === 'pending') return '◷';
+  if (status === 'won') return '✓';
+  if (status === 'lost') return '×';
+  if (status === 'breakeven') return '=';
+  if (status === 'skipped') return '!';
+  return '○';
+}
+
+function pnlClass(value: number | null): string {
+  if (value === null || value === 0) return 'is-flat';
+  return value > 0 ? 'is-positive' : 'is-negative';
+}
+
+function skippedReason(value: string | null): string {
+  if (!value) return 'Execution gate blocked this signal.';
+  return value.replaceAll('_', ' ');
+}
+
+export function TradeTimeline({ apiBaseUrl, currency }: Props) {
+  const [data, setData] = useState<TimelineData | null>(null);
+  const [statusFilter, setStatusFilter] = useState<FilterKey>('all');
+  const [sourceFilter, setSourceFilter] = useState('all');
+  const [traderFilter, setTraderFilter] = useState('all');
+  const [loading, setLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [syncNote, setSyncNote] = useState<string | null>(null);
+
+  const refresh = useCallback(async (quiet = false) => {
+    if (!quiet) setRefreshing(true);
+    let syncFailed = false;
+    try {
+      const syncResponse = await fetch(`${apiBaseUrl}/account/mt5/dashboard/performance/sync`, {
+        method: 'POST',
+        credentials: 'include',
+        headers: { Accept: 'application/json' },
+        cache: 'no-store',
+      });
+      if (!syncResponse.ok) syncFailed = true;
+    } catch {
+      syncFailed = true;
+    }
+
+    try {
+      const response = await fetch(`${apiBaseUrl}/account/mt5/dashboard/performance/timeline?limit=250`, {
+        credentials: 'include',
+        headers: { Accept: 'application/json' },
+        cache: 'no-store',
+      });
+      const next = await readJson<TimelineData>(response);
+      setData(next);
+      setError(null);
+      setSyncNote(syncFailed ? 'Showing the last broker-backed ledger snapshot. Live history refresh is temporarily unavailable.' : null);
+      if (!syncFailed) window.dispatchEvent(new Event('super-signals-ledger-synced'));
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : 'Trade history is temporarily unavailable.');
+    } finally {
+      setLoading(false);
+      setRefreshing(false);
+    }
+  }, [apiBaseUrl]);
+
+  useEffect(() => {
+    void refresh(true);
+  }, [refresh]);
+
+  const sources = useMemo(() => {
+    if (!data?.provider_identity_visible) return [];
+    return Array.from(new Set(data.trades.map((trade) => trade.source_label).filter((value): value is string => Boolean(value)))).sort();
+  }, [data]);
+
+  const traders = useMemo(() => {
+    if (!data?.provider_identity_visible) return [];
+    return Array.from(new Set(data.trades.map((trade) => trade.trader_stream).filter((value): value is string => Boolean(value)))).sort();
+  }, [data]);
+
+  const visibleTrades = useMemo(() => {
+    if (!data) return [];
+    const acceptedStatuses: Record<FilterKey, Set<string> | null> = {
+      all: null,
+      open: new Set(['open']),
+      pending: new Set(['pending']),
+      closed: new Set(['won', 'lost', 'breakeven', 'closed_unknown']),
+      won: new Set(['won']),
+      lost: new Set(['lost']),
+      breakeven: new Set(['breakeven']),
+      skipped: new Set(['skipped']),
+    };
+    return data.trades.filter((trade) => {
+      const statuses = acceptedStatuses[statusFilter];
+      if (statuses && !statuses.has(trade.status)) return false;
+      if (sourceFilter !== 'all' && trade.source_label !== sourceFilter) return false;
+      if (traderFilter !== 'all' && trade.trader_stream !== traderFilter) return false;
+      return true;
+    });
+  }, [data, sourceFilter, statusFilter, traderFilter]);
+
+  if (loading && !data) {
+    return <section className="day33-timeline day33-timeline--loading" aria-label="Loading trade timeline"><div /><div /><div /></section>;
+  }
+
+  return <section className="day33-timeline" aria-labelledby="day33-timeline-title">
+    <div className="day33-timeline-head">
+      <div><span>Canonical broker ledger</span><h2 id="day33-timeline-title">Trade timeline</h2><p>Open, pending, completed and mechanically skipped Super Signals trades in one view.</p></div>
+      <button type="button" className="day33-refresh" onClick={() => void refresh()} disabled={refreshing}>{refreshing ? 'Syncing…' : 'Sync broker'}</button>
+    </div>
+
+    {syncNote && <div className="day33-sync-note" role="status">{syncNote}</div>}
+    {error && <div className="day33-sync-note day33-sync-note--error" role="alert">{error}</div>}
+
+    <div className="day33-live-strip" aria-label="Current trade state">
+      <div><span className="day33-live-dot day33-live-dot--open" /><strong>{data?.open_count ?? 0}</strong><span>Open</span></div>
+      <div><span className="day33-live-dot day33-live-dot--pending" /><strong>{data?.pending_count ?? 0}</strong><span>Pending</span></div>
+      <small>Broker-backed current state</small>
+    </div>
+
+    <div className="day33-status-filters" aria-label="Filter trade status">
+      {([
+        ['all', 'All'], ['open', 'Open'], ['pending', 'Pending'], ['closed', 'Closed'],
+        ['won', 'Won'], ['lost', 'Lost'], ['breakeven', 'BE'], ['skipped', 'Skipped'],
+      ] as Array<[FilterKey, string]>).map(([key, label]) => <button key={key} type="button" className={statusFilter === key ? 'is-selected' : ''} onClick={() => setStatusFilter(key)}>{label}</button>)}
+    </div>
+
+    {data?.provider_identity_visible && (sources.length > 0 || traders.length > 0) && <div className="day33-identity-filters" aria-label="Filter signal source and trader">
+      {sources.length > 0 && <label><span>Source</span><select value={sourceFilter} onChange={(event) => setSourceFilter(event.target.value)}><option value="all">All sources</option>{sources.map((source) => <option key={source} value={source}>{source}</option>)}</select></label>}
+      {traders.length > 0 && <label><span>Trader</span><select value={traderFilter} onChange={(event) => setTraderFilter(event.target.value)}><option value="all">All traders</option>{traders.map((trader) => <option key={trader} value={trader}>{trader}</option>)}</select></label>}
+    </div>}
+
+    {visibleTrades.length === 0 ? <div className="day33-empty"><strong>No trades in this view</strong><span>Change the filters or sync the broker ledger.</span></div> : <div className="day33-trade-list">{visibleTrades.map((trade) => <article className={`day33-trade-card day33-status--${trade.status_color}`} key={trade.signal_id}>
+      <div className="day33-trade-top">
+        <div className="day33-trade-symbol"><span className={`day32-side day32-side--${trade.side.toLowerCase()}`}>{trade.side}</span><strong>{trade.symbol}</strong></div>
+        <span className={`day33-status-badge day33-status-badge--${trade.status_color}`}><i aria-hidden="true">{statusIcon(trade.status)}</i>{trade.status_label}</span>
+      </div>
+
+      {data?.provider_identity_visible && trade.source_label && <div className="day33-identity-row">
+        <span className={`day33-source-chip day33-source-chip--${trade.source_color_index ?? 0}`}><i />{trade.source_label}</span>
+        {trade.trader_stream && <span className={`day33-trader-chip day33-source-chip--${trade.source_color_index ?? 0}`}>{trade.trader_stream}</span>}
+      </div>}
+
+      {trade.status === 'skipped' ? <div className="day33-skipped-reason"><strong>Not placed</strong><span>{skippedReason(trade.close_reason)}</span></div> : <>
+        <div className="day33-progress-row">
+          {trade.open_positions > 0 && <span>{trade.open_positions}/{trade.position_count} positions open</span>}
+          {trade.pending_positions > 0 && <span>{trade.pending_positions} pending</span>}
+          {trade.closed_positions > 0 && <span>{trade.closed_positions} closed</span>}
+        </div>
+
+        <div className="day33-trade-metrics">
+          <div><span>Actual P/L</span><strong className={pnlClass(trade.cash_pnl)}>{money(trade.cash_pnl, currency)}</strong></div>
+          <div><span>Pips</span><strong>{trade.net_pips === null ? '—' : `${trade.net_pips > 0 ? '+' : ''}${trade.net_pips}`}</strong></div>
+          <div><span>$500 @ 1%</span><strong className={pnlClass(trade.model_500_pnl)}>{trade.model_500_pnl === null ? '—' : money(trade.model_500_pnl, 'USD')}</strong></div>
+        </div>
+      </>}
+
+      <div className="day33-trade-time">{trade.status === 'skipped' ? <span>Skipped {shortTime(trade.closed_at)}</span> : <><span>{trade.opened_at ? `Opened ${shortTime(trade.opened_at)}` : 'Open time unavailable'}</span>{trade.closed_at && <span>Closed {shortTime(trade.closed_at)}</span>}</>}</div>
+    </article>)}</div>}
+
+    <div className="day33-legend" aria-label="Trade status colour legend">
+      <span><i className="is-blue" />Open</span><span><i className="is-amber" />Pending / skipped</span><span><i className="is-green" />Win</span><span><i className="is-red" />Loss</span><span><i className="is-grey" />BE / closed</span>
+    </div>
+    <p className="day33-privacy-note">Status colour shows what happened to the trade. Source/trader colour is a separate identity marker and never changes the result meaning.</p>
+  </section>;
+}
