@@ -132,6 +132,18 @@ async def _lifespan(application: FastAPI) -> AsyncIterator[None]:
     if os.getenv("SUPER_SIGNALS_DAY27_CODE_PROBE", "").strip() == "1":
         await run_day27_code_acceptance_probe()
 
+    day34_reference_raw = (
+        os.getenv("SUPER_SIGNALS_DAY34_REFERENCE_USER_ID", "").strip()
+        or os.getenv("SUPER_SIGNALS_DAY28_OWNER_ID", "").strip()
+        or os.getenv("SUPER_SIGNALS_DAY22_OWNER_ID", "").strip()
+    )
+    day34_reference_user_id: UUID | None = None
+    if day34_reference_raw:
+        try:
+            day34_reference_user_id = UUID(day34_reference_raw)
+        except ValueError:
+            logger.error("Day 34 reference user is invalid; shared summaries/settlement watch are disabled")
+
     broker_key_value = (
         os.getenv("SUPER_SIGNALS_BROKER_CREDENTIAL_KEYS")
         or os.getenv("SUPER_SIGNALS_MT5_ENCRYPTION_KEYS")
@@ -163,28 +175,23 @@ async def _lifespan(application: FastAPI) -> AsyncIterator[None]:
         application.state.day33_performance_service = day33_performance_service
 
         if os.getenv("SUPER_SIGNALS_DAY34_SETTLEMENT_WATCH_ENABLED", "").strip() == "1":
-            reference_user_raw = (
-                os.getenv("SUPER_SIGNALS_DAY34_REFERENCE_USER_ID", "").strip()
-                or os.getenv("SUPER_SIGNALS_DAY28_OWNER_ID", "").strip()
-                or os.getenv("SUPER_SIGNALS_DAY22_OWNER_ID", "").strip()
-            )
-            try:
-                reference_user_id = UUID(reference_user_raw)
-                poll_seconds = int(
-                    os.getenv("SUPER_SIGNALS_DAY34_SETTLEMENT_POLL_SECONDS", "15").strip()
-                    or "15"
-                )
-                day34_settlement_manager = Day34BrokerSettlementManager(
-                    session_factory=session_factory,
-                    performance_service=day33_performance_service,
-                    reference_user_id=reference_user_id,
-                    poll_seconds=poll_seconds,
-                )
-                application.state.day34_settlement_manager = day34_settlement_manager
-            except (ValueError, TypeError):
-                logger.error(
-                    "Day 34 settlement watch disabled: reference user or poll interval is invalid"
-                )
+            if day34_reference_user_id is None:
+                logger.error("Day 34 settlement watch disabled: reference user is missing or invalid")
+            else:
+                try:
+                    poll_seconds = int(
+                        os.getenv("SUPER_SIGNALS_DAY34_SETTLEMENT_POLL_SECONDS", "15").strip()
+                        or "15"
+                    )
+                    day34_settlement_manager = Day34BrokerSettlementManager(
+                        session_factory=session_factory,
+                        performance_service=day33_performance_service,
+                        reference_user_id=day34_reference_user_id,
+                        poll_seconds=poll_seconds,
+                    )
+                    application.state.day34_settlement_manager = day34_settlement_manager
+                except (ValueError, TypeError):
+                    logger.error("Day 34 settlement watch disabled: poll interval is invalid")
 
         allow_mt5_manager = True
         diagnostic_probe = (
@@ -198,7 +205,7 @@ async def _lifespan(application: FastAPI) -> AsyncIterator[None]:
                 logger.error(
                     "Day 22 MetaAPI token recovery skipped owner=%s token=%s",
                     bool(owner_id_raw),
-                    bool(metaapi_token),
+                    len(metaapi_token) >= 20,
                 )
             else:
                 try:
@@ -279,6 +286,7 @@ async def _lifespan(application: FastAPI) -> AsyncIterator[None]:
         destination_chat_id=publisher_settings.destination_chat_id,
         poll_seconds=publisher_settings.poll_seconds,
         reader_exclusion_active=publisher_destination_excluded,
+        reference_user_id=day34_reference_user_id,
     )
     application.state.telegram_publisher = publisher
 
