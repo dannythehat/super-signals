@@ -31,6 +31,7 @@ from app.mt5_recovery import (
 )
 from app.performance_ledger_day33_v2 import Day33PerformanceLedgerServiceV2
 from app.publisher_config import get_publisher_settings
+from app.push_notifications_day34 import Day34PushNotificationManager
 from app.routes.access import router as access_router
 from app.routes.admin_accounts import router as admin_accounts_router
 from app.routes.auth import router as auth_router
@@ -197,7 +198,7 @@ async def _lifespan(application: FastAPI) -> AsyncIterator[None]:
                 logger.error(
                     "Day 22 MetaAPI token recovery skipped owner=%s token=%s",
                     bool(owner_id_raw),
-                    len(metaapi_token) >= 20,
+                    bool(metaapi_token),
                 )
             else:
                 try:
@@ -249,6 +250,24 @@ async def _lifespan(application: FastAPI) -> AsyncIterator[None]:
             cipher=broker_cipher,
         )
 
+    push_manager: Day34PushNotificationManager | None = None
+    vapid_private_key = os.getenv("SUPER_SIGNALS_WEB_PUSH_VAPID_PRIVATE_KEY", "").strip()
+    vapid_subject = os.getenv("SUPER_SIGNALS_WEB_PUSH_VAPID_SUBJECT", "").strip()
+    if vapid_private_key and vapid_subject:
+        try:
+            push_poll_seconds = int(
+                os.getenv("SUPER_SIGNALS_DAY34_PUSH_POLL_SECONDS", "3").strip() or "3"
+            )
+            push_manager = Day34PushNotificationManager(
+                session_factory=session_factory,
+                vapid_private_key=vapid_private_key,
+                vapid_subject=vapid_subject,
+                poll_seconds=push_poll_seconds,
+            )
+            application.state.day34_push_manager = push_manager
+        except (ValueError, TypeError):
+            logger.error("Day 34 Web Push disabled: VAPID or poll configuration is invalid")
+
     publisher_destination_excluded = bool(
         publisher_settings.enabled and publisher_settings.destination_chat_id is not None
     )
@@ -286,12 +305,16 @@ async def _lifespan(application: FastAPI) -> AsyncIterator[None]:
 
     if day34_settlement_manager is not None:
         await day34_settlement_manager.start()
+    if push_manager is not None:
+        await push_manager.start()
     await publisher.start()
 
     try:
         yield
     finally:
         await publisher.stop()
+        if push_manager is not None:
+            await push_manager.stop()
         if day34_settlement_manager is not None:
             await day34_settlement_manager.stop()
         if listener is not None:
