@@ -12,11 +12,13 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
+from app.broker_settlement_day34 import Day34BrokerSettlementManager
 from app.config import get_settings
 from app.day26_code_acceptance import run_day26_code_acceptance_probe
 from app.day27_code_acceptance import run_day27_code_acceptance_probe
 from app.db import get_session_factory
 from app.metaapi_gateway import MetaApiProvisioningGateway
+from app.metaapi_read_gateway import MetaApiReadGateway
 from app.mt5_connection_manager import Mt5ConnectionManager
 from app.mt5_connection_service import Mt5ConnectionError, Mt5DemoConnectionService
 from app.mt5_connection_service_day30 import Day30Mt5ConnectionService
@@ -27,6 +29,7 @@ from app.mt5_recovery import (
     reencrypt_existing_metaapi_token,
     verify_existing_metaapi_token,
 )
+from app.performance_ledger_day33_v2 import Day33PerformanceLedgerServiceV2
 from app.publisher_config import get_publisher_settings
 from app.routes.access import router as access_router
 from app.routes.admin_accounts import router as admin_accounts_router
@@ -56,7 +59,7 @@ from app.routes.user_mt5_accounts import router as user_mt5_accounts_router
 from app.telegram_crypto import TelegramSessionCipher
 from app.telegram_listener import TelegramListenerManager
 from app.telegram_listener_day28 import build_day28_listener_manager
-from app.telegram_publisher_day20 import Day20TelegramPublisherManager
+from app.telegram_publisher_day34 import Day34TelegramPublisherManager
 
 logger = logging.getLogger(__name__)
 
@@ -139,6 +142,7 @@ async def _lifespan(application: FastAPI) -> AsyncIterator[None]:
     )
     mt5_connection_manager: Mt5ConnectionManager | None = None
     mt5_bootstrap_task: asyncio.Task[None] | None = None
+    day34_settlement_manager: Day34BrokerSettlementManager | None = None
     if broker_keys:
         broker_cipher = MetaApiTokenCipher(broker_keys)
         gateway = MetaApiProvisioningGateway()
@@ -148,6 +152,37 @@ async def _lifespan(application: FastAPI) -> AsyncIterator[None]:
             gateway=gateway,
         )
         application.state.mt5_connection_service = mt5_connection_service
+
+        day33_performance_service = Day33PerformanceLedgerServiceV2(
+            session_factory=session_factory,
+            cipher=broker_cipher,
+            gateway=MetaApiReadGateway(),
+        )
+        application.state.day33_performance_service = day33_performance_service
+
+        if os.getenv("SUPER_SIGNALS_DAY34_SETTLEMENT_WATCH_ENABLED", "").strip() == "1":
+            reference_user_raw = (
+                os.getenv("SUPER_SIGNALS_DAY34_REFERENCE_USER_ID", "").strip()
+                or os.getenv("SUPER_SIGNALS_DAY28_OWNER_ID", "").strip()
+                or os.getenv("SUPER_SIGNALS_DAY22_OWNER_ID", "").strip()
+            )
+            try:
+                reference_user_id = UUID(reference_user_raw)
+                poll_seconds = int(
+                    os.getenv("SUPER_SIGNALS_DAY34_SETTLEMENT_POLL_SECONDS", "15").strip()
+                    or "15"
+                )
+                day34_settlement_manager = Day34BrokerSettlementManager(
+                    session_factory=session_factory,
+                    performance_service=day33_performance_service,
+                    reference_user_id=reference_user_id,
+                    poll_seconds=poll_seconds,
+                )
+                application.state.day34_settlement_manager = day34_settlement_manager
+            except (ValueError, TypeError):
+                logger.error(
+                    "Day 34 settlement watch disabled: reference user or poll interval is invalid"
+                )
 
         allow_mt5_manager = True
         diagnostic_probe = (
@@ -217,7 +252,7 @@ async def _lifespan(application: FastAPI) -> AsyncIterator[None]:
         publisher_settings.enabled and publisher_settings.destination_chat_id is not None
     )
 
-    publisher = Day20TelegramPublisherManager(
+    publisher = Day34TelegramPublisherManager(
         session_factory=session_factory,
         enabled=publisher_settings.enabled,
         bot_token=publisher_settings.bot_token,
@@ -248,12 +283,16 @@ async def _lifespan(application: FastAPI) -> AsyncIterator[None]:
         application.state.telegram_listener = listener
         await listener.start()
 
+    if day34_settlement_manager is not None:
+        await day34_settlement_manager.start()
     await publisher.start()
 
     try:
         yield
     finally:
         await publisher.stop()
+        if day34_settlement_manager is not None:
+            await day34_settlement_manager.stop()
         if listener is not None:
             await listener.stop()
         if mt5_bootstrap_task is not None and not mt5_bootstrap_task.done():
