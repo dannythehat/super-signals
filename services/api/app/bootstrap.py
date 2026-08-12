@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import os
 
 from sqlalchemy import text
@@ -70,11 +69,6 @@ def main() -> None:
 
     status = "created or rotated" if changed else "already configured"
     print(f"Owner account {status}: {email}")
-
-    if os.getenv("SUPER_SIGNALS_DAY27_LIVE_ACCEPTANCE", "").strip() == "1":
-        from app.day27_live_acceptance_resume import run_day27_live_acceptance_resume
-
-        asyncio.run(run_day27_live_acceptance_resume())
 
 
 if __name__ == "__main__":
