@@ -17,7 +17,9 @@ from app.metaapi_read_gateway import MetaApiReadGateway
 from app.mt5_connection_service_day30 import Day30Mt5ConnectionService
 from app.mt5_runtime import require_mt5_service
 
-router = APIRouter(prefix="/account/dashboard", tags=["dashboard-day32"])
+# Included by the existing /account/mt5 router, so the final endpoint is
+# /account/mt5/dashboard without adding another application-level router.
+router = APIRouter(prefix="/dashboard", tags=["dashboard-day32"])
 Identity = Annotated[dict[str, Any], Depends(get_current_identity)]
 
 
