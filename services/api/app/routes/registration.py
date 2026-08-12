@@ -5,16 +5,16 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import Depends, HTTPException, status
 from pydantic import BaseModel, Field
 from sqlalchemy import select, text
 from sqlalchemy.orm import Session
 
 from app.db import get_db_session
 from app.models import AuditEvent, Invitation, Role, User, UserRole
+from app.routes.auth import router
 from app.security import hash_password, hash_token
 
-router = APIRouter(prefix="/auth", tags=["authentication"])
 DbSession = Annotated[Session, Depends(get_db_session)]
 
 _GENERIC_INVITATION_ERROR = (
@@ -74,8 +74,6 @@ def register_with_invitation(
     key_hash = hash_token(payload.access_key)
     now = datetime.now(UTC)
 
-    # Row locking makes the one-time property true under concurrency: only the
-    # first request can mark this key used; the second waits and then sees used_at.
     invitation = session.scalar(
         select(Invitation)
         .where(Invitation.key_hash == key_hash)
