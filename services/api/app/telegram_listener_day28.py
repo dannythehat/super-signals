@@ -19,11 +19,11 @@ from telethon import TelegramClient
 from sqlalchemy.orm import Session, sessionmaker
 
 from app.day28_full_execution import Day28FullExecutionRouter
+from app.day28_zone_guard import Day28GuardedExecutionService
 from app.metaapi_margin_gateway import MetaApiMarginGateway
 from app.metaapi_read_gateway import MetaApiReadGateway
 from app.metaapi_trade_gateway import MetaApiTradeGateway
 from app.mt5_crypto import MetaApiTokenCipher
-from app.mt5_execution_day26_atomic import AtomicDay26Mt5ExecutionService
 from app.mt5_management_day27 import Day27Mt5ManagementService
 from app.telegram_crypto import TelegramSessionCipher
 from app.telegram_listener import CapturedTelegramMessage, ReaderListeningPlan
@@ -93,7 +93,7 @@ def build_day28_execution_router_from_env(
         cipher = MetaApiTokenCipher(broker_keys)
         read_gateway = MetaApiReadGateway()
         trade_gateway = MetaApiTradeGateway()
-        execution = AtomicDay26Mt5ExecutionService(
+        execution = Day28GuardedExecutionService(
             session_factory=session_factory,
             cipher=cipher,
             read_gateway=read_gateway,
