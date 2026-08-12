@@ -1,0 +1,219 @@
+.settings-page {
+  display: grid;
+  gap: 20px;
+}
+
+.settings-user-stack {
+  display: grid;
+  gap: 14px;
+}
+
+.settings-page .trading-activation-panel {
+  position: static;
+  z-index: auto;
+  width: 100%;
+  max-height: none;
+  overflow: visible;
+  padding: clamp(18px, 4vw, 24px);
+  border-color: rgba(89, 232, 205, 0.12);
+  border-radius: 20px;
+  background: rgba(7, 13, 23, 0.82);
+  box-shadow: none;
+  backdrop-filter: none;
+}
+
+.settings-page .recommended-preset {
+  border-color: rgba(89, 232, 205, 0.13);
+  background: rgba(89, 232, 205, 0.035);
+}
+
+.settings-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.settings-card,
+.settings-panel {
+  padding: clamp(18px, 4vw, 24px);
+  border: 1px solid rgba(255, 255, 255, 0.075);
+  border-radius: 20px;
+  background: rgba(7, 13, 23, 0.79);
+}
+
+.settings-card {
+  display: grid;
+  align-content: start;
+  gap: 10px;
+}
+
+.settings-card h2,
+.settings-panel h2 {
+  margin: 0;
+  color: #f3f6f8;
+  font-size: 1.18rem;
+  letter-spacing: -0.02em;
+}
+
+.settings-card p,
+.settings-help,
+.settings-mt5-form p {
+  margin: 0;
+  color: #818c9d;
+  font-size: 0.82rem;
+  line-height: 1.55;
+}
+
+.settings-card > .button,
+.settings-card > .settings-actions {
+  margin-top: auto;
+}
+
+.settings-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.settings-panel {
+  display: grid;
+  gap: 16px;
+}
+
+.settings-panel-heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 14px;
+}
+
+.settings-panel-heading > div {
+  display: grid;
+  gap: 4px;
+}
+
+.settings-state {
+  padding: 6px 9px;
+  border: 1px solid rgba(255, 255, 255, 0.09);
+  border-radius: 999px;
+  color: #9ba5b3;
+  background: rgba(255, 255, 255, 0.035);
+  font-size: 0.65rem;
+  font-weight: 850;
+  letter-spacing: 0.07em;
+}
+
+.settings-state--good {
+  border-color: rgba(100, 239, 176, 0.16);
+  color: #b9f7d7;
+  background: rgba(76, 223, 158, 0.055);
+}
+
+.settings-state--attention {
+  border-color: rgba(255, 188, 98, 0.15);
+  color: #e5c596;
+}
+
+.settings-account-summary {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.settings-account-summary > div {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+  padding: 12px;
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.025);
+}
+
+.settings-account-summary span {
+  color: #6e798a;
+  font-size: 0.67rem;
+  font-weight: 750;
+  text-transform: uppercase;
+}
+
+.settings-account-summary strong {
+  overflow: hidden;
+  color: #dbe1e7;
+  font-size: 0.8rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.settings-mt5-form {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+  padding-top: 4px;
+}
+
+.settings-mt5-form label {
+  display: grid;
+  gap: 6px;
+  color: #cbd2da;
+  font-size: 0.76rem;
+  font-weight: 700;
+}
+
+.settings-mt5-form label:last-of-type,
+.settings-mt5-form p,
+.settings-mt5-form .settings-actions {
+  grid-column: 1 / -1;
+}
+
+.settings-mt5-form input {
+  width: 100%;
+  min-height: 45px;
+  padding: 10px 12px;
+  border: 1px solid rgba(255, 255, 255, 0.11);
+  border-radius: 11px;
+  outline: none;
+  color: #fff;
+  background: rgba(255, 255, 255, 0.035);
+}
+
+.settings-mt5-form input:focus {
+  border-color: rgba(89, 232, 205, 0.48);
+  box-shadow: 0 0 0 3px rgba(89, 232, 205, 0.08);
+}
+
+.settings-notice {
+  margin: 0;
+  padding: 10px 12px;
+  border-radius: 11px;
+  color: #b8c6d2;
+  background: rgba(255, 255, 255, 0.035);
+  font-size: 0.78rem;
+}
+
+@media (max-width: 720px) {
+  .settings-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .settings-account-summary {
+    grid-template-columns: 1fr;
+  }
+
+  .settings-mt5-form {
+    grid-template-columns: 1fr;
+  }
+
+  .settings-mt5-form label:last-of-type,
+  .settings-mt5-form p,
+  .settings-mt5-form .settings-actions {
+    grid-column: auto;
+  }
+
+  .settings-page .trading-activation-panel {
+    right: auto;
+    bottom: auto;
+    width: 100%;
+    max-height: none;
+  }
+}
