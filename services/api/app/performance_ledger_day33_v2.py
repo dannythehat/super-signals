@@ -18,13 +18,7 @@ from app.performance_ledger_day33 import (
 
 
 class Day33PerformanceLedgerServiceV2(Day33PerformanceLedgerService):
-    """Fetch broker history only while a mapped position remains unresolved.
-
-    A completed position with an immutable broker-backed outcome never needs to be
-    fetched again on routine refresh. Missing legacy history remains retryable on a
-    later explicit sync, while authentication/permission failures fail the sync
-    instead of being disguised as an unknown trade result.
-    """
+    """Incremental broker history plus privacy-safe shared current trade state."""
 
     def ledger_ready(self, user_id: UUID) -> bool:
         with self._session_factory() as session:
@@ -67,6 +61,37 @@ class Day33PerformanceLedgerServiceV2(Day33PerformanceLedgerService):
             for row in rows
             if row["broker_position_id"] and row["id"] not in completed_ids
         ]
+
+    def read_shared_live_board(self) -> list[Any]:
+        """Return one provider-hidden row per currently open/pending Signal.
+
+        This is deliberately global rather than user-specific. Multi-user copies
+        are deduplicated by canonical signal, so Day 34 can publish one shared
+        board without revealing users, account counts, balances or provider names.
+        """
+        with self._session_factory() as session:
+            return list(
+                session.execute(
+                    text(
+                        """
+                        SELECT
+                            s.id AS signal_id,
+                            COALESCE(s.symbol,'') AS symbol,
+                            COALESCE(s.side,'') AS side,
+                            COUNT(DISTINCT p.tp_index) FILTER (WHERE o.status='open')::int AS open_positions,
+                            COUNT(DISTINCT p.tp_index) FILTER (WHERE o.status='pending')::int AS pending_positions,
+                            COUNT(DISTINCT p.tp_index)::int AS position_count,
+                            MIN(o.opened_at) AS opened_at
+                        FROM performance_trade_outcomes o
+                        JOIN positions p ON p.id=o.position_id
+                        JOIN signals s ON s.id=o.signal_id
+                        GROUP BY s.id,s.symbol,s.side
+                        HAVING BOOL_OR(o.status='open') OR BOOL_OR(o.status='pending')
+                        ORDER BY MIN(COALESCE(o.opened_at,o.derived_at)), s.id
+                        """
+                    )
+                ).mappings().all()
+            )
 
     async def sync_user(self, user_id: UUID) -> Day33SyncResult:
         account = self._account(user_id)
