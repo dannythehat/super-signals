@@ -6,7 +6,7 @@ alembic -c alembic.ini upgrade head
 python -m app.bootstrap
 
 if [ "${SUPER_SIGNALS_DAY28_CODE_ACCEPTANCE:-0}" = "1" ]; then
-  python -m pytest -q tests/test_day28_full_execution.py tests/test_day28_zone_guard.py
+  python -m app.day28_code_acceptance
 fi
 
 if [ "${SUPER_SIGNALS_DAY28_LIVE_ACCEPTANCE:-0}" = "1" ]; then
