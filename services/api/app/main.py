@@ -53,7 +53,7 @@ from app.routes.telegram_sources import (
 )
 from app.telegram_crypto import TelegramSessionCipher
 from app.telegram_listener import TelegramListenerManager
-from app.telegram_listener_day21 import build_day21_listener_manager
+from app.telegram_listener_day28 import build_day28_listener_manager
 from app.telegram_publisher_day20 import Day20TelegramPublisherManager
 
 logger = logging.getLogger(__name__)
@@ -231,7 +231,7 @@ async def _lifespan(application: FastAPI) -> AsyncIterator[None]:
         and settings.telegram_api_id is not None
         and settings.telegram_api_hash is not None
     ):
-        listener = build_day21_listener_manager(
+        listener = build_day28_listener_manager(
             api_id=settings.telegram_api_id,
             api_hash=settings.telegram_api_hash,
             cipher=TelegramSessionCipher(settings.telegram_session_keys),
