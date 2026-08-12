@@ -8,11 +8,15 @@ cutover-filtered: anything still broker-active at deployment belongs on the live
 
 from __future__ import annotations
 
+import hashlib
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from sqlalchemy import text
 
 from app.telegram_publisher_day34 import Day34TelegramPublisherManager
+
+_BOARD_PIN_RETRY_BACKOFF = timedelta(minutes=1)
 
 
 class Day34CutoverTelegramPublisherManager(Day34TelegramPublisherManager):
@@ -165,6 +169,45 @@ class Day34CutoverTelegramPublisherManager(Day34TelegramPublisherManager):
         # Intentionally sees ALL current broker-active state, including a trade opened
         # before deployment that is still live after deployment.
         self._sync_live_board_safely()
+
+    def _sync_live_board(self) -> None:
+        """Edit trade-state changes immediately, but rate-limit pin-only failures.
+
+        A missing Telegram pin permission is operationally harmless but previously made
+        the publisher retry every poll. We still edit the board immediately whenever its
+        broker-backed digest changes; only an unchanged board whose sole outstanding work
+        is a recently failed pin receives this one-minute backoff.
+        """
+        rows = self._live_board_rows()
+        rendered = self._render_live_board(rows)
+        desired_digest = hashlib.sha256(rendered.encode("utf-8")).hexdigest()
+        with self._session_factory() as session:
+            state = session.execute(
+                text(
+                    """
+                    SELECT telegram_message_id, source_digest, pinned_at,
+                           failure_code, attempted_at
+                    FROM telegram_live_board_state
+                    WHERE id=1
+                    """
+                )
+            ).mappings().one()
+
+        digest_unchanged = str(state["source_digest"] or "") == desired_digest
+        pin_only_pending = (
+            state["telegram_message_id"] is not None
+            and state["pinned_at"] is None
+            and digest_unchanged
+            and str(state["failure_code"] or "") == "telegram_http_400"
+        )
+        attempted_at = state["attempted_at"]
+        if pin_only_pending and isinstance(attempted_at, datetime):
+            now = datetime.now(UTC)
+            attempt = attempted_at if attempted_at.tzinfo else attempted_at.replace(tzinfo=UTC)
+            if now - attempt < _BOARD_PIN_RETRY_BACKOFF:
+                return
+
+        super()._sync_live_board()
 
     @staticmethod
     def _seed_in_app_notifications_after_cutover(
