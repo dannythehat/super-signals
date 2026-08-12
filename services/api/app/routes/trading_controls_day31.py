@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from dataclasses import asdict
 from decimal import Decimal
 from typing import Annotated, Any
 
@@ -10,6 +9,10 @@ from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from pydantic import BaseModel, Field
 
 from app.access_control import get_current_identity, require_permission
+from app.metaapi_read_gateway import MetaApiReadGateway
+from app.metaapi_trade_gateway import MetaApiTradeGateway
+from app.mt5_connection_service_day30 import Day30Mt5ConnectionService
+from app.mt5_runtime import require_mt5_service
 from app.trading_controls_day31 import (
     Day31ActivationPreview,
     Day31StopResult,
@@ -18,7 +21,9 @@ from app.trading_controls_day31 import (
     Day31TradingControlView,
 )
 
-router = APIRouter(prefix="/account/trading", tags=["trading-controls"])
+# Mounted beneath the existing /account/mt5 invited-user router, producing
+# /account/mt5/trading/... without touching the application/trading startup.
+router = APIRouter(prefix="/trading", tags=["trading-controls"])
 UserIdentity = Annotated[dict[str, Any], Depends(get_current_identity)]
 RiskIdentity = Annotated[dict[str, Any], Depends(require_permission("risk.manage"))]
 AutomationIdentity = Annotated[
@@ -85,8 +90,12 @@ def _ordinary_user(identity: dict[str, Any]) -> None:
 
 
 def _service(request: Request) -> Day31TradingControlService:
-    service = getattr(request.app.state, "day31_trading_control_service", None)
-    if not isinstance(service, Day31TradingControlService):
+    existing = getattr(request.app.state, "day31_trading_control_service", None)
+    if isinstance(existing, Day31TradingControlService):
+        return existing
+
+    base = require_mt5_service(request)
+    if not isinstance(base, Day30Mt5ConnectionService):
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail={
@@ -94,6 +103,13 @@ def _service(request: Request) -> Day31TradingControlService:
                 "message": "Trading controls are temporarily unavailable.",
             },
         )
+    service = Day31TradingControlService(
+        session_factory=base._session_factory,
+        cipher=base._cipher,
+        read_gateway=MetaApiReadGateway(),
+        trade_gateway=MetaApiTradeGateway(),
+    )
+    request.app.state.day31_trading_control_service = service
     return service
 
 
