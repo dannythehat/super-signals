@@ -124,6 +124,7 @@ export function TradeTimeline({ apiBaseUrl, currency }: Props) {
       setData(next);
       setError(null);
       setSyncNote(syncFailed ? 'Showing the last broker-backed ledger snapshot. Live history refresh is temporarily unavailable.' : null);
+      if (!syncFailed) window.dispatchEvent(new Event('super-signals-ledger-synced'));
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : 'Trade history is temporarily unavailable.');
     } finally {
