@@ -144,6 +144,7 @@ class Day34PushNotificationManager:
                     FROM notification_events AS n
                     JOIN push_subscriptions AS ps
                       ON ps.enabled = true
+                     AND n.created_at >= ps.active_since
                      AND (
                          n.audience = 'shared'
                          OR (n.audience = 'user' AND n.user_id = ps.user_id)
