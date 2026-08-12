@@ -134,6 +134,47 @@ class Day34PushNotificationManager:
 
     def _seed_deliveries(self) -> int:
         with self._session_factory() as session:
+            # One private confirmation per device activation proves that the browser,
+            # subscription and push worker are genuinely ready. The event key includes
+            # active_since so an explicitly re-enabled device may receive one fresh
+            # confirmation, while normal polling/restarts can never duplicate it.
+            session.execute(
+                text(
+                    """
+                    INSERT INTO notification_events (
+                        event_key, signal_id, lifecycle_event_id, user_id,
+                        audience, kind, title, body, payload
+                    )
+                    SELECT
+                        'push-enabled:' || ps.id::text || ':' ||
+                            to_char(ps.active_since AT TIME ZONE 'UTC', 'YYYYMMDDHH24MISSUS'),
+                        NULL,
+                        NULL,
+                        ps.user_id,
+                        'user',
+                        'push_test',
+                        'Super Signals alerts are on',
+                        'This device is ready to receive live trade alerts.',
+                        jsonb_build_object(
+                            'subscription_confirmation', true,
+                            'provider_identity_exposed', false,
+                            'private_balance_exposed', false,
+                            'trade_action_created', false
+                        )
+                    FROM push_subscriptions AS ps
+                    WHERE ps.enabled = true
+                      AND NOT EXISTS (
+                          SELECT 1
+                          FROM notification_events AS n
+                          WHERE n.event_key =
+                              'push-enabled:' || ps.id::text || ':' ||
+                              to_char(ps.active_since AT TIME ZONE 'UTC', 'YYYYMMDDHH24MISSUS')
+                      )
+                    ON CONFLICT (event_key) DO NOTHING
+                    """
+                )
+            )
+
             rows = session.execute(
                 text(
                     """
