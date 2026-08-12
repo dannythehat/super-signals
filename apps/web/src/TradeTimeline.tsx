@@ -30,7 +30,7 @@ type TimelineData = {
   broker_trade_action_created: boolean;
 };
 
-type FilterKey = 'all' | 'open' | 'pending' | 'closed' | 'won' | 'lost' | 'breakeven';
+type FilterKey = 'all' | 'open' | 'pending' | 'closed' | 'won' | 'lost' | 'breakeven' | 'skipped';
 
 type Props = {
   apiBaseUrl: string;
@@ -81,12 +81,18 @@ function statusIcon(status: string): string {
   if (status === 'won') return '✓';
   if (status === 'lost') return '×';
   if (status === 'breakeven') return '=';
+  if (status === 'skipped') return '!';
   return '○';
 }
 
 function pnlClass(value: number | null): string {
   if (value === null || value === 0) return 'is-flat';
   return value > 0 ? 'is-positive' : 'is-negative';
+}
+
+function skippedReason(value: string | null): string {
+  if (!value) return 'Execution gate blocked this signal.';
+  return value.replaceAll('_', ' ');
 }
 
 export function TradeTimeline({ apiBaseUrl, currency }: Props) {
@@ -157,6 +163,7 @@ export function TradeTimeline({ apiBaseUrl, currency }: Props) {
       won: new Set(['won']),
       lost: new Set(['lost']),
       breakeven: new Set(['breakeven']),
+      skipped: new Set(['skipped']),
     };
     return data.trades.filter((trade) => {
       const statuses = acceptedStatuses[statusFilter];
@@ -173,7 +180,7 @@ export function TradeTimeline({ apiBaseUrl, currency }: Props) {
 
   return <section className="day33-timeline" aria-labelledby="day33-timeline-title">
     <div className="day33-timeline-head">
-      <div><span>Canonical broker ledger</span><h2 id="day33-timeline-title">Trade timeline</h2><p>Open, pending and completed Super Signals trades in one view.</p></div>
+      <div><span>Canonical broker ledger</span><h2 id="day33-timeline-title">Trade timeline</h2><p>Open, pending, completed and mechanically skipped Super Signals trades in one view.</p></div>
       <button type="button" className="day33-refresh" onClick={() => void refresh()} disabled={refreshing}>{refreshing ? 'Syncing…' : 'Sync broker'}</button>
     </div>
 
@@ -189,7 +196,7 @@ export function TradeTimeline({ apiBaseUrl, currency }: Props) {
     <div className="day33-status-filters" aria-label="Filter trade status">
       {([
         ['all', 'All'], ['open', 'Open'], ['pending', 'Pending'], ['closed', 'Closed'],
-        ['won', 'Won'], ['lost', 'Lost'], ['breakeven', 'BE'],
+        ['won', 'Won'], ['lost', 'Lost'], ['breakeven', 'BE'], ['skipped', 'Skipped'],
       ] as Array<[FilterKey, string]>).map(([key, label]) => <button key={key} type="button" className={statusFilter === key ? 'is-selected' : ''} onClick={() => setStatusFilter(key)}>{label}</button>)}
     </div>
 
@@ -209,23 +216,25 @@ export function TradeTimeline({ apiBaseUrl, currency }: Props) {
         {trade.trader_stream && <span className={`day33-trader-chip day33-source-chip--${trade.source_color_index ?? 0}`}>{trade.trader_stream}</span>}
       </div>}
 
-      <div className="day33-progress-row">
-        {trade.open_positions > 0 && <span>{trade.open_positions}/{trade.position_count} positions open</span>}
-        {trade.pending_positions > 0 && <span>{trade.pending_positions} pending</span>}
-        {trade.closed_positions > 0 && <span>{trade.closed_positions} closed</span>}
-      </div>
+      {trade.status === 'skipped' ? <div className="day33-skipped-reason"><strong>Not placed</strong><span>{skippedReason(trade.close_reason)}</span></div> : <>
+        <div className="day33-progress-row">
+          {trade.open_positions > 0 && <span>{trade.open_positions}/{trade.position_count} positions open</span>}
+          {trade.pending_positions > 0 && <span>{trade.pending_positions} pending</span>}
+          {trade.closed_positions > 0 && <span>{trade.closed_positions} closed</span>}
+        </div>
 
-      <div className="day33-trade-metrics">
-        <div><span>Actual P/L</span><strong className={pnlClass(trade.cash_pnl)}>{money(trade.cash_pnl, currency)}</strong></div>
-        <div><span>Pips</span><strong>{trade.net_pips === null ? '—' : `${trade.net_pips > 0 ? '+' : ''}${trade.net_pips}`}</strong></div>
-        <div><span>$500 @ 1%</span><strong className={pnlClass(trade.model_500_pnl)}>{trade.model_500_pnl === null ? '—' : money(trade.model_500_pnl, 'USD')}</strong></div>
-      </div>
+        <div className="day33-trade-metrics">
+          <div><span>Actual P/L</span><strong className={pnlClass(trade.cash_pnl)}>{money(trade.cash_pnl, currency)}</strong></div>
+          <div><span>Pips</span><strong>{trade.net_pips === null ? '—' : `${trade.net_pips > 0 ? '+' : ''}${trade.net_pips}`}</strong></div>
+          <div><span>$500 @ 1%</span><strong className={pnlClass(trade.model_500_pnl)}>{trade.model_500_pnl === null ? '—' : money(trade.model_500_pnl, 'USD')}</strong></div>
+        </div>
+      </>}
 
-      <div className="day33-trade-time"><span>{trade.opened_at ? `Opened ${shortTime(trade.opened_at)}` : 'Open time unavailable'}</span>{trade.closed_at && <span>Closed {shortTime(trade.closed_at)}</span>}</div>
+      <div className="day33-trade-time">{trade.status === 'skipped' ? <span>Skipped {shortTime(trade.closed_at)}</span> : <><span>{trade.opened_at ? `Opened ${shortTime(trade.opened_at)}` : 'Open time unavailable'}</span>{trade.closed_at && <span>Closed {shortTime(trade.closed_at)}</span>}</>}</div>
     </article>)}</div>}
 
     <div className="day33-legend" aria-label="Trade status colour legend">
-      <span><i className="is-blue" />Open</span><span><i className="is-amber" />Pending</span><span><i className="is-green" />Win</span><span><i className="is-red" />Loss</span><span><i className="is-grey" />BE / closed</span>
+      <span><i className="is-blue" />Open</span><span><i className="is-amber" />Pending / skipped</span><span><i className="is-green" />Win</span><span><i className="is-red" />Loss</span><span><i className="is-grey" />BE / closed</span>
     </div>
     <p className="day33-privacy-note">Status colour shows what happened to the trade. Source/trader colour is a separate identity marker and never changes the result meaning.</p>
   </section>;
