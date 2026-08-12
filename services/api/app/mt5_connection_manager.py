@@ -58,6 +58,12 @@ class Mt5ConnectionManager:
         if self._task is not None and not self._task.done():
             return
         self._stopping.clear()
+
+        if os.getenv("SUPER_SIGNALS_DAY30_LIVE_ACCEPTANCE", "").strip() == "1":
+            from app.day30_live_acceptance import run_day30_live_acceptance
+
+            await run_day30_live_acceptance(self._service)  # type: ignore[arg-type]
+
         # Reconcile once before the loop. This is the restart/reconnect path.
         # The idle interval is deliberately conservative while Super Signals is
         # not yet using a continuous broker stream. Manual owner refresh remains
