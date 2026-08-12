@@ -1,6 +1,7 @@
-const CACHE_NAME = 'super-signals-shell-v1';
+const CACHE_NAME = 'super-signals-shell-v2';
 const SHELL_ASSETS = ['/', '/manifest.webmanifest', '/app-icon.svg', '/super-signals-logo.png'];
 const PRIVATE_PREFIXES = ['/api/', '/auth/', '/account/', '/admin/', '/owner/'];
+const STATIC_DESTINATIONS = new Set(['style', 'script', 'image', 'font']);
 
 self.addEventListener('install', (event) => {
   event.waitUntil(caches.open(CACHE_NAME).then((cache) => cache.addAll(SHELL_ASSETS)));
@@ -26,8 +27,10 @@ self.addEventListener('fetch', (event) => {
     event.respondWith(
       fetch(request)
         .then((response) => {
-          const copy = response.clone();
-          caches.open(CACHE_NAME).then((cache) => cache.put('/', copy));
+          if (response.ok) {
+            const copy = response.clone();
+            void caches.open(CACHE_NAME).then((cache) => cache.put('/', copy));
+          }
           return response;
         })
         .catch(() => caches.match('/')),
@@ -35,13 +38,16 @@ self.addEventListener('fetch', (event) => {
     return;
   }
 
+  const isKnownShellAsset = SHELL_ASSETS.includes(url.pathname);
+  if (!isKnownShellAsset && !STATIC_DESTINATIONS.has(request.destination)) return;
+
   event.respondWith(
     caches.match(request).then((cached) => {
       if (cached) return cached;
       return fetch(request).then((response) => {
         if (!response.ok) return response;
         const copy = response.clone();
-        caches.open(CACHE_NAME).then((cache) => cache.put(request, copy));
+        void caches.open(CACHE_NAME).then((cache) => cache.put(request, copy));
         return response;
       });
     }),
