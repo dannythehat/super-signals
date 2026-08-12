@@ -19,7 +19,7 @@ from app.db import get_session_factory
 from app.metaapi_gateway import MetaApiProvisioningGateway
 from app.mt5_connection_manager import Mt5ConnectionManager
 from app.mt5_connection_service import Mt5ConnectionError, Mt5DemoConnectionService
-from app.mt5_connection_service_day22 import Day22Mt5DemoConnectionService
+from app.mt5_connection_service_day30 import Day30Mt5ConnectionService
 from app.mt5_crypto import MetaApiTokenCipher
 from app.mt5_day23_acceptance import run_day23_acceptance_probe
 from app.mt5_recovery import (
@@ -35,6 +35,7 @@ from app.routes.day26_execution import router as day26_execution_router
 from app.routes.day27_management import router as day27_management_router
 from app.routes.health import router as health_router
 from app.routes.mt5_accounts import router as mt5_accounts_router
+from app.routes.mt5_approvals_day30 import router as mt5_approvals_day30_router
 from app.routes.signals import router as signals_router
 from app.routes.telegram_accounts import router as telegram_accounts_router
 from app.routes.telegram_classifications import router as telegram_classifications_router
@@ -51,6 +52,7 @@ from app.routes.telegram_sources import (
     provide_telegram_source_service,
     router as telegram_sources_router,
 )
+from app.routes.user_mt5_accounts import router as user_mt5_accounts_router
 from app.telegram_crypto import TelegramSessionCipher
 from app.telegram_listener import TelegramListenerManager
 from app.telegram_listener_day28 import build_day28_listener_manager
@@ -140,7 +142,7 @@ async def _lifespan(application: FastAPI) -> AsyncIterator[None]:
     if broker_keys:
         broker_cipher = MetaApiTokenCipher(broker_keys)
         gateway = MetaApiProvisioningGateway()
-        mt5_connection_service = Day22Mt5DemoConnectionService(
+        mt5_connection_service = Day30Mt5ConnectionService(
             session_factory=session_factory,
             cipher=broker_cipher,
             gateway=gateway,
@@ -313,6 +315,8 @@ def create_app() -> FastAPI:
     application.include_router(telegram_publisher_router)
     application.include_router(telegram_e2e_gate_router)
     application.include_router(mt5_accounts_router)
+    application.include_router(mt5_approvals_day30_router)
+    application.include_router(user_mt5_accounts_router)
     application.include_router(day26_execution_router)
     application.include_router(day27_management_router)
     _mount_web_application(application)
