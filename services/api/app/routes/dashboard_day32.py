@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import asdict
 from datetime import datetime
 from decimal import Decimal
 from typing import Annotated, Any
@@ -167,15 +168,15 @@ async def account_dashboard(
     view = await _service(request).read(identity["id"])
     _no_store(response)
     return DashboardResponse(
-        connection=ConnectionResponse(**view.connection.__dict__),
-        account=(AccountResponse(**view.account.__dict__) if view.account is not None else None),
-        trading=TradingResponse(**view.trading.__dict__),
+        connection=ConnectionResponse(**asdict(view.connection)),
+        account=(AccountResponse(**asdict(view.account)) if view.account is not None else None),
+        trading=TradingResponse(**asdict(view.trading)),
         open_profit=view.open_profit,
-        open_positions=tuple(OpenPositionResponse(**item.__dict__) for item in view.open_positions),
-        latest_signal=(LatestSignalResponse(**view.latest_signal.__dict__) if view.latest_signal is not None else None),
-        recent_completed=tuple(CompletedPositionResponse(**item.__dict__) for item in view.recent_completed),
-        performance=tuple(PerformanceResponse(**item.__dict__) for item in view.performance),
-        win_loss=WinLossResponse(**view.win_loss.__dict__),
-        activity=tuple(ActivityResponse(**item.__dict__) for item in view.activity),
+        open_positions=tuple(OpenPositionResponse(**asdict(item)) for item in view.open_positions),
+        latest_signal=(LatestSignalResponse(**asdict(view.latest_signal)) if view.latest_signal is not None else None),
+        recent_completed=tuple(CompletedPositionResponse(**asdict(item)) for item in view.recent_completed),
+        performance=tuple(PerformanceResponse(**asdict(item)) for item in view.performance),
+        win_loss=WinLossResponse(**asdict(view.win_loss)),
+        activity=tuple(ActivityResponse(**asdict(item)) for item in view.activity),
         reconciled_external_positions=view.reconciled_external_positions,
     )
