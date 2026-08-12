@@ -32,6 +32,13 @@ CORE_TABLES = {
     "performance_account_snapshots",
     "performance_trade_outcomes",
     "performance_summaries",
+    "telegram_live_board_state",
+    "notification_events",
+    "notification_reads",
+    "telegram_notification_deliveries",
+    "push_subscriptions",
+    "push_notification_deliveries",
+    "day34_summary_state",
 }
 
 
