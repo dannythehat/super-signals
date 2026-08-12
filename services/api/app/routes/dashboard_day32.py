@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from dataclasses import asdict
 from datetime import datetime
-from decimal import Decimal
 from typing import Annotated, Any
 from uuid import UUID
 
@@ -45,15 +44,15 @@ class AccountResponse(BaseModel):
 class TradingResponse(BaseModel):
     available: bool
     status: str | None
-    risk_percent: Decimal | None
+    risk_percent: float | None
     allow_double_lot: bool | None
-    effective_double_lot_risk_percent: Decimal | None
+    effective_double_lot_risk_percent: float | None
 
 
 class PerformanceResponse(BaseModel):
     key: str
     label: str
-    amount: Decimal | None
+    amount: float | None
     known_position_count: int
     provisional_until_day33: bool
 
@@ -66,7 +65,7 @@ class OpenPositionResponse(BaseModel):
     symbol: str
     side: str
     volume: float
-    planned_risk_percent: Decimal
+    planned_risk_percent: float
     entry_price: float
     current_price: float | None
     stop_loss: float | None
@@ -93,7 +92,7 @@ class CompletedPositionResponse(BaseModel):
     symbol: str
     side: str
     closed_at: datetime | None
-    pnl_amount: Decimal | None
+    pnl_amount: float | None
     close_reason: str | None
 
 
@@ -102,7 +101,7 @@ class WinLossResponse(BaseModel):
     losses: int
     breakeven: int
     known_results: int
-    win_rate_percent: Decimal | None
+    win_rate_percent: float | None
 
 
 class ActivityResponse(BaseModel):
