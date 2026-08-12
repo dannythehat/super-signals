@@ -5,14 +5,7 @@ small modules. Importing them here registers those routes before ``main`` import
 the router objects, keeping invitation work isolated from the trading startup.
 """
 
-import os
-
 from . import admin_accounts as _admin_accounts  # noqa: F401
 from . import auth as _auth  # noqa: F401
 from . import invitations as _invitations  # noqa: F401
 from . import registration as _registration  # noqa: F401
-
-if os.getenv("SUPER_SIGNALS_DAY29_LIVE_ACCEPTANCE", "").strip() == "1":
-    from app.day29_live_acceptance import run_day29_live_acceptance
-
-    run_day29_live_acceptance()
