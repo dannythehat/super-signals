@@ -1,18 +1,20 @@
-"""Day 34 authenticated in-app notifications.
+"""Day 34 authenticated in-app and Web Push notification controls.
 
 Notifications are derived from canonical broker/lifecycle events and stored in
-PostgreSQL. Reading or acknowledging a notification is UI state only and can never
-place, close, modify or otherwise affect a trade.
+PostgreSQL. Reading, subscribing or acknowledging a notification is visibility/UI state
+only and can never place, close, modify or otherwise affect a trade.
 """
 
 from __future__ import annotations
 
+import hashlib
+import os
 from datetime import datetime
 from typing import Annotated, Any
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
@@ -47,6 +49,37 @@ class NotificationReadResponse(BaseModel):
     broker_trade_action_created: bool = False
 
 
+class PushConfigResponse(BaseModel):
+    enabled: bool
+    public_key: str | None
+    broker_trade_action_created: bool = False
+
+
+class PushKeysRequest(BaseModel):
+    p256dh: str = Field(min_length=20, max_length=512)
+    auth: str = Field(min_length=8, max_length=256)
+
+
+class PushSubscriptionRequest(BaseModel):
+    endpoint: str = Field(min_length=20, max_length=4096)
+    keys: PushKeysRequest
+
+
+class PushSubscriptionResponse(BaseModel):
+    subscription_id: UUID
+    enabled: bool
+    broker_trade_action_created: bool = False
+
+
+class PushUnsubscribeRequest(BaseModel):
+    endpoint: str = Field(min_length=20, max_length=4096)
+
+
+class PushUnsubscribeResponse(BaseModel):
+    disabled: bool
+    broker_trade_action_created: bool = False
+
+
 def _no_store(response: Response) -> None:
     response.headers["Cache-Control"] = "no-store"
     response.headers["Pragma"] = "no-cache"
@@ -54,6 +87,23 @@ def _no_store(response: Response) -> None:
 
 def _visible_filter() -> str:
     return "(n.audience = 'shared' OR (n.audience = 'user' AND n.user_id = :user_id))"
+
+
+def _endpoint_hash(endpoint: str) -> str:
+    return hashlib.sha256(endpoint.encode("utf-8")).hexdigest()
+
+
+def _validate_push_endpoint(endpoint: str) -> str:
+    normalized = endpoint.strip()
+    if not normalized.startswith("https://"):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail={
+                "code": "push_endpoint_invalid",
+                "message": "Push subscription endpoint must use HTTPS.",
+            },
+        )
+    return normalized
 
 
 @router.get("", response_model=NotificationListResponse)
@@ -185,3 +235,105 @@ def mark_notification_read(
         read_at=existing,
         already_read=already_read,
     )
+
+
+@router.get("/push/config", response_model=PushConfigResponse)
+def push_config(response: Response, identity: Identity) -> PushConfigResponse:
+    del identity
+    public_key = os.getenv("SUPER_SIGNALS_WEB_PUSH_VAPID_PUBLIC_KEY", "").strip()
+    _no_store(response)
+    return PushConfigResponse(
+        enabled=bool(public_key),
+        public_key=public_key or None,
+    )
+
+
+@router.post("/push/subscribe", response_model=PushSubscriptionResponse)
+def subscribe_push(
+    payload: PushSubscriptionRequest,
+    response: Response,
+    session: DbSession,
+    identity: Identity,
+) -> PushSubscriptionResponse:
+    user_id = identity["id"]
+    endpoint = _validate_push_endpoint(payload.endpoint)
+    endpoint_hash = _endpoint_hash(endpoint)
+    existing = session.execute(
+        text(
+            """
+            SELECT id, user_id
+            FROM push_subscriptions
+            WHERE endpoint_hash = :endpoint_hash
+            LIMIT 1
+            """
+        ),
+        {"endpoint_hash": endpoint_hash},
+    ).mappings().first()
+    if existing is not None and existing["user_id"] != user_id:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={
+                "code": "push_subscription_owned_by_other_user",
+                "message": "This device subscription is already linked to another account.",
+            },
+        )
+
+    subscription_id = session.execute(
+        text(
+            """
+            INSERT INTO push_subscriptions (
+                user_id, endpoint, endpoint_hash, p256dh, auth, enabled,
+                failure_count, updated_at
+            )
+            VALUES (
+                :user_id, :endpoint, :endpoint_hash, :p256dh, :auth, true, 0, now()
+            )
+            ON CONFLICT (endpoint_hash) DO UPDATE
+                SET p256dh=EXCLUDED.p256dh,
+                    auth=EXCLUDED.auth,
+                    enabled=true,
+                    failure_count=0,
+                    updated_at=now()
+            RETURNING id
+            """
+        ),
+        {
+            "user_id": user_id,
+            "endpoint": endpoint,
+            "endpoint_hash": endpoint_hash,
+            "p256dh": payload.keys.p256dh.strip(),
+            "auth": payload.keys.auth.strip(),
+        },
+    ).scalar_one()
+    session.commit()
+    _no_store(response)
+    return PushSubscriptionResponse(subscription_id=subscription_id, enabled=True)
+
+
+@router.post("/push/unsubscribe", response_model=PushUnsubscribeResponse)
+def unsubscribe_push(
+    payload: PushUnsubscribeRequest,
+    response: Response,
+    session: DbSession,
+    identity: Identity,
+) -> PushUnsubscribeResponse:
+    endpoint = _validate_push_endpoint(payload.endpoint)
+    changed = session.execute(
+        text(
+            """
+            UPDATE push_subscriptions
+            SET enabled=false, updated_at=now()
+            WHERE endpoint_hash=:endpoint_hash
+              AND user_id=:user_id
+              AND enabled=true
+            RETURNING id
+            """
+        ),
+        {
+            "endpoint_hash": _endpoint_hash(endpoint),
+            "user_id": identity["id"],
+        },
+    ).scalar_one_or_none()
+    session.commit()
+    _no_store(response)
+    return PushUnsubscribeResponse(disabled=changed is not None)
