@@ -1,30 +1,53 @@
-"""Day 34 Telegram feed: execution-first roots, lifecycle replies and one pinned board.
+"""Day 34 Telegram feed: execution-first roots, lifecycle replies, summaries and one pinned board.
 
 The broker/database state is authoritative. Canonical Signals that never reached a
 confirmed Day 26 broker placement are suppressed from the member feed. The pinned Live
 Trades Board is one bot-authored message that is edited in place and never affects
-trading if Telegram is unavailable.
+trading if Telegram is unavailable. Scheduled summaries use a separate outbox so they
+can never masquerade as Signal roots or lifecycle replies.
 """
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
+from dataclasses import dataclass
 from typing import Any
+from uuid import UUID
 
 from sqlalchemy import text
 
 from app.models import AuditEvent
-from app.telegram_publisher import TelegramPublishError, _bot_api_call
+from app.summary_notifications_day34 import Day34SummaryNotificationService
+from app.telegram_publisher import PublicationAttempt, TelegramPublishError, _bot_api_call
 from app.telegram_publisher_day20 import Day20TelegramPublisherManager
 
 DAY34_PUBLISHER_VERSION = "day34-publisher-v1"
 
 
+@dataclass(frozen=True, slots=True)
+class SummaryPublicationAttempt:
+    delivery_id: UUID
+    notification_id: UUID
+    text: str
+
+
 class Day34TelegramPublisherManager(Day20TelegramPublisherManager):
     """Day 20 threaded history with Day 34 broker-first visibility and live board."""
 
+    def __init__(self, *, reference_user_id: UUID | None = None, **kwargs: Any) -> None:
+        super().__init__(**kwargs)
+        self._summary_service = (
+            Day34SummaryNotificationService(
+                session_factory=self._session_factory,
+                reference_user_id=reference_user_id,
+            )
+            if reference_user_id is not None
+            else None
+        )
+
     def _seed_missing_publications(self) -> None:
-        """Seed only Signals with a completed broker placement acceptance event."""
+        """Seed only broker-placed roots/lifecycle plus completed ledger summaries."""
         with self._session_factory() as session:
             # Retrofit old Day 19/20 behaviour: a canonical Signal is not enough to
             # become member-visible. Any still-pending pre-Day34 root without a
@@ -109,6 +132,10 @@ class Day34TelegramPublisherManager(Day20TelegramPublisherManager):
             self._seed_in_app_notifications(session)
             session.commit()
 
+        if self._summary_service is not None:
+            self._summary_service.seed_due()
+        self._seed_summary_deliveries()
+
         # Board failure is deliberately isolated from root/lifecycle publication and
         # from trading. The same state row/message ID is reused on every retry.
         self._sync_live_board_safely()
@@ -189,6 +216,209 @@ class Day34TelegramPublisherManager(Day20TelegramPublisherManager):
                 """
             )
         )
+
+    def _seed_summary_deliveries(self) -> None:
+        with self._session_factory() as session:
+            session.execute(
+                text(
+                    """
+                    INSERT INTO telegram_notification_deliveries (
+                        notification_id, status
+                    )
+                    SELECT n.id, 'pending'
+                    FROM notification_events AS n
+                    WHERE n.audience='shared'
+                      AND n.kind IN ('summary_daily','summary_weekly','summary_monthly')
+                      AND NOT EXISTS (
+                          SELECT 1
+                          FROM telegram_notification_deliveries AS d
+                          WHERE d.notification_id=n.id
+                      )
+                    ON CONFLICT (notification_id) DO NOTHING
+                    """
+                )
+            )
+            session.commit()
+
+    def _mark_stale_sending_failed(self) -> None:
+        super()._mark_stale_sending_failed()
+        with self._session_factory() as session:
+            session.execute(
+                text(
+                    """
+                    UPDATE telegram_notification_deliveries
+                    SET status='failed',
+                        failure_code='delivery_state_uncertain',
+                        failure_reason='Previous process stopped during Telegram summary delivery; automatic retry is disabled to avoid duplicate posts.',
+                        updated_at=now()
+                    WHERE status='sending'
+                    """
+                )
+            )
+            session.commit()
+
+    def _claim_next(self) -> PublicationAttempt | SummaryPublicationAttempt | None:
+        regular_attempt = super()._claim_next()
+        if regular_attempt is not None:
+            return regular_attempt
+
+        assert self._destination_chat_id is not None
+        with self._session_factory() as session:
+            row = session.execute(
+                text(
+                    """
+                    SELECT
+                        d.id AS delivery_id,
+                        d.notification_id,
+                        n.title,
+                        n.body
+                    FROM telegram_notification_deliveries AS d
+                    JOIN notification_events AS n ON n.id=d.notification_id
+                    WHERE d.status='pending'
+                    ORDER BY d.created_at, d.id
+                    FOR UPDATE OF d SKIP LOCKED
+                    LIMIT 1
+                    """
+                )
+            ).mappings().first()
+            if row is None:
+                session.rollback()
+                return None
+
+            rendered = f"{str(row['title'])}\n{str(row['body'])}"
+            session.execute(
+                text(
+                    """
+                    UPDATE telegram_notification_deliveries
+                    SET status='sending',
+                        rendered_text=:rendered,
+                        destination_chat_id=:chat_id,
+                        attempt_count=attempt_count+1,
+                        attempted_at=now(),
+                        failure_code=NULL,
+                        failure_reason=NULL,
+                        updated_at=now()
+                    WHERE id=:delivery_id AND status='pending'
+                    """
+                ),
+                {
+                    "delivery_id": row["delivery_id"],
+                    "rendered": rendered,
+                    "chat_id": self._destination_chat_id,
+                },
+            )
+            session.commit()
+            return SummaryPublicationAttempt(
+                delivery_id=row["delivery_id"],
+                notification_id=row["notification_id"],
+                text=rendered,
+            )
+
+    async def _deliver(
+        self,
+        attempt: PublicationAttempt | SummaryPublicationAttempt,
+    ) -> None:
+        if not isinstance(attempt, SummaryPublicationAttempt):
+            await super()._deliver(attempt)
+            return
+
+        assert self._bot_token is not None
+        assert self._destination_chat_id is not None
+        try:
+            result = await asyncio.to_thread(
+                _bot_api_call,
+                self._bot_token,
+                "sendMessage",
+                {
+                    "chat_id": self._destination_chat_id,
+                    "text": attempt.text,
+                    "disable_web_page_preview": "true",
+                },
+            )
+            message_id = int(result["message_id"])
+        except (TelegramPublishError, KeyError, TypeError, ValueError) as exc:
+            if isinstance(exc, TelegramPublishError):
+                code, reason = exc.code, exc.reason
+            else:
+                code = "telegram_invalid_success_response"
+                reason = "Telegram did not return a usable summary message ID."
+            await asyncio.to_thread(self._record_summary_failure, attempt, code, reason)
+            return
+        await asyncio.to_thread(self._record_summary_success, attempt, message_id)
+
+    def _record_summary_success(
+        self,
+        attempt: SummaryPublicationAttempt,
+        message_id: int,
+    ) -> None:
+        with self._session_factory() as session:
+            updated = session.execute(
+                text(
+                    """
+                    UPDATE telegram_notification_deliveries
+                    SET status='sent', telegram_message_id=:message_id,
+                        sent_at=now(), updated_at=now()
+                    WHERE id=:delivery_id AND status='sending'
+                    RETURNING id
+                    """
+                ),
+                {"delivery_id": attempt.delivery_id, "message_id": message_id},
+            ).scalar_one_or_none()
+            if updated is not None:
+                session.add(
+                    AuditEvent(
+                        actor_user_id=None,
+                        event_type="telegram.day34_summary_sent",
+                        entity_type="notification_event",
+                        entity_id=attempt.notification_id,
+                        payload={
+                            "publisher_version": DAY34_PUBLISHER_VERSION,
+                            "delivery_id": str(attempt.delivery_id),
+                            "telegram_message_id": message_id,
+                            "provider_identity_exposed": False,
+                            "private_balance_exposed": False,
+                            "trade_action_created": False,
+                        },
+                    )
+                )
+            session.commit()
+
+    def _record_summary_failure(
+        self,
+        attempt: SummaryPublicationAttempt,
+        code: str,
+        reason: str,
+    ) -> None:
+        with self._session_factory() as session:
+            updated = session.execute(
+                text(
+                    """
+                    UPDATE telegram_notification_deliveries
+                    SET status='failed', failure_code=:code, failure_reason=:reason,
+                        updated_at=now()
+                    WHERE id=:delivery_id AND status='sending'
+                    RETURNING id
+                    """
+                ),
+                {"delivery_id": attempt.delivery_id, "code": code[:80], "reason": reason[:500]},
+            ).scalar_one_or_none()
+            if updated is not None:
+                session.add(
+                    AuditEvent(
+                        actor_user_id=None,
+                        event_type="telegram.day34_summary_failed",
+                        entity_type="notification_event",
+                        entity_id=attempt.notification_id,
+                        payload={
+                            "publisher_version": DAY34_PUBLISHER_VERSION,
+                            "delivery_id": str(attempt.delivery_id),
+                            "failure_code": code[:80],
+                            "trading_unchanged": True,
+                            "trade_action_created": False,
+                        },
+                    )
+                )
+            session.commit()
 
     def _sync_live_board_safely(self) -> None:
         if not self.configured:
@@ -467,4 +697,4 @@ class Day34TelegramPublisherManager(Day20TelegramPublisherManager):
             session.commit()
 
 
-__all__ = ["Day34TelegramPublisherManager"]
+__all__ = ["Day34TelegramPublisherManager", "SummaryPublicationAttempt"]
