@@ -155,7 +155,10 @@ def test_active_context_cannot_supply_missing_new_trade_execution_values(monkeyp
 
     assert result.decision == "new_trade"
     assert result.action == "skip"
-    assert result.reason == "provider_instruction_incomplete"
+    # The model tried to copy execution numbers from active context into a terse
+    # new-trade instruction. The mechanical literal-evidence guard catches this
+    # specifically: none of those values appeared in the current message/direct reply.
+    assert result.reason == "literal_value_verification_failed"
 
 
 def test_multiple_active_trades_are_given_to_ai_without_forcing_a_target(monkeypatch) -> None:
