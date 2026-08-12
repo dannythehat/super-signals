@@ -92,4 +92,15 @@ async def execute_day27_management(
 
     response.headers["Cache-Control"] = "no-store"
     response.headers["Pragma"] = "no-cache"
-    return Day27ManagementResponse(**result.__dict__)
+    return Day27ManagementResponse(
+        lifecycle_event_id=result.lifecycle_event_id,
+        signal_id=result.signal_id,
+        user_id=result.user_id,
+        actions_requested=result.actions_requested,
+        broker_actions_sent=result.broker_actions_sent,
+        positions_closed=result.positions_closed,
+        positions_modified=result.positions_modified,
+        orders_cancelled=result.orders_cancelled,
+        external_positions_reconciled=result.external_positions_reconciled,
+        already_applied=result.already_applied,
+    )
