@@ -3,7 +3,8 @@
 Providers are not required to announce TP/SL/final results. This read-only manager polls
 the existing Day 33 broker ledger for the configured reference account, reconciles
 terminal broker outcomes into local position state, and creates exactly-once canonical
-broker lifecycle/result events. It never places, closes or modifies a broker trade.
+broker lifecycle/result events for Day-34-forward settlements. It never places, closes
+or modifies a broker trade.
 """
 
 from __future__ import annotations
@@ -25,7 +26,6 @@ from app.performance_ledger_day33 import Day33LedgerError
 from app.performance_ledger_day33_v2 import Day33PerformanceLedgerServiceV2
 
 logger = logging.getLogger(__name__)
-_TERMINAL = {"won", "lost", "breakeven", "closed_unknown"}
 
 
 @dataclass(frozen=True, slots=True)
@@ -105,6 +105,9 @@ class Day34BrokerSettlementManager:
                 reason=exc.code,
             )
 
+        # Historical reconciliation is intentionally allowed so stale local rows can be
+        # corrected from broker truth. Member-facing lifecycle/result events below are
+        # cut over separately so deployment cannot replay old Day 26-33 outcomes.
         reconciled = self._reconcile_terminal_positions()
         position_events = self._create_position_settlement_events()
         signal_results = self._create_signal_result_events()
@@ -198,9 +201,18 @@ class Day34BrokerSettlementManager:
             session.commit()
             return len(rows)
 
+    def _publish_after(self, session: Session) -> datetime:
+        value = session.execute(
+            text("SELECT publish_after FROM day34_summary_state WHERE id = 1")
+        ).scalar_one()
+        if not isinstance(value, datetime):
+            raise RuntimeError("day34_notification_cutover_missing")
+        return value
+
     def _create_position_settlement_events(self) -> int:
-        """Create one broker lifecycle event for each terminal TP leg."""
+        """Create one broker lifecycle event for each Day-34-forward terminal TP leg."""
         with self._session_factory() as session:
+            publish_after = self._publish_after(session)
             rows = session.execute(
                 text(
                     """
@@ -218,6 +230,8 @@ class Day34BrokerSettlementManager:
                     JOIN signals AS s ON s.id = o.signal_id
                     WHERE o.user_id = :user_id
                       AND o.status IN ('won','lost','breakeven','closed_unknown')
+                      AND o.closed_at IS NOT NULL
+                      AND o.closed_at > :publish_after
                       AND NOT EXISTS (
                           SELECT 1
                           FROM signal_lifecycle_events AS ev
@@ -226,7 +240,10 @@ class Day34BrokerSettlementManager:
                     ORDER BY o.closed_at, p.tp_index
                     """
                 ),
-                {"user_id": self._reference_user_id},
+                {
+                    "user_id": self._reference_user_id,
+                    "publish_after": publish_after,
+                },
             ).mappings().all()
 
             created = 0
@@ -280,7 +297,7 @@ class Day34BrokerSettlementManager:
                                 "real_user_balance_exposed": False,
                             }
                         ),
-                        "occurred_at": row["closed_at"] or datetime.now(UTC),
+                        "occurred_at": row["closed_at"],
                     },
                 ).scalar_one_or_none()
                 if inserted is not None:
@@ -289,8 +306,9 @@ class Day34BrokerSettlementManager:
             return created
 
     def _create_signal_result_events(self) -> int:
-        """Create one final plain-English WIN/LOSS/BE result after every leg settles."""
+        """Create one final plain-English result when a Day-34-forward trade settles."""
         with self._session_factory() as session:
+            publish_after = self._publish_after(session)
             rows = session.execute(
                 text(
                     """
@@ -320,10 +338,15 @@ class Day34BrokerSettlementManager:
                        AND COUNT(*) FILTER (
                            WHERE o.status IN ('won','lost','breakeven','closed_unknown')
                        ) = COUNT(*)
+                       AND COUNT(*) FILTER (WHERE o.closed_at IS NULL) = 0
+                       AND MAX(o.closed_at) > :publish_after
                     ORDER BY MAX(o.closed_at)
                     """
                 ),
-                {"user_id": self._reference_user_id},
+                {
+                    "user_id": self._reference_user_id,
+                    "publish_after": publish_after,
+                },
             ).mappings().all()
 
             created = 0
@@ -410,7 +433,7 @@ class Day34BrokerSettlementManager:
                                 "real_user_pnl_exposed": False,
                             }
                         ),
-                        "occurred_at": row["closed_at"] or datetime.now(UTC),
+                        "occurred_at": row["closed_at"],
                     },
                 ).scalar_one_or_none()
                 if inserted is not None:
