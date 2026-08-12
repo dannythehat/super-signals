@@ -6,7 +6,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Annotated, Any, Literal
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import Depends, HTTPException, status
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -14,9 +14,9 @@ from sqlalchemy.orm import Session
 from app.access_control import require_permission
 from app.db import get_db_session
 from app.models import AuditEvent, Invitation, Role, User
+from app.routes.admin_accounts import router
 from app.security import hash_token, new_token
 
-router = APIRouter(prefix="/admin/invitations", tags=["invitations"])
 DbSession = Annotated[Session, Depends(get_db_session)]
 OwnerAccessKeys = Annotated[
     dict[str, Any],
@@ -70,7 +70,7 @@ def _invitation_status(invitation: Invitation, now: datetime) -> str:
     return "active"
 
 
-@router.get("", response_model=list[InvitationView])
+@router.get("/invitations", response_model=list[InvitationView])
 def list_invitations(
     session: DbSession,
     actor: OwnerAccessKeys,
@@ -92,7 +92,11 @@ def list_invitations(
     ]
 
 
-@router.post("", response_model=CreatedInvitationResponse, status_code=status.HTTP_201_CREATED)
+@router.post(
+    "/invitations",
+    response_model=CreatedInvitationResponse,
+    status_code=status.HTTP_201_CREATED,
+)
 def create_invitation(
     payload: CreateInvitationRequest,
     session: DbSession,
@@ -115,8 +119,6 @@ def create_invitation(
             detail="Invited User role is not configured.",
         )
 
-    # Only one live key per approved email. Creating a replacement revokes any
-    # earlier unused key so the owner never has to reason about multiple valid keys.
     active_rows = session.scalars(
         select(Invitation).where(
             Invitation.email == email,
@@ -171,7 +173,7 @@ def create_invitation(
     )
 
 
-@router.post("/{invitation_id}/revoke", response_model=RevokeInvitationResponse)
+@router.post("/invitations/{invitation_id}/revoke", response_model=RevokeInvitationResponse)
 def revoke_invitation(
     invitation_id: UUID,
     session: DbSession,
