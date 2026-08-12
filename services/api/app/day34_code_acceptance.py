@@ -8,6 +8,7 @@ provider-hidden Live Trades Board and standardized $500 summary wording.
 
 from __future__ import annotations
 
+import os
 from datetime import UTC, datetime
 from decimal import Decimal
 from uuid import UUID
@@ -117,9 +118,15 @@ def run_day34_code_acceptance_probe() -> None:
     assert "+84 pips" in summary
     assert "$500 example at Recommended 1%: +$7.60 · +1.52%" in summary
 
+    push_public = bool(os.getenv("SUPER_SIGNALS_WEB_PUSH_VAPID_PUBLIC_KEY", "").strip())
+    push_private = bool(os.getenv("SUPER_SIGNALS_WEB_PUSH_VAPID_PRIVATE_KEY", "").strip())
+    push_subject = bool(os.getenv("SUPER_SIGNALS_WEB_PUSH_VAPID_SUBJECT", "").strip())
+
     print(
         "Day 34 code acceptance PASSED: active_unique=1 ambiguous_blocked=1 "
-        "pips_normalized=1 board_privacy=1 model500_summary=1"
+        "pips_normalized=1 board_privacy=1 model500_summary=1 "
+        f"push_public={int(push_public)} push_private={int(push_private)} "
+        f"push_subject={int(push_subject)}"
     )
 
 
