@@ -221,25 +221,31 @@ async def live_board_contract(
     response: Response,
     identity: Identity,
 ) -> LiveBoardResponse:
-    # Deliberately use user-level visibility even for admins: this is the exact
-    # privacy-safe payload Day 34 may render into the shared member Telegram feed.
-    view = _service(request).read_timeline(identity["id"], viewer_role="user", limit=250)
-    active = tuple(item for item in view.trades if item.status in {"open", "pending"})
+    # Identity is required for private-app access, but the result is deliberately
+    # independent of that user's account. Day 34 gets one shared, deduplicated,
+    # provider-hidden signal board for every invited member.
+    _ = identity
+    rows = _service(request).read_shared_live_board()
+    trades: list[LiveBoardTradeResponse] = []
+    for row in rows:
+        open_positions = int(row["open_positions"])
+        pending_positions = int(row["pending_positions"])
+        is_open = open_positions > 0
+        trades.append(
+            LiveBoardTradeResponse(
+                signal_id=row["signal_id"],
+                symbol=str(row["symbol"]),
+                side=str(row["side"]),
+                status="open" if is_open else "pending",
+                status_label="Open" if is_open else "Pending",
+                open_positions=open_positions,
+                pending_positions=pending_positions,
+                position_count=int(row["position_count"]),
+            )
+        )
     _no_store(response)
     return LiveBoardResponse(
-        open_count=sum(1 for item in active if item.status == "open"),
-        pending_count=sum(1 for item in active if item.status == "pending"),
-        trades=tuple(
-            LiveBoardTradeResponse(
-                signal_id=item.signal_id,
-                symbol=item.symbol,
-                side=item.side,
-                status=item.status,
-                status_label=item.status_label,
-                open_positions=item.open_positions,
-                pending_positions=item.pending_positions,
-                position_count=item.position_count,
-            )
-            for item in active
-        ),
+        open_count=sum(1 for item in trades if item.status == "open"),
+        pending_count=sum(1 for item in trades if item.status == "pending"),
+        trades=tuple(trades),
     )
