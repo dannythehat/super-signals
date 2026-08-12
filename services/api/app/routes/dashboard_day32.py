@@ -1,4 +1,4 @@
-"""Authenticated read-only mobile dashboard endpoint for Day 32."""
+"""Authenticated read-only mobile dashboard endpoint for Day 32/33."""
 
 from __future__ import annotations
 
@@ -15,10 +15,16 @@ from app.dashboard_day32 import Day32DashboardService, QuietDay23Mt5ReadService
 from app.metaapi_read_gateway import MetaApiReadGateway
 from app.mt5_connection_service_day30 import Day30Mt5ConnectionService
 from app.mt5_runtime import require_mt5_service
+from app.routes.performance_day33 import (
+    _service as _performance_service,
+    router as performance_day33_router,
+)
 
 # Included by the existing /account/mt5 router, so the final endpoint is
-# /account/mt5/dashboard without adding another application-level router.
+# /account/mt5/dashboard. Day 33 performance routes nest below this router as
+# /account/mt5/dashboard/performance/* without adding an application-level router.
 router = APIRouter(prefix="/dashboard", tags=["dashboard-day32"])
+router.include_router(performance_day33_router)
 Identity = Annotated[dict[str, Any], Depends(get_current_identity)]
 
 
@@ -123,8 +129,8 @@ class DashboardResponse(BaseModel):
     win_loss: WinLossResponse
     activity: tuple[ActivityResponse, ...]
     reconciled_external_positions: int
-    canonical_performance_ready: bool = False
-    performance_basis: str = "provisional_position_records"
+    canonical_performance_ready: bool = True
+    performance_basis: str = "broker_deal_ledger"
     broker_trade_action_created: bool = False
 
 
@@ -173,6 +179,35 @@ async def account_dashboard(
     identity: Identity,
 ) -> DashboardResponse:
     view = await _service(request).read(identity["id"])
+    ledger = _performance_service(request)
+    windows = {item.key: item for item in ledger.read_windows(identity["id"])}
+    canonical_periods = tuple(
+        PerformanceResponse(
+            key=key,
+            label=windows[key].label,
+            amount=float(windows[key].cash_pnl),
+            known_position_count=windows[key].closed_trades,
+            provisional_until_day33=False,
+        )
+        for key in ("today", "7d", "30d")
+        if key in windows
+    )
+    all_time = windows.get("all")
+    win_loss = (
+        WinLossResponse(
+            wins=all_time.wins,
+            losses=all_time.losses,
+            breakeven=all_time.breakeven,
+            known_results=all_time.wins + all_time.losses + all_time.breakeven,
+            win_rate_percent=(
+                float(all_time.win_rate_percent)
+                if all_time.win_rate_percent is not None
+                else None
+            ),
+        )
+        if all_time is not None
+        else WinLossResponse(wins=0, losses=0, breakeven=0, known_results=0, win_rate_percent=None)
+    )
     _no_store(response)
     return DashboardResponse(
         connection=ConnectionResponse(**asdict(view.connection)),
@@ -182,8 +217,8 @@ async def account_dashboard(
         open_positions=tuple(OpenPositionResponse(**asdict(item)) for item in view.open_positions),
         latest_signal=(LatestSignalResponse(**asdict(view.latest_signal)) if view.latest_signal is not None else None),
         recent_completed=tuple(CompletedPositionResponse(**asdict(item)) for item in view.recent_completed),
-        performance=tuple(PerformanceResponse(**asdict(item)) for item in view.performance),
-        win_loss=WinLossResponse(**asdict(view.win_loss)),
+        performance=canonical_periods,
+        win_loss=win_loss,
         activity=tuple(ActivityResponse(**asdict(item)) for item in view.activity),
         reconciled_external_positions=view.reconciled_external_positions,
     )
