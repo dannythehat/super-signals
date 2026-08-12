@@ -2,6 +2,7 @@ import { FormEvent, useCallback, useEffect, useState } from 'react';
 
 import { MobileDashboard } from './MobileDashboard';
 import { Mt5DemoConnectionPanel } from './Mt5DemoConnectionPanel';
+import { PushNotificationsDay34 } from './PushNotificationsDay34';
 import { TelegramConnectionPanel } from './TelegramConnectionPanel';
 import { TelegramSourceSelector } from './TelegramSourceSelector';
 import { TradingActivationPanel } from './TradingActivationPanel';
@@ -203,6 +204,7 @@ export function App() {
           <div className="workspace-page-header"><div><p className="eyebrow">Account controls</p><h1 id="settings-page-title">Settings</h1><p className="intro">The daily dashboard stays focused on trading. Connections, risk and administration live here.</p></div><span className="workspace-role-pill">{account.role_label}</span></div>
           {account.role === 'user' && <div className="settings-user-stack"><TradingActivationPanel /><UserMt5ConnectionPanel apiBaseUrl={apiBaseUrl} /></div>}
           <div className="settings-grid" aria-label="Settings areas">
+            <PushNotificationsDay34 apiBaseUrl={apiBaseUrl} />
             {account.role === 'trading_admin' && canManageTelegram && <article className="settings-card"><span className="status-label">First-time setup</span><h2>Telegram onboarding</h2><p>Connect your private reader and select the groups you administer.</p><button className="button button--quiet" type="button" onClick={() => navigate('setup')}>Open Telegram setup</button></article>}
             {canManageTelegram && <article className="settings-card"><span className="status-label">Signal network</span><h2>Telegram &amp; sources</h2><p>{sharedSourcesLoaded ? `${sharedSources.length} shared source${sharedSources.length === 1 ? '' : 's'} currently catalogued.` : 'Checking shared sources…'} Private reader sessions remain isolated per administrator.</p><div className="settings-actions"><button className="button button--quiet" type="button" onClick={() => navigate('sources')}>Signal sources</button><button className="button button--quiet" type="button" onClick={() => navigate('telegram')}>Reader accounts</button></div></article>}
             {canManageMt5 && <article className="settings-card"><span className="status-label">Owner broker tools</span><h2>Vantage MT5 demo</h2><p>Open the owner-only demo connection and terminal read diagnostics used for controlled acceptance.</p><button className="button button--quiet" type="button" onClick={() => navigate('mt5')}>Open MT5 demo</button></article>}
