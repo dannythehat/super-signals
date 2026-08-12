@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
-from decimal import Decimal
 from typing import Any
 from uuid import UUID
 
@@ -65,6 +64,48 @@ class Day33PerformanceLedgerServiceV2(Day33PerformanceLedgerService):
             for row in rows
             if row["broker_position_id"] and row["id"] not in completed_ids
         ]
+
+    def _backfill_account_snapshots_from_audit(
+        self,
+        *,
+        user_id: UUID,
+        mt5_account_id: UUID,
+    ) -> int:
+        """Reuse the immutable Day 23 pre-trade account reads as balance evidence.
+
+        Day 26/28 already reads MT5 state before any order is sent. Those append-only
+        audit events retain balance/equity/currency, so Day 33 can reproduce return
+        percentages without adding a new write or failure mode to the trading engine.
+        """
+        with self._session_factory() as session:
+            result = session.execute(
+                text(
+                    """
+                    INSERT INTO performance_account_snapshots (
+                        user_id,mt5_account_id,currency,balance,equity,captured_at
+                    )
+                    SELECT
+                        :user_id,
+                        :mt5_account_id,
+                        COALESCE(NULLIF(a.payload->>'currency',''),'USD'),
+                        (a.payload->>'balance')::numeric,
+                        COALESCE(NULLIF(a.payload->>'equity',''),a.payload->>'balance')::numeric,
+                        a.created_at
+                    FROM audit_events a
+                    WHERE a.entity_type='mt5_account'
+                      AND a.entity_id=:mt5_account_id
+                      AND a.event_type='mt5.day23_live_state_read'
+                      AND a.payload ? 'balance'
+                      AND COALESCE(a.payload->>'balance','') ~ '^-?[0-9]+(\\.[0-9]+)?$'
+                      AND COALESCE(NULLIF(a.payload->>'equity',''),a.payload->>'balance','') ~ '^-?[0-9]+(\\.[0-9]+)?$'
+                    ON CONFLICT (mt5_account_id,captured_at) DO NOTHING
+                    RETURNING id
+                    """
+                ),
+                {"user_id": user_id, "mt5_account_id": mt5_account_id},
+            ).all()
+            session.commit()
+            return len(result)
 
     def read_shared_live_board(self) -> list[Any]:
         """Return one provider-hidden row per currently open/pending Signal.
@@ -258,6 +299,12 @@ class Day33PerformanceLedgerServiceV2(Day33PerformanceLedgerService):
         except MetaApiGatewayError as exc:
             raise Day33LedgerError(exc.code, retryable=exc.retryable) from exc
 
+        # Import the pre-trade Day 23 reads before deriving returns. This does not
+        # contact the broker and does not change any trading state.
+        self._backfill_account_snapshots_from_audit(
+            user_id=user_id,
+            mt5_account_id=account["id"],
+        )
         self._store_snapshot(
             user_id=user_id,
             mt5_account_id=account["id"],
