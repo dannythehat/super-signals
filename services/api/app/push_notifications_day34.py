@@ -134,10 +134,6 @@ class Day34PushNotificationManager:
 
     def _seed_deliveries(self) -> int:
         with self._session_factory() as session:
-            # One private confirmation per device activation proves that the browser,
-            # subscription and push worker are genuinely ready. The event key includes
-            # active_since so an explicitly re-enabled device may receive one fresh
-            # confirmation, while normal polling/restarts can never duplicate it.
             session.execute(
                 text(
                     """
@@ -297,20 +293,10 @@ class Day34PushNotificationManager:
             if status_code in {404, 410}:
                 self._suppress_expired(delivery_id, subscription_id, status_code)
                 return "suppressed"
-            self._record_failure(
-                delivery_id,
-                subscription_id,
-                code=f"web_push_{status_code or 'error'}",
-                reason=str(exc)[:500],
-            )
+            self._record_failure(delivery_id, subscription_id, code=f"web_push_{status_code or 'error'}", reason=str(exc)[:500])
             return "failed"
         except Exception as exc:
-            self._record_failure(
-                delivery_id,
-                subscription_id,
-                code="web_push_unexpected",
-                reason=str(exc)[:500],
-            )
+            self._record_failure(delivery_id, subscription_id, code="web_push_unexpected", reason=str(exc)[:500])
             return "failed"
 
         self._record_success(delivery_id, subscription_id)
@@ -318,91 +304,20 @@ class Day34PushNotificationManager:
 
     def _record_success(self, delivery_id: UUID, subscription_id: UUID) -> None:
         with self._session_factory() as session:
-            session.execute(
-                text(
-                    """
-                    UPDATE push_notification_deliveries
-                    SET status='sent', sent_at=now(), failure_code=NULL,
-                        failure_reason=NULL, updated_at=now()
-                    WHERE id=:delivery_id
-                    """
-                ),
-                {"delivery_id": delivery_id},
-            )
-            session.execute(
-                text(
-                    """
-                    UPDATE push_subscriptions
-                    SET failure_count=0, last_success_at=now(), updated_at=now()
-                    WHERE id=:subscription_id
-                    """
-                ),
-                {"subscription_id": subscription_id},
-            )
+            session.execute(text("UPDATE push_notification_deliveries SET status='sent', sent_at=now(), failure_code=NULL, failure_reason=NULL, updated_at=now() WHERE id=:delivery_id"), {"delivery_id": delivery_id})
+            session.execute(text("UPDATE push_subscriptions SET failure_count=0, last_success_at=now(), updated_at=now() WHERE id=:subscription_id"), {"subscription_id": subscription_id})
             session.commit()
 
-    def _record_failure(
-        self,
-        delivery_id: UUID,
-        subscription_id: UUID,
-        *,
-        code: str,
-        reason: str,
-    ) -> None:
+    def _record_failure(self, delivery_id: UUID, subscription_id: UUID, *, code: str, reason: str) -> None:
         with self._session_factory() as session:
-            session.execute(
-                text(
-                    """
-                    UPDATE push_notification_deliveries
-                    SET status='failed', failure_code=:code, failure_reason=:reason,
-                        updated_at=now()
-                    WHERE id=:delivery_id
-                    """
-                ),
-                {"delivery_id": delivery_id, "code": code[:80], "reason": reason[:500]},
-            )
-            session.execute(
-                text(
-                    """
-                    UPDATE push_subscriptions
-                    SET failure_count=failure_count+1, last_failure_at=now(), updated_at=now()
-                    WHERE id=:subscription_id
-                    """
-                ),
-                {"subscription_id": subscription_id},
-            )
+            session.execute(text("UPDATE push_notification_deliveries SET status='failed', failure_code=:code, failure_reason=:reason, updated_at=now() WHERE id=:delivery_id"), {"delivery_id": delivery_id, "code": code[:80], "reason": reason[:500]})
+            session.execute(text("UPDATE push_subscriptions SET failure_count=failure_count+1, last_failure_at=now(), updated_at=now() WHERE id=:subscription_id"), {"subscription_id": subscription_id})
             session.commit()
 
-    def _suppress_expired(
-        self,
-        delivery_id: UUID,
-        subscription_id: UUID,
-        status_code: int,
-    ) -> None:
+    def _suppress_expired(self, delivery_id: UUID, subscription_id: UUID, status_code: int) -> None:
         with self._session_factory() as session:
-            session.execute(
-                text(
-                    """
-                    UPDATE push_notification_deliveries
-                    SET status='suppressed', failure_code=:code,
-                        failure_reason='Browser push subscription expired or was removed.',
-                        updated_at=now()
-                    WHERE id=:delivery_id
-                    """
-                ),
-                {"delivery_id": delivery_id, "code": f"web_push_{status_code}"},
-            )
-            session.execute(
-                text(
-                    """
-                    UPDATE push_subscriptions
-                    SET enabled=false, failure_count=failure_count+1,
-                        last_failure_at=now(), updated_at=now()
-                    WHERE id=:subscription_id
-                    """
-                ),
-                {"subscription_id": subscription_id},
-            )
+            session.execute(text("UPDATE push_notification_deliveries SET status='suppressed', failure_code=:code, failure_reason='Browser push subscription expired or was removed.', updated_at=now() WHERE id=:delivery_id"), {"delivery_id": delivery_id, "code": f"web_push_{status_code}"})
+            session.execute(text("UPDATE push_subscriptions SET enabled=false, failure_count=failure_count+1, last_failure_at=now(), updated_at=now() WHERE id=:subscription_id"), {"subscription_id": subscription_id})
             session.commit()
 
 
