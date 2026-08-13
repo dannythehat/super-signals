@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 
 import { AdminEmergencyStopDay35 } from './AdminEmergencyStopDay35';
 import { AdminMemberControlsDay35 } from './AdminMemberControlsDay35';
+import { AdminOperationsDay35 } from './AdminOperationsDay35';
 import './admin-control-centre-day35.css';
 
 type Tone = 'healthy' | 'attention' | 'critical' | 'neutral';
@@ -131,6 +132,7 @@ export function AdminControlCentreDay35({
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [safetyPanel, setSafetyPanel] = useState<SafetyPanel>('none');
+  const [operationsOpen, setOperationsOpen] = useState(false);
   const ownerView = roleLabel.toLowerCase().includes('owner');
 
   const load = useCallback(async () => {
@@ -251,8 +253,9 @@ export function AdminControlCentreDay35({
 
       <section className="day35-quick-actions" aria-labelledby="day35-quick-actions-title">
         <div className="day35-section-heading"><div><p className="eyebrow">Operator shortcuts</p><h2 id="day35-quick-actions-title">Go straight to the work</h2></div></div>
-        <div><button type="button" onClick={onOpenPortfolio}><span>◈</span><strong>Signal Portfolio</strong><small>Rank provider performance</small></button><button type="button" onClick={onOpenSources}><span>⌁</span><strong>Signal sources</strong><small>Live, Testing and Paused</small></button><button type="button" onClick={onOpenSettings}><span>⚙</span><strong>Admin settings</strong><small>Connections and access</small></button></div>
+        <div><button type="button" onClick={() => setOperationsOpen(!operationsOpen)}><span>◎</span><strong>Trades &amp; failures</strong><small>Canonical trade and issue drill-down</small></button><button type="button" onClick={onOpenPortfolio}><span>◈</span><strong>Signal Portfolio</strong><small>Rank provider performance</small></button><button type="button" onClick={onOpenSources}><span>⌁</span><strong>Signal sources</strong><small>Live, Testing and Paused</small></button><button type="button" onClick={onOpenSettings}><span>⚙</span><strong>Admin settings</strong><small>Connections and access</small></button></div>
       </section>
+      {operationsOpen && <div className="day35-operations-inline"><AdminOperationsDay35 apiBaseUrl={apiBaseUrl} /></div>}
 
       <section className="day35-danger-zone" aria-labelledby="day35-danger-zone-title">
         <div className="day35-section-heading"><div><p className="eyebrow">Safety &amp; access</p><h2 id="day35-danger-zone-title">Confirmed account controls</h2></div><span>Separate from normal operations</span></div>
