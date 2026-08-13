@@ -1,4 +1,4 @@
-import { FormEvent, useCallback, useEffect, useState } from 'react';
+import { FormEvent, MouseEvent, useCallback, useEffect, useState } from 'react';
 
 const VANTAGE_AFFILIATE_URL = import.meta.env.VITE_VANTAGE_AFFILIATE_URL
   || 'https://www.vantagemarkets.com/forex-trading/forex-trading-account/?affid=32372443';
@@ -31,6 +31,16 @@ async function readJson<T>(response: Response): Promise<T> {
     throw new Error(message);
   }
   return body;
+}
+
+function openVantageExternally(event: MouseEvent<HTMLAnchorElement>) {
+  if (!/Android/i.test(window.navigator.userAgent)) return;
+  event.preventDefault();
+  const target = new URL(VANTAGE_AFFILIATE_URL);
+  const fallback = encodeURIComponent(VANTAGE_AFFILIATE_URL);
+  const scheme = target.protocol.replace(':', '');
+  const intentUrl = `intent://${target.host}${target.pathname}${target.search}#Intent;scheme=${scheme};action=android.intent.action.VIEW;S.browser_fallback_url=${fallback};end`;
+  window.location.href = intentUrl;
 }
 
 export function UserMt5ConnectionPanel({ apiBaseUrl }: Props) {
@@ -102,8 +112,8 @@ export function UserMt5ConnectionPanel({ apiBaseUrl }: Props) {
 
     {!connected && <div className="settings-vantage-start">
       <strong>Need a Vantage account?</strong>
-      <p>Create your Vantage account using the Super Signals referral link. Vantage opens in a new tab, so this setup page stays open.</p>
-      <a className="button button--quiet" href={VANTAGE_AFFILIATE_URL} target="_blank" rel="noopener noreferrer">Create a Vantage account ↗</a>
+      <p>Create your Vantage account using the Super Signals referral link. Vantage opens in your browser, leaving Super Signals available to return to.</p>
+      <a className="button button--quiet" href={VANTAGE_AFFILIATE_URL} target="_blank" rel="noopener noreferrer" onClick={openVantageExternally}>Create a Vantage account ↗</a>
     </div>}
 
     {loading ? <p className="muted-copy">Checking your trading account…</p> : status ? <>
