@@ -140,7 +140,7 @@ def _member_response(request: Request, identity: dict[str, Any]) -> MemberMt5Onb
     connection_service = _connection_service(request)
     mirror_owner_id = acceptance_mirror_owner_user_id(identity, connection_service._session_factory)
     if mirror_owner_id is not None:
-        connection = connection_service.get_user_status(mirror_owner_id)
+        connection = connection_service.get_status(mirror_owner_id)
         return MemberMt5OnboardingResponse(
             request_status="approved",
             request_login_masked=connection.login_masked,
