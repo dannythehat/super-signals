@@ -1,30 +1,28 @@
 """Day 38 live-account execution boundary for ordinary invited users.
 
-Day 26 remains the accepted Owner-demo executor. This subclass deliberately reuses
-that exact risk/preflight/order/mapping engine while changing only the account gate:
-ordinary users must be active, automation-active, Owner-approved, connected and LIVE.
-The stored Day 31 risk/double-lot choices are loaded server-side and cannot be supplied
+The Owner keeps the accepted demo-only Day 28 path. Ordinary members use the same
+atomic execution + per-leg provider-zone guard, but their account gate is LIVE-only.
+Stored Day 31 risk/double-lot choices are loaded server-side and cannot be supplied
 by the caller.
 """
 
 from __future__ import annotations
 
-from decimal import Decimal
 from uuid import UUID
 
 from sqlalchemy import text
 
+from app.day28_zone_guard import Day28GuardedExecutionService
 from app.mt5_execution_day26 import (
     Day26ExecutionError,
     Day26ExecutionResult,
-    Day26Mt5ExecutionService,
     _AccountInput,
     _SignalInput,
 )
 
 
-class Day38LiveUserExecutionService(Day26Mt5ExecutionService):
-    """Run the proven Day 26 mechanics against one eligible member LIVE account."""
+class Day38LiveUserExecutionService(Day28GuardedExecutionService):
+    """Run the strongest accepted execution engine against one member LIVE account."""
 
     async def execute_live_user_signal(
         self,
@@ -33,7 +31,7 @@ class Day38LiveUserExecutionService(Day26Mt5ExecutionService):
         signal_id: UUID,
     ) -> Day26ExecutionResult:
         risk_percent, allow_double_lot = self._load_live_preferences(user_id)
-        return await super().execute_owner_demo_signal(
+        return await self.execute_owner_demo_signal(
             owner_user_id=user_id,
             signal_id=signal_id,
             risk_percent=risk_percent,
@@ -63,7 +61,7 @@ class Day38LiveUserExecutionService(Day26Mt5ExecutionService):
         return str(row["risk_percent"]), bool(row["allow_double_lot"])
 
     def _load_inputs(self, user_id: UUID, signal_id: UUID) -> tuple[_SignalInput, _AccountInput]:
-        """Day 26 input loader with the ordinary-member LIVE gate substituted in."""
+        """Accepted Day 26 input contract with the ordinary-member LIVE gate."""
         with self._session_factory() as session:
             signal_row = session.execute(
                 text(
