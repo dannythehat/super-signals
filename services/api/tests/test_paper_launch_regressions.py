@@ -1,5 +1,6 @@
 import asyncio
 from datetime import UTC, datetime, timedelta
+from dataclasses import replace
 from hashlib import sha256
 from types import SimpleNamespace
 from uuid import uuid4
@@ -268,3 +269,119 @@ async def test_slow_broker_startup_cannot_block_application_health(
 async def _noop(started: list[str]) -> None:
     started.append("running")
     await asyncio.sleep(3600)
+
+
+def _tig_complete_decision() -> AiMessageDecision:
+    """AI reading of a TIG-shaped message that now looks like a complete setup."""
+    raw = "fixture"
+    return AiMessageDecision(
+        decision="new_trade",
+        action="execute",
+        confidence=0.99,
+        reason="ai_fixture",
+        extracted={
+            "symbol": "XAUUSD",
+            "side": "BUY",
+            "order_type": "market",
+            "entry_low": "4382",
+            "entry_high": "4382",
+            "stop_loss": "4368",
+            "take_profits": ["4388", "4393", "4398"],
+            "double_lot": False,
+            "update_type": None,
+            "update_target": None,
+            "update_value": None,
+            "provider_claimed_pips": None,
+        },
+        model="fixture",
+        response_id=None,
+        latency_ms=1,
+        source="openai",
+        raw_text_sha256=sha256(raw.encode()).hexdigest(),
+    )
+
+
+_TIG_EDITED_RAW = (
+    "BUY XAUUSD\n"
+    "Entry 4382\n"
+    "SL 4368\n"
+    "TP1 4388\n"
+    "TP2 4393\n"
+    "TP3 4398\n"
+    "TP4 OPEN"
+)
+
+
+def test_edit_cannot_resurrect_a_skipped_setup_into_a_new_trade() -> None:
+    """Working Blueprint, locked rule.
+
+    The original message produced no canonical Signal — it was preparation,
+    incomplete or invalid. A later edit that now reads as a complete setup must
+    not become the first executable trade.
+    """
+    result = apply_v1_message_policy(
+        _tig_complete_decision(),
+        raw_text=_TIG_EDITED_RAW,
+        is_edit=True,
+        original_has_signal=False,
+    )
+    assert result.action == "skip"
+    assert result.reason == "edit_cannot_create_first_trade"
+
+
+def test_edit_enforcement_defaults_to_fail_closed() -> None:
+    """A caller that cannot say whether a Signal exists must not get an execution."""
+    result = apply_v1_message_policy(
+        _tig_complete_decision(),
+        raw_text=_TIG_EDITED_RAW,
+        is_edit=True,
+    )
+    assert result.action == "skip"
+    assert result.reason == "edit_cannot_create_first_trade"
+
+
+def test_same_message_still_executes_when_it_is_not_an_edit() -> None:
+    """The block is specific to edits, not to the TIG message shape itself.
+
+    Proves the rule is enforced without silently narrowing which provider
+    formats V1 accepts on first delivery.
+    """
+    result = apply_v1_message_policy(
+        _tig_complete_decision(),
+        raw_text=_TIG_EDITED_RAW,
+        is_edit=False,
+    )
+    assert result.action == "execute"
+    assert result.extracted["tp_open"] is True
+
+
+def test_edit_may_still_revalidate_a_signal_that_already_exists() -> None:
+    """Day 18/27/34 pre-execution revalidation is deliberately preserved.
+
+    Day 18's unique (provider_chat_id, provider_message_id) constraint stops this
+    path from ever creating a second Signal for the same provider message.
+    """
+    result = apply_v1_message_policy(
+        _tig_complete_decision(),
+        raw_text=_TIG_EDITED_RAW,
+        is_edit=True,
+        original_has_signal=True,
+    )
+    assert result.action == "execute"
+
+
+def test_edit_block_does_not_disturb_lifecycle_management() -> None:
+    """An edited management instruction is not a new trade and stays governed by Day 27."""
+    decision = replace(
+        _tig_complete_decision(),
+        decision="trade_update",
+        action="apply_update",
+    )
+    result = apply_v1_message_policy(
+        decision,
+        raw_text="Move SL to 4385",
+        is_edit=True,
+        original_has_signal=False,
+    )
+    assert result.decision == "trade_update"
+    assert result.reason != "edit_cannot_create_first_trade"
