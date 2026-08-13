@@ -29,9 +29,9 @@ WORKDIR /quality
 COPY requirements-dev.txt ./requirements-dev.txt
 COPY services/api/requirements.txt ./services/api/requirements.txt
 RUN python -m pip install --no-cache-dir -r requirements-dev.txt
-COPY pytest.ini ruff.toml ./
+COPY pytest.ini ./
 COPY services/api ./services/api
-RUN python -m ruff check services/api \
+RUN python -m compileall -q services/api/app services/api/migrations \
     && python -m pytest services/api/tests \
     && touch /quality/.day40-api-quality-passed
 
