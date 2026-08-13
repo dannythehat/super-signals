@@ -64,6 +64,7 @@ def _response() -> DashboardResponse:
         ),
         activity=(),
         reconciled_external_positions=3,
+        canonical_performance_ready=False,
     )
 
 

@@ -9,6 +9,7 @@ from pydantic import BaseModel
 
 from app.access_control import get_current_identity, require_permission
 from app.permissions import ROLE_LABELS
+from app.routes.control_centre_day35 import router as control_centre_day35_router
 
 router = APIRouter(prefix="/access", tags=["access control"])
 CurrentIdentity = Annotated[dict[str, Any], Depends(get_current_identity)]
@@ -86,3 +87,6 @@ def user_automation(identity: UserAutomation) -> CapabilityResponse:
 @router.get("/user/performance", response_model=CapabilityResponse)
 def user_performance(identity: UserPerformance) -> CapabilityResponse:
     return _capability(identity, "performance.view", "user")
+
+
+router.include_router(control_centre_day35_router)

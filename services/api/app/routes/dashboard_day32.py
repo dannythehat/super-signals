@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import asdict
+from dataclasses import asdict, replace
 from datetime import datetime
 from typing import Annotated, Any
 from uuid import UUID
@@ -10,6 +10,7 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from pydantic import BaseModel
 
+from app.acceptance_self_test import acceptance_mirror_owner_user_id
 from app.access_control import get_current_identity
 from app.dashboard_day32 import Day32DashboardService, QuietDay23Mt5ReadService
 from app.metaapi_read_gateway import MetaApiReadGateway
@@ -174,10 +175,25 @@ async def account_dashboard(
     response: Response,
     identity: Identity,
 ) -> DashboardResponse:
-    view = await _service(request).read(identity["id"])
+    service = _service(request)
+    mirror_user_id = acceptance_mirror_owner_user_id(identity, service._session_factory)
+    data_user_id = mirror_user_id or identity["id"]
+    view = await service.read(data_user_id)
+    if mirror_user_id is not None:
+        # The acceptance member borrows Owner broker/performance READS only. Its own
+        # trading controls remain authoritative, so this mirror can never turn into a
+        # second execution path or a second MetaAPI account. Present the connection
+        # with normal member semantics because production invited accounts are live-only.
+        view = replace(
+            view,
+            connection=replace(view.connection, account_environment="live"),
+            trading=service._trading(identity["id"]),
+            reconciled_external_positions=0,
+        )
+
     ledger = _performance_service(request)
-    ready = ledger.ledger_ready(identity["id"])
-    windows = {item.key: item for item in ledger.read_windows(identity["id"])} if ready else {}
+    ready = ledger.ledger_ready(data_user_id)
+    windows = {item.key: item for item in ledger.read_windows(data_user_id)} if ready else {}
 
     period_labels = (("today", "Today"), ("7d", "7 days"), ("30d", "30 days"))
     canonical_periods = tuple(

@@ -14,14 +14,86 @@ from typing import Any
 
 from sqlalchemy import text
 
-from app.telegram_publisher import TelegramPublishError, _bot_api_call
+from app.telegram_publisher import PublicationAttempt, TelegramPublishError, _bot_api_call
+from app.telegram_publisher_day20 import LifecyclePublicationAttempt
 from app.telegram_publisher_day34 import Day34TelegramPublisherManager
+from app.trade_identity import prefix_public_trade_identity, public_trade_identity
 
 _BOARD_PIN_RETRY_BACKOFF = timedelta(minutes=1)
 
 
 class Day34CutoverTelegramPublisherManager(Day34TelegramPublisherManager):
     """Day34 publisher with a persisted forward-only member-notification boundary."""
+
+    def _claim_next(self) -> Any:
+        """Attach the same public trade identity to every root and lifecycle post."""
+
+        attempt = super()._claim_next()
+        if attempt is None or not isinstance(attempt, PublicationAttempt):
+            return attempt
+
+        rendered = prefix_public_trade_identity(attempt.signal_id, attempt.text)
+        with self._session_factory() as session:
+            session.execute(
+                text(
+                    """
+                    UPDATE telegram_publications
+                    SET rendered_text=:rendered_text,
+                        updated_at=now()
+                    WHERE id=:publication_id
+                      AND status='sending'
+                    """
+                ),
+                {
+                    "publication_id": attempt.publication_id,
+                    "rendered_text": rendered,
+                },
+            )
+            session.commit()
+
+        if isinstance(attempt, LifecyclePublicationAttempt):
+            return LifecyclePublicationAttempt(
+                publication_id=attempt.publication_id,
+                signal_id=attempt.signal_id,
+                text=rendered,
+                reply_to_message_id=attempt.reply_to_message_id,
+            )
+        return PublicationAttempt(
+            publication_id=attempt.publication_id,
+            signal_id=attempt.signal_id,
+            text=rendered,
+        )
+
+    @staticmethod
+    def _render_live_board(rows: list[Any]) -> str:
+        """Render every active Signal with its permanent provider-hidden identity."""
+
+        open_count = sum(1 for row in rows if row["open_tp_indices"])
+        pending_count = sum(1 for row in rows if row["pending_tp_indices"])
+        lines = [
+            "📌 SUPER SIGNALS · LIVE TRADES",
+            f"OPEN {open_count} · PENDING {pending_count}",
+        ]
+        if not rows:
+            lines.extend(["", "No active trades."])
+            return "\n".join(lines)
+
+        lines.append("")
+        for row in rows:
+            identity = public_trade_identity(row["signal_id"])
+            symbol = str(row["symbol"] or "").upper()
+            side = str(row["side"] or "").upper()
+            open_indices = [int(value) for value in (row["open_tp_indices"] or [])]
+            pending_indices = [int(value) for value in (row["pending_tp_indices"] or [])]
+            states: list[str] = []
+            if open_indices:
+                states.append("/".join(f"TP{index}" for index in open_indices) + " open")
+            if pending_indices:
+                states.append("/".join(f"TP{index}" for index in pending_indices) + " pending")
+            lines.append(
+                f"{identity.label} · {symbol} {side} · {' · '.join(states)}"
+            )
+        return "\n".join(lines)
 
     def _seed_missing_publications(self) -> None:
         with self._session_factory() as session:
@@ -283,10 +355,12 @@ class Day34CutoverTelegramPublisherManager(Day34TelegramPublisherManager):
                     NULL,
                     'shared',
                     'trade_open',
-                    COALESCE(sig.symbol,'') || ' ' || COALESCE(sig.side,'') || ' opened',
+                    'SS-' || upper(left(replace(sig.id::text,'-',''),10)) || ' · ' ||
+                        COALESCE(sig.symbol,'') || ' ' || COALESCE(sig.side,'') || ' opened',
                     'Trade placed and confirmed at the broker.',
                     jsonb_build_object(
                         'broker_confirmed', true,
+                        'public_trade_reference', 'SS-' || upper(left(replace(sig.id::text,'-',''),10)),
                         'provider_identity_exposed', false,
                         'trade_action_created', false
                     )
@@ -322,6 +396,7 @@ class Day34CutoverTelegramPublisherManager(Day34TelegramPublisherManager):
                         WHEN ev.event_type LIKE 'broker_result_%' THEN 'trade_result'
                         ELSE 'trade_update'
                     END,
+                    'SS-' || upper(left(replace(ev.signal_id::text,'-',''),10)) || ' · ' ||
                     CASE
                         WHEN ev.event_type='broker_result_win' THEN 'Trade won'
                         WHEN ev.event_type='broker_result_loss' THEN 'Trade lost'
@@ -329,10 +404,11 @@ class Day34CutoverTelegramPublisherManager(Day34TelegramPublisherManager):
                         WHEN ev.event_type='broker_result_closed' THEN 'Trade closed'
                         ELSE 'Trade update'
                     END,
-                    ev.rendered_text,
+                    'SS-' || upper(left(replace(ev.signal_id::text,'-',''),10)) || ' · ' || ev.rendered_text,
                     jsonb_build_object(
                         'origin', ev.origin,
                         'broker_result', ev.event_type LIKE 'broker_result_%',
+                        'public_trade_reference', 'SS-' || upper(left(replace(ev.signal_id::text,'-',''),10)),
                         'provider_identity_exposed', false,
                         'trade_action_created', false
                     )

@@ -1,0 +1,148 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <meta name="robots" content="noindex,nofollow" />
+  <meta name="referrer" content="no-referrer" />
+  <title>Join Super Signals</title>
+  <style>
+    :root { color-scheme: dark; font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; background:#020812; color:#f6f8fb; }
+    * { box-sizing:border-box; }
+    body { margin:0; min-height:100vh; background:radial-gradient(circle at 50% -20%, rgba(35,214,190,.16), transparent 42%), #020812; }
+    main { min-height:100vh; display:grid; place-items:center; padding:24px 18px calc(32px + env(safe-area-inset-bottom)); }
+    .card { width:min(100%, 480px); padding:28px 22px; border:1px solid rgba(150,177,200,.18); border-radius:28px; background:rgba(7,16,29,.94); box-shadow:0 30px 80px rgba(0,0,0,.45); }
+    .logo { width:205px; max-width:70vw; display:block; margin:0 0 28px; }
+    .eyebrow { margin:0 0 8px; color:#78ead7; font-size:.78rem; font-weight:800; letter-spacing:.16em; text-transform:uppercase; }
+    h1 { margin:0; font-size:clamp(2rem, 9vw, 3rem); line-height:1.02; letter-spacing:-.04em; }
+    .intro { margin:16px 0 26px; color:#aab6c6; line-height:1.55; font-size:1rem; }
+    .invite { margin:0 0 22px; padding:15px 16px; border-radius:18px; background:rgba(54,220,194,.07); border:1px solid rgba(83,228,206,.18); }
+    .invite small { display:block; color:#8190a4; margin-bottom:4px; }
+    .invite strong { display:block; overflow-wrap:anywhere; }
+    form { display:grid; gap:17px; }
+    label { display:grid; gap:8px; color:#d8e0ea; font-size:.92rem; font-weight:700; }
+    input { width:100%; border:1px solid rgba(159,178,204,.22); background:#0a1321; color:#fff; border-radius:16px; padding:15px 16px; font:inherit; outline:none; }
+    input:focus { border-color:#5be8d1; box-shadow:0 0 0 3px rgba(91,232,209,.10); }
+    button, .button { width:100%; border:0; border-radius:17px; padding:16px 18px; font:inherit; font-weight:850; text-align:center; text-decoration:none; cursor:pointer; }
+    button { margin-top:4px; color:#03100e; background:linear-gradient(105deg,#28d8d1,#79f34f); }
+    button:disabled { opacity:.55; cursor:wait; }
+    .button { display:block; margin-top:12px; color:#eff5f9; background:#111a28; border:1px solid rgba(159,178,204,.22); }
+    .fine { color:#7f8ca0; line-height:1.5; font-size:.82rem; margin:18px 0 0; }
+    .notice { margin:0 0 18px; padding:13px 14px; border-radius:14px; line-height:1.45; }
+    .notice.error { background:rgba(255,93,104,.09); border:1px solid rgba(255,93,104,.26); color:#ffb6bc; }
+    .notice.success { background:rgba(69,221,151,.09); border:1px solid rgba(69,221,151,.25); color:#a9f3cd; }
+    .hidden { display:none !important; }
+  </style>
+</head>
+<body>
+<main>
+  <section class="card" aria-labelledby="join-title">
+    <img class="logo" src="/super-signals-logo.png" alt="Super Signals" />
+    <p class="eyebrow">Private invitation</p>
+    <h1 id="join-title">Create your account</h1>
+    <p class="intro">Your invitation is personal to the approved email below. Create your Super Signals password, then sign in on this device.</p>
+
+    <div id="notice" class="notice hidden" role="status"></div>
+    <div id="inviteSummary" class="invite">
+      <small>Approved email</small>
+      <strong id="approvedEmail">Checking invitation…</strong>
+    </div>
+
+    <form id="joinForm" autocomplete="on">
+      <input id="email" name="email" type="hidden" />
+      <input id="accessKey" name="access_key" type="hidden" />
+      <label>Your name
+        <input name="display_name" autocomplete="name" maxlength="120" placeholder="e.g. Danny" required />
+      </label>
+      <label>Create a password
+        <input name="password" type="password" autocomplete="new-password" minlength="12" maxlength="128" required />
+      </label>
+      <label>Confirm password
+        <input name="confirm_password" type="password" autocomplete="new-password" minlength="12" maxlength="128" required />
+      </label>
+      <button id="submitButton" type="submit">Create my Super Signals account</button>
+    </form>
+    <div id="successActions" class="hidden">
+      <a class="button" href="/">Sign in to Super Signals</a>
+    </div>
+    <p class="fine">The access key can only be used once. Never send broker passwords, MT5 passwords or other account secrets by email or Telegram.</p>
+  </section>
+</main>
+<script>
+(() => {
+  const form = document.getElementById('joinForm');
+  const notice = document.getElementById('notice');
+  const approvedEmail = document.getElementById('approvedEmail');
+  const emailInput = document.getElementById('email');
+  const keyInput = document.getElementById('accessKey');
+  const submitButton = document.getElementById('submitButton');
+  const successActions = document.getElementById('successActions');
+
+  function showNotice(message, tone) {
+    notice.textContent = message;
+    notice.className = `notice ${tone}`;
+  }
+
+  const fragment = new URLSearchParams(location.hash.startsWith('#') ? location.hash.slice(1) : location.hash);
+  const email = (fragment.get('email') || '').trim().toLowerCase();
+  const accessKey = fragment.get('key') || '';
+  if (email && accessKey) {
+    emailInput.value = email;
+    keyInput.value = accessKey;
+    approvedEmail.textContent = email;
+    history.replaceState(null, '', location.pathname);
+  } else {
+    approvedEmail.textContent = 'Invitation details missing';
+    form.classList.add('hidden');
+    showNotice('Open the personal Super Signals invitation link from your email. The link contains the one-time invitation details needed to create your account.', 'error');
+  }
+
+  form.addEventListener('submit', async (event) => {
+    event.preventDefault();
+    const data = new FormData(form);
+    const password = String(data.get('password') || '');
+    const confirmPassword = String(data.get('confirm_password') || '');
+    if (password !== confirmPassword) {
+      showNotice('The two passwords do not match.', 'error');
+      return;
+    }
+    submitButton.disabled = true;
+    submitButton.textContent = 'Creating account…';
+    notice.className = 'notice hidden';
+    try {
+      const response = await fetch('/auth/register', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+        body: JSON.stringify({
+          email: emailInput.value,
+          access_key: keyInput.value,
+          password,
+          display_name: String(data.get('display_name') || '').trim(),
+        }),
+      });
+      const body = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(body.detail || 'Account creation failed.');
+
+      const logoutResponse = await fetch('/auth/logout', {
+        method: 'POST',
+        credentials: 'include',
+        headers: { Accept: 'application/json' },
+      });
+      if (!logoutResponse.ok && logoutResponse.status !== 401) {
+        throw new Error('Your account was created, but this device could not clear the previous Super Signals session. Close this browser tab and open Super Signals again before signing in.');
+      }
+
+      keyInput.value = '';
+      form.classList.add('hidden');
+      successActions.classList.remove('hidden');
+      showNotice(`Account created for ${email}. This device has been signed out of any previous Super Signals account. Sign in with your new password.`, 'success');
+    } catch (error) {
+      showNotice(error instanceof Error ? error.message : 'Account creation failed.', 'error');
+      submitButton.disabled = false;
+      submitButton.textContent = 'Create my Super Signals account';
+    }
+  });
+})();
+</script>
+</body>
+</html>
