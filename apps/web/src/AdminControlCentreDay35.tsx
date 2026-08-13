@@ -1,12 +1,11 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 
-import { AdminEmergencyStopDay35 } from './AdminEmergencyStopDay35';
 import { AdminMemberControlsDay35 } from './AdminMemberControlsDay35';
 import { AdminOperationsDay35 } from './AdminOperationsDay35';
 import './admin-control-centre-day35.css';
 
 type Tone = 'healthy' | 'attention' | 'critical' | 'neutral';
-type SafetyPanel = 'none' | 'members' | 'emergency';
+type SafetyPanel = 'none' | 'members';
 
 type ReviewStage = {
   stage: string;
@@ -257,23 +256,21 @@ export function AdminControlCentreDay35({
       </section>
       {operationsOpen && <div className="day35-operations-inline"><AdminOperationsDay35 apiBaseUrl={apiBaseUrl} /></div>}
 
-      <section className="day35-danger-zone" aria-labelledby="day35-danger-zone-title">
-        <div className="day35-section-heading"><div><p className="eyebrow">Safety &amp; access</p><h2 id="day35-danger-zone-title">Confirmed account controls</h2></div><span>Separate from normal operations</span></div>
-        <p className="day35-danger-zone-copy">Opening a control below still does nothing by itself. Broker-affecting actions require an exact typed phrase and are audited against the administrator who initiated them.</p>
+      {ownerView && <section className="day35-danger-zone" aria-labelledby="day35-danger-zone-title">
+        <div className="day35-section-heading"><div><p className="eyebrow">Safety &amp; access</p><h2 id="day35-danger-zone-title">Confirmed member controls</h2></div><span>Owner only</span></div>
+        <p className="day35-danger-zone-copy">Opening member controls does nothing by itself. Revoking a member requires the exact typed phrase, stops that member's automation first, closes only mapped Super Signals positions, and records immutable Owner audit evidence.</p>
         <div className="day35-danger-zone-actions">
-          {ownerView && <button type="button" className={safetyPanel === 'members' ? 'is-open' : ''} onClick={() => setSafetyPanel(safetyPanel === 'members' ? 'none' : 'members')}><span>Member access</span><strong>Review users &amp; revoke</strong><small>Owner only · mapped positions only</small></button>}
-          <button type="button" className={`is-emergency ${safetyPanel === 'emergency' ? 'is-open' : ''}`} onClick={() => setSafetyPanel(safetyPanel === 'emergency' ? 'none' : 'emergency')}><span>Emergency control</span><strong>Stop Super Signals automation</strong><small>Owner / Trading Admin · typed confirmation</small></button>
+          <button type="button" className={safetyPanel === 'members' ? 'is-open' : ''} onClick={() => setSafetyPanel(safetyPanel === 'members' ? 'none' : 'members')}><span>Member access</span><strong>Review users &amp; revoke</strong><small>Owner only · mapped positions only</small></button>
         </div>
-        {safetyPanel === 'members' && ownerView && <div className="day35-danger-zone-panel"><AdminMemberControlsDay35 apiBaseUrl={apiBaseUrl} /></div>}
-        {safetyPanel === 'emergency' && <div className="day35-danger-zone-panel"><AdminEmergencyStopDay35 apiBaseUrl={apiBaseUrl} /></div>}
-      </section>
+        {safetyPanel === 'members' && <div className="day35-danger-zone-panel"><AdminMemberControlsDay35 apiBaseUrl={apiBaseUrl} /></div>}
+      </section>}
 
       <section className="day35-recent-events" aria-labelledby="day35-recent-events-title">
         <div className="day35-section-heading"><div><p className="eyebrow">Immutable audit trail</p><h2 id="day35-recent-events-title">Recent operator events</h2></div></div>
         {data.recent_events.length ? <div>{data.recent_events.map((event, index) => <article key={`${event.created_at}:${event.event_type}:${index}`}><span /><div><strong>{eventLabel(event.event_type)}</strong><small>{event.entity_type} · {dateTime(event.created_at)}</small></div></article>)}</div> : <div className="day35-control-empty">No recent operator events.</div>}
       </section>
 
-      <div className="day35-control-safety"><span aria-hidden="true">◎</span><div><strong>Normal Control Centre views are observability only</strong><small>Broker-affecting controls are isolated above, require explicit typed confirmation and reuse the mapped-only Day 31 close gateway.</small></div></div>
+      <div className="day35-control-safety"><span aria-hidden="true">◎</span><div><strong>Normal Control Centre views are observability only</strong><small>Owner member revoke is isolated above, requires explicit typed confirmation, and reuses the mapped-only Day 31 Stop &amp; Close gateway. There is no global emergency-stop control.</small></div></div>
     </>}
   </section>;
 }
