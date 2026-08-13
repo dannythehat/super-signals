@@ -4,13 +4,14 @@ from __future__ import annotations
 
 from dataclasses import asdict
 from datetime import datetime
-from typing import Annotated, Any
+from typing import Annotated, Any, cast
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
 from pydantic import BaseModel
 
 from app.access_control import get_current_identity
+from app.admin_portfolio_day35 import Day35AdminPortfolioService, PeriodKey, SortKey
 from app.metaapi_read_gateway import MetaApiReadGateway
 from app.mt5_connection_service_day30 import Day30Mt5ConnectionService
 from app.mt5_runtime import require_mt5_service
@@ -102,6 +103,37 @@ class LiveBoardResponse(BaseModel):
     broker_trade_action_created: bool = False
 
 
+class AdminPortfolioRowResponse(BaseModel):
+    dimension_type: str
+    source_id: UUID
+    source_label: str
+    trader_stream: str | None
+    source_color_index: int
+    realized_cash_pnl: float
+    open_cash_pnl: float | None
+    open_cash_pnl_known: bool
+    return_percent: float | None
+    trades_closed: int
+    trades_open: int
+    wins: int
+    losses: int
+    breakeven: int
+    win_rate_percent: float | None
+    net_pips: float | None
+    rank: int
+
+
+class AdminPortfolioResponse(BaseModel):
+    period_key: str
+    period_label: str
+    period_start: datetime
+    period_end: datetime
+    rows: tuple[AdminPortfolioRowResponse, ...]
+    performance_basis: str
+    provider_identity_visible: bool
+    broker_trade_action_created: bool
+
+
 def _service(request: Request) -> Day33PerformanceLedgerServiceV2:
     existing = getattr(request.app.state, "day33_performance_service", None)
     if isinstance(existing, Day33PerformanceLedgerServiceV2):
@@ -148,6 +180,17 @@ def _raise_ledger(exc: Day33LedgerError) -> None:
             "message": "Broker-backed performance is temporarily unavailable.",
         },
     ) from exc
+
+
+def _admin_portfolio_role(identity: dict[str, Any]) -> None:
+    if str(identity.get("role") or "") not in {"owner", "trading_admin"}:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail={
+                "code": "day35_admin_portfolio_forbidden",
+                "message": "The Signal Portfolio is available to Super Signals administrators only.",
+            },
+        )
 
 
 @router.post("/sync", response_model=SyncResponse)
@@ -248,4 +291,43 @@ async def live_board_contract(
         open_count=sum(1 for item in trades if item.status == "open"),
         pending_count=sum(1 for item in trades if item.status == "pending"),
         trades=tuple(trades),
+    )
+
+
+@router.get("/admin-portfolio", response_model=AdminPortfolioResponse)
+async def admin_signal_portfolio(
+    request: Request,
+    response: Response,
+    identity: Identity,
+    period: str = Query(default="today"),
+    sort_by: str = Query(default="realized_pnl"),
+) -> AdminPortfolioResponse:
+    """Day 35 admin-only source/trader comparison over Day 33 broker truth."""
+
+    _admin_portfolio_role(identity)
+    allowed_periods = {"today", "7d", "month", "year", "all"}
+    allowed_sorts = {"realized_pnl", "return_percent", "win_rate", "trade_count"}
+    if period not in allowed_periods or sort_by not in allowed_sorts:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail={
+                "code": "day35_admin_portfolio_filter_invalid",
+                "message": "Choose a supported Signal Portfolio period and sort order.",
+            },
+        )
+
+    view = Day35AdminPortfolioService(_service(request)).read(
+        cast(PeriodKey, period),
+        sort_by=cast(SortKey, sort_by),
+    )
+    _no_store(response)
+    return AdminPortfolioResponse(
+        period_key=view.period_key,
+        period_label=view.period_label,
+        period_start=view.period_start,
+        period_end=view.period_end,
+        rows=tuple(AdminPortfolioRowResponse(**asdict(item)) for item in view.rows),
+        performance_basis=view.performance_basis,
+        provider_identity_visible=view.provider_identity_visible,
+        broker_trade_action_created=view.broker_trade_action_created,
     )
