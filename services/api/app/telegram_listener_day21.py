@@ -13,6 +13,7 @@ import os
 from typing import Any
 
 from telethon import TelegramClient, events
+from telethon.errors import FloodWaitError
 from telethon.sessions import StringSession
 
 from app.ai_message_pipeline import AiMessagePipeline
@@ -215,6 +216,18 @@ class Day21TelegramListenerManager(Day20TelegramListenerManager):
                 await self._recover_live_gaps(client, plan)
             except asyncio.CancelledError:
                 raise
+            except FloodWaitError as exc:
+                # Telegram is explicitly asking this reader to back off. Polling
+                # again on the normal interval would extend the penalty and risk
+                # the reader session, so honour the requested wait before the next
+                # sweep. Live push delivery is unaffected.
+                wait_seconds = max(int(getattr(exc, "seconds", 0) or 0), 0)
+                logger.warning(
+                    "Telegram live recovery backing off for %ds after flood wait",
+                    wait_seconds,
+                    extra={"telegram_account_id": str(plan.telegram_account_id)},
+                )
+                await asyncio.sleep(wait_seconds)
             except Exception:
                 logger.exception(
                     "Telegram live recovery check failed",

@@ -36,6 +36,7 @@ from app.telegram_listener_day21 import Day21TelegramListenerManager
 logger = logging.getLogger(__name__)
 _DAY28_LIVE_RECOVERY_LIMIT = 10
 _DAY28_LIVE_RECOVERY_MAX_AGE_SECONDS = 60
+_DAY28_LIVE_RECOVERY_SKEW_SECONDS = 5
 
 
 def _enabled(value: str | None, *, default: bool = False) -> bool:
@@ -251,7 +252,16 @@ class Day28TelegramListenerManager(Day21TelegramListenerManager):
             reference = reference.replace(tzinfo=UTC)
         value_utc = value if value.tzinfo is not None else value.replace(tzinfo=UTC)
         age_seconds = (reference.astimezone(UTC) - value_utc.astimezone(UTC)).total_seconds()
-        return 0 <= age_seconds <= _DAY28_LIVE_RECOVERY_MAX_AGE_SECONDS
+        # A small negative age means the provider timestamp is marginally ahead of
+        # this server's clock, which is ordinary skew for a just-posted message.
+        # Treating that as stale would discard exactly the fresh delivery this
+        # recovery path exists to rescue. Anything genuinely older than the
+        # freshness budget still remains evidence only.
+        return (
+            -_DAY28_LIVE_RECOVERY_SKEW_SECONDS
+            <= age_seconds
+            <= _DAY28_LIVE_RECOVERY_MAX_AGE_SECONDS
+        )
 
     async def _recover_live_gaps(
         self,
@@ -265,8 +275,11 @@ class Day28TelegramListenerManager(Day21TelegramListenerManager):
         Only deliveries no more than 60 seconds old may reach the broker router; older
         recovered history is persisted as evidence only, preserving Day 37 no-replay.
         """
-        now = datetime.now(UTC)
         for source in plan.sources:
+            # Freshness is measured per source. A single snapshot taken before the
+            # whole sweep would drift by however long the earlier sources took,
+            # progressively mislabelling genuinely fresh deliveries as stale.
+            now = datetime.now(UTC)
             messages = await client.get_messages(source.chat_id, limit=_DAY28_LIVE_RECOVERY_LIMIT)
             for message in reversed(list(messages)):
                 message_id = getattr(message, "id", None)
