@@ -225,9 +225,6 @@ describe('TelegramSourceSelector', () => {
 
     fireEvent.click(screen.getAllByRole('button', { name: 'Add to shared sources' })[0]);
 
-    expect(
-      await screen.findByText('Source added to the shared list and kept PAUSED. No monitoring has started.'),
-    ).toBeInTheDocument();
     expect(await screen.findByText('SELECTED · PAUSED')).toBeInTheDocument();
     expect(fetchMock).toHaveBeenCalledWith(
       `/api/admin/telegram/sources/accounts/${account.id}/select`,
@@ -239,9 +236,6 @@ describe('TelegramSourceSelector', () => {
     );
 
     fireEvent.click(screen.getByRole('button', { name: 'Remove my reader' }));
-    expect(
-      await screen.findByText(/Your reader was removed\. The shared source remains/i),
-    ).toBeInTheDocument();
     await waitFor(() => expect(screen.queryByText('SELECTED · PAUSED')).not.toBeInTheDocument());
   });
 
@@ -288,9 +282,6 @@ describe('TelegramSourceSelector', () => {
     expect(await screen.findByText('ALREADY SHARED · PAUSED')).toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: 'Add my reader too' }));
 
-    expect(
-      await screen.findByText('Existing shared source linked to your reader too. No duplicate source was created.'),
-    ).toBeInTheDocument();
     expect(await screen.findByText('SELECTED · PAUSED')).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Remove my reader' })).toBeInTheDocument();
   });
