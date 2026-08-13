@@ -9,6 +9,16 @@ from pydantic import BaseModel, Field
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
+from app.auth_rate_limit_day39 import (
+    ADMIN_SETUP_POLICY,
+    LOGIN_POLICY,
+    RECOVERY_POLICY,
+    RateLimitExceeded,
+    assert_not_limited,
+    clear_failures,
+    record_attempt,
+    record_failure,
+)
 from app.auth_service import (
     authenticate_user,
     create_recovery_request,
@@ -84,6 +94,14 @@ def _client_ip(request: Request) -> str | None:
     return request.client.host if request.client else None
 
 
+def _too_many_attempts() -> HTTPException:
+    return HTTPException(
+        status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+        detail="Too many attempts. Try again later.",
+        headers={"Retry-After": "900"},
+    )
+
+
 def account_response(identity: dict[str, Any]) -> AccountResponse:
     return AccountResponse(
         id=str(identity["id"]),
@@ -131,13 +149,35 @@ def login(
     session: DbSession,
     settings: AppSettings,
 ) -> AccountResponse:
+    try:
+        assert_not_limited(
+            session,
+            policy=LOGIN_POLICY,
+            subject=payload.email,
+            fingerprint_secret=settings.session_fingerprint_secret,
+        )
+    except RateLimitExceeded as exc:
+        raise _too_many_attempts() from exc
+
     identity = authenticate_user(session, payload.email, payload.password)
     if identity is None:
+        record_failure(
+            session,
+            policy=LOGIN_POLICY,
+            subject=payload.email,
+            fingerprint_secret=settings.session_fingerprint_secret,
+        )
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Email or password is incorrect.",
         )
 
+    clear_failures(
+        session,
+        policy=LOGIN_POLICY,
+        subject=payload.email,
+        fingerprint_secret=settings.session_fingerprint_secret,
+    )
     raw_token, _ = create_session(
         session,
         user_id=identity["id"],
@@ -155,7 +195,18 @@ def login(
 def complete_admin_setup(
     payload: AdminSetupRequest,
     session: DbSession,
+    settings: AppSettings,
 ) -> AdminSetupResponse:
+    try:
+        assert_not_limited(
+            session,
+            policy=ADMIN_SETUP_POLICY,
+            subject=payload.token,
+            fingerprint_secret=settings.session_fingerprint_secret,
+        )
+    except RateLimitExceeded as exc:
+        raise _too_many_attempts() from exc
+
     # Trading Admin setup tokens are deliberately single-use but do not expire
     # with time. They remain valid until completed or explicitly replaced by an
     # Owner, at which point the previous unused token is marked used. Ordinary
@@ -187,6 +238,12 @@ def complete_admin_setup(
         .first()
     )
     if setup is None:
+        record_failure(
+            session,
+            policy=ADMIN_SETUP_POLICY,
+            subject=payload.token,
+            fingerprint_secret=settings.session_fingerprint_secret,
+        )
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="This administrator setup link is invalid, already used, or has been replaced.",
@@ -233,6 +290,12 @@ def complete_admin_setup(
         )
     )
     session.commit()
+    clear_failures(
+        session,
+        policy=ADMIN_SETUP_POLICY,
+        subject=payload.token,
+        fingerprint_secret=settings.session_fingerprint_secret,
+    )
 
     return AdminSetupResponse(
         message="Trading Admin account is ready. You can sign in now.",
@@ -248,7 +311,12 @@ def me(
     settings: AppSettings,
 ) -> AccountResponse:
     raw_token = _session_token(request, settings)
-    identity = get_user_for_session(session, raw_token)
+    identity = get_user_for_session(
+        session,
+        raw_token,
+        user_agent=request.headers.get("user-agent"),
+        fingerprint_secret=settings.session_fingerprint_secret,
+    )
     if identity is None:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
@@ -292,6 +360,26 @@ def recovery(
     session: DbSession,
     settings: AppSettings,
 ) -> RecoveryResponse:
+    try:
+        assert_not_limited(
+            session,
+            policy=RECOVERY_POLICY,
+            subject=payload.email,
+            fingerprint_secret=settings.session_fingerprint_secret,
+        )
+    except RateLimitExceeded as exc:
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail="Too many recovery requests. Try again later.",
+            headers={"Retry-After": "3600"},
+        ) from exc
+
+    record_attempt(
+        session,
+        policy=RECOVERY_POLICY,
+        subject=payload.email,
+        fingerprint_secret=settings.session_fingerprint_secret,
+    )
     create_recovery_request(
         session,
         email=payload.email,
