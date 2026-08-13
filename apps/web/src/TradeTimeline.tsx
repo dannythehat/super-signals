@@ -103,7 +103,7 @@ function pnlClass(value: number | null): string {
 }
 
 function skippedReason(value: string | null): string {
-  if (!value) return 'Execution gate blocked this signal.';
+  if (!value) return 'This trade was not placed because a safety check stopped it.';
   return value.replaceAll('_', ' ');
 }
 
@@ -141,7 +141,7 @@ export function TradeTimeline({ apiBaseUrl, currency }: Props) {
       const next = await readJson<TimelineData>(response);
       setData(next);
       setError(null);
-      setSyncNote(syncFailed ? 'Showing the last broker-backed ledger snapshot. Live history refresh is temporarily unavailable.' : null);
+      setSyncNote(syncFailed ? 'Showing your most recent saved trade history. Live refresh is temporarily unavailable.' : null);
       if (!syncFailed) window.dispatchEvent(new Event('super-signals-ledger-synced'));
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : 'Trade history is temporarily unavailable.');
@@ -187,13 +187,13 @@ export function TradeTimeline({ apiBaseUrl, currency }: Props) {
   }, [data, sourceFilter, statusFilter, traderFilter]);
 
   if (loading && !data) {
-    return <section className="day33-timeline day33-timeline--loading" aria-label="Loading trade timeline"><div /><div /><div /></section>;
+    return <section className="day33-timeline day33-timeline--loading" aria-label="Loading trade history"><div /><div /><div /></section>;
   }
 
   return <section className="day33-timeline" aria-labelledby="day33-timeline-title">
     <div className="day33-timeline-head">
-      <div><span>Canonical broker ledger</span><h2 id="day33-timeline-title">Trade timeline</h2><p>Open, pending, completed and mechanically skipped Super Signals trades in one view.</p></div>
-      <button type="button" className="day33-refresh" onClick={() => void refresh()} disabled={refreshing}>{refreshing ? 'Syncing…' : 'Sync broker'}</button>
+      <div><span>Your trades</span><h2 id="day33-timeline-title">Trade history</h2><p>Open, pending and completed Super Signals trades in one place.</p></div>
+      <button type="button" className="day33-refresh" onClick={() => void refresh()} disabled={refreshing}>{refreshing ? 'Refreshing…' : 'Refresh'}</button>
     </div>
 
     {syncNote && <div className="day33-sync-note" role="status">{syncNote}</div>}
@@ -202,7 +202,7 @@ export function TradeTimeline({ apiBaseUrl, currency }: Props) {
     <div className="day33-live-strip" aria-label="Current trade state">
       <div><span className="day33-live-dot day33-live-dot--open" /><strong>{data?.open_count ?? 0}</strong><span>Open</span></div>
       <div><span className="day33-live-dot day33-live-dot--pending" /><strong>{data?.pending_count ?? 0}</strong><span>Pending</span></div>
-      <small>Broker-backed current state</small>
+      <small>Current account state</small>
     </div>
 
     <div className="day33-status-filters" aria-label="Filter trade status">
@@ -217,10 +217,10 @@ export function TradeTimeline({ apiBaseUrl, currency }: Props) {
       {traders.length > 0 && <label><span>Trader</span><select value={traderFilter} onChange={(event) => setTraderFilter(event.target.value)}><option value="all">All traders</option>{traders.map((trader) => <option key={trader} value={trader}>{trader}</option>)}</select></label>}
     </div>}
 
-    {visibleTrades.length === 0 ? <div className="day33-empty"><strong>No trades in this view</strong><span>Change the filters or sync the broker ledger.</span></div> : <div className="day33-trade-list">{visibleTrades.map((trade) => {
+    {visibleTrades.length === 0 ? <div className="day33-empty"><strong>No trades yet</strong><span>Your Super Signals trades will appear here.</span></div> : <div className="day33-trade-list">{visibleTrades.map((trade) => {
       const identity = publicTradeIdentity(trade.signal_id);
       return <article className={`day33-trade-card day33-status--${trade.status_color}`} key={trade.signal_id}>
-        <div className="day33-trade-reference" aria-label={`Trade ${identity.reference}`}><span aria-hidden="true">{identity.marker}</span><strong>{identity.reference}</strong><small>Trade identity</small></div>
+        <div className="day33-trade-reference" aria-label={`Trade ${identity.reference}`}><span aria-hidden="true">{identity.marker}</span><strong>{identity.reference}</strong><small>Trade ID</small></div>
         <div className="day33-trade-top">
           <div className="day33-trade-symbol"><span className={`day32-side day32-side--${trade.side.toLowerCase()}`}>{trade.side}</span><strong>{trade.symbol}</strong></div>
           <span className={`day33-status-badge day33-status-badge--${trade.status_color}`}><i aria-hidden="true">{statusIcon(trade.status)}</i>{trade.status_label}</span>
@@ -252,6 +252,6 @@ export function TradeTimeline({ apiBaseUrl, currency }: Props) {
     <div className="day33-legend" aria-label="Trade status colour legend">
       <span><i className="is-blue" />Open</span><span><i className="is-amber" />Pending / skipped</span><span><i className="is-green" />Win</span><span><i className="is-red" />Loss</span><span><i className="is-grey" />BE / closed</span>
     </div>
-    <p className="day33-privacy-note">The SS trade identity follows one canonical trade from opening to final result. Status colour shows what happened; source/trader colour is separate admin-only identity and never changes the result meaning.</p>
+    <p className="day33-privacy-note">Each trade keeps the same SS Trade ID from opening to final result, so every update is easy to match to the correct trade.{data?.provider_identity_visible ? ' Source and trader labels are shown separately for administrators.' : ''}</p>
   </section>;
 }
