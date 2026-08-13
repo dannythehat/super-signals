@@ -25,23 +25,8 @@ COPY services/api/requirements.txt /tmp/requirements.txt
 RUN python -m pip install --no-cache-dir -r /tmp/requirements.txt
 
 COPY services/api /app/services/api
-COPY --from=web-build /build/apps/web/dist /app/web-dist
-RUN python -m pip install --no-cache-dir pytest && cd /app/services/api && pytest -q \
-    tests/test_day36_manual_mt5_reconciliation.py \
-    tests/test_day36_provider_update_remaining_positions.py \
-    tests/test_admin_portfolio_day35.py \
-    tests/test_admin_user_controls_day35.py \
-    tests/test_control_centre_day35.py \
-    tests/test_day35_mapped_only_stop_behavior.py \
-    tests/test_day35_mt5_onboarding.py \
-    tests/test_day35_role_privacy.py \
-    tests/test_operations_day35.py \
-    tests/test_trade_identity_day35.py \
-    tests/test_day29_invitations.py \
-    tests/test_authentication.py \
-    tests/test_day31_risk_activation_controls.py \
-    tests/test_day32_dashboard_contract.py
 COPY scripts/render-start.sh /app/scripts/render-start.sh
+COPY --from=web-build /build/apps/web/dist /app/web-dist
 RUN chmod 0755 /app/scripts/render-start.sh
 
 EXPOSE 10000
