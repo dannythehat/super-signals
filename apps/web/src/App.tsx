@@ -1,6 +1,7 @@
 import { FormEvent, useCallback, useEffect, useState } from 'react';
 
 import { AdminControlCentreDay35 } from './AdminControlCentreDay35';
+import { AdminReviewQueueDay35 } from './AdminReviewQueueDay35';
 import { AdminSignalPortfolioDay35 } from './AdminSignalPortfolioDay35';
 import { MobileDashboard } from './MobileDashboard';
 import { Mt5DemoConnectionPanel } from './Mt5DemoConnectionPanel';
@@ -13,7 +14,7 @@ import { UserMt5ConnectionPanel } from './UserMt5ConnectionPanel';
 
 type AuthState = 'checking' | 'signed-out' | 'signed-in';
 type Notice = { tone: 'error' | 'success'; message: string } | null;
-type WorkspaceView = 'overview' | 'portfolio' | 'settings' | 'setup' | 'telegram' | 'sources' | 'mt5' | 'access';
+type WorkspaceView = 'overview' | 'portfolio' | 'reviews' | 'settings' | 'setup' | 'telegram' | 'sources' | 'mt5' | 'access';
 
 interface AccessAction { permission: string; label: string; description: string; }
 interface AccessSection { key: 'owner' | 'trading' | 'user'; label: string; description: string; actions: AccessAction[]; }
@@ -29,7 +30,7 @@ interface TelegramSetupSource { selected: boolean; managed_by_this_reader?: bool
 const apiBaseUrl = import.meta.env.VITE_API_BASE_URL ?? '/api';
 
 function workspaceViewFromHistory(value: unknown): WorkspaceView | null {
-  return value === 'overview' || value === 'portfolio' || value === 'settings' || value === 'setup' || value === 'telegram' || value === 'sources' || value === 'mt5' || value === 'access' ? value : null;
+  return value === 'overview' || value === 'portfolio' || value === 'reviews' || value === 'settings' || value === 'setup' || value === 'telegram' || value === 'sources' || value === 'mt5' || value === 'access' ? value : null;
 }
 function requestedWorkspaceView(): WorkspaceView | null {
   return workspaceViewFromHistory(new URLSearchParams(window.location.search).get('view'));
@@ -81,6 +82,7 @@ export function App() {
   const canManageMt5 = account?.permissions.includes('mt5_accounts.approve') ?? false;
   const canViewOwnerAlerts = account?.permissions.includes('admins.manage') ?? false;
   const canViewAdminPortfolio = account?.role === 'owner' || account?.role === 'trading_admin';
+  const canViewReviewQueue = account?.permissions.includes('signals.review') ?? false;
 
   const refreshSharedSources = useCallback(async () => {
     if (!canManageTelegram) { setSharedSources([]); setSharedSourcesLoaded(true); return; }
@@ -134,18 +136,18 @@ export function App() {
     const requestedView = requestedWorkspaceView();
     const historyView = workspaceViewFromHistory(window.history.state?.superSignalsView);
     const candidate = historyView ?? requestedView ?? 'overview';
-    const roleSafeCandidate = candidate === 'portfolio' && !canViewAdminPortfolio ? 'overview' : candidate;
-    const initialView = roleSafeCandidate === 'mt5' && !canManageMt5 ? 'settings' : roleSafeCandidate;
+    const adminSafeCandidate = candidate === 'portfolio' && !canViewAdminPortfolio ? 'overview' : candidate === 'reviews' && !canViewReviewQueue ? 'overview' : candidate;
+    const initialView = adminSafeCandidate === 'mt5' && !canManageMt5 ? 'settings' : adminSafeCandidate;
     setActiveView(initialView);
     window.history.replaceState(historyStateWithView(initialView), '', urlForView(initialView));
     function handlePopState(event: PopStateEvent) {
       const candidateView = workspaceViewFromHistory(event.state?.superSignalsView) ?? requestedWorkspaceView() ?? 'overview';
-      const roleSafeView = candidateView === 'portfolio' && !canViewAdminPortfolio ? 'overview' : candidateView;
-      const view = roleSafeView === 'mt5' && !canManageMt5 ? 'settings' : roleSafeView;
+      const adminSafeView = candidateView === 'portfolio' && !canViewAdminPortfolio ? 'overview' : candidateView === 'reviews' && !canViewReviewQueue ? 'overview' : candidateView;
+      const view = adminSafeView === 'mt5' && !canManageMt5 ? 'settings' : adminSafeView;
       setActiveView(view); setMenuOpen(false); if (view === 'settings') void refreshSharedSources();
     }
     window.addEventListener('popstate', handlePopState); return () => window.removeEventListener('popstate', handlePopState);
-  }, [authState, canManageMt5, canViewAdminPortfolio, refreshSharedSources]);
+  }, [authState, canManageMt5, canViewAdminPortfolio, canViewReviewQueue, refreshSharedSources]);
 
   useEffect(() => { if (!menuOpen) return; const closeOnEscape = (event: KeyboardEvent) => { if (event.key === 'Escape') setMenuOpen(false); }; window.addEventListener('keydown', closeOnEscape); return () => window.removeEventListener('keydown', closeOnEscape); }, [menuOpen]);
 
@@ -156,8 +158,9 @@ export function App() {
       const authenticatedAccount = await readJson<Account>(response);
       const requestedView = requestedWorkspaceView();
       const canUsePortfolio = authenticatedAccount.role === 'owner' || authenticatedAccount.role === 'trading_admin';
-      const roleSafeRequested = requestedView === 'portfolio' && !canUsePortfolio ? 'overview' : requestedView;
-      const loginView = roleSafeRequested === 'mt5' && !authenticatedAccount.permissions.includes('mt5_accounts.approve') ? 'settings' : roleSafeRequested ?? 'overview';
+      const canUseReviews = authenticatedAccount.permissions.includes('signals.review');
+      const adminSafeRequested = requestedView === 'portfolio' && !canUsePortfolio ? 'overview' : requestedView === 'reviews' && !canUseReviews ? 'overview' : requestedView;
+      const loginView = adminSafeRequested === 'mt5' && !authenticatedAccount.permissions.includes('mt5_accounts.approve') ? 'settings' : adminSafeRequested ?? 'overview';
       setAccount(authenticatedAccount); setAuthState('signed-in'); setActiveView(loginView); window.history.replaceState(historyStateWithView(loginView), '', urlForView(loginView)); event.currentTarget.reset();
     } catch (error) { setNotice({ tone: 'error', message: error instanceof Error ? error.message : 'Login failed.' }); }
     finally { setBusy(false); }
@@ -177,6 +180,7 @@ export function App() {
 
   function navigate(view: WorkspaceView) {
     if (view === 'portfolio' && !canViewAdminPortfolio) return;
+    if (view === 'reviews' && !canViewReviewQueue) return;
     if (view !== activeView) window.history.pushState(historyStateWithView(view), '', urlForView(view));
     setActiveView(view); setMenuOpen(false); if (view === 'settings') void refreshSharedSources();
     try { window.scrollTo({ top: 0, behavior: 'smooth' }); } catch { /* test environments */ }
@@ -199,23 +203,26 @@ export function App() {
         <nav className="drawer-nav" aria-label="Main menu">
           <button type="button" aria-current={activeView === 'overview' ? 'page' : undefined} onClick={() => navigate('overview')}><span className="drawer-nav-icon" aria-hidden="true">⌂</span><span className="drawer-nav-label"><strong>{canViewAdminPortfolio ? 'Control Centre' : 'Home'}</strong><small>{canViewAdminPortfolio ? 'Health, reviews and trading operations' : 'Balance, positions and trading activity'}</small></span></button>
           {canViewAdminPortfolio && <button type="button" aria-current={activeView === 'portfolio' ? 'page' : undefined} onClick={() => navigate('portfolio')}><span className="drawer-nav-icon" aria-hidden="true">◈</span><span className="drawer-nav-label"><strong>Signal Portfolio</strong><small>Compare provider and trader performance</small></span></button>}
+          {canViewReviewQueue && <button type="button" aria-current={activeView === 'reviews' ? 'page' : undefined} onClick={() => navigate('reviews')}><span className="drawer-nav-icon" aria-hidden="true">◇</span><span className="drawer-nav-label"><strong>Review Queue</strong><small>Inspect held classifier and parser items</small></span></button>}
           <button type="button" aria-current={activeView === 'settings' ? 'page' : undefined} onClick={() => navigate('settings')}><span className="drawer-nav-icon" aria-hidden="true">⚙</span><span className="drawer-nav-label"><strong>Settings</strong><small>Risk, MT5, sources and security</small></span></button>
         </nav>
         <div className="drawer-footer"><div className="drawer-account"><strong>{displayName}</strong><small>{account.email}</small></div><button className="button button--quiet" type="button" onClick={handleLogout} disabled={busy}>Log out</button></div>
       </aside>
       <div className="workspace-content">
-        {activeView !== 'overview' && activeView !== 'portfolio' && activeView !== 'settings' && activeView !== 'setup' && <button className="workspace-back-button" type="button" onClick={() => navigate('settings')}><span aria-hidden="true">←</span> Back to Settings</button>}
+        {activeView !== 'overview' && activeView !== 'portfolio' && activeView !== 'reviews' && activeView !== 'settings' && activeView !== 'setup' && <button className="workspace-back-button" type="button" onClick={() => navigate('settings')}><span aria-hidden="true">←</span> Back to Settings</button>}
         {activeView === 'setup' && account.role === 'trading_admin' && canManageTelegram && <TradingAdminOnboarding apiBaseUrl={apiBaseUrl} displayName={displayName} onComplete={() => { void refreshSharedSources(); navigate('overview'); }} />}
 
         {activeView === 'overview' && canViewAdminPortfolio && <AdminControlCentreDay35 apiBaseUrl={apiBaseUrl} displayName={displayName} roleLabel={account.role_label} onOpenPortfolio={() => navigate('portfolio')} onOpenSources={() => navigate('sources')} onOpenSettings={() => navigate('settings')} />}
         {activeView === 'overview' && !canViewAdminPortfolio && <MobileDashboard apiBaseUrl={apiBaseUrl} displayName={displayName} roleLabel={account.role_label} onOpenSettings={() => navigate('settings')} />}
         {activeView === 'portfolio' && canViewAdminPortfolio && <AdminSignalPortfolioDay35 apiBaseUrl={apiBaseUrl} />}
+        {activeView === 'reviews' && canViewReviewQueue && <AdminReviewQueueDay35 apiBaseUrl={apiBaseUrl} onOpenSources={() => navigate('sources')} />}
 
         {activeView === 'settings' && <section className="settings-page" aria-labelledby="settings-page-title">
           <div className="workspace-page-header"><div><p className="eyebrow">Account controls</p><h1 id="settings-page-title">Settings</h1><p className="intro">The daily dashboard stays focused on trading. Connections, risk and administration live here.</p></div><span className="workspace-role-pill">{account.role_label}</span></div>
           {account.role === 'user' && <div className="settings-user-stack"><TradingActivationPanel /><UserMt5ConnectionPanel apiBaseUrl={apiBaseUrl} /></div>}
           <div className="settings-grid" aria-label="Settings areas">
             {canViewAdminPortfolio && <article className="settings-card"><span className="status-label">Day 35 control room</span><h2>Signal Portfolio</h2><p>Rank approved sources and reliably attributed trader streams using broker-backed performance only.</p><button className="button button--quiet" type="button" onClick={() => navigate('portfolio')}>Open Signal Portfolio</button></article>}
+            {canViewReviewQueue && <article className="settings-card"><span className="status-label">Operator attention</span><h2>Review Queue</h2><p>Inspect the latest messages held by classification, parsing or validation safety gates.</p><button className="button button--quiet" type="button" onClick={() => navigate('reviews')}>Open Review Queue</button></article>}
             <PushNotificationsDay34 apiBaseUrl={apiBaseUrl} />
             {account.role === 'trading_admin' && canManageTelegram && <article className="settings-card"><span className="status-label">First-time setup</span><h2>Telegram onboarding</h2><p>Connect your private reader and select the groups you administer.</p><button className="button button--quiet" type="button" onClick={() => navigate('setup')}>Open Telegram setup</button></article>}
             {canManageTelegram && <article className="settings-card"><span className="status-label">Signal network</span><h2>Telegram &amp; sources</h2><p>{sharedSourcesLoaded ? `${sharedSources.length} shared source${sharedSources.length === 1 ? '' : 's'} currently catalogued.` : 'Checking shared sources…'} Private reader sessions remain isolated per administrator.</p><div className="settings-actions"><button className="button button--quiet" type="button" onClick={() => navigate('sources')}>Signal sources</button><button className="button button--quiet" type="button" onClick={() => navigate('telegram')}>Reader accounts</button></div></article>}
