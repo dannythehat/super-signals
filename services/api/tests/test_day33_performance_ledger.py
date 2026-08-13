@@ -81,7 +81,7 @@ def test_provider_identity_is_hidden_from_invited_user() -> None:
     assert invited.source_color_index is None
 
 
-def test_skipped_trade_is_amber_and_provider_hidden_for_invited_user() -> None:
+def test_skipped_trade_is_amber_and_does_not_invent_trader_attribution() -> None:
     row = _executed_row()
     row.update(
         {
@@ -104,7 +104,7 @@ def test_skipped_trade_is_amber_and_provider_hidden_for_invited_user() -> None:
     assert admin.status == "skipped"
     assert admin.status_color == "amber"
     assert admin.status_label == "Skipped"
-    assert admin.trader_stream == "Matthew"
+    assert admin.trader_stream is None
     assert invited.source_label is None
     assert invited.trader_stream is None
     assert invited.close_reason == "entry_price_unavailable"
