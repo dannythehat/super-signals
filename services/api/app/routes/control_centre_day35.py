@@ -12,6 +12,7 @@ from pydantic import BaseModel
 from app.access_control import require_permission
 from app.control_centre_day35 import Day35ControlCentreService
 from app.db import get_session_factory
+from app.routes.admin_user_controls_day35 import router as admin_user_controls_day35_router
 
 router = APIRouter(prefix="/day35", tags=["day35-admin"])
 ActivityAdmin = Annotated[dict[str, Any], Depends(require_permission("activity.view"))]
@@ -117,3 +118,6 @@ def control_centre(
         recent_events=tuple(RecentEventResponse(**asdict(item)) for item in view.recent_events),
         broker_trade_action_created=view.broker_trade_action_created,
     )
+
+
+router.include_router(admin_user_controls_day35_router)
