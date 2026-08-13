@@ -1,5 +1,6 @@
 import { FormEvent, useCallback, useEffect, useState } from 'react';
 
+import { AdminControlCentreDay35 } from './AdminControlCentreDay35';
 import { AdminSignalPortfolioDay35 } from './AdminSignalPortfolioDay35';
 import { MobileDashboard } from './MobileDashboard';
 import { Mt5DemoConnectionPanel } from './Mt5DemoConnectionPanel';
@@ -189,14 +190,14 @@ export function App() {
 
     return <main className="app-shell workspace-shell"><section className="dashboard-card dashboard-card--workspace" aria-label="Super Signals workspace">
       <header className="workspace-topbar">
-        <button className="workspace-brand workspace-brand-button" type="button" aria-label="Go home" onClick={() => navigate('overview')}><img className="brand-logo" src="/super-signals-logo.png" alt="Super Signals" /><span className="workspace-brand-copy"><strong>Private trading account</strong><small>Signal follower · broker controlled</small></span></button>
+        <button className="workspace-brand workspace-brand-button" type="button" aria-label="Go home" onClick={() => navigate('overview')}><img className="brand-logo" src="/super-signals-logo.png" alt="Super Signals" /><span className="workspace-brand-copy"><strong>{canViewAdminPortfolio ? 'Super Signals control room' : 'Private trading account'}</strong><small>{canViewAdminPortfolio ? 'Signals · broker · members · operations' : 'Signal follower · broker controlled'}</small></span></button>
         <div className="workspace-topbar-actions">{activeView !== 'overview' && <button className="topbar-home-button" type="button" onClick={() => navigate('overview')}><span aria-hidden="true">⌂</span><span>Home</span></button>}<button className="menu-trigger" type="button" aria-label="Open menu" aria-expanded={menuOpen} onClick={() => setMenuOpen(true)}><span className="menu-bars" aria-hidden="true"><span /><span /><span /></span></button></div>
       </header>
       {menuOpen && <button className="menu-backdrop" type="button" aria-label="Close menu" onClick={() => setMenuOpen(false)} />}
       <aside className={`workspace-drawer ${menuOpen ? 'workspace-drawer--open' : ''}`} aria-label="Workspace navigation" aria-hidden={!menuOpen}>
         <div className="drawer-header"><div><strong>Super Signals</strong><span>{account.role_label}</span></div><button className="menu-close" type="button" aria-label="Close menu" onClick={() => setMenuOpen(false)}>×</button></div>
         <nav className="drawer-nav" aria-label="Main menu">
-          <button type="button" aria-current={activeView === 'overview' ? 'page' : undefined} onClick={() => navigate('overview')}><span className="drawer-nav-icon" aria-hidden="true">⌂</span><span className="drawer-nav-label"><strong>Home</strong><small>Balance, positions and trading activity</small></span></button>
+          <button type="button" aria-current={activeView === 'overview' ? 'page' : undefined} onClick={() => navigate('overview')}><span className="drawer-nav-icon" aria-hidden="true">⌂</span><span className="drawer-nav-label"><strong>{canViewAdminPortfolio ? 'Control Centre' : 'Home'}</strong><small>{canViewAdminPortfolio ? 'Health, reviews and trading operations' : 'Balance, positions and trading activity'}</small></span></button>
           {canViewAdminPortfolio && <button type="button" aria-current={activeView === 'portfolio' ? 'page' : undefined} onClick={() => navigate('portfolio')}><span className="drawer-nav-icon" aria-hidden="true">◈</span><span className="drawer-nav-label"><strong>Signal Portfolio</strong><small>Compare provider and trader performance</small></span></button>}
           <button type="button" aria-current={activeView === 'settings' ? 'page' : undefined} onClick={() => navigate('settings')}><span className="drawer-nav-icon" aria-hidden="true">⚙</span><span className="drawer-nav-label"><strong>Settings</strong><small>Risk, MT5, sources and security</small></span></button>
         </nav>
@@ -206,7 +207,8 @@ export function App() {
         {activeView !== 'overview' && activeView !== 'portfolio' && activeView !== 'settings' && activeView !== 'setup' && <button className="workspace-back-button" type="button" onClick={() => navigate('settings')}><span aria-hidden="true">←</span> Back to Settings</button>}
         {activeView === 'setup' && account.role === 'trading_admin' && canManageTelegram && <TradingAdminOnboarding apiBaseUrl={apiBaseUrl} displayName={displayName} onComplete={() => { void refreshSharedSources(); navigate('overview'); }} />}
 
-        {activeView === 'overview' && <MobileDashboard apiBaseUrl={apiBaseUrl} displayName={displayName} roleLabel={account.role_label} onOpenSettings={() => navigate('settings')} />}
+        {activeView === 'overview' && canViewAdminPortfolio && <AdminControlCentreDay35 apiBaseUrl={apiBaseUrl} displayName={displayName} roleLabel={account.role_label} onOpenPortfolio={() => navigate('portfolio')} onOpenSources={() => navigate('sources')} onOpenSettings={() => navigate('settings')} />}
+        {activeView === 'overview' && !canViewAdminPortfolio && <MobileDashboard apiBaseUrl={apiBaseUrl} displayName={displayName} roleLabel={account.role_label} onOpenSettings={() => navigate('settings')} />}
         {activeView === 'portfolio' && canViewAdminPortfolio && <AdminSignalPortfolioDay35 apiBaseUrl={apiBaseUrl} />}
 
         {activeView === 'settings' && <section className="settings-page" aria-labelledby="settings-page-title">
