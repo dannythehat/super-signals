@@ -15,7 +15,8 @@ from app.mt5_connection_service_day30 import Day30Mt5ConnectionService
 from app.mt5_onboarding_day35 import Day35Mt5OnboardingService
 from app.mt5_runtime import require_mt5_service
 
-router = APIRouter(tags=["mt5-onboarding"])
+user_router = APIRouter(prefix="/onboarding", tags=["mt5-onboarding"])
+owner_router = APIRouter(prefix="/requests", tags=["mt5-onboarding-owner"])
 UserIdentity = Annotated[dict[str, Any], Depends(get_current_identity)]
 OwnerIdentity = Annotated[dict[str, Any], Depends(require_permission("mt5_accounts.approve"))]
 
@@ -159,7 +160,7 @@ def _member_response(request: Request, user_id: UUID) -> MemberMt5OnboardingResp
     )
 
 
-@router.get("/account/mt5/onboarding", response_model=MemberMt5OnboardingResponse)
+@user_router.get("", response_model=MemberMt5OnboardingResponse)
 async def member_mt5_onboarding_status(
     request: Request, response: Response, identity: UserIdentity
 ) -> MemberMt5OnboardingResponse:
@@ -168,7 +169,7 @@ async def member_mt5_onboarding_status(
     return _member_response(request, identity["id"])
 
 
-@router.post("/account/mt5/onboarding/request", response_model=MemberMt5OnboardingResponse)
+@user_router.post("/request", response_model=MemberMt5OnboardingResponse)
 async def submit_member_mt5_request(
     payload: SubmitMt5ApprovalRequest,
     request: Request,
@@ -186,7 +187,7 @@ async def submit_member_mt5_request(
     return _member_response(request, identity["id"])
 
 
-@router.post("/account/mt5/onboarding/connect", response_model=MemberMt5OnboardingResponse)
+@user_router.post("/connect", response_model=MemberMt5OnboardingResponse)
 async def connect_approved_member_mt5(
     payload: ConnectApprovedMt5Request,
     request: Request,
@@ -204,20 +205,29 @@ async def connect_approved_member_mt5(
     return _member_response(request, identity["id"])
 
 
-@router.get("/owner/mt5/onboarding/requests", response_model=list[PendingMt5ApprovalRequestResponse])
+@owner_router.get("", response_model=list[PendingMt5ApprovalRequestResponse])
 async def list_member_mt5_requests(
     request: Request, response: Response, identity: OwnerIdentity
 ) -> list[PendingMt5ApprovalRequestResponse]:
     _owner(identity)
     rows = _onboarding_service(request).list_pending_requests()
     _no_store(response)
-    return [PendingMt5ApprovalRequestResponse(**row.__dict__) for row in rows]
+    return [
+        PendingMt5ApprovalRequestResponse(
+            request_id=row.request_id,
+            user_id=row.user_id,
+            email=row.email,
+            display_name=row.display_name,
+            login_masked=row.login_masked,
+            server=row.server,
+            requested_at=row.requested_at,
+            updated_at=row.updated_at,
+        )
+        for row in rows
+    ]
 
 
-@router.post(
-    "/owner/mt5/onboarding/requests/{user_id}/approve",
-    response_model=OwnerApproveRequestResponse,
-)
+@owner_router.post("/{user_id}/approve", response_model=OwnerApproveRequestResponse)
 async def approve_member_mt5_request(
     user_id: UUID,
     request: Request,
