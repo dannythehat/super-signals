@@ -30,7 +30,7 @@ _OPEN_TARGET = re.compile(
     re.IGNORECASE,
 )
 _DOUBLE_SIZE = re.compile(
-    r"\b(?:DOUBLE\s+(?:LOT|LOTS|SIZE)|2X\s+(?:LOT|LOTS|SIZE))\b",
+    r"\b(?:DOUBLE|2X)\s+(?:LOTS?|LOT\s+SIZE|LOTSIZE|SIZE)\b",
     re.IGNORECASE,
 )
 _RESULT_ONLY = re.compile(
@@ -122,9 +122,9 @@ def _normalise_trade_values(
         if parsed is not None
     )
     extracted["tp_open"] = bool(_OPEN_TARGET.search(raw_text))
-    extracted["double_lot"] = bool(extracted.get("double_lot")) and bool(
-        _DOUBLE_SIZE.search(raw_text)
-    )
+    # Provider sizing is mechanical: only an explicit literal in the current message
+    # can enable double size. Do not depend on the AI model echoing the boolean.
+    extracted["double_lot"] = bool(_DOUBLE_SIZE.search(raw_text))
     return extracted, entry_low, entry_high, stop_loss, take_profits
 
 
