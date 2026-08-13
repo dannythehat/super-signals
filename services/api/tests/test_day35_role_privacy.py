@@ -1,4 +1,4 @@
-"""Day 35 role/privacy contract across admin and invited-user surfaces."""
+"""Day 35+ role/privacy contract across admin and invited-user surfaces."""
 
 from __future__ import annotations
 
@@ -26,7 +26,7 @@ def test_member_revoke_is_owner_permission_only() -> None:
     source = inspect.getsource(admin_user_controls_day35)
 
     assert 'require_permission("users.manage")' in source
-    assert 'require_permission("emergency_stop.use")' in source
+    assert 'require_permission("emergency_stop.use")' not in source
 
 
 def test_member_list_and_revoke_routes_use_owner_guard() -> None:
@@ -37,9 +37,9 @@ def test_member_list_and_revoke_routes_use_owner_guard() -> None:
     assert "actor: OwnerUsers" in revoke_source
 
 
-def test_emergency_stop_uses_shared_admin_emergency_permission() -> None:
-    preview_source = inspect.getsource(admin_user_controls_day35.emergency_preview)
-    execute_source = inspect.getsource(admin_user_controls_day35.emergency_stop)
+def test_global_emergency_stop_routes_remain_removed() -> None:
+    route_paths = {route.path for route in admin_user_controls_day35.router.routes}
 
-    assert "actor: EmergencyAdmin" in preview_source
-    assert "actor: EmergencyAdmin" in execute_source
+    assert "/user-controls/emergency-preview" not in route_paths
+    assert "/user-controls/emergency-stop" not in route_paths
+    assert "/user-controls/users/{user_id}/revoke" in route_paths
