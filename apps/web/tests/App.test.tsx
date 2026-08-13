@@ -10,49 +10,22 @@ const owner = {
   role: 'owner',
   role_label: 'Owner Admin',
   roles: ['owner'],
-  permissions: ['users.manage', 'sources.manage', 'account.connect'],
+  permissions: ['users.manage', 'admins.manage', 'sources.manage', 'mt5_accounts.approve', 'account.connect'],
   sections: [
     {
-      key: 'owner',
-      label: 'Owner controls',
-      description: 'Users, access, approvals and security.',
-      actions: [
-        {
-          permission: 'users.manage',
-          label: 'Invited users',
-          description: 'Invite, suspend or revoke users.',
-        },
-      ],
+      key: 'owner', label: 'Owner controls', description: 'Users, access, approvals and security.',
+      actions: [{ permission: 'users.manage', label: 'Invited users', description: 'Invite, suspend or revoke users.' }],
     },
     {
-      key: 'trading',
-      label: 'Trading operations',
-      description: 'Telegram sources and review activity.',
-      actions: [
-        {
-          permission: 'sources.manage',
-          label: 'Signal sources',
-          description: 'Add, pause, resume or remove sources.',
-        },
-      ],
+      key: 'trading', label: 'Trading operations', description: 'Telegram sources and review activity.',
+      actions: [{ permission: 'sources.manage', label: 'Signal sources', description: 'Add, pause, resume or remove sources.' }],
     },
     {
-      key: 'user',
-      label: 'My trading',
-      description: 'Approved account and automation.',
-      actions: [
-        {
-          permission: 'account.connect',
-          label: 'MT5 account',
-          description: 'Connect one approved account.',
-        },
-      ],
+      key: 'user', label: 'My approved access', description: 'Approved account and automation.',
+      actions: [{ permission: 'account.connect', label: 'MT5 account', description: 'Connect one approved account.' }],
     },
   ],
-  security: {
-    two_factor: 'setup_required',
-    passkey: 'setup_available',
-  },
+  security: { two_factor: 'setup_required', passkey: 'setup_available' },
 };
 
 const tradingAdmin = {
@@ -86,25 +59,80 @@ const sharedSource = {
   status: 'paused',
 };
 
+const dashboard = {
+  connection: {
+    configured: false,
+    status: 'not_configured',
+    account_environment: null,
+    login_masked: null,
+    server: null,
+    error_code: null,
+    read_at: null,
+  },
+  account: null,
+  trading: {
+    available: false,
+    status: null,
+    risk_percent: null,
+    allow_double_lot: null,
+    effective_double_lot_risk_percent: null,
+  },
+  open_profit: null,
+  open_positions: [],
+  latest_signal: null,
+  recent_completed: [],
+  performance: [
+    { key: 'today', label: 'Today', amount: null, known_position_count: 0, provisional_until_day33: false },
+    { key: '7d', label: '7 days', amount: null, known_position_count: 0, provisional_until_day33: false },
+    { key: '30d', label: '30 days', amount: null, known_position_count: 0, provisional_until_day33: false },
+  ],
+  win_loss: { wins: 0, losses: 0, breakeven: 0, known_results: 0, win_rate_percent: null },
+  activity: [],
+  reconciled_external_positions: 0,
+  canonical_performance_ready: true,
+  performance_basis: 'broker_ledger',
+  broker_trade_action_created: false,
+};
+
 function jsonResponse(status: number, body: unknown): Response {
-  return {
-    ok: status >= 200 && status < 300,
-    status,
-    json: async () => body,
-  } as Response;
+  return { ok: status >= 200 && status < 300, status, json: async () => body } as Response;
+}
+
+type MockOptions = {
+  session?: typeof owner | typeof tradingAdmin | typeof invitedUser | null;
+  loginAccount?: typeof owner | typeof tradingAdmin | typeof invitedUser;
+  sources?: typeof sharedSource[];
+};
+
+function appFetchMock(options: MockOptions = {}) {
+  const { session = owner, loginAccount = owner, sources = [] } = options;
+  return vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+    const url = String(input);
+    if (url.endsWith('/auth/me')) return session ? jsonResponse(200, session) : jsonResponse(401, {});
+    if (url.endsWith('/auth/login')) return jsonResponse(200, loginAccount);
+    if (url.endsWith('/auth/logout')) return jsonResponse(204, {});
+    if (url.endsWith('/auth/recovery')) return jsonResponse(202, { message: 'If the account is eligible, recovery instructions will be sent.' });
+    if (url.endsWith('/admin/telegram/sources/shared')) return jsonResponse(200, sources);
+    if (url.endsWith('/admin/telegram/accounts')) return jsonResponse(200, [{ id: 'reader-1', status: 'connected' }]);
+    if (url.includes('/admin/telegram/sources/accounts/reader-1/available')) return jsonResponse(200, [{ selected: true, managed_by_this_reader: true }]);
+    if (url.endsWith('/account/mt5/dashboard')) return jsonResponse(200, dashboard);
+    if (url.endsWith('/account/mt5/dashboard/performance/sync')) return jsonResponse(200, { synced: true });
+    if (url.includes('/account/mt5/dashboard/performance/timeline')) return jsonResponse(200, { trades: [], open_count: 0, pending_count: 0, provider_identity_visible: false, broker_trade_action_created: false });
+    if (url.endsWith('/account/mt5/manual-actions')) return jsonResponse(200, { stop_loss_changes: 0, take_profit_changes: 0, manual_closes: 0, actions: [], broker_trade_action_created: false });
+    if (init?.method === 'POST') return jsonResponse(200, {});
+    return jsonResponse(404, { detail: { message: 'Not configured in this focused UI test.' } });
+  });
 }
 
 describe('App', () => {
   afterEach(() => {
     vi.unstubAllGlobals();
-    window.history.replaceState({}, '', window.location.href);
+    window.history.replaceState({}, '', window.location.pathname);
   });
 
   it('shows account login when no valid session exists', async () => {
-    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(jsonResponse(401, {})));
-
+    vi.stubGlobal('fetch', appFetchMock({ session: null }));
     render(<App />);
-
     expect(await screen.findByRole('heading', { name: 'Sign in securely' })).toBeInTheDocument();
     expect(screen.getByLabelText('Email')).toBeInTheDocument();
     expect(screen.getByLabelText('Password')).toBeInTheDocument();
@@ -112,159 +140,88 @@ describe('App', () => {
 
   it('shows a safe service error without exposing technical details', async () => {
     vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new Error('private network details')));
-
     render(<App />);
-
     expect(await screen.findByText('The secure service is unavailable.')).toBeInTheDocument();
     expect(screen.queryByText('private network details')).not.toBeInTheDocument();
   });
 
-  it('signs the owner in to a clean overview with settings behind the menu', async () => {
-    const fetchMock = vi
-      .fn()
-      .mockResolvedValueOnce(jsonResponse(401, {}))
-      .mockResolvedValueOnce(jsonResponse(200, owner))
-      .mockResolvedValueOnce(jsonResponse(200, []));
+  it('signs the owner in to the current broker-backed Home', async () => {
+    const fetchMock = appFetchMock({ session: null, loginAccount: owner });
     vi.stubGlobal('fetch', fetchMock);
-
     render(<App />);
-
-    fireEvent.change(await screen.findByLabelText('Email'), {
-      target: { value: 'owner@example.com' },
-    });
-    fireEvent.change(screen.getByLabelText('Password'), {
-      target: { value: 'correct horse battery staple' },
-    });
+    fireEvent.change(await screen.findByLabelText('Email'), { target: { value: 'owner@example.com' } });
+    fireEvent.change(screen.getByLabelText('Password'), { target: { value: 'correct horse battery staple' } });
     fireEvent.click(screen.getByRole('button', { name: 'Sign in' }));
-
-    expect(await screen.findByRole('heading', { name: 'Welcome back, Danny' })).toBeInTheDocument();
-    expect(screen.getByText('Live trading disabled')).toBeInTheDocument();
-    expect(screen.queryByText('Owner controls')).not.toBeInTheDocument();
-    expect(screen.queryByText('Trading operations')).not.toBeInTheDocument();
+    expect(await screen.findByRole('heading', { name: 'Hi, Danny' })).toBeInTheDocument();
+    expect(screen.getByText('MT5 setup needed')).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Open menu' })).toBeInTheDocument();
-    expect(fetchMock).toHaveBeenCalledWith(
-      '/api/auth/login',
-      expect.objectContaining({ method: 'POST', credentials: 'include' }),
-    );
+    expect(fetchMock).toHaveBeenCalledWith('/api/auth/login', expect.objectContaining({ method: 'POST', credentials: 'include' }));
   });
 
-  it('shows connected shared sources on the overview and returns home without browser back', async () => {
-    const fetchMock = vi
-      .fn()
-      .mockResolvedValueOnce(jsonResponse(200, owner))
-      .mockResolvedValueOnce(jsonResponse(200, [sharedSource]));
-    vi.stubGlobal('fetch', fetchMock);
+  it('shows shared source count in Settings and opens the shared source workspace', async () => {
+    vi.stubGlobal('fetch', appFetchMock({ session: owner, sources: [sharedSource] }));
     window.scrollTo = vi.fn();
-
     render(<App />);
-
-    expect(await screen.findByText(sharedSource.title)).toBeInTheDocument();
-    expect(screen.getByText('SHARED · PAUSED')).toBeInTheDocument();
-
-    fireEvent.click(screen.getByRole('button', { name: 'Open menu' }));
-    fireEvent.click(screen.getByRole('button', { name: /Access & security/i }));
-
-    expect(await screen.findByRole('heading', { name: 'Access & security' })).toBeInTheDocument();
-    fireEvent.click(screen.getByRole('button', { name: 'Back to overview' }));
-    expect(await screen.findByRole('heading', { name: 'Welcome back, Danny' })).toBeInTheDocument();
+    expect(await screen.findByRole('heading', { name: 'Hi, Danny' })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Open Settings' }));
+    expect(await screen.findByRole('heading', { name: 'Settings' })).toBeInTheDocument();
+    expect(screen.getByText('1 shared source currently catalogued.')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Signal sources' }));
+    expect(await screen.findByRole('heading', { name: 'Signal sources' })).toBeInTheDocument();
   });
 
-  it('opens the workspace menu and navigates to access settings', async () => {
-    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(jsonResponse(200, owner)));
+  it('keeps owner operational tools inside Settings rather than the daily Home', async () => {
+    vi.stubGlobal('fetch', appFetchMock({ session: owner }));
     window.scrollTo = vi.fn();
-
     render(<App />);
-
-    fireEvent.click(await screen.findByRole('button', { name: 'Open menu' }));
-    expect(screen.getByRole('button', { name: /Telegram accounts/i })).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: /Signal sources/i })).toBeInTheDocument();
-
-    fireEvent.click(screen.getByRole('button', { name: /Access & security/i }));
-
-    expect(await screen.findByRole('heading', { name: 'Access & security' })).toBeInTheDocument();
-    expect(screen.getByText('Owner controls')).toBeInTheDocument();
-    expect(screen.getByText('Trading operations')).toBeInTheDocument();
-    expect(screen.getByText('My trading')).toBeInTheDocument();
-  });
-
-  it('shows Telegram navigation to a Trading Admin without exposing Owner controls', async () => {
-    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(jsonResponse(200, tradingAdmin)));
-
-    render(<App />);
-
-    expect(
-      await screen.findByRole('heading', { name: 'Welcome back, Trading Admin' }),
-    ).toBeInTheDocument();
+    expect(await screen.findByRole('heading', { name: 'Hi, Danny' })).toBeInTheDocument();
+    expect(screen.queryByText('Telegram & sources')).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: 'Open menu' }));
-    expect(screen.getByRole('button', { name: /Telegram accounts/i })).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: /Signal sources/i })).toBeInTheDocument();
-    expect(screen.queryByText('Owner controls')).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: /^Settings/ }));
+    expect(await screen.findByText('Telegram & sources')).toBeInTheDocument();
+    expect(screen.getByText('Vantage MT5 demo')).toBeInTheDocument();
+    expect(screen.getByText('Account & security')).toBeInTheDocument();
   });
 
-  it('keeps Telegram management out of an invited user menu', async () => {
-    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(jsonResponse(200, invitedUser)));
+  it('shows Telegram source tools to a configured Trading Admin without Owner broker tools', async () => {
+    vi.stubGlobal('fetch', appFetchMock({ session: tradingAdmin }));
     window.scrollTo = vi.fn();
-
     render(<App />);
+    expect(await screen.findByRole('heading', { name: 'Hi, Trading Admin' })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Open Settings' }));
+    expect(await screen.findByText('Telegram & sources')).toBeInTheDocument();
+    expect(screen.queryByText('Vantage MT5 demo')).not.toBeInTheDocument();
+  });
 
-    expect(
-      await screen.findByRole('heading', { name: 'Welcome back, Invited User' }),
-    ).toBeInTheDocument();
-    fireEvent.click(screen.getByRole('button', { name: 'Open menu' }));
-    expect(screen.queryByRole('button', { name: /Telegram accounts/i })).not.toBeInTheDocument();
-    expect(screen.queryByRole('button', { name: /Signal sources/i })).not.toBeInTheDocument();
-
-    fireEvent.click(screen.getByRole('button', { name: /Access & security/i }));
-    expect(await screen.findByText('My trading')).toBeInTheDocument();
-    expect(screen.queryByText('Owner controls')).not.toBeInTheDocument();
-    expect(screen.queryByText('Trading operations')).not.toBeInTheDocument();
+  it('keeps Telegram and Owner broker management out of an invited member Settings page', async () => {
+    vi.stubGlobal('fetch', appFetchMock({ session: invitedUser }));
+    window.scrollTo = vi.fn();
+    render(<App />);
+    expect(await screen.findByRole('heading', { name: 'Hi, Invited User' })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Open Settings' }));
+    expect(await screen.findByRole('heading', { name: 'Settings' })).toBeInTheDocument();
+    expect(screen.queryByText('Telegram & sources')).not.toBeInTheDocument();
+    expect(screen.queryByText('Vantage MT5 demo')).not.toBeInTheDocument();
+    expect(screen.getByText('Account & security')).toBeInTheDocument();
   });
 
   it('revokes the visible session and returns to login on logout', async () => {
-    const fetchMock = vi
-      .fn()
-      .mockResolvedValueOnce(jsonResponse(200, owner))
-      .mockResolvedValueOnce(jsonResponse(200, []))
-      .mockResolvedValueOnce(jsonResponse(204, {}));
+    const fetchMock = appFetchMock({ session: owner });
     vi.stubGlobal('fetch', fetchMock);
-
     render(<App />);
-
     fireEvent.click(await screen.findByRole('button', { name: 'Open menu' }));
     fireEvent.click(screen.getByRole('button', { name: 'Log out' }));
-
     expect(await screen.findByRole('heading', { name: 'Sign in securely' })).toBeInTheDocument();
-    await waitFor(() => {
-      expect(fetchMock).toHaveBeenLastCalledWith(
-        '/api/auth/logout',
-        expect.objectContaining({ method: 'POST', credentials: 'include' }),
-      );
-    });
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledWith('/api/auth/logout', expect.objectContaining({ method: 'POST', credentials: 'include' })));
   });
 
   it('uses the same safe recovery response for every email', async () => {
-    const fetchMock = vi
-      .fn()
-      .mockResolvedValueOnce(jsonResponse(401, {}))
-      .mockResolvedValueOnce(
-        jsonResponse(202, {
-          message: 'If the account is eligible, recovery instructions will be sent.',
-        }),
-      );
-    vi.stubGlobal('fetch', fetchMock);
-
+    vi.stubGlobal('fetch', appFetchMock({ session: null }));
     render(<App />);
-
     fireEvent.click(await screen.findByRole('button', { name: 'I cannot access my account' }));
     expect(screen.getByRole('heading', { name: 'Recover access' })).toBeInTheDocument();
-
-    fireEvent.change(screen.getByLabelText('Account email'), {
-      target: { value: 'unknown@example.com' },
-    });
+    fireEvent.change(screen.getByLabelText('Email'), { target: { value: 'unknown@example.com' } });
     fireEvent.click(screen.getByRole('button', { name: 'Send recovery instructions' }));
-
-    expect(
-      await screen.findByText('If the account is eligible, recovery instructions will be sent.'),
-    ).toBeInTheDocument();
+    expect(await screen.findByText('If the account is eligible, recovery instructions will be sent.')).toBeInTheDocument();
   });
 });
