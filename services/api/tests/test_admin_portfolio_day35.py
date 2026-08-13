@@ -1,8 +1,7 @@
+import asyncio
 from datetime import UTC, datetime
 from decimal import Decimal
 from uuid import UUID
-
-import pytest
 
 from app.admin_portfolio_day35 import (
     Day35AdminPortfolioService,
@@ -99,9 +98,8 @@ class _FakeLivePortfolio(Day35AdminPortfolioService):
         return {"101": Decimal("1.25"), "102": Decimal("-0.40")}
 
 
-@pytest.mark.asyncio
-async def test_live_floating_pnl_uses_only_mapped_broker_positions_and_keeps_trader_split() -> None:
-    view = await _FakeLivePortfolio().read_with_live_open_pnl("today")
+def test_live_floating_pnl_uses_only_mapped_broker_positions_and_keeps_trader_split() -> None:
+    view = asyncio.run(_FakeLivePortfolio().read_with_live_open_pnl("today"))
 
     source = view.rows[0]
     trader = view.rows[1]
@@ -123,9 +121,8 @@ class _FailedLivePortfolio(_FakeLivePortfolio):
         raise MetaApiGatewayError("metaapi_timeout", retryable=True)
 
 
-@pytest.mark.asyncio
-async def test_live_read_failure_never_turns_open_pnl_into_false_zero() -> None:
-    view = await _FailedLivePortfolio().read_with_live_open_pnl("today")
+def test_live_read_failure_never_turns_open_pnl_into_false_zero() -> None:
+    view = asyncio.run(_FailedLivePortfolio().read_with_live_open_pnl("today"))
 
     assert view.rows[0].open_cash_pnl is None
     assert view.rows[0].open_cash_pnl_known is False
@@ -146,9 +143,8 @@ class _PendingOnlyPortfolio(_FakeLivePortfolio):
         raise AssertionError("pending-only portfolio must not need a broker position read")
 
 
-@pytest.mark.asyncio
-async def test_pending_only_dimension_has_zero_floating_without_network_trade_side_effect() -> None:
-    view = await _PendingOnlyPortfolio().read_with_live_open_pnl("today")
+def test_pending_only_dimension_has_zero_floating_without_network_trade_side_effect() -> None:
+    view = asyncio.run(_PendingOnlyPortfolio().read_with_live_open_pnl("today"))
 
     assert all(row.open_cash_pnl_known for row in view.rows)
     assert all(row.open_cash_pnl == Decimal("0") for row in view.rows)
