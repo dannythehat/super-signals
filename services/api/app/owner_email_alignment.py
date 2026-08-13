@@ -1,29 +1,27 @@
 """One-time controlled Owner email alignment for the live Super Signals account.
 
 This utility preserves the existing Owner user identity and only changes its email.
-It is intentionally fail-closed and idempotent. It runs only when both migration
-environment variables are populated.
+It is intentionally fail-closed and idempotent. It also handles the specific
+bootstrap edge case where the old configured email was re-seeded after the
+first alignment by retiring that duplicate account safely.
 """
 
 from __future__ import annotations
 
 import os
 
-from sqlalchemy import select
+from sqlalchemy import select, text
 from sqlalchemy.orm import Session
 
 from app.db import get_engine
 from app.models import AuditEvent, Role, User, UserRole
 
 
-def _has_owner_role(session: Session, user_id) -> bool:
-    return (
-        session.scalar(
-            select(UserRole)
-            .join(Role, Role.id == UserRole.role_id)
-            .where(UserRole.user_id == user_id, Role.name == "owner")
-        )
-        is not None
+def _owner_link(session: Session, user_id) -> UserRole | None:
+    return session.scalar(
+        select(UserRole)
+        .join(Role, Role.id == UserRole.role_id)
+        .where(UserRole.user_id == user_id, Role.name == "owner")
     )
 
 
@@ -45,15 +43,52 @@ def main() -> None:
         target = session.scalar(select(User).where(User.email == target_email))
 
         if source is None:
-            if target is not None and _has_owner_role(session, target.id):
+            if target is not None and _owner_link(session, target.id) is not None:
                 print("Owner email alignment: already completed")
                 return
             raise RuntimeError("Owner email alignment source account was not found")
 
-        if not _has_owner_role(session, source.id):
+        source_owner_link = _owner_link(session, source.id)
+        if source_owner_link is None:
             raise RuntimeError("Owner email alignment source account is not an Owner")
+
         if target is not None and target.id != source.id:
-            raise RuntimeError("Owner email alignment target email is already in use")
+            if _owner_link(session, target.id) is None:
+                raise RuntimeError("Owner email alignment target email is already in use by a non-Owner")
+
+            # The first alignment can be followed by bootstrap re-seeding the old
+            # configured Owner email. In that exact state, keep the migrated target
+            # Owner and retire the newly re-seeded source account. This removes its
+            # Owner permission and revokes any sessions before bootstrap runs again.
+            source.status = "revoked"
+            session.execute(
+                text(
+                    """
+                    UPDATE auth_sessions
+                    SET revoked_at = COALESCE(revoked_at, now())
+                    WHERE user_id = :user_id
+                      AND revoked_at IS NULL
+                    """
+                ),
+                {"user_id": source.id},
+            )
+            session.delete(source_owner_link)
+            session.add(
+                AuditEvent(
+                    actor_user_id=target.id,
+                    event_type="admin.duplicate_owner_retired",
+                    entity_type="user",
+                    entity_id=source.id,
+                    payload={
+                        "retired_email": source_email,
+                        "retained_owner_email": target_email,
+                        "reason": "old_owner_email_reseeded_after_controlled_alignment",
+                    },
+                )
+            )
+            session.commit()
+            print("Owner email alignment: re-seeded duplicate Owner retired")
+            return
 
         previous_email = str(source.email)
         source.email = target_email
