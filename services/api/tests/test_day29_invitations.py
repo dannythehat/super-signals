@@ -80,14 +80,21 @@ def _create_invite(client: TestClient, email: str) -> dict:
     return response.json()
 
 
-def _register(client: TestClient, *, email: str, access_key: str):
+def _register(
+    client: TestClient,
+    *,
+    email: str,
+    access_key: str,
+    password: str = "member password 12345",
+    display_name: str = "Test Member",
+):
     return client.post(
         "/auth/register",
         json={
             "email": email,
             "access_key": access_key,
-            "password": "member password 12345",
-            "display_name": "Test Member",
+            "password": password,
+            "display_name": display_name,
         },
     )
 
@@ -214,3 +221,123 @@ def test_expired_and_revoked_keys_are_rejected_and_audited(invitation_client) ->
             )
         )
         assert revoked_audit == 1
+
+
+def test_revoked_ordinary_member_can_be_reinvited_with_fresh_password_and_sessions(
+    invitation_client,
+) -> None:
+    client, engine = invitation_client
+    email = "returning-member@example.com"
+    old_password = "old member password 12345"
+    new_password = "new member password 67890"
+
+    first = _create_invite(client, email)
+    first_registration = _register(
+        client,
+        email=email,
+        access_key=first["access_key"],
+        password=old_password,
+        display_name="Returning Member",
+    )
+    assert first_registration.status_code == 201
+
+    with TestClient(create_app()) as member_client:
+        first_login = member_client.post(
+            "/auth/login",
+            json={"email": email, "password": old_password},
+        )
+        assert first_login.status_code == 200
+
+    with engine.begin() as connection:
+        user_id = connection.scalar(
+            text("SELECT id FROM users WHERE lower(email::text)=lower(:email)"),
+            {"email": email},
+        )
+        assert user_id is not None
+        active_session_count = connection.scalar(
+            text(
+                """
+                SELECT count(*) FROM auth_sessions
+                WHERE user_id=:user_id AND revoked_at IS NULL
+                """
+            ),
+            {"user_id": user_id},
+        )
+        assert active_session_count == 1
+        connection.execute(
+            text("UPDATE users SET status='revoked', updated_at=now() WHERE id=:user_id"),
+            {"user_id": user_id},
+        )
+
+    second = _create_invite(client, email)
+    second_registration = _register(
+        client,
+        email=email,
+        access_key=second["access_key"],
+        password=new_password,
+        display_name="Returning Member Again",
+    )
+    assert second_registration.status_code == 201
+
+    with engine.connect() as connection:
+        account = connection.execute(
+            text(
+                """
+                SELECT id,status,display_name
+                FROM users WHERE lower(email::text)=lower(:email)
+                """
+            ),
+            {"email": email},
+        ).mappings().one()
+        assert account["id"] == user_id
+        assert account["status"] == "active"
+        assert account["display_name"] == "Returning Member Again"
+
+        role_names = connection.execute(
+            text(
+                """
+                SELECT r.name
+                FROM user_roles ur JOIN roles r ON r.id=ur.role_id
+                WHERE ur.user_id=:user_id
+                ORDER BY r.name
+                """
+            ),
+            {"user_id": user_id},
+        ).scalars().all()
+        assert role_names == ["user"]
+
+        surviving_old_sessions = connection.scalar(
+            text(
+                """
+                SELECT count(*) FROM auth_sessions
+                WHERE user_id=:user_id AND revoked_at IS NULL
+                """
+            ),
+            {"user_id": user_id},
+        )
+        assert surviving_old_sessions == 0
+
+        reactivation_audit = connection.execute(
+            text(
+                """
+                SELECT payload
+                FROM audit_events
+                WHERE event_type='access.invitation_registered'
+                  AND entity_id=:invitation_id
+                """
+            ),
+            {"invitation_id": second["id"]},
+        ).scalar_one()
+        assert reactivation_audit["reactivated_existing_user"] is True
+
+    with TestClient(create_app()) as login_client:
+        old_login = login_client.post(
+            "/auth/login",
+            json={"email": email, "password": old_password},
+        )
+        assert old_login.status_code == 401
+        fresh_login = login_client.post(
+            "/auth/login",
+            json={"email": email, "password": new_password},
+        )
+        assert fresh_login.status_code == 200
