@@ -8,8 +8,6 @@ from decimal import Decimal
 from types import SimpleNamespace
 from uuid import UUID, uuid4
 
-import pytest
-
 import app.mt5_execution_day26 as day26_module
 from app.day28_full_execution import _StoredDecision
 from app.day38_full_execution import Day38FullExecutionRouter
@@ -17,11 +15,11 @@ from app.metaapi_trade_gateway import MetaApiMarketOrderResult
 from app.mt5_execution_day26 import (
     Day26ExecutionError,
     Day26MappedPosition,
-    Day26RollbackResult,
     _AccountInput,
     _PlannedPosition,
     _SignalInput,
 )
+from app.mt5_execution_day26_atomic import Day26RollbackResult
 from app.mt5_execution_day38 import Day38LiveUserExecutionService
 from app.mt5_management_day27 import Day27ManagementError
 from app.multi_user_distribution_day38 import (
