@@ -57,146 +57,179 @@ type LiveState = {
 function connectionHelp(connection: Connection | null): string | null {
   if (!connection?.last_error_code) return null;
   const messages: Record<string, string> = {
-    metaapi_permission_denied: 'MetaAPI refused the connection. Check the MetaAPI balance/subscription, then use Refresh connection.',
-    metaapi_e_auth: 'Vantage rejected the MT5 credentials. Re-enter the MT5 login, trading password and exact server name below.',
-    broker_credential_decryption_failed: 'The permanent broker encryption configuration needs administrator recovery. Do not create another MetaAPI account.',
-    metaapi_timeout: 'MetaAPI did not answer in time. Wait briefly and use Refresh connection; do not reconnect repeatedly.',
-    metaapi_unreachable: 'MetaAPI is temporarily unreachable. Use Refresh connection later; your saved MT5 link has not been deleted.',
+    metaapi_permission_denied: 'The broker connection needs attention. Super Signals cannot currently access the required broker functions.',
+    metaapi_e_auth: 'Vantage rejected the MT5 credentials. Re-enter the MT5 login, trading password and exact server name.',
+    broker_credential_decryption_failed: 'The saved broker connection needs administrator recovery.',
+    metaapi_timeout: 'The broker connection did not answer in time. Try Refresh connection again shortly.',
+    metaapi_unreachable: 'The broker connection is temporarily unavailable. Your saved MT5 link has not been deleted.',
   };
-  return messages[connection.last_error_code] ?? `Connection needs attention (${connection.last_error_code}).`;
+  return messages[connection.last_error_code] ?? `The broker connection needs attention (${connection.last_error_code}).`;
 }
 
 function amount(value: number, currency: string): string {
-  return `${value.toFixed(2)} ${currency}`;
+  return new Intl.NumberFormat(undefined, {
+    style: 'currency',
+    currency: currency || 'USD',
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  }).format(value);
+}
+
+function connectionLabel(connection: Connection | null): string {
+  if (!connection) return 'Checking…';
+  if (connection.status === 'connected' && connection.remote_connection_status === 'CONNECTED') return 'Connected';
+  if (!connection.configured) return 'Not connected';
+  return 'Needs attention';
 }
 
 export function Mt5DemoConnectionPanel({ apiBaseUrl }: { apiBaseUrl: string }) {
   const [connection, setConnection] = useState<Connection | null>(null);
   const [liveState, setLiveState] = useState<LiveState | null>(null);
   const [busy, setBusy] = useState(false);
-  const [liveBusy, setLiveBusy] = useState(false);
-  const [tokenBusy, setTokenBusy] = useState(false);
   const [message, setMessage] = useState('');
-  const [liveMessage, setLiveMessage] = useState('');
-  const [tokenMessage, setTokenMessage] = useState('');
 
   async function load() {
-    const response = await fetch(`${apiBaseUrl}/owner/mt5/demo/status`, { credentials: 'include', headers: { Accept: 'application/json' } });
-    if (!response.ok) throw new Error('Unable to read MT5 connection status.');
+    const response = await fetch(`${apiBaseUrl}/owner/mt5/demo/status`, {
+      credentials: 'include',
+      headers: { Accept: 'application/json' },
+      cache: 'no-store',
+    });
+    if (!response.ok) throw new Error('Unable to read the MT5 connection status.');
     setConnection((await response.json()) as Connection);
   }
 
-  useEffect(() => { void load().catch(() => setMessage('Unable to read MT5 connection status.')); }, []);
-
-  async function connect(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault(); setBusy(true); setMessage('');
-    const form = new FormData(event.currentTarget);
-    try {
-      const response = await fetch(`${apiBaseUrl}/owner/mt5/demo/connect`, {
-        method: 'POST', credentials: 'include', headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
-        body: JSON.stringify({ login: form.get('login'), password: form.get('password'), server: form.get('server') }),
-      });
-      const body = await response.json() as Connection | { detail?: { message?: string } };
-      if (!response.ok) throw new Error('detail' in body ? body.detail?.message ?? 'Connection failed.' : 'Connection failed.');
-      setConnection(body as Connection);
-      event.currentTarget.reset();
-      setMessage((body as Connection).status === 'connected' ? 'Vantage MT5 demo connected.' : 'Connection submitted. The broker connection is still starting.');
-    } catch (error) { setMessage(error instanceof Error ? error.message : 'Connection failed.'); }
-    finally { setBusy(false); }
-  }
-
-  async function replaceMetaApiToken(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault(); setTokenBusy(true); setTokenMessage(''); setLiveMessage('');
-    const form = new FormData(event.currentTarget);
-    try {
-      const response = await fetch(`${apiBaseUrl}/owner/mt5/demo/metaapi-token`, {
-        method: 'POST', credentials: 'include', headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
-        body: JSON.stringify({ token: form.get('token') }),
-      });
-      const body = await response.json() as LiveState | { detail?: { message?: string } };
-      if (!response.ok) throw new Error('detail' in body ? body.detail?.message ?? 'MetaAPI update failed.' : 'MetaAPI update failed.');
-      setLiveState(body as LiveState);
-      event.currentTarget.reset();
-      setTokenMessage('DAY 23 SUCCESS — MetaAPI updated and live MT5 state read successfully.');
-      setLiveMessage((body as LiveState).execution_ready ? 'Fresh executable XAUUSD quote received.' : `Execution blocked: ${(body as LiveState).execution_block_reason ?? 'price unavailable'}.`);
-      await load();
-    } catch (error) { setTokenMessage(error instanceof Error ? error.message : 'MetaAPI update failed.'); }
-    finally { setTokenBusy(false); }
-  }
+  useEffect(() => {
+    void load().catch(() => setMessage('Unable to read the MT5 connection status.'));
+  }, []);
 
   async function refresh() {
-    setBusy(true); setMessage('');
+    setBusy(true);
+    setMessage('');
     try {
-      const response = await fetch(`${apiBaseUrl}/owner/mt5/demo/refresh`, { method: 'POST', credentials: 'include', headers: { Accept: 'application/json' } });
+      const response = await fetch(`${apiBaseUrl}/owner/mt5/demo/refresh`, {
+        method: 'POST',
+        credentials: 'include',
+        headers: { Accept: 'application/json' },
+      });
       const body = await response.json() as Connection | { detail?: { message?: string } };
-      if (!response.ok) throw new Error('detail' in body ? body.detail?.message ?? 'Status refresh failed.' : 'Status refresh failed.');
+      if (!response.ok) {
+        throw new Error('detail' in body ? body.detail?.message ?? 'Connection refresh failed.' : 'Connection refresh failed.');
+      }
       setConnection(body as Connection);
-      setMessage((body as Connection).status === 'connected' ? 'Connection confirmed.' : 'Connection status refreshed.');
-    } catch (error) { setMessage(error instanceof Error ? error.message : 'Status refresh failed.'); }
-    finally { setBusy(false); }
+      setMessage((body as Connection).status === 'connected' ? 'Vantage demo connection confirmed.' : 'Connection status refreshed.');
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : 'Connection refresh failed.');
+    } finally {
+      setBusy(false);
+    }
   }
 
   async function readLiveState() {
-    setLiveBusy(true); setLiveMessage('');
+    setBusy(true);
+    setMessage('');
     try {
-      const response = await fetch(`${apiBaseUrl}/owner/mt5/demo/live-state`, { credentials: 'include', headers: { Accept: 'application/json' } });
+      const response = await fetch(`${apiBaseUrl}/owner/mt5/demo/live-state`, {
+        credentials: 'include',
+        headers: { Accept: 'application/json' },
+        cache: 'no-store',
+      });
       const body = await response.json() as LiveState | { detail?: { message?: string } };
-      if (!response.ok) throw new Error('detail' in body ? body.detail?.message ?? 'Live MT5 read failed.' : 'Live MT5 read failed.');
+      if (!response.ok) {
+        throw new Error('detail' in body ? body.detail?.message ?? 'Unable to read the demo account.' : 'Unable to read the demo account.');
+      }
       setLiveState(body as LiveState);
-      setLiveMessage((body as LiveState).execution_ready ? 'Fresh executable XAUUSD quote received.' : `Execution blocked: ${(body as LiveState).execution_block_reason ?? 'price unavailable'}.`);
-    } catch (error) { setLiveMessage(error instanceof Error ? error.message : 'Live MT5 read failed.'); }
-    finally { setLiveBusy(false); }
+      setMessage((body as LiveState).execution_ready ? 'Demo account is online and receiving a fresh XAUUSD quote.' : `Demo account read completed. ${(body as LiveState).execution_block_reason ?? 'Price is not currently executable.'}`);
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : 'Unable to read the demo account.');
+    } finally {
+      setBusy(false);
+    }
   }
 
+  async function connect(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setBusy(true);
+    setMessage('');
+    const form = new FormData(event.currentTarget);
+    try {
+      const response = await fetch(`${apiBaseUrl}/owner/mt5/demo/connect`, {
+        method: 'POST',
+        credentials: 'include',
+        headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+        body: JSON.stringify({ login: form.get('login'), password: form.get('password'), server: form.get('server') }),
+      });
+      const body = await response.json() as Connection | { detail?: { message?: string } };
+      if (!response.ok) {
+        throw new Error('detail' in body ? body.detail?.message ?? 'Connection failed.' : 'Connection failed.');
+      }
+      setConnection(body as Connection);
+      event.currentTarget.reset();
+      setMessage((body as Connection).status === 'connected' ? 'Vantage demo connected.' : 'Connection submitted.');
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : 'Connection failed.');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  const connected = connection?.status === 'connected' && connection.remote_connection_status === 'CONNECTED';
   const showCredentialForm = !connection?.configured || connection.status === 'error' || connection.status === 'disconnected';
   const help = connectionHelp(connection);
 
-  return <section aria-labelledby="mt5-demo-title">
+  return <section aria-labelledby="paper-trading-title">
     <div className="overview-hero">
-      <p className="eyebrow">MT5 connection</p>
-      <h1 id="mt5-demo-title">Vantage MT5 demo</h1>
-      <p className="intro">Your MetaAPI connection is managed by Super Signals. You only need your Vantage MT5 login, trading password and exact server name when first connecting or when Vantage credentials genuinely need to be re-entered. The MT5 password is never stored.</p>
+      <p className="eyebrow">Paper trading</p>
+      <h1 id="paper-trading-title">Vantage demo account</h1>
+      <p className="intro">This is the Super Signals paper-trading account. It uses virtual funds only. Your broker connection is managed securely in the background.</p>
     </div>
+
     <div className="overview-grid">
-      <article className="overview-card"><span className="status-label">Connection</span><strong>{connection?.status ?? 'Checking…'}</strong><small>{connection?.remote_state ?? 'Not configured'} · {connection?.remote_connection_status ?? 'No remote state'}</small></article>
-      <article className="overview-card"><span className="status-label">Account</span><strong>{connection?.login_masked ?? 'Not connected'}</strong><small>{connection?.server ?? 'Vantage demo server not set'}</small></article>
-      <article className="overview-card"><span className="status-label">Trading</span><strong>Disabled</strong><small>Day 23 reads broker state only. It cannot place orders.</small></article>
+      <article className={`overview-card ${connected ? 'status-card--healthy' : ''}`}>
+        <span className="status-label">Connection</span>
+        <strong>{connectionLabel(connection)}</strong>
+        <small>{connected ? 'Broker link is online' : 'Broker link is not ready'}</small>
+      </article>
+      <article className="overview-card">
+        <span className="status-label">MT5 account</span>
+        <strong>{connection?.login_masked ?? 'Not connected'}</strong>
+        <small>{connection?.server ?? 'Vantage demo server not set'}</small>
+      </article>
+      <article className="overview-card status-card--healthy">
+        <span className="status-label">Mode</span>
+        <strong>Paper Trading</strong>
+        <small>Demo funds only · no real-money account</small>
+      </article>
     </div>
-    {help && <p role="status">{help}</p>}
 
-    {connection?.configured && <form className="auth-form" onSubmit={replaceMetaApiToken} autoComplete="off">
-      <p><strong>Day 23 — replace MetaAPI access</strong></p>
-      <p>Paste the new MetaAPI token with all API permissions enabled. This replaces the older management-only token for the same connected Vantage account and immediately runs the Day 23 live-state test.</p>
-      <label>New MetaAPI token<input name="token" type="password" required autoComplete="off" /></label>
-      <button className="button" type="submit" disabled={tokenBusy}>{tokenBusy ? 'Updating & testing…' : 'Update MetaAPI & test Day 23'}</button>
-      {tokenMessage && <p role="status"><strong>{tokenMessage}</strong></p>}
-    </form>}
+    {help && <div className="day32-inline-warning" role="status"><strong>{help}</strong></div>}
 
-    {connection?.configured && <div className="overview-actions"><button className="button button--quiet" type="button" onClick={refresh} disabled={busy}>{busy ? 'Checking…' : 'Refresh connection'}</button>{connection.status === 'connected' && <button className="button" type="button" onClick={readLiveState} disabled={liveBusy}>{liveBusy ? 'Reading MT5…' : 'Read live MT5 state'}</button>}</div>}
-
-    {liveState && <div className="overview-section" aria-label="Live MT5 state">
-      <div className="overview-grid">
-        <article className="overview-card"><span className="status-label">Balance</span><strong>{amount(liveState.account.balance, liveState.account.currency)}</strong><small>Equity {amount(liveState.account.equity, liveState.account.currency)}</small></article>
-        <article className="overview-card"><span className="status-label">Margin</span><strong>{amount(liveState.account.margin, liveState.account.currency)}</strong><small>Free {amount(liveState.account.free_margin, liveState.account.currency)}</small></article>
-        <article className="overview-card"><span className="status-label">Open positions</span><strong>{liveState.positions.length}</strong><small>{liveState.account.trade_allowed ? 'Broker reports trading allowed' : 'Broker reports trading disabled'}</small></article>
-      </div>
-      <div className="overview-grid">
-        <article className="overview-card"><span className="status-label">XAUUSD SELL</span><strong>{liveState.price.sell_price ?? 'Unavailable'}</strong><small>SELL uses executable bid</small></article>
-        <article className="overview-card"><span className="status-label">XAUUSD BUY</span><strong>{liveState.price.buy_price ?? 'Unavailable'}</strong><small>BUY uses executable ask</small></article>
-        <article className="overview-card"><span className="status-label">Price gate</span><strong>{liveState.execution_ready ? 'Fresh' : 'BLOCKED'}</strong><small>{liveState.price.quote_age_seconds == null ? liveState.execution_block_reason ?? 'Unavailable' : `${liveState.price.quote_age_seconds.toFixed(1)}s old · ${liveState.region}`}</small></article>
-      </div>
-      {liveState.positions.length > 0 && <div className="overview-grid">{liveState.positions.map(position => <article className="overview-card" key={position.position_id}><span className="status-label">{position.symbol} {position.side}</span><strong>{position.volume} lots</strong><small>Open {position.open_price} · Current {position.current_price ?? '—'} · P/L {position.profit ?? '—'}</small></article>)}</div>}
-      <p><small>Live state is read only when you press the button, so Super Signals does not burn MetaAPI credits by polling this screen in the background.</small></p>
+    {connected && <div className="overview-actions">
+      <button className="button button--quiet" type="button" onClick={refresh} disabled={busy}>{busy ? 'Checking…' : 'Refresh connection'}</button>
+      <button className="button" type="button" onClick={readLiveState} disabled={busy}>{busy ? 'Checking…' : 'Check demo account'}</button>
     </div>}
 
-    {liveMessage && <p role="status">{liveMessage}</p>}
+    {liveState && <div className="overview-section" aria-label="Demo account state">
+      <div className="overview-grid">
+        <article className="overview-card"><span className="status-label">Balance</span><strong>{amount(liveState.account.balance, liveState.account.currency)}</strong><small>Equity {amount(liveState.account.equity, liveState.account.currency)}</small></article>
+        <article className="overview-card"><span className="status-label">Free margin</span><strong>{amount(liveState.account.free_margin, liveState.account.currency)}</strong><small>Used margin {amount(liveState.account.margin, liveState.account.currency)}</small></article>
+        <article className="overview-card"><span className="status-label">Open positions</span><strong>{liveState.positions.length}</strong><small>{liveState.account.trade_allowed ? 'Broker trading available' : 'Broker trading unavailable'}</small></article>
+      </div>
+      <div className="overview-grid">
+        <article className="overview-card"><span className="status-label">XAUUSD</span><strong>{liveState.price.bid ?? '—'} / {liveState.price.ask ?? '—'}</strong><small>Bid / Ask</small></article>
+        <article className="overview-card"><span className="status-label">Market data</span><strong>{liveState.execution_ready ? 'Ready' : 'Waiting'}</strong><small>{liveState.price.quote_age_seconds == null ? 'No fresh quote' : `${liveState.price.quote_age_seconds.toFixed(1)}s old`}</small></article>
+        <article className="overview-card"><span className="status-label">Environment</span><strong>Demo</strong><small>{liveState.region}</small></article>
+      </div>
+    </div>}
+
     {showCredentialForm && <form className="auth-form" onSubmit={connect} autoComplete="off">
-      {connection?.configured && <p><strong>Reconnect only if needed.</strong> Your saved MetaAPI link is retained. Re-enter these fields only when Vantage credentials or the server connection need repairing.</p>}
-      <label>Vantage MT5 account number<input name="login" inputMode="numeric" required autoComplete="off" /><small>Vantage calls this “MT5 Login” in the account email.</small></label>
-      <label>Vantage MT5 trading password<input name="password" type="password" required autoComplete="new-password" /><small>Use the MT5 trading password, not your Vantage website password. Super Signals does not store it.</small></label>
-      <label>Vantage MT5 server<input name="server" required autoComplete="off" defaultValue={connection?.server ?? ''} placeholder="Exact server name from your Vantage email" /></label>
-      <button className="button" type="submit" disabled={busy}>{busy ? 'Connecting…' : connection?.configured ? 'Reconnect account' : 'Connect demo account'}</button>
+      <p><strong>Connect the Vantage demo account</strong></p>
+      <p>Only use this form if the saved demo connection genuinely needs to be connected or repaired.</p>
+      <label>Vantage MT5 account number<input name="login" inputMode="numeric" required autoComplete="off" /></label>
+      <label>Vantage MT5 trading password<input name="password" type="password" required autoComplete="new-password" /></label>
+      <label>Vantage MT5 server<input name="server" required autoComplete="off" defaultValue={connection?.server ?? ''} placeholder="Exact Vantage server name" /></label>
+      <button className="button" type="submit" disabled={busy}>{busy ? 'Connecting…' : 'Connect demo account'}</button>
     </form>}
-    {message && <p role="status">{message}</p>}
+
+    {message && <p role="status"><strong>{message}</strong></p>}
   </section>;
 }
