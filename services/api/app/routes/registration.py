@@ -122,13 +122,26 @@ def register_with_invitation(
         )
 
     existing_user = session.scalar(select(User).where(User.email == email))
+    reactivated_existing_user = False
     if existing_user is not None:
-        _reject(
-            session,
-            email=email,
-            code="account_exists",
-            invitation_id=invitation_id,
+        existing_roles = set(
+            session.scalars(
+                select(Role.name)
+                .join(UserRole, UserRole.role_id == Role.id)
+                .where(UserRole.user_id == existing_user.id)
+            ).all()
         )
+        # Re-invitation is deliberately narrow. A new Owner invitation may restore
+        # only a previously revoked ordinary member. It cannot replace an active
+        # account, bypass a suspension, or alter an administrator account.
+        if existing_user.status != "revoked" or existing_roles != {"user"}:
+            _reject(
+                session,
+                email=email,
+                code="account_exists",
+                invitation_id=invitation_id,
+            )
+        reactivated_existing_user = True
 
     try:
         password_hash = hash_password(payload.password)
@@ -138,25 +151,67 @@ def register_with_invitation(
             detail=str(exc),
         ) from exc
 
-    display_name = (payload.display_name or "").strip() or email.split("@", 1)[0]
-    user = User(
-        email=email,
-        display_name=display_name[:120],
-        status="active",
-    )
-    session.add(user)
-    session.flush()
-    session.execute(
-        text("UPDATE users SET password_hash = :password_hash WHERE id = :user_id"),
-        {"password_hash": password_hash, "user_id": user.id},
-    )
-    session.add(
-        UserRole(
-            user_id=user.id,
-            role_id=role.id,
-            granted_by_user_id=invitation.created_by_user_id,
+    requested_name = (payload.display_name or "").strip()
+    if existing_user is None:
+        display_name = requested_name or email.split("@", 1)[0]
+        user = User(
+            email=email,
+            display_name=display_name[:120],
+            status="active",
         )
-    )
+        session.add(user)
+        session.flush()
+        session.execute(
+            text("UPDATE users SET password_hash = :password_hash WHERE id = :user_id"),
+            {"password_hash": password_hash, "user_id": user.id},
+        )
+        session.add(
+            UserRole(
+                user_id=user.id,
+                role_id=role.id,
+                granted_by_user_id=invitation.created_by_user_id,
+            )
+        )
+    else:
+        user = existing_user
+        display_name = (
+            requested_name
+            or str(existing_user.display_name or "").strip()
+            or email.split("@", 1)[0]
+        )
+        # A re-invited member starts with a fresh password and no surviving web
+        # sessions. Revoked MT5 approvals, disabled push devices and stopped
+        # automation remain revoked/disabled/stopped until their normal flows are
+        # completed again; registration must not silently restore trading access.
+        session.execute(
+            text(
+                """
+                UPDATE auth_sessions
+                SET revoked_at = COALESCE(revoked_at, :now)
+                WHERE user_id = :user_id AND revoked_at IS NULL
+                """
+            ),
+            {"user_id": user.id, "now": now},
+        )
+        session.execute(
+            text(
+                """
+                UPDATE users
+                SET password_hash = :password_hash,
+                    display_name = :display_name,
+                    status = 'active',
+                    updated_at = :now
+                WHERE id = :user_id AND status = 'revoked'
+                """
+            ),
+            {
+                "password_hash": password_hash,
+                "display_name": display_name[:120],
+                "user_id": user.id,
+                "now": now,
+            },
+        )
+
     invitation.used_at = now
     session.add(
         AuditEvent(
@@ -168,6 +223,7 @@ def register_with_invitation(
                 "email": email,
                 "user_id": str(user.id),
                 "role": "user",
+                "reactivated_existing_user": reactivated_existing_user,
             },
         )
     )
