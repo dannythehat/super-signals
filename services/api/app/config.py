@@ -224,8 +224,16 @@ def get_settings() -> Settings:
             "SUPER_SIGNALS_SESSION_COOKIE",
             "super_signals_session",
         ),
-        session_ttl_seconds=int(os.getenv("SUPER_SIGNALS_SESSION_TTL_SECONDS", "315360000")),
-        recovery_ttl_seconds=int(os.getenv("SUPER_SIGNALS_RECOVERY_TTL_SECONDS", "1800")),
+        # Thirty days with sliding renewal. The old ten-year default made a stolen
+        # cookie unnecessarily valuable; production may shorten this further by env.
+        session_ttl_seconds=_positive_int(
+            "SUPER_SIGNALS_SESSION_TTL_SECONDS",
+            "2592000",
+        ),
+        recovery_ttl_seconds=_positive_int(
+            "SUPER_SIGNALS_RECOVERY_TTL_SECONDS",
+            "1800",
+        ),
         session_cookie_secure=_parse_bool(
             os.getenv("SUPER_SIGNALS_COOKIE_SECURE", str(default_secure))
         ),
