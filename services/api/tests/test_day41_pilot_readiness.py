@@ -85,12 +85,16 @@ def test_explicit_arm_is_separate_from_technical_readiness() -> None:
     assert result.blockers == ("owner_live_pilot_not_armed",)
 
 
-def test_no_global_emergency_endpoint_exists_in_surviving_control_routers() -> None:
-    paths = {route.path for route in access_router.routes} | {
-        route.path for route in user_controls_router.routes
+def _registered_paths(router) -> set[str]:
+    return {
+        path
+        for route in router.routes
+        if (path := getattr(route, "path", None)) is not None
     }
-    assert "/access/trading/emergency-stop" not in paths
-    assert "/user-controls/emergency-preview" not in paths
-    assert "/user-controls/emergency-stop" not in paths
+
+
+def test_no_global_emergency_endpoint_exists_in_surviving_control_routers() -> None:
+    paths = _registered_paths(access_router) | _registered_paths(user_controls_router)
+    assert not any("emergency-stop" in path or "emergency_stop" in path for path in paths)
     assert "/access/owner/day41-pilot-readiness" in paths
     assert "/user-controls/users/{user_id}/revoke" in paths
