@@ -10,6 +10,7 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
 from pydantic import BaseModel
 
+from app.acceptance_self_test import acceptance_mirror_owner_user_id
 from app.access_control import get_current_identity
 from app.admin_portfolio_day35 import Day35AdminPortfolioService, PeriodKey, SortKey
 from app.metaapi_read_gateway import MetaApiReadGateway
@@ -159,6 +160,11 @@ def _service(request: Request) -> Day33PerformanceLedgerServiceV2:
     return service
 
 
+def _read_user_id(request: Request, identity: dict[str, Any]) -> UUID:
+    service = _service(request)
+    return acceptance_mirror_owner_user_id(identity, service._session_factory) or identity["id"]
+
+
 def _no_store(response: Response) -> None:
     response.headers["Cache-Control"] = "no-store"
     response.headers["Pragma"] = "no-cache"
@@ -202,6 +208,8 @@ async def sync_performance(
     response: Response,
     identity: Identity,
 ) -> SyncResponse:
+    # Mutation-like broker reconciliation stays bound to the signed-in account. The
+    # acceptance mirror is deliberately read-only and never syncs/rebuilds Owner state.
     try:
         result = await _service(request).sync_user(identity["id"])
     except Day33LedgerError as exc:
@@ -218,7 +226,7 @@ async def performance_readiness(
 ) -> ReadinessResponse:
     _no_store(response)
     return ReadinessResponse(
-        canonical_performance_ready=_service(request).ledger_ready(identity["id"])
+        canonical_performance_ready=_service(request).ledger_ready(_read_user_id(request, identity))
     )
 
 
@@ -228,7 +236,7 @@ async def performance_windows(
     response: Response,
     identity: Identity,
 ) -> tuple[PerformanceWindowResponse, ...]:
-    windows = _service(request).read_windows(identity["id"])
+    windows = _service(request).read_windows(_read_user_id(request, identity))
     _no_store(response)
     return tuple(PerformanceWindowResponse(**asdict(item)) for item in windows)
 
@@ -244,7 +252,7 @@ async def performance_timeline(
     limit: int = Query(default=100, ge=1, le=250),
 ) -> TimelineResponse:
     view = _service(request).read_timeline(
-        identity["id"],
+        _read_user_id(request, identity),
         viewer_role=str(identity.get("role") or "user"),
         status_filter=status_value,
         source_filter=source,
@@ -267,9 +275,6 @@ async def live_board_contract(
     response: Response,
     identity: Identity,
 ) -> LiveBoardResponse:
-    # Identity is required for private-app access, but the result is deliberately
-    # independent of that user's account. Day 34 gets one shared, deduplicated,
-    # provider-hidden signal board for every invited member.
     _ = identity
     rows = _service(request).read_shared_live_board()
     trades: list[LiveBoardTradeResponse] = []
@@ -305,8 +310,6 @@ async def admin_signal_portfolio(
     period: str = Query(default="today"),
     sort_by: str = Query(default="realized_pnl"),
 ) -> AdminPortfolioResponse:
-    """Day 35 admin-only source/trader comparison over Day 33 + live broker truth."""
-
     _admin_portfolio_role(identity)
     allowed_periods = {"today", "7d", "month", "year", "all"}
     allowed_sorts = {"realized_pnl", "return_percent", "win_rate", "trade_count"}
