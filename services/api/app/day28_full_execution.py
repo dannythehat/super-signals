@@ -15,6 +15,7 @@ boundary.  Day 28 only connects the already-proven pieces.
 from __future__ import annotations
 
 import asyncio
+import logging
 from dataclasses import dataclass
 from decimal import Decimal
 from typing import Any, Iterable
@@ -26,6 +27,8 @@ from sqlalchemy.orm import Session, sessionmaker
 from app.models import AuditEvent
 from app.mt5_execution_day26 import Day26ExecutionError
 from app.mt5_management_day27 import Day27ManagementError
+
+logger = logging.getLogger(__name__)
 
 _ALLOWED_RISK = {Decimal("0.5"), Decimal("1"), Decimal("1.5"), Decimal("2")}
 
@@ -416,6 +419,18 @@ class Day28FullExecutionRouter:
         entity_type: str,
         payload: dict[str, Any],
     ) -> None:
+        # Execution outcomes were previously recorded only as audit rows. That makes
+        # the single most important question about this service -- did the last
+        # provider signal actually place a trade, and if not why -- answerable only
+        # by querying the database. Mirror the outcome to the platform log so it is
+        # observable in real time. Identifiers and counts only; no credentials,
+        # balances, provider identity or message text.
+        logger.info(
+            "Execution route succeeded %s=%s positions=%s",
+            entity_type,
+            entity_id,
+            payload.get("position_count", payload.get("positions", "n/a")),
+        )
         with self._session_factory() as session:
             session.add(
                 AuditEvent(
@@ -447,6 +462,18 @@ class Day28FullExecutionRouter:
         }
         if extra:
             payload.update(extra)
+        # A skip is the normal, safe outcome for most provider messages, so this is
+        # not an error-level event. It is logged because the reason code is the only
+        # way to tell "correctly ignored chatter" apart from "a real trade was
+        # blocked by a gate", which is exactly what an operator needs to see.
+        logger.info(
+            "Execution route did not place a trade %s=%s reason=%s decision=%s action=%s",
+            entity_type,
+            entity_id,
+            error_code,
+            decision,
+            action,
+        )
         with self._session_factory() as session:
             session.add(
                 AuditEvent(
