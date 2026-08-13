@@ -1,6 +1,6 @@
 """Add member-submitted MT5 approval requests.
 
-Revision ID: 0022_day35_mt5_onboarding_requests
+Revision ID: 0022_day35_mt5_onboarding
 Revises: 0021_day34_push_active_since
 Create Date: 2026-08-13
 
@@ -14,7 +14,7 @@ import sqlalchemy as sa
 from alembic import op
 from sqlalchemy.dialects import postgresql
 
-revision: str = "0022_day35_mt5_onboarding_requests"
+revision: str = "0022_day35_mt5_onboarding"
 down_revision: str | None = "0021_day34_push_active_since"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
