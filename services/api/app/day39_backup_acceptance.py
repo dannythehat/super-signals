@@ -141,10 +141,17 @@ def run_day39_backup_restore_acceptance() -> None:
         backup_path = Path(temporary.name)
 
     try:
+        pg_environment = _pg_environment(url)
         with psycopg.connect(
             **_connection_kwargs(url, primary_database),
-            autocommit=True,
+            autocommit=False,
         ) as primary:
+            primary.execute(
+                "SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY"
+            )
+            snapshot_id = str(
+                primary.execute("SELECT pg_export_snapshot()").fetchone()[0]
+            )
             primary_counts = _table_counts(primary)
             primary_version = str(
                 primary.execute("SELECT version_num FROM alembic_version").fetchone()[0]
@@ -166,26 +173,27 @@ def run_day39_backup_restore_acceptance() -> None:
             ).fetchone()
             owner_id = owner_row[0] if owner_row else None
 
-        pg_environment = _pg_environment(url)
-        dump_command = [
-            "pg_dump",
-            *_pg_args(url, primary_database),
-            "--format=custom",
-            "--no-owner",
-            "--no-privileges",
-            "--file",
-            str(backup_path),
-        ]
-        dump = subprocess.run(
-            dump_command,
-            env=pg_environment,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.PIPE,
-            text=True,
-            check=False,
-        )
-        if dump.returncode != 0:
-            raise RuntimeError("pg_dump failed during Day 39 backup proof.")
+            dump_command = [
+                "pg_dump",
+                *_pg_args(url, primary_database),
+                "--format=custom",
+                "--no-owner",
+                "--no-privileges",
+                "--snapshot",
+                snapshot_id,
+                "--file",
+                str(backup_path),
+            ]
+            dump = subprocess.run(
+                dump_command,
+                env=pg_environment,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.PIPE,
+                text=True,
+                check=False,
+            )
+            if dump.returncode != 0:
+                raise RuntimeError("pg_dump failed during Day 39 backup proof.")
 
         backup_bytes = backup_path.stat().st_size
         if backup_bytes <= 0:
