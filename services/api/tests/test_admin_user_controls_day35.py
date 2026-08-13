@@ -5,6 +5,7 @@ from __future__ import annotations
 import inspect
 
 from app.admin_user_controls_day35 import (
+    Day35AdminUserControlService,
     Day35EmergencyPreview,
     Day35RevokePreview,
 )
@@ -37,3 +38,14 @@ def test_revoke_preview_contract_explicitly_excludes_manual_unmapped_positions()
 def test_emergency_preview_contract_is_preview_only_and_excludes_manual_positions() -> None:
     assert Day35EmergencyPreview.__dataclass_fields__["manual_or_unmapped_positions_touched"].default is False
     assert Day35EmergencyPreview.__dataclass_fields__["broker_trade_action_created"].default is False
+
+
+def test_emergency_blocks_active_invited_user_controls_without_uuid_array_binding() -> None:
+    source = inspect.getsource(Day35AdminUserControlService.emergency_stop)
+
+    assert "UPDATE user_trading_controls utc" in source
+    assert "AND EXISTS (" in source
+    assert "u.id=utc.user_id" in source
+    assert "u.status='active'" in source
+    assert "r.name='user'" in source
+    assert "ANY(:user_ids)" not in source
