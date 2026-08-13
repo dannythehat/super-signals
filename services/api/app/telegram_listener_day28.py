@@ -1,9 +1,11 @@
-"""Day 28 listener adapter for the first complete automatic execution gate.
+"""Day 28 listener adapter for the complete automatic execution gate.
 
-Live Telegram messages still use the proven Day 21 persistence + AI/V1 pipeline.  Once
-that durable decision is stored, Day 28 dispatches it to the owner Vantage demo account.
-Bounded reconnect catch-up deliberately remains supervision/audit-only so historical
-messages can never become fresh broker instructions after a restart.
+Live Telegram messages still use the proven Day 21 persistence + AI/V1 pipeline.
+Day 38 now supplies the execution router beneath this same listener so one canonical
+Signal can fan out independently to eligible member LIVE accounts while the accepted
+Owner demo reference path remains available. Bounded reconnect catch-up deliberately
+remains supervision/audit-only so historical messages can never become fresh broker
+instructions after a restart.
 """
 
 from __future__ import annotations
@@ -53,12 +55,7 @@ def build_day28_execution_router_from_env(
     *,
     session_factory: sessionmaker[Session],
 ) -> Day28FullExecutionRouter | None:
-    """Build the demo-only automatic dispatcher only when explicitly enabled.
-
-    Day 28 requires an owner UUID and an explicit source UUID allow-list.  Missing or
-    malformed configuration disables automatic broker execution rather than falling
-    back to every Testing/Live source.
-    """
+    """Retain the historical Owner-demo builder for tests/diagnostics."""
     if not _enabled(os.getenv("SUPER_SIGNALS_DAY28_AUTO_EXECUTION_ENABLED")):
         return None
 
@@ -121,7 +118,7 @@ def build_day28_execution_router_from_env(
 
 
 class Day28TelegramListenerManager(Day21TelegramListenerManager):
-    """Day 21 reliable reader plus live-only Day 28 broker dispatch."""
+    """Day 21 reliable reader plus live-only automatic broker dispatch."""
 
     def __init__(
         self,
@@ -144,8 +141,9 @@ class Day28TelegramListenerManager(Day21TelegramListenerManager):
         )
         self._session_factory_day28 = session_factory
         self._day28_router = day28_router
-        # Day 28 has one owner demo account. Serialising broker dispatch also removes
-        # any chance of concurrent duplicate Telegram deliveries racing Day 26.
+        # Serialising canonical dispatch removes concurrent duplicate Telegram
+        # delivery races while each account is still executed independently inside
+        # the Day 38 router.
         self._day28_dispatch_lock = Lock()
 
     def _dispatch_sync(
@@ -167,11 +165,8 @@ class Day28TelegramListenerManager(Day21TelegramListenerManager):
                     )
                 )
             except Exception:
-                # Listener reliability wins over automatic dispatch.  The broker
-                # services themselves audit their exact failure codes; an unexpected
-                # orchestration error must not disconnect the Telegram reader.
                 logger.exception(
-                    "Day 28 automatic dispatch failed unexpectedly",
+                    "Automatic dispatch failed unexpectedly",
                     extra={
                         "source_id": str(source_id),
                         "telegram_message_id": telegram_message_id,
@@ -182,7 +177,7 @@ class Day28TelegramListenerManager(Day21TelegramListenerManager):
 
         if result.outcome == "blocked":
             logger.warning(
-                "Day 28 broker route blocked code=%s",
+                "Broker route blocked code=%s",
                 result.error_code or result.reason,
                 extra={
                     "source_id": str(source_id),
@@ -192,7 +187,7 @@ class Day28TelegramListenerManager(Day21TelegramListenerManager):
             )
         elif result.outcome in {"executed", "managed"}:
             logger.info(
-                "Day 28 automatic route completed outcome=%s positions=%d broker_actions=%d",
+                "Automatic route completed outcome=%s positions=%d broker_actions=%d",
                 result.outcome,
                 result.position_count,
                 result.broker_actions_sent,
@@ -251,7 +246,7 @@ class Day28TelegramListenerManager(Day21TelegramListenerManager):
         client: TelegramClient,
         plan: ReaderListeningPlan,
     ) -> None:
-        """Run Day 21 catch-up without Day 28 broker mutation."""
+        """Run Day 21 catch-up without any broker mutation."""
         for source in plan.sources:
             messages = await client.get_messages(source.chat_id, limit=25)
             for message in reversed(list(messages)):
@@ -312,14 +307,16 @@ def build_day28_listener_manager(
     refresh_seconds: int,
     excluded_chat_id: int | None,
 ) -> Day28TelegramListenerManager:
-    return Day28TelegramListenerManager(
+    # Keep main.py and the proven listener lifecycle untouched. Day 38 supplies only
+    # the router beneath it; this import is intentionally local to avoid a module
+    # cycle because telegram_listener_day38 reuses this manager class.
+    from app.telegram_listener_day38 import build_day38_listener_manager
+
+    return build_day38_listener_manager(
         api_id=api_id,
         api_hash=api_hash,
         cipher=cipher,
         session_factory=session_factory,
         refresh_seconds=refresh_seconds,
         excluded_chat_id=excluded_chat_id,
-        day28_router=build_day28_execution_router_from_env(
-            session_factory=session_factory,
-        ),
     )
