@@ -37,6 +37,8 @@ type Props = {
   currency: string;
 };
 
+const TRADE_MARKERS = ['🟣', '🟪', '🔷', '🟧', '🔶', '🔹', '🔸', '💠'] as const;
+
 async function readJson<T>(response: Response): Promise<T> {
   const body = (await response.json()) as T;
   if (!response.ok) {
@@ -83,6 +85,16 @@ function statusIcon(status: string): string {
   if (status === 'breakeven') return '=';
   if (status === 'skipped') return '!';
   return '○';
+}
+
+function publicTradeIdentity(signalId: string): { reference: string; marker: string } {
+  const compact = signalId.replaceAll('-', '').toUpperCase();
+  const markerByte = Number.parseInt(compact.slice(10, 12), 16);
+  const markerIndex = Number.isFinite(markerByte) ? markerByte % TRADE_MARKERS.length : 0;
+  return {
+    reference: `SS-${compact.slice(0, 10)}`,
+    marker: TRADE_MARKERS[markerIndex],
+  };
 }
 
 function pnlClass(value: number | null): string {
@@ -205,37 +217,41 @@ export function TradeTimeline({ apiBaseUrl, currency }: Props) {
       {traders.length > 0 && <label><span>Trader</span><select value={traderFilter} onChange={(event) => setTraderFilter(event.target.value)}><option value="all">All traders</option>{traders.map((trader) => <option key={trader} value={trader}>{trader}</option>)}</select></label>}
     </div>}
 
-    {visibleTrades.length === 0 ? <div className="day33-empty"><strong>No trades in this view</strong><span>Change the filters or sync the broker ledger.</span></div> : <div className="day33-trade-list">{visibleTrades.map((trade) => <article className={`day33-trade-card day33-status--${trade.status_color}`} key={trade.signal_id}>
-      <div className="day33-trade-top">
-        <div className="day33-trade-symbol"><span className={`day32-side day32-side--${trade.side.toLowerCase()}`}>{trade.side}</span><strong>{trade.symbol}</strong></div>
-        <span className={`day33-status-badge day33-status-badge--${trade.status_color}`}><i aria-hidden="true">{statusIcon(trade.status)}</i>{trade.status_label}</span>
-      </div>
-
-      {data?.provider_identity_visible && trade.source_label && <div className="day33-identity-row">
-        <span className={`day33-source-chip day33-source-chip--${trade.source_color_index ?? 0}`}><i />{trade.source_label}</span>
-        {trade.trader_stream && <span className={`day33-trader-chip day33-source-chip--${trade.source_color_index ?? 0}`}>{trade.trader_stream}</span>}
-      </div>}
-
-      {trade.status === 'skipped' ? <div className="day33-skipped-reason"><strong>Not placed</strong><span>{skippedReason(trade.close_reason)}</span></div> : <>
-        <div className="day33-progress-row">
-          {trade.open_positions > 0 && <span>{trade.open_positions}/{trade.position_count} positions open</span>}
-          {trade.pending_positions > 0 && <span>{trade.pending_positions} pending</span>}
-          {trade.closed_positions > 0 && <span>{trade.closed_positions} closed</span>}
+    {visibleTrades.length === 0 ? <div className="day33-empty"><strong>No trades in this view</strong><span>Change the filters or sync the broker ledger.</span></div> : <div className="day33-trade-list">{visibleTrades.map((trade) => {
+      const identity = publicTradeIdentity(trade.signal_id);
+      return <article className={`day33-trade-card day33-status--${trade.status_color}`} key={trade.signal_id}>
+        <div className="day33-trade-reference" aria-label={`Trade ${identity.reference}`}><span aria-hidden="true">{identity.marker}</span><strong>{identity.reference}</strong><small>Trade identity</small></div>
+        <div className="day33-trade-top">
+          <div className="day33-trade-symbol"><span className={`day32-side day32-side--${trade.side.toLowerCase()}`}>{trade.side}</span><strong>{trade.symbol}</strong></div>
+          <span className={`day33-status-badge day33-status-badge--${trade.status_color}`}><i aria-hidden="true">{statusIcon(trade.status)}</i>{trade.status_label}</span>
         </div>
 
-        <div className="day33-trade-metrics">
-          <div><span>Actual P/L</span><strong className={pnlClass(trade.cash_pnl)}>{money(trade.cash_pnl, currency)}</strong></div>
-          <div><span>Pips</span><strong>{trade.net_pips === null ? '—' : `${trade.net_pips > 0 ? '+' : ''}${trade.net_pips}`}</strong></div>
-          <div><span>$500 @ 1%</span><strong className={pnlClass(trade.model_500_pnl)}>{trade.model_500_pnl === null ? '—' : money(trade.model_500_pnl, 'USD')}</strong></div>
-        </div>
-      </>}
+        {data?.provider_identity_visible && trade.source_label && <div className="day33-identity-row">
+          <span className={`day33-source-chip day33-source-chip--${trade.source_color_index ?? 0}`}><i />{trade.source_label}</span>
+          {trade.trader_stream && <span className={`day33-trader-chip day33-source-chip--${trade.source_color_index ?? 0}`}>{trade.trader_stream}</span>}
+        </div>}
 
-      <div className="day33-trade-time">{trade.status === 'skipped' ? <span>Skipped {shortTime(trade.closed_at)}</span> : <><span>{trade.opened_at ? `Opened ${shortTime(trade.opened_at)}` : 'Open time unavailable'}</span>{trade.closed_at && <span>Closed {shortTime(trade.closed_at)}</span>}</>}</div>
-    </article>)}</div>}
+        {trade.status === 'skipped' ? <div className="day33-skipped-reason"><strong>Not placed</strong><span>{skippedReason(trade.close_reason)}</span></div> : <>
+          <div className="day33-progress-row">
+            {trade.open_positions > 0 && <span>{trade.open_positions}/{trade.position_count} positions open</span>}
+            {trade.pending_positions > 0 && <span>{trade.pending_positions} pending</span>}
+            {trade.closed_positions > 0 && <span>{trade.closed_positions} closed</span>}
+          </div>
+
+          <div className="day33-trade-metrics">
+            <div><span>Actual P/L</span><strong className={pnlClass(trade.cash_pnl)}>{money(trade.cash_pnl, currency)}</strong></div>
+            <div><span>Pips</span><strong>{trade.net_pips === null ? '—' : `${trade.net_pips > 0 ? '+' : ''}${trade.net_pips}`}</strong></div>
+            <div><span>$500 @ 1%</span><strong className={pnlClass(trade.model_500_pnl)}>{trade.model_500_pnl === null ? '—' : money(trade.model_500_pnl, 'USD')}</strong></div>
+          </div>
+        </>}
+
+        <div className="day33-trade-time">{trade.status === 'skipped' ? <span>Skipped {shortTime(trade.closed_at)}</span> : <><span>{trade.opened_at ? `Opened ${shortTime(trade.opened_at)}` : 'Open time unavailable'}</span>{trade.closed_at && <span>Closed {shortTime(trade.closed_at)}</span>}</>}</div>
+      </article>;
+    })}</div>}
 
     <div className="day33-legend" aria-label="Trade status colour legend">
       <span><i className="is-blue" />Open</span><span><i className="is-amber" />Pending / skipped</span><span><i className="is-green" />Win</span><span><i className="is-red" />Loss</span><span><i className="is-grey" />BE / closed</span>
     </div>
-    <p className="day33-privacy-note">Status colour shows what happened to the trade. Source/trader colour is a separate identity marker and never changes the result meaning.</p>
+    <p className="day33-privacy-note">The SS trade identity follows one canonical trade from opening to final result. Status colour shows what happened; source/trader colour is separate admin-only identity and never changes the result meaning.</p>
   </section>;
 }
