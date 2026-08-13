@@ -1,3 +1,9 @@
+FROM python:3.13-slim AS security-scan
+
+WORKDIR /scan
+COPY . /scan
+RUN python scripts/day39_secret_scan.py /scan && touch /scan/.day39-secret-scan-passed
+
 FROM node:22-bookworm-slim AS web-build
 
 WORKDIR /build
@@ -27,7 +33,10 @@ RUN python -m pip install --no-cache-dir -r /tmp/requirements.txt
 COPY services/api /app/services/api
 COPY scripts/render-start.sh /app/scripts/render-start.sh
 COPY --from=web-build /build/apps/web/dist /app/web-dist
-RUN chmod 0755 /app/scripts/render-start.sh
+COPY --from=security-scan /scan/.day39-secret-scan-passed /tmp/.day39-secret-scan-passed
+RUN test -f /tmp/.day39-secret-scan-passed \
+    && rm /tmp/.day39-secret-scan-passed \
+    && chmod 0755 /app/scripts/render-start.sh
 
 EXPOSE 10000
 CMD ["/app/scripts/render-start.sh"]
