@@ -8,15 +8,13 @@ from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, Response
 from pydantic import BaseModel
-from sqlalchemy.orm import Session
 
 from app.access_control import require_permission
 from app.control_centre_day35 import Day35ControlCentreService
-from app.db import get_db_session, get_session_factory
+from app.db import get_session_factory
 
-router = APIRouter(prefix="/admin/day35", tags=["day35-admin"])
+router = APIRouter(prefix="/day35", tags=["day35-admin"])
 ActivityAdmin = Annotated[dict[str, Any], Depends(require_permission("activity.view"))]
-DbSession = Annotated[Session, Depends(get_db_session)]
 
 
 class ReviewStageResponse(BaseModel):
@@ -79,11 +77,10 @@ class ControlCentreResponse(BaseModel):
 def control_centre(
     response: Response,
     identity: ActivityAdmin,
-    session: DbSession,
 ) -> ControlCentreResponse:
     """One read-only operational snapshot for the Owner/Trading Admin home."""
 
-    del identity, session
+    del identity
     view = Day35ControlCentreService(get_session_factory()).read()
     response.headers["Cache-Control"] = "no-store"
     response.headers["Pragma"] = "no-cache"
