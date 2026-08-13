@@ -135,12 +135,16 @@ def test_permission_matrix_is_seeded(migrated_engine) -> None:
                 """
             )
         )
+        global_emergency_permission = connection.scalar(
+            text("SELECT count(*) FROM permissions WHERE code='emergency_stop.use'")
+        )
 
     assert {"owner", "trading_admin", "user"} <= role_names
-    assert permission_count == 23
-    assert owner_count == 23
-    assert trading_admin_count == 8
+    assert permission_count == 22
+    assert owner_count == 22
+    assert trading_admin_count == 7
     assert user_count == 8
+    assert global_emergency_permission == 0
 
 
 def test_owner_seed_is_idempotent_and_assigns_owner_role(migrated_engine) -> None:
