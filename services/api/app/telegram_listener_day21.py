@@ -13,6 +13,7 @@ import os
 from typing import Any
 
 from telethon import TelegramClient, events
+from telethon.errors import FloodWaitError
 from telethon.sessions import StringSession
 
 from app.ai_message_pipeline import AiMessagePipeline
@@ -28,6 +29,7 @@ from sqlalchemy.orm import Session, sessionmaker
 
 logger = logging.getLogger(__name__)
 _DAY21_CATCHUP_LIMIT = 25
+_DAY21_LIVE_RECOVERY_SECONDS = 15
 
 
 class Day21TelegramListenerManager(Day20TelegramListenerManager):
@@ -102,6 +104,7 @@ class Day21TelegramListenerManager(Day20TelegramListenerManager):
         source_by_chat_id = {source.chat_id: source for source in plan.sources}
         exact_chat_ids = tuple(source_by_chat_id)
         selected_source_ids = tuple(source.source_id for source in plan.sources)
+        recovery_task: asyncio.Task[None] | None = None
 
         async def handle_new_message(event: Any) -> None:
             captured = self._capture_new_message(event, source_by_chat_id)
@@ -173,6 +176,10 @@ class Day21TelegramListenerManager(Day20TelegramListenerManager):
             client.add_event_handler(handle_deleted_message, events.MessageDeleted())
 
             await self._catch_up_recent_messages(client, plan)
+            recovery_task = asyncio.create_task(
+                self._run_live_recovery(client, plan),
+                name=f"super-signals-telegram-recovery-{plan.telegram_account_id}",
+            )
 
             logger.info(
                 "Telegram reader listening to %d selected source(s) after bounded catch-up",
@@ -188,8 +195,56 @@ class Day21TelegramListenerManager(Day20TelegramListenerManager):
                 extra={"telegram_account_id": str(plan.telegram_account_id)},
             )
         finally:
+            if recovery_task is not None:
+                recovery_task.cancel()
+                try:
+                    await recovery_task
+                except asyncio.CancelledError:
+                    pass
             if client.is_connected():
                 await client.disconnect()
+
+    async def _run_live_recovery(
+        self,
+        client: TelegramClient,
+        plan: ReaderListeningPlan,
+    ) -> None:
+        """Continuously reconcile recent history while the push listener is connected."""
+        while client.is_connected():
+            await asyncio.sleep(_DAY21_LIVE_RECOVERY_SECONDS)
+            try:
+                await self._recover_live_gaps(client, plan)
+            except asyncio.CancelledError:
+                raise
+            except FloodWaitError as exc:
+                # Telegram is explicitly asking this reader to back off. Polling
+                # again on the normal interval would extend the penalty and risk
+                # the reader session, so honour the requested wait before the next
+                # sweep. Live push delivery is unaffected.
+                wait_seconds = max(int(getattr(exc, "seconds", 0) or 0), 0)
+                logger.warning(
+                    "Telegram live recovery backing off for %ds after flood wait",
+                    wait_seconds,
+                    extra={"telegram_account_id": str(plan.telegram_account_id)},
+                )
+                await asyncio.sleep(wait_seconds)
+            except Exception:
+                logger.exception(
+                    "Telegram live recovery check failed",
+                    extra={"telegram_account_id": str(plan.telegram_account_id)},
+                )
+
+    async def _recover_live_gaps(
+        self,
+        client: TelegramClient,
+        plan: ReaderListeningPlan,
+    ) -> None:
+        """Default recovery is evidence-safe bounded catch-up.
+
+        Broker-enabled descendants override this hook so only genuinely fresh recovered
+        deliveries may reach execution while older gaps remain evidence only.
+        """
+        await self._catch_up_recent_messages(client, plan)
 
     async def _catch_up_recent_messages(
         self,

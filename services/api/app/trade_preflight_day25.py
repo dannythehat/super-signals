@@ -8,6 +8,7 @@ complete Day 24-sized TP set can be funded. It never places a trade.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from dataclasses import dataclass
 from decimal import Decimal
@@ -18,6 +19,11 @@ from app.mt5_read_service_day23 import Day23LiveState, Day23Mt5ReadService, Day2
 from app.risk_sizing_day24 import Day24RiskSizingResult
 
 logger = logging.getLogger(__name__)
+
+# One bounded retry only. Margin truth stays mandatory; this exists so a single
+# transient MetaAPI blip cannot permanently discard a valid provider signal.
+_MARGIN_ATTEMPTS = 2
+_MARGIN_RETRY_DELAY_SECONDS = 1.0
 
 
 @dataclass(frozen=True, slots=True)
@@ -123,23 +129,51 @@ class Day25TradePreflightService:
                 margin_check_count=0,
             )
 
-        try:
-            required_margin = self._decimal(
-                await self._margin_gateway.calculate_margin(
-                    token=token,
-                    account_id=live_state.metaapi_account_id,
-                    region=live_state.region,
-                    symbol=symbol,
-                    side=normalized_side,
-                    volume=float(total_volume),
-                    open_price=float(executable_price),
+        # A transient MetaAPI failure must not silently lose a genuine provider
+        # signal, but margin truth is still mandatory. The gateway already marks
+        # timeout / unreachable / 408 / 425 / 429 / 5xx as retryable; every other
+        # code (400/401/403/404, invalid response) is a real condition that must
+        # fail closed immediately with no retry. This mirrors the bounded
+        # single-retry pattern already used by the Day 26/27/36 broker paths.
+        required_margin: Decimal | None = None
+        margin_check_count = 0
+        last_error: MetaApiGatewayError | None = None
+        for attempt in range(1, _MARGIN_ATTEMPTS + 1):
+            margin_check_count = attempt
+            try:
+                required_margin = self._decimal(
+                    await self._margin_gateway.calculate_margin(
+                        token=token,
+                        account_id=live_state.metaapi_account_id,
+                        region=live_state.region,
+                        symbol=symbol,
+                        side=normalized_side,
+                        volume=float(total_volume),
+                        open_price=float(executable_price),
+                    )
                 )
-            )
-        except MetaApiGatewayError as exc:
+                last_error = None
+                break
+            except MetaApiGatewayError as exc:
+                last_error = exc
+                if not exc.retryable or attempt == _MARGIN_ATTEMPTS:
+                    break
+                logger.warning(
+                    "Margin preflight retrying after transient failure code=%s attempt=%d",
+                    exc.code,
+                    attempt,
+                )
+                await asyncio.sleep(_MARGIN_RETRY_DELAY_SECONDS)
+
+        if last_error is not None or required_margin is None:
             # Preserve the existing fail-closed public contract while making the
             # sanitized MetaAPI reason visible to operators. No token, account ID,
             # balance or provider data is logged here.
-            logger.warning("Margin preflight unavailable code=%s", exc.code)
+            logger.warning(
+                "Margin preflight unavailable code=%s attempts=%d",
+                last_error.code if last_error is not None else "metaapi_invalid_response",
+                margin_check_count,
+            )
             return self._blocked(
                 reason="margin_check_unavailable",
                 side=normalized_side,
@@ -152,7 +186,7 @@ class Day25TradePreflightService:
                 sizing=sizing,
                 total_volume=total_volume,
                 price_check_count=1,
-                margin_check_count=1,
+                margin_check_count=margin_check_count,
             )
 
         if required_margin > free_margin:
@@ -168,7 +202,7 @@ class Day25TradePreflightService:
                 sizing=sizing,
                 total_volume=total_volume,
                 price_check_count=1,
-                margin_check_count=1,
+                margin_check_count=margin_check_count,
             )
 
         return Day25PreflightResult(
@@ -186,7 +220,7 @@ class Day25TradePreflightService:
             total_volume=total_volume,
             positions_allowed=sizing.position_count,
             price_check_count=1,
-            margin_check_count=1,
+            margin_check_count=margin_check_count,
             all_or_nothing=True,
             trade_action_created=False,
         )

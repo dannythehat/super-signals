@@ -30,7 +30,7 @@ _OPEN_TARGET = re.compile(
     re.IGNORECASE,
 )
 _DOUBLE_SIZE = re.compile(
-    r"\b(?:DOUBLE\s+(?:LOT|LOTS|SIZE)|2X\s+(?:LOT|LOTS|SIZE))\b",
+    r"\b(?:DOUBLE|2X)\s+(?:LOTS?|LOT\s+SIZE|LOTSIZE|SIZE)\b",
     re.IGNORECASE,
 )
 _RESULT_ONLY = re.compile(
@@ -122,9 +122,9 @@ def _normalise_trade_values(
         if parsed is not None
     )
     extracted["tp_open"] = bool(_OPEN_TARGET.search(raw_text))
-    extracted["double_lot"] = bool(extracted.get("double_lot")) and bool(
-        _DOUBLE_SIZE.search(raw_text)
-    )
+    # Provider sizing is mechanical: only an explicit literal in the current message
+    # can enable double size. Do not depend on the AI model echoing the boolean.
+    extracted["double_lot"] = bool(_DOUBLE_SIZE.search(raw_text))
     return extracted, entry_low, entry_high, stop_loss, take_profits
 
 
@@ -160,16 +160,33 @@ def apply_v1_message_policy(
     *,
     raw_text: str,
     is_edit: bool = False,
+    original_has_signal: bool = False,
 ) -> AiMessageDecision:
     """Return the mechanically allowed V1 decision.
 
     Context can help the AI classify semantics, but cannot make a trade executable.
     The current message alone must contain instrument, side, entry, SL and >=1 numeric TP.
     Day 27 management is similarly current-message-only and fail-closed.
+
+    An edit can revalidate a signal that already exists, but it can never author the
+    first one. ``original_has_signal`` states whether the edited provider message had
+    already produced a canonical Signal, and defaults to False so any caller that
+    cannot answer that question fails closed.
     """
     text = raw_text or ""
 
     if decision.decision == "new_trade":
+        # Working Blueprint, locked: "An initially skipped setup is not resurrected
+        # into a new trade by a later edit." A preparation, incomplete or invalid
+        # original produced no Signal, so an edit that now looks complete must not
+        # become the first executable trade. This is enforced mechanically rather
+        # than left to the supervisor happening to classify the edit conservatively.
+        # Edits to a message that already owns a Signal still revalidate normally,
+        # and Day 18's unique (provider_chat_id, provider_message_id) constraint
+        # keeps that path from ever creating a second Signal.
+        if is_edit and not original_has_signal:
+            return _skip(decision, "edit_cannot_create_first_trade")
+
         extracted, entry_low, entry_high, stop_loss, take_profits = _normalise_trade_values(
             decision, text
         )
