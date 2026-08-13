@@ -13,6 +13,11 @@ logger = logging.getLogger(__name__)
 DEFAULT_REFRESH_SECONDS = 3600
 MINIMUM_REFRESH_SECONDS = 300
 
+# Upper bound on the one startup reconciliation that runs inside the FastAPI
+# lifespan. Generous enough for a normal cold MetaAPI round-trip, short enough
+# that a stalled broker API cannot keep /health unreachable.
+_STARTUP_RECONCILE_TIMEOUT_SECONDS = 30.0
+
 
 def _configured_refresh_seconds() -> int:
     raw = os.getenv("SUPER_SIGNALS_MT5_RECONCILE_SECONDS", "").strip()
@@ -62,12 +67,27 @@ class Mt5ConnectionManager:
         # The idle interval is deliberately conservative while Super Signals is
         # not yet using a continuous broker stream. Manual owner refresh remains
         # available and future trading days can deliberately tune the interval.
+        # This runs inside the FastAPI lifespan, before the service reports healthy.
+        # MetaAPI is an external dependency and must never be able to hold the whole
+        # web service unstartable: bound the startup attempt and let the periodic
+        # loop below retry. Nothing is swallowed silently and no broker state is
+        # assumed — a timed-out reconciliation simply stays unreconciled until the
+        # next pass, which is the same position a failed reconciliation already left.
         try:
-            checked = await self._service.reconcile_all()
+            checked = await asyncio.wait_for(
+                self._service.reconcile_all(),
+                timeout=_STARTUP_RECONCILE_TIMEOUT_SECONDS,
+            )
             logger.info(
                 "MT5 startup reconciliation checked %d account(s); idle interval=%ds",
                 checked,
                 self._refresh_seconds,
+            )
+        except TimeoutError:
+            logger.error(
+                "MT5 startup reconciliation exceeded %ds; continuing startup and "
+                "retrying on the idle interval",
+                _STARTUP_RECONCILE_TIMEOUT_SECONDS,
             )
         except Exception:
             logger.exception("MT5 connection startup reconciliation failed")
