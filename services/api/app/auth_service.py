@@ -147,12 +147,18 @@ def create_session(
     return raw_token, expires_at
 
 
-def get_user_for_session(session: Session, raw_token: str) -> dict[str, Any] | None:
+def get_user_for_session(
+    session: Session,
+    raw_token: str,
+    *,
+    user_agent: str | None = None,
+    fingerprint_secret: str | None = None,
+) -> dict[str, Any] | None:
     active_session = (
         session.execute(
             text(
                 """
-                SELECT s.id AS session_id, s.user_id, s.expires_at
+                SELECT s.id AS session_id, s.user_id, s.expires_at, s.user_agent_hash
                 FROM auth_sessions AS s
                 JOIN users AS u ON u.id = s.user_id
                 WHERE s.token_hash = :token_hash
@@ -169,6 +175,19 @@ def get_user_for_session(session: Session, raw_token: str) -> dict[str, Any] | N
     )
     if active_session is None:
         return None
+
+    if fingerprint_secret is not None:
+        current_user_agent_hash = privacy_hash(user_agent, fingerprint_secret)
+        stored_user_agent_hash = active_session["user_agent_hash"]
+        # Sessions created without a user-agent remain usable for backwards
+        # compatibility. Once a fingerprint exists, a stolen cookie presented by a
+        # different browser/device family is rejected. IP is deliberately not bound
+        # because legitimate mobile-network addresses change frequently.
+        if (
+            stored_user_agent_hash is not None
+            and current_user_agent_hash != stored_user_agent_hash
+        ):
+            return None
 
     identity = _load_identity(session, active_session["user_id"])
     if identity is None:
