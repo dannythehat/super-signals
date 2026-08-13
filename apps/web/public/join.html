@@ -63,7 +63,7 @@
       <button id="submitButton" type="submit">Create my Super Signals account</button>
     </form>
     <div id="successActions" class="hidden">
-      <a class="button" href="/">Continue to Super Signals</a>
+      <a class="button" href="/">Sign in to Super Signals</a>
     </div>
     <p class="fine">The access key can only be used once. Never send broker passwords, MT5 passwords or other account secrets by email or Telegram.</p>
   </section>
@@ -110,7 +110,6 @@
     submitButton.textContent = 'Creating account…';
     notice.className = 'notice hidden';
     try {
-      // Production serves FastAPI at the site root; /api/* belongs to the static mount.
       const response = await fetch('/auth/register', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
@@ -123,10 +122,20 @@
       });
       const body = await response.json().catch(() => ({}));
       if (!response.ok) throw new Error(body.detail || 'Account creation failed.');
+
+      const logoutResponse = await fetch('/auth/logout', {
+        method: 'POST',
+        credentials: 'include',
+        headers: { Accept: 'application/json' },
+      });
+      if (!logoutResponse.ok && logoutResponse.status !== 401) {
+        throw new Error('Your account was created, but this device could not clear the previous Super Signals session. Close this browser tab and open Super Signals again before signing in.');
+      }
+
       keyInput.value = '';
       form.classList.add('hidden');
       successActions.classList.remove('hidden');
-      showNotice('Account created. Your one-time invitation has now been used. Continue to Super Signals and sign in with your new password.', 'success');
+      showNotice(`Account created for ${email}. This device has been signed out of any previous Super Signals account. Sign in with your new password.`, 'success');
     } catch (error) {
       showNotice(error instanceof Error ? error.message : 'Account creation failed.', 'error');
       submitButton.disabled = false;
