@@ -3,6 +3,7 @@
 import asyncio
 import logging
 import os
+import sys
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import AsyncIterator
@@ -371,7 +372,41 @@ def _mount_web_application(application: FastAPI) -> None:
     application.mount("/", StaticFiles(directory=web_dist, html=True), name="web")
 
 
+def _configure_logging() -> None:
+    """Make the application's own diagnostics visible in the platform log.
+
+    Nothing configured the root logger, so every module-level logger inherited
+    the default WARNING threshold. Python's lastResort handler still leaked
+    warnings and errors to stderr, which is why failures were visible while
+    every successful-path logger.info was silently dropped -- including the MT5
+    startup reconciliation result, the Telegram reader listening confirmation
+    and the stale-gap "evidence only" notice that proves the no-replay rule is
+    working. Operators could see that something broke but never that anything
+    worked.
+
+    Uvicorn configures its own loggers with propagate disabled, so adding a
+    root handler here does not duplicate access or server lines. Every existing
+    call site already logs sanitized values only; this changes visibility, not
+    content.
+    """
+    level_name = os.getenv("SUPER_SIGNALS_LOG_LEVEL", "INFO").strip().upper()
+    level = getattr(logging, level_name, logging.INFO)
+    if not isinstance(level, int):
+        level = logging.INFO
+
+    root = logging.getLogger()
+    root.setLevel(level)
+    if not any(getattr(h, "_super_signals", False) for h in root.handlers):
+        handler = logging.StreamHandler(stream=sys.stdout)
+        handler.setFormatter(
+            logging.Formatter("%(levelname)s:     %(name)s: %(message)s")
+        )
+        handler._super_signals = True  # type: ignore[attr-defined]
+        root.addHandler(handler)
+
+
 def create_app() -> FastAPI:
+    _configure_logging()
     settings = get_settings()
     application = FastAPI(
         title="Super Signals API",
