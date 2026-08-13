@@ -34,6 +34,9 @@ type PortfolioResponse = {
   performance_basis: string;
   provider_identity_visible: boolean;
   broker_trade_action_created: boolean;
+  open_cash_pnl_live: boolean;
+  open_cash_pnl_as_of: string | null;
+  open_cash_pnl_error_code: string | null;
 };
 
 type Props = {
@@ -86,6 +89,13 @@ function tone(value: number | null): string {
   return value > 0 ? 'is-positive' : 'is-negative';
 }
 
+function compactTime(value: string | null): string {
+  if (!value) return '';
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return '';
+  return new Intl.DateTimeFormat(undefined, { hour: '2-digit', minute: '2-digit', second: '2-digit' }).format(date);
+}
+
 async function readJson<T>(response: Response): Promise<T> {
   const body = (await response.json()) as T;
   if (!response.ok) {
@@ -129,9 +139,12 @@ export function AdminSignalPortfolioDay35({ apiBaseUrl }: Props) {
 
   const totals = useMemo(() => {
     const sourceRows = data?.rows.filter((row) => row.dimension_type === 'source') ?? [];
+    const floatingKnown = sourceRows.every((row) => row.open_cash_pnl_known);
     return {
       sources: sourceRows.length,
       realised: sourceRows.reduce((sum, row) => sum + row.realized_cash_pnl, 0),
+      floating: floatingKnown ? sourceRows.reduce((sum, row) => sum + (row.open_cash_pnl ?? 0), 0) : null,
+      floatingKnown,
       closed: sourceRows.reduce((sum, row) => sum + row.trades_closed, 0),
       open: sourceRows.reduce((sum, row) => sum + row.trades_open, 0),
     };
@@ -142,7 +155,7 @@ export function AdminSignalPortfolioDay35({ apiBaseUrl }: Props) {
       <div>
         <p className="eyebrow">Admin Signal Portfolio</p>
         <h1 id="day35-portfolio-title">Which signals are actually strongest?</h1>
-        <p className="intro">Compare approved providers and reliably attributed trader streams using the canonical broker-backed Day 33 ledger.</p>
+        <p className="intro">Compare approved providers and reliably attributed trader streams using the canonical broker-backed Day 33 ledger, with current open P/L read directly from the reference MT5 account.</p>
       </div>
       <span className="workspace-role-pill">BROKER TRUTH</span>
     </div>
@@ -153,14 +166,17 @@ export function AdminSignalPortfolioDay35({ apiBaseUrl }: Props) {
 
     <div className="day35-portfolio-toolbar">
       <label><span>Rank by</span><select value={sortBy} onChange={(event) => setSortBy(event.target.value as SortKey)}>{SORTS.map(([key, label]) => <option key={key} value={key}>{label}</option>)}</select></label>
-      <button type="button" className="day33-refresh" onClick={() => void load()} disabled={loading}>{loading ? 'Refreshing…' : 'Refresh'}</button>
+      <button type="button" className="day33-refresh" onClick={() => void load()} disabled={loading}>{loading ? 'Refreshing…' : 'Refresh live data'}</button>
     </div>
 
     {error && <div className="day33-sync-note day33-sync-note--error" role="alert">{error}</div>}
+    {data && !data.open_cash_pnl_live && totals.open > 0 && <div className="day35-live-note day35-live-note--warning" role="status"><strong>Realised performance is available.</strong><span>Live MT5 floating P/L could not be confirmed on this refresh, so open values remain unknown rather than showing a false zero.</span></div>}
+    {data?.open_cash_pnl_live && <div className="day35-live-note" role="status"><span className="day35-live-dot" aria-hidden="true" /><span>Floating P/L checked against live mapped broker positions{data.open_cash_pnl_as_of ? ` at ${compactTime(data.open_cash_pnl_as_of)}` : ''}.</span></div>}
 
     <div className="day35-portfolio-summary" aria-label="Signal Portfolio overview">
       <article><span>Sources in period</span><strong>{loading && !data ? '—' : totals.sources}</strong></article>
       <article><span>Reference realised P/L</span><strong className={tone(totals.realised)}>{loading && !data ? '—' : signedMoney(totals.realised)}</strong></article>
+      <article><span>Reference floating P/L</span><strong className={totals.floatingKnown ? tone(totals.floating) : 'is-flat'}>{loading && !data ? '—' : totals.floatingKnown && totals.floating !== null ? signedMoney(totals.floating) : 'Unknown'}</strong></article>
       <article><span>Closed legs</span><strong>{loading && !data ? '—' : totals.closed}</strong></article>
       <article><span>Still open</span><strong>{loading && !data ? '—' : totals.open}</strong></article>
     </div>
@@ -187,10 +203,10 @@ export function AdminSignalPortfolioDay35({ apiBaseUrl }: Props) {
           <span><small>Net pips</small><strong>{pips(row.net_pips)}</strong></span>
         </div>
 
-        <div className="day35-floating-row"><span>Current floating P/L</span><strong className={row.open_cash_pnl_known ? tone(row.open_cash_pnl) : 'is-unknown'}>{row.open_cash_pnl_known ? money(row.open_cash_pnl) : 'Waiting for live broker read'}</strong></div>
+        <div className="day35-floating-row"><span>Current floating P/L</span><strong className={row.open_cash_pnl_known ? tone(row.open_cash_pnl) : 'is-unknown'}>{row.open_cash_pnl_known && row.open_cash_pnl !== null ? signedMoney(row.open_cash_pnl) : 'Live value unavailable'}</strong></div>
       </article>)}
     </div> : <div className="day33-empty"><strong>No provider performance in this period</strong><span>Choose a wider period or wait for broker-backed trade outcomes.</span></div>}
 
-    <div className="day35-ledger-note"><strong>One performance truth.</strong><span>These figures are read from the Day 33 broker-backed ledger. Telegram claims never become performance data. Source/trader colours are identity only and remain separate from win/loss status colours.</span></div>
+    <div className="day35-ledger-note"><strong>One performance truth.</strong><span>Realised results and return calculations stay on the Day 33 broker-deal ledger. Floating P/L is a separate read-only snapshot of mapped broker positions. Telegram claims never become performance data, and no dashboard read can place, modify or close a trade.</span></div>
   </section>;
 }
