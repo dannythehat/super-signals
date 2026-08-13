@@ -11,7 +11,7 @@ from app.models import Role, User, UserRole
 
 DEFAULT_ROLES = {
     "owner": "Full platform control, security, users, keys and roles.",
-    "trading_admin": "Signal sources, tests, activity and emergency trading controls.",
+    "trading_admin": "Signal sources, tests, reviews and trading activity.",
     "user": "Personal MT5 connection, risk, automation, signals and performance.",
 }
 
