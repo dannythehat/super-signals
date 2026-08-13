@@ -3,7 +3,9 @@
 The Owner keeps the accepted demo-only Day 28 path. Ordinary members use the same
 atomic execution + per-leg provider-zone guard, but their account gate is LIVE-only.
 Stored Day 31 risk/double-lot choices are loaded server-side and cannot be supplied
-by the caller.
+by the caller. Atomic compensation is also LIVE-aware so a later-leg failure can close
+any earlier member legs from the same Signal instead of being blocked by Day 26's
+historical Owner-demo gate.
 """
 
 from __future__ import annotations
@@ -13,6 +15,7 @@ from uuid import UUID
 from sqlalchemy import text
 
 from app.day28_zone_guard import Day28GuardedExecutionService
+from app.mt5_crypto import BrokerCredentialDecryptionError
 from app.mt5_execution_day26 import (
     Day26ExecutionError,
     Day26ExecutionResult,
@@ -156,16 +159,7 @@ class Day38LiveUserExecutionService(Day28GuardedExecutionService):
             ).mappings().first()
             if eligibility is None:
                 raise Day26ExecutionError("day38_user_not_execution_ready")
-            if str(eligibility["account_environment"] or "").lower() != "live":
-                raise Day26ExecutionError("day38_live_account_required")
-            if str(eligibility["account_status"] or "") != "connected":
-                raise Day26ExecutionError("mt5_account_not_connected")
-            if str(eligibility["login"] or "") != str(eligibility["approved_login"] or ""):
-                raise Day26ExecutionError("mt5_account_not_approved")
-            if str(eligibility["server"] or "").strip().lower() != str(
-                eligibility["approved_server"] or ""
-            ).strip().lower():
-                raise Day26ExecutionError("mt5_account_not_approved")
+            self._validate_live_account_row(eligibility)
 
         payload = signal_row["canonical_payload"] if isinstance(signal_row["canonical_payload"], dict) else {}
         has_open_runner = any(
@@ -206,6 +200,61 @@ class Day38LiveUserExecutionService(Day28GuardedExecutionService):
             token_ciphertext=bytes(eligibility["metaapi_token_ciphertext"]),
         )
         return signal, account
+
+    def _rollback_account(self, user_id: UUID) -> tuple[str, str]:
+        """Atomic Day 26 rollback, but against the same approved member LIVE account."""
+        with self._session_factory() as session:
+            row = session.execute(
+                text(
+                    """
+                    SELECT
+                        m.metaapi_account_id,
+                        m.metaapi_token_ciphertext,
+                        m.account_environment,
+                        m.status AS account_status,
+                        m.login,
+                        m.server,
+                        a.login AS approved_login,
+                        a.server AS approved_server
+                    FROM users AS u
+                    JOIN user_roles AS ur ON ur.user_id=u.id
+                    JOIN roles AS r ON r.id=ur.role_id AND r.name='user'
+                    JOIN mt5_accounts AS m ON m.owner_user_id=u.id
+                    JOIN mt5_account_approvals AS a
+                      ON a.user_id=u.id
+                     AND a.status='active'
+                    WHERE u.id=:user_id
+                      AND u.status='active'
+                      AND m.status!='revoked'
+                    ORDER BY m.created_at DESC
+                    LIMIT 1
+                    """
+                ),
+                {"user_id": user_id},
+            ).mappings().first()
+        if row is None:
+            raise Day26ExecutionError("day38_user_not_execution_ready")
+        self._validate_live_account_row(row)
+        try:
+            token = self._cipher.decrypt(bytes(row["metaapi_token_ciphertext"])).strip()
+        except BrokerCredentialDecryptionError as exc:
+            raise Day26ExecutionError("broker_credential_decryption_failed") from exc
+        if len(token) < 20:
+            raise Day26ExecutionError("metaapi_platform_token_not_configured")
+        return str(row["metaapi_account_id"]), token
+
+    @staticmethod
+    def _validate_live_account_row(row) -> None:  # noqa: ANN001
+        if str(row["account_environment"] or "").lower() != "live":
+            raise Day26ExecutionError("day38_live_account_required")
+        if str(row["account_status"] or "") != "connected":
+            raise Day26ExecutionError("mt5_account_not_connected")
+        if str(row["login"] or "") != str(row["approved_login"] or ""):
+            raise Day26ExecutionError("mt5_account_not_approved")
+        if str(row["server"] or "").strip().lower() != str(
+            row["approved_server"] or ""
+        ).strip().lower():
+            raise Day26ExecutionError("mt5_account_not_approved")
 
 
 __all__ = ["Day38LiveUserExecutionService"]
