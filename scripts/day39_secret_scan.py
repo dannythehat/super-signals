@@ -45,10 +45,13 @@ RULES: tuple[tuple[str, re.Pattern[str]], ...] = (
     ),
 )
 
-# Deliberately public/local examples that are allowed in source-controlled templates.
+# Deliberately public/local examples that are allowed in source-controlled templates
+# and tests. Keep this list exact; never exempt a whole file or directory merely
+# because a credential-shaped string is inconvenient to scan.
 ALLOWED_SUBSTRINGS = (
     "postgresql+psycopg://super_signals:super_signals@127.0.0.1:5432/super_signals",
     "postgresql://super_signals:super_signals@127.0.0.1:5432/super_signals",
+    "postgresql://user:password@db.example.com/app",
 )
 
 
