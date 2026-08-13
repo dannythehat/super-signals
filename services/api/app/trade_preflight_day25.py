@@ -8,6 +8,7 @@ complete Day 24-sized TP set can be funded. It never places a trade.
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from decimal import Decimal
 
@@ -15,6 +16,8 @@ from app.metaapi_gateway import MetaApiGatewayError
 from app.metaapi_margin_gateway import MetaApiMarginGateway
 from app.mt5_read_service_day23 import Day23LiveState, Day23Mt5ReadService, Day23ReadError
 from app.risk_sizing_day24 import Day24RiskSizingResult
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True, slots=True)
@@ -132,7 +135,11 @@ class Day25TradePreflightService:
                     open_price=float(executable_price),
                 )
             )
-        except MetaApiGatewayError:
+        except MetaApiGatewayError as exc:
+            # Preserve the existing fail-closed public contract while making the
+            # sanitized MetaAPI reason visible to operators. No token, account ID,
+            # balance or provider data is logged here.
+            logger.warning("Margin preflight unavailable code=%s", exc.code)
             return self._blocked(
                 reason="margin_check_unavailable",
                 side=normalized_side,
