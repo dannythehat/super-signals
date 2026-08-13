@@ -87,6 +87,7 @@ export function Mt5DemoConnectionPanel({ apiBaseUrl }: { apiBaseUrl: string }) {
   const [liveState, setLiveState] = useState<LiveState | null>(null);
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState('');
+  const [loaded, setLoaded] = useState(false);
 
   async function load() {
     const response = await fetch(`${apiBaseUrl}/owner/mt5/demo/status`, {
@@ -99,7 +100,9 @@ export function Mt5DemoConnectionPanel({ apiBaseUrl }: { apiBaseUrl: string }) {
   }
 
   useEffect(() => {
-    void load().catch(() => setMessage('Unable to read the MT5 connection status.'));
+    void load()
+      .catch(() => setMessage('Unable to read the MT5 connection status.'))
+      .finally(() => setLoaded(true));
   }, []);
 
   async function refresh() {
@@ -173,7 +176,11 @@ export function Mt5DemoConnectionPanel({ apiBaseUrl }: { apiBaseUrl: string }) {
   }
 
   const connected = connection?.status === 'connected' && connection.remote_connection_status === 'CONNECTED';
-  const showCredentialForm = !connection?.configured || connection.status === 'error' || connection.status === 'disconnected';
+  // Only offer the credential form once the real connection state is known.
+  // Rendering it while the status request is still in flight briefly tells an
+  // already-connected owner to reconnect, which reads as a broken account.
+  const showCredentialForm =
+    loaded && (!connection?.configured || connection.status === 'error' || connection.status === 'disconnected');
   const help = connectionHelp(connection);
 
   return <section aria-labelledby="paper-trading-title">
