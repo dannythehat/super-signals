@@ -25,6 +25,7 @@ COPY services/api/requirements.txt /tmp/requirements.txt
 RUN python -m pip install --no-cache-dir -r /tmp/requirements.txt
 
 COPY services/api /app/services/api
+COPY --from=web-build /build/apps/web/dist /app/web-dist
 RUN python -m pip install --no-cache-dir pytest && cd /app/services/api && pytest -q \
     tests/test_admin_portfolio_day35.py \
     tests/test_admin_user_controls_day35.py \
@@ -39,7 +40,6 @@ RUN python -m pip install --no-cache-dir pytest && cd /app/services/api && pytes
     tests/test_day31_risk_activation_controls.py \
     tests/test_day32_dashboard_contract.py
 COPY scripts/render-start.sh /app/scripts/render-start.sh
-COPY --from=web-build /build/apps/web/dist /app/web-dist
 RUN chmod 0755 /app/scripts/render-start.sh
 
 EXPOSE 10000
