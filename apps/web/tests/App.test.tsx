@@ -158,14 +158,15 @@ describe('App', () => {
     expect(fetchMock).toHaveBeenCalledWith('/api/auth/login', expect.objectContaining({ method: 'POST', credentials: 'include' }));
   });
 
-  it('shows shared source count in Settings and opens the shared source workspace', async () => {
-    vi.stubGlobal('fetch', appFetchMock({ session: owner, sources: [sharedSource] }));
+  it('opens the shared source workspace from current Settings', async () => {
+    const fetchMock = appFetchMock({ session: owner, sources: [sharedSource] });
+    vi.stubGlobal('fetch', fetchMock);
     window.scrollTo = vi.fn();
     render(<App />);
     expect(await screen.findByRole('heading', { name: 'Hi, Danny' })).toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: 'Open Settings' }));
     expect(await screen.findByRole('heading', { name: 'Settings' })).toBeInTheDocument();
-    expect(screen.getByText('1 shared source currently catalogued.')).toBeInTheDocument();
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledWith('/api/admin/telegram/sources/shared', expect.anything()));
     fireEvent.click(screen.getByRole('button', { name: 'Signal sources' }));
     expect(await screen.findByRole('heading', { name: 'Signal sources' })).toBeInTheDocument();
   });
@@ -180,7 +181,7 @@ describe('App', () => {
     fireEvent.click(screen.getByRole('button', { name: /^Settings/ }));
     expect(await screen.findByText('Telegram & sources')).toBeInTheDocument();
     expect(screen.getByText('Vantage MT5 demo')).toBeInTheDocument();
-    expect(screen.getByText('Account & security')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Account & security' })).toBeInTheDocument();
   });
 
   it('shows Telegram source tools to a configured Trading Admin without Owner broker tools', async () => {
@@ -202,7 +203,7 @@ describe('App', () => {
     expect(await screen.findByRole('heading', { name: 'Settings' })).toBeInTheDocument();
     expect(screen.queryByText('Telegram & sources')).not.toBeInTheDocument();
     expect(screen.queryByText('Vantage MT5 demo')).not.toBeInTheDocument();
-    expect(screen.getByText('Account & security')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Account & security' })).toBeInTheDocument();
   });
 
   it('revokes the visible session and returns to login on logout', async () => {
@@ -220,7 +221,7 @@ describe('App', () => {
     render(<App />);
     fireEvent.click(await screen.findByRole('button', { name: 'I cannot access my account' }));
     expect(screen.getByRole('heading', { name: 'Recover access' })).toBeInTheDocument();
-    fireEvent.change(screen.getByLabelText('Email'), { target: { value: 'unknown@example.com' } });
+    fireEvent.change(screen.getByLabelText('Account email'), { target: { value: 'unknown@example.com' } });
     fireEvent.click(screen.getByRole('button', { name: 'Send recovery instructions' }));
     expect(await screen.findByText('If the account is eligible, recovery instructions will be sent.')).toBeInTheDocument();
   });
