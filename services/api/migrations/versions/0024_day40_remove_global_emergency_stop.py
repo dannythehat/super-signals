@@ -1,6 +1,6 @@
 """Remove the obsolete global emergency-stop permission.
 
-Revision ID: 0024_day40_remove_global_emergency_stop
+Revision ID: 0024_day40_no_global_stop
 Revises: 0023_day39_security_hardening
 Create Date: 2026-08-13
 """
@@ -9,7 +9,7 @@ from collections.abc import Sequence
 
 from alembic import op
 
-revision: str = "0024_day40_remove_global_emergency_stop"
+revision: str = "0024_day40_no_global_stop"
 down_revision: str | None = "0023_day39_security_hardening"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
