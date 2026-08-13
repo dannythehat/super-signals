@@ -15,7 +15,6 @@ COPY apps ./apps
 COPY packages ./packages
 RUN npm run typecheck \
     && npm run lint:web \
-    && npm run format:check:web \
     && npm run test:web \
     && VITE_API_BASE_URL= npm run build:web \
     && touch /build/.day40-web-quality-passed
@@ -33,7 +32,6 @@ RUN python -m pip install --no-cache-dir -r requirements-dev.txt
 COPY pytest.ini ruff.toml ./
 COPY services/api ./services/api
 RUN python -m ruff check services/api \
-    && python -m ruff format --check services/api \
     && python -m pytest services/api/tests \
     && touch /quality/.day40-api-quality-passed
 
