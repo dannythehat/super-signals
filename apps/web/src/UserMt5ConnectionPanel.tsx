@@ -1,5 +1,8 @@
 import { FormEvent, useCallback, useEffect, useState } from 'react';
 
+const VANTAGE_AFFILIATE_URL = import.meta.env.VITE_VANTAGE_AFFILIATE_URL
+  || 'https://www.vantagemarkets.com/forex-trading/forex-trading-account/?affid=32372443';
+
 type MemberMt5OnboardingStatus = {
   request_status: string;
   request_login_masked: string | null;
@@ -90,13 +93,18 @@ export function UserMt5ConnectionPanel({ apiBaseUrl }: Props) {
 
   const connected = status?.connection_status === 'connected';
   const waiting = status?.request_status === 'requested' && !status.approved;
-  const canSubmit = !status?.approved && (!waiting || editRequest);
 
   return <section className="settings-panel settings-panel--mt5" aria-labelledby="user-mt5-settings-title">
     <div className="settings-panel-heading">
       <div><span className="status-label">Vantage MT5</span><h2 id="user-mt5-settings-title">Trading account</h2></div>
       {status && <span className={`settings-state settings-state--${connected ? 'good' : 'attention'}`}>{connected ? 'CONNECTED' : status.approved ? 'APPROVED' : waiting ? 'WAITING FOR APPROVAL' : 'SETUP NEEDED'}</span>}
     </div>
+
+    {!connected && <div className="settings-vantage-start">
+      <strong>Need a Vantage account?</strong>
+      <p>Create your Vantage account using the Super Signals referral link. Vantage opens in a new tab, so this setup page stays open.</p>
+      <a className="button button--quiet" href={VANTAGE_AFFILIATE_URL} target="_blank" rel="noopener noreferrer">Create a Vantage account ↗</a>
+    </div>}
 
     {loading ? <p className="muted-copy">Checking your trading account…</p> : status ? <>
       {connected && <>
@@ -109,7 +117,7 @@ export function UserMt5ConnectionPanel({ apiBaseUrl }: Props) {
       </>}
 
       {!connected && !status.approved && !waiting && <>
-        <p className="settings-help">Enter the Vantage MT5 account number and exact server you received from Vantage. Your trading password is not needed yet.</p>
+        <p className="settings-help">Already created your Vantage account? Enter the MT5 account number and exact server Vantage gave you. Your trading password is not needed yet.</p>
         <form className="settings-mt5-form" onSubmit={submitRequest}>
           <label>MT5 account number<input name="login" inputMode="numeric" autoComplete="off" required /></label>
           <label>Exact Vantage server<input name="server" autoComplete="off" placeholder="e.g. VantageInternational-Live" required /></label>
@@ -148,8 +156,6 @@ export function UserMt5ConnectionPanel({ apiBaseUrl }: Props) {
           <button className="button" type="submit" disabled={busy}>{busy ? 'Connecting…' : 'Connect MT5'}</button>
         </form>
       </>}
-
-      {canSubmit && waiting && editRequest ? null : null}
     </> : null}
     {notice && <p className="settings-notice" role="status">{notice}</p>}
   </section>;
