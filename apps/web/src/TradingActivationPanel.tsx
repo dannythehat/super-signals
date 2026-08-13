@@ -45,6 +45,8 @@ async function readJson<T>(response: Response): Promise<T> {
 export function TradingActivationPanel() {
   const [eligible, setEligible] = useState(false);
   const [settings, setSettings] = useState<TradingSettings | null>(null);
+  const [draftRiskPercent, setDraftRiskPercent] = useState<number | null>(null);
+  const [draftAllowDoubleLot, setDraftAllowDoubleLot] = useState<boolean | null>(null);
   const [realMt5Status, setRealMt5Status] = useState<Mt5ConnectionStatus | null>(null);
   const [onboardingStatus, setOnboardingStatus] = useState<Mt5OnboardingStatus | null>(null);
   const [preview, setPreview] = useState<ActivationPreview | null>(null);
@@ -64,7 +66,10 @@ export function TradingActivationPanel() {
         fetch(`${apiBaseUrl}/account/mt5/status`, { credentials: 'include', headers: { Accept: 'application/json' }, cache: 'no-store' }),
         fetch(`${apiBaseUrl}/account/mt5/onboarding`, { credentials: 'include', headers: { Accept: 'application/json' }, cache: 'no-store' }),
       ]);
-      setSettings(await readJson<TradingSettings>(settingsResponse));
+      const nextSettings = await readJson<TradingSettings>(settingsResponse);
+      setSettings(nextSettings);
+      setDraftRiskPercent(Number(nextSettings.risk_percent));
+      setDraftAllowDoubleLot(nextSettings.allow_double_lot);
       setRealMt5Status(await readJson<Mt5ConnectionStatus>(mt5Response));
       setOnboardingStatus(await readJson<Mt5OnboardingStatus>(onboardingResponse));
     } catch {
@@ -79,16 +84,19 @@ export function TradingActivationPanel() {
     return () => window.removeEventListener('super-signals-mt5-connected', onMt5Connected);
   }, [refresh]);
 
-  async function saveRisk(riskPercent: number, allowDoubleLot: boolean) {
+  async function saveRisk() {
+    if (draftRiskPercent === null || draftAllowDoubleLot === null) return;
     setBusy(true); setNotice(null); setPreview(null);
     try {
       const response = await fetch(`${apiBaseUrl}/account/mt5/trading/risk`, {
         method: 'PATCH', credentials: 'include', headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
-        body: JSON.stringify({ risk_percent: riskPercent, allow_double_lot: allowDoubleLot }),
+        body: JSON.stringify({ risk_percent: draftRiskPercent, allow_double_lot: draftAllowDoubleLot }),
       });
       const next = await readJson<TradingSettings>(response);
       setSettings(next);
-      setNotice(next.trading_status === 'stopped' ? 'Risk settings saved.' : null);
+      setDraftRiskPercent(Number(next.risk_percent));
+      setDraftAllowDoubleLot(next.allow_double_lot);
+      setNotice('Risk settings saved.');
     } catch (error) { setNotice(error instanceof Error ? error.message : 'Risk settings could not be saved.'); }
     finally { setBusy(false); }
   }
@@ -122,6 +130,8 @@ export function TradingActivationPanel() {
       const response = await fetch(`${apiBaseUrl}/account/mt5/trading/stop-and-close`, { method: 'POST', credentials: 'include', headers: { Accept: 'application/json' } });
       const result = await readJson<StopResult>(response);
       setSettings(result.settings); setConfirmStop(false); setPreview(null);
+      setDraftRiskPercent(Number(result.settings.risk_percent));
+      setDraftAllowDoubleLot(result.settings.allow_double_lot);
       setNotice(`Trading stopped. ${result.positions_closed} bot position${result.positions_closed === 1 ? '' : 's'} closed.`);
     } catch (error) {
       setConfirmStop(false); setNotice(error instanceof Error ? `${error.message} New trades remain stopped.` : 'New trades remain stopped.');
@@ -129,9 +139,10 @@ export function TradingActivationPanel() {
     } finally { setBusy(false); }
   }
 
-  if (!eligible || !settings) return null;
+  if (!eligible || !settings || draftRiskPercent === null || draftAllowDoubleLot === null) return null;
 
-  const effectiveDouble = settings.allow_double_lot ? `${settings.effective_double_lot_risk_percent}%` : 'Off';
+  const hasUnsavedRiskChanges = Number(settings.risk_percent) !== draftRiskPercent || settings.allow_double_lot !== draftAllowDoubleLot;
+  const effectiveDouble = draftAllowDoubleLot ? `${draftRiskPercent * 2}%` : 'Off';
   const realMt5Connected = realMt5Status?.status === 'connected';
   const acceptanceMirror = onboardingStatus?.connection_status === 'connected' && !realMt5Connected;
 
@@ -145,12 +156,14 @@ export function TradingActivationPanel() {
 
     <fieldset className="risk-selector" disabled={busy}>
       <legend>Risk per position</legend>
-      <div className="risk-options">{allowedRisks.map((risk) => <button key={risk} type="button" className={Number(settings.risk_percent) === risk ? 'risk-option risk-option--selected' : 'risk-option'} aria-pressed={Number(settings.risk_percent) === risk} onClick={() => void saveRisk(risk, settings.allow_double_lot)}>{risk}%</button>)}</div>
+      <div className="risk-options">{allowedRisks.map((risk) => <button key={risk} type="button" className={draftRiskPercent === risk ? 'risk-option risk-option--selected' : 'risk-option'} aria-pressed={draftRiskPercent === risk} onClick={() => { setDraftRiskPercent(risk); setNotice(null); }}>{risk}%</button>)}</div>
     </fieldset>
 
-    <label className="double-lot-toggle"><input type="checkbox" checked={settings.allow_double_lot} disabled={busy} onChange={(event) => void saveRisk(Number(settings.risk_percent), event.currentTarget.checked)} /><span><strong>Allow double-lot signals</strong><small>If a provider explicitly says DOUBLE LOTSIZE, Super Signals doubles your selected risk for that position.</small></span></label>
+    <label className="double-lot-toggle"><input type="checkbox" checked={draftAllowDoubleLot} disabled={busy} onChange={(event) => { setDraftAllowDoubleLot(event.currentTarget.checked); setNotice(null); }} /><span><strong>Allow double-lot signals</strong><small>If a provider explicitly says DOUBLE LOTSIZE, Super Signals doubles your selected risk for that position.</small></span></label>
 
-    <div className="effective-risk"><span>Normal signal <strong>{settings.effective_normal_risk_percent}%</strong></span><span>Double-lot signal <strong>{effectiveDouble}</strong></span></div>
+    <div className="effective-risk"><span>Normal signal <strong>{draftRiskPercent}%</strong></span><span>Double-lot signal <strong>{effectiveDouble}</strong></span></div>
+
+    <div className="control-actions"><button className="button" type="button" disabled={busy || !hasUnsavedRiskChanges} onClick={() => void saveRisk()}>{busy ? 'Saving…' : hasUnsavedRiskChanges ? 'Save risk settings' : 'Risk settings saved'}</button></div>
 
     {preview && <div className="activation-confirmation" role="dialog" aria-label={preview.confirmation_title}><strong>{preview.confirmation_title}</strong><p>{preview.confirmation_message}</p><ul>{preview.requirements.map((item) => <li key={item.key} className={item.passed ? 'requirement-pass' : 'requirement-fail'}>{item.passed ? '✓' : '×'} {item.label}</li>)}</ul>{preview.ready ? <div className="control-actions"><button className="button" type="button" disabled={busy || !realMt5Connected} onClick={() => void confirmActivation()}>Confirm &amp; activate</button><button className="button button--quiet" type="button" disabled={busy} onClick={() => setPreview(null)}>Cancel</button></div> : <button className="button button--quiet" type="button" onClick={() => setPreview(null)}>Close</button>}</div>}
 
@@ -158,7 +171,7 @@ export function TradingActivationPanel() {
 
     {!preview && !confirmStop && settings.trading_status !== 'active' && acceptanceMirror && <div className="settings-notice" role="status"><strong>Read-only test account.</strong> Trading activation is intentionally disabled while this user mirrors the Owner MT5 connection for acceptance testing.</div>}
     {!preview && !confirmStop && settings.trading_status !== 'active' && !acceptanceMirror && !realMt5Connected && <div className="settings-notice" role="status">Connect your approved Vantage MT5 account below before activating automated trading.</div>}
-    {!preview && !confirmStop && <div className="control-actions">{settings.trading_status === 'active' ? <button className="button" type="button" disabled={busy} onClick={() => setConfirmStop(true)}>Stop and Close</button> : !acceptanceMirror && realMt5Connected ? <button className="button" type="button" disabled={busy} onClick={() => void prepareActivation()}>Activate Trades</button> : null}</div>}
+    {!preview && !confirmStop && <div className="control-actions">{settings.trading_status === 'active' ? <button className="button" type="button" disabled={busy} onClick={() => setConfirmStop(true)}>Stop and Close</button> : !acceptanceMirror && realMt5Connected ? <button className="button" type="button" disabled={busy || hasUnsavedRiskChanges} onClick={() => void prepareActivation()}>{hasUnsavedRiskChanges ? 'Save risk settings first' : 'Activate Trades'}</button> : null}</div>}
     {notice && <p className="trading-control-notice" role="status">{notice}</p>}
   </aside>;
 }
