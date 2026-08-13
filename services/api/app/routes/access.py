@@ -9,6 +9,7 @@ from pydantic import BaseModel
 
 from app.access_control import get_current_identity, require_permission
 from app.day41_pilot_readiness import Day41PilotReadiness, read_day41_pilot_readiness
+from app.day42_final_readiness import Day42FinalReadiness, read_day42_final_readiness
 from app.permissions import ROLE_LABELS
 from app.routes.control_centre_day35 import router as control_centre_day35_router
 
@@ -50,6 +51,24 @@ class Day41PilotReadinessResponse(BaseModel):
     trade_action_created: bool
 
 
+class Day42FinalReadinessResponse(BaseModel):
+    go: bool
+    ready_for_owner_go: bool
+    blockers: tuple[str, ...]
+    day40_regression_proven: bool
+    day41_live_pilot_passed: bool
+    prior_days_accepted: bool
+    durable_database_verified: bool
+    monitoring_support_verified: bool
+    first_user_owner_approved: bool
+    ordinary_members_inactive: bool
+    global_emergency_absent: bool
+    publication_failures_clear: bool
+    owner_go_authorized: bool
+    invitation_created: bool
+    trade_action_created: bool
+
+
 def _capability(identity: dict[str, Any], permission: str, area: str) -> CapabilityResponse:
     return CapabilityResponse(
         permission=permission,
@@ -83,6 +102,13 @@ def day41_pilot_readiness(identity: OwnerSecurity) -> Day41PilotReadinessRespons
     del identity
     readiness: Day41PilotReadiness = read_day41_pilot_readiness()
     return Day41PilotReadinessResponse(**readiness.as_dict())
+
+
+@router.get("/owner/day42-go-no-go", response_model=Day42FinalReadinessResponse)
+def day42_go_no_go(identity: OwnerSecurity) -> Day42FinalReadinessResponse:
+    del identity
+    readiness: Day42FinalReadiness = read_day42_final_readiness()
+    return Day42FinalReadinessResponse(**readiness.as_dict())
 
 
 @router.get("/trading/sources", response_model=CapabilityResponse)
