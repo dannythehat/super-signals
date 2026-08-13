@@ -27,14 +27,15 @@ def test_numeric_stop_change_uses_only_supported_value() -> None:
     assert "provider commentary" not in result.text
 
 
-def test_partial_close_percentage_is_normalised() -> None:
+def test_unsupported_partial_close_is_not_overstated_as_executed_percentage() -> None:
     result = render_provider_update(
         "CLOSE 50% NOW secret source wording",
         ["close_trade"],
     )
     assert result is not None
-    assert result.event_type == "partial_close"
-    assert result.text == "TRADE UPDATE\nPartial close of 50% instructed."
+    assert result.event_type == "close_instruction"
+    assert result.text == "TRADE UPDATE\nClose instruction received."
+    assert "50%" not in result.text
     assert "secret source wording" not in result.text
 
 
