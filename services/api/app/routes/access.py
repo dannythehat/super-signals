@@ -8,6 +8,7 @@ from fastapi import APIRouter, Depends
 from pydantic import BaseModel
 
 from app.access_control import get_current_identity, require_permission
+from app.day41_pilot_readiness import Day41PilotReadiness, read_day41_pilot_readiness
 from app.permissions import ROLE_LABELS
 from app.routes.control_centre_day35 import router as control_centre_day35_router
 
@@ -17,7 +18,6 @@ OwnerUsers = Annotated[dict[str, Any], Depends(require_permission("users.manage"
 OwnerSecurity = Annotated[dict[str, Any], Depends(require_permission("security.manage"))]
 TradingSources = Annotated[dict[str, Any], Depends(require_permission("sources.manage"))]
 TradingActivity = Annotated[dict[str, Any], Depends(require_permission("activity.view"))]
-EmergencyStop = Annotated[dict[str, Any], Depends(require_permission("emergency_stop.use"))]
 UserAccount = Annotated[dict[str, Any], Depends(require_permission("account.connect"))]
 UserAutomation = Annotated[dict[str, Any], Depends(require_permission("automation.toggle"))]
 UserPerformance = Annotated[dict[str, Any], Depends(require_permission("performance.view"))]
@@ -29,6 +29,25 @@ class CapabilityResponse(BaseModel):
     area: str
     role: str
     role_label: str
+
+
+class Day41PilotReadinessResponse(BaseModel):
+    ready: bool
+    armed: bool
+    blockers: tuple[str, ...]
+    migration_ok: bool
+    day40_regression_proven: bool
+    canonical_owner_ok: bool
+    owner_live_mt5_ok: bool
+    owner_live_approval_ok: bool
+    owner_risk_ok: bool
+    owner_safe_start_ok: bool
+    owner_mapped_exposure_clear: bool
+    ordinary_members_inactive: bool
+    global_emergency_absent: bool
+    durable_database_verified: bool
+    owner_limits_approved: bool
+    trade_action_created: bool
 
 
 def _capability(identity: dict[str, Any], permission: str, area: str) -> CapabilityResponse:
@@ -59,6 +78,13 @@ def owner_security(identity: OwnerSecurity) -> CapabilityResponse:
     return _capability(identity, "security.manage", "owner")
 
 
+@router.get("/owner/day41-pilot-readiness", response_model=Day41PilotReadinessResponse)
+def day41_pilot_readiness(identity: OwnerSecurity) -> Day41PilotReadinessResponse:
+    del identity
+    readiness: Day41PilotReadiness = read_day41_pilot_readiness()
+    return Day41PilotReadinessResponse(**readiness.as_dict())
+
+
 @router.get("/trading/sources", response_model=CapabilityResponse)
 def trading_sources(identity: TradingSources) -> CapabilityResponse:
     return _capability(identity, "sources.manage", "trading")
@@ -67,11 +93,6 @@ def trading_sources(identity: TradingSources) -> CapabilityResponse:
 @router.get("/trading/activity", response_model=CapabilityResponse)
 def trading_activity(identity: TradingActivity) -> CapabilityResponse:
     return _capability(identity, "activity.view", "trading")
-
-
-@router.get("/trading/emergency-stop", response_model=CapabilityResponse)
-def emergency_stop_capability(identity: EmergencyStop) -> CapabilityResponse:
-    return _capability(identity, "emergency_stop.use", "trading")
 
 
 @router.get("/user/account", response_model=CapabilityResponse)
