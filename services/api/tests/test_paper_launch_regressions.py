@@ -27,8 +27,6 @@ def _fx_double_lot_decision() -> AiMessageDecision:
             "entry_high": "4386",
             "stop_loss": "4410",
             "take_profits": ["4382", "4381", "4350"],
-            # Deliberately false: the mechanical policy must trust the literal
-            # provider wording, not require the model to echo this boolean.
             "double_lot": False,
             "update_type": None,
             "update_target": None,
@@ -81,19 +79,21 @@ async def test_fresh_missing_telegram_post_is_dispatched_but_stale_one_is_eviden
         sources=(source,),
     )
     now = datetime.now(UTC)
+    # Telethon recent history is newest first; recovery reverses it so persistence
+    # and any fresh dispatch happen oldest to newest.
     messages = [
         SimpleNamespace(
-            id=101,
-            raw_text="BUY XAUUSD 4380\nSL 4370\nTP 4390",
-            date=now - timedelta(seconds=90),
+            id=102,
+            raw_text="SELL XAUUSD 4386\nSL 4410\nTP 4382",
+            date=now - timedelta(seconds=5),
             edit_date=None,
             reply_to=None,
             media=None,
         ),
         SimpleNamespace(
-            id=102,
-            raw_text="SELL XAUUSD 4386\nSL 4410\nTP 4382",
-            date=now - timedelta(seconds=5),
+            id=101,
+            raw_text="BUY XAUUSD 4380\nSL 4370\nTP 4390",
+            date=now - timedelta(seconds=90),
             edit_date=None,
             reply_to=None,
             media=None,
