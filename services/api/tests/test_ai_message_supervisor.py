@@ -295,7 +295,7 @@ def test_execution_guard_can_use_direct_reply_but_not_ambient_history() -> None:
 
     without_link = _guard_execute_decision(decision, current)
     assert without_link["action"] == "skip"
-    assert without_link["reason"] == "provider_instruction_incomplete"
+    assert without_link["reason"] == "literal_value_verification_failed"
 
     with_link = _guard_execute_decision(
         decision,
