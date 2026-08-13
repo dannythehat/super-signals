@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hmac
 from datetime import UTC, datetime, timedelta
 from typing import Any
 from uuid import UUID
@@ -16,6 +17,10 @@ from app.security import hash_token, new_token, privacy_hash, verify_password
 _DUMMY_PASSWORD_HASH = (
     "scrypt$n=32768$r=8$p=1$c3VwZXItc2lnbmFscy1kbQ$puUPWva99xMDxi6WGb_sern6ymlGtbRxUc3Xj5Hb_aQ"
 )
+# A session may slide while the device is active, but it can never survive
+# indefinitely. This protects production even if a stale environment variable
+# accidentally asks for a multi-year session.
+_MAX_SESSION_ABSOLUTE_SECONDS = 30 * 24 * 60 * 60
 
 
 def utc_now() -> datetime:
@@ -123,7 +128,8 @@ def create_session(
     fingerprint_secret: str,
 ) -> tuple[str, datetime]:
     raw_token = new_token()
-    expires_at = utc_now() + timedelta(seconds=ttl_seconds)
+    effective_ttl = min(ttl_seconds, _MAX_SESSION_ABSOLUTE_SECONDS)
+    expires_at = utc_now() + timedelta(seconds=effective_ttl)
     session.execute(
         text(
             """
@@ -147,12 +153,23 @@ def create_session(
     return raw_token, expires_at
 
 
-def get_user_for_session(session: Session, raw_token: str) -> dict[str, Any] | None:
+def get_user_for_session(
+    session: Session,
+    raw_token: str,
+    *,
+    user_agent: str | None = None,
+    fingerprint_secret: str | None = None,
+) -> dict[str, Any] | None:
     active_session = (
         session.execute(
             text(
                 """
-                SELECT s.id AS session_id, s.user_id, s.expires_at
+                SELECT
+                    s.id AS session_id,
+                    s.user_id,
+                    s.created_at,
+                    s.expires_at,
+                    s.user_agent_hash
                 FROM auth_sessions AS s
                 JOIN users AS u ON u.id = s.user_id
                 WHERE s.token_hash = :token_hash
@@ -170,11 +187,51 @@ def get_user_for_session(session: Session, raw_token: str) -> dict[str, Any] | N
     if active_session is None:
         return None
 
+    now = utc_now()
+    hard_deadline = active_session["created_at"] + timedelta(
+        seconds=_MAX_SESSION_ABSOLUTE_SECONDS
+    )
+
+    stored_user_agent_hash = active_session["user_agent_hash"]
+    if fingerprint_secret is not None and stored_user_agent_hash is not None:
+        current_user_agent_hash = privacy_hash(user_agent, fingerprint_secret)
+        if (
+            current_user_agent_hash is None
+            or not hmac.compare_digest(stored_user_agent_hash, current_user_agent_hash)
+        ):
+            session.execute(
+                text(
+                    """
+                    UPDATE auth_sessions
+                    SET revoked_at = COALESCE(revoked_at, now())
+                    WHERE id = :session_id
+                    """
+                ),
+                {"session_id": active_session["session_id"]},
+            )
+            session.commit()
+            return None
+
+    if now >= hard_deadline:
+        session.execute(
+            text(
+                """
+                UPDATE auth_sessions
+                SET revoked_at = COALESCE(revoked_at, now())
+                WHERE id = :session_id
+                """
+            ),
+            {"session_id": active_session["session_id"]},
+        )
+        session.commit()
+        return None
+
     identity = _load_identity(session, active_session["user_id"])
     if identity is None:
         return None
 
-    renewed_expires_at = utc_now() + timedelta(seconds=get_settings().session_ttl_seconds)
+    requested_renewal = now + timedelta(seconds=get_settings().session_ttl_seconds)
+    renewed_expires_at = min(requested_renewal, hard_deadline)
     session.execute(
         text(
             """
