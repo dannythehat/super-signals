@@ -385,3 +385,37 @@ def test_edit_block_does_not_disturb_lifecycle_management() -> None:
     )
     assert result.decision == "trade_update"
     assert result.reason != "edit_cannot_create_first_trade"
+
+
+def test_application_logging_exposes_info_diagnostics() -> None:
+    """Operators must be able to see success-path diagnostics, not only failures.
+
+    Without a configured root logger the app inherited WARNING, so every
+    logger.info -- MT5 reconciliation, reader listening confirmation, the
+    stale-gap evidence-only notice -- was dropped while lastResort still
+    surfaced errors. That made "working" and "silently broken" look identical.
+    """
+    import logging as _logging
+
+    from app.main import _configure_logging
+
+    root = _logging.getLogger()
+    original_level = root.level
+    original_handlers = list(root.handlers)
+    try:
+        root.handlers = []
+        root.setLevel(_logging.WARNING)
+        assert not root.isEnabledFor(_logging.INFO)
+
+        _configure_logging()
+
+        assert root.isEnabledFor(_logging.INFO)
+        assert any(getattr(h, "_super_signals", False) for h in root.handlers)
+
+        # Re-running must not stack duplicate handlers onto the root logger.
+        _configure_logging()
+        added = [h for h in root.handlers if getattr(h, "_super_signals", False)]
+        assert len(added) == 1
+    finally:
+        root.handlers = original_handlers
+        root.setLevel(original_level)
