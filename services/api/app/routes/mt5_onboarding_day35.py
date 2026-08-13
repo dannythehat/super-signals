@@ -9,6 +9,7 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from pydantic import BaseModel, Field
 
+from app.acceptance_self_test import acceptance_mirror_enabled, acceptance_mirror_owner_user_id
 from app.access_control import get_current_identity, require_permission
 from app.mt5_connection_service import Mt5ConnectionError
 from app.mt5_connection_service_day30 import Day30Mt5ConnectionService
@@ -135,8 +136,30 @@ def _safe_error(exc: Mt5ConnectionError) -> HTTPException:
     )
 
 
-def _member_response(request: Request, user_id: UUID) -> MemberMt5OnboardingResponse:
+def _member_response(request: Request, identity: dict[str, Any]) -> MemberMt5OnboardingResponse:
     connection_service = _connection_service(request)
+    mirror_owner_id = acceptance_mirror_owner_user_id(identity, connection_service._session_factory)
+    if mirror_owner_id is not None:
+        connection = connection_service.get_user_status(mirror_owner_id)
+        return MemberMt5OnboardingResponse(
+            request_status="approved",
+            request_login_masked=connection.login_masked,
+            request_server=connection.server,
+            request_updated_at=None,
+            approved=True,
+            approval_status="active",
+            approved_login_masked=connection.login_masked,
+            approved_server=connection.server,
+            configured=connection.configured,
+            connection_status=connection.status,
+            remote_state=connection.remote_state,
+            remote_connection_status=connection.remote_connection_status,
+            last_error_code=connection.last_error_code,
+            last_checked_at=connection.last_checked_at,
+            last_connected_at=connection.last_connected_at,
+        )
+
+    user_id = identity["id"]
     onboarding_service = Day35Mt5OnboardingService(connection_service)
     request_view = onboarding_service.get_request(user_id)
     approval = connection_service.get_user_approval(user_id)
@@ -160,13 +183,24 @@ def _member_response(request: Request, user_id: UUID) -> MemberMt5OnboardingResp
     )
 
 
+def _reject_acceptance_mirror_mutation(identity: dict[str, Any]) -> None:
+    if acceptance_mirror_enabled(identity):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={
+                "code": "acceptance_mirror_read_only",
+                "message": "This acceptance account is using the Owner's existing MT5 as a read-only test mirror.",
+            },
+        )
+
+
 @user_router.get("", response_model=MemberMt5OnboardingResponse)
 async def member_mt5_onboarding_status(
     request: Request, response: Response, identity: UserIdentity
 ) -> MemberMt5OnboardingResponse:
     _ordinary_user(identity)
     _no_store(response)
-    return _member_response(request, identity["id"])
+    return _member_response(request, identity)
 
 
 @user_router.post("/request", response_model=MemberMt5OnboardingResponse)
@@ -177,6 +211,7 @@ async def submit_member_mt5_request(
     identity: UserIdentity,
 ) -> MemberMt5OnboardingResponse:
     _ordinary_user(identity)
+    _reject_acceptance_mirror_mutation(identity)
     try:
         _onboarding_service(request).submit_request(
             user_id=identity["id"], login=payload.login, server=payload.server
@@ -184,7 +219,7 @@ async def submit_member_mt5_request(
     except Mt5ConnectionError as exc:
         raise _safe_error(exc) from exc
     _no_store(response)
-    return _member_response(request, identity["id"])
+    return _member_response(request, identity)
 
 
 @user_router.post("/connect", response_model=MemberMt5OnboardingResponse)
@@ -195,6 +230,7 @@ async def connect_approved_member_mt5(
     identity: UserIdentity,
 ) -> MemberMt5OnboardingResponse:
     _ordinary_user(identity)
+    _reject_acceptance_mirror_mutation(identity)
     try:
         await _onboarding_service(request).connect_approved(
             user_id=identity["id"], password=payload.password
@@ -202,7 +238,7 @@ async def connect_approved_member_mt5(
     except Mt5ConnectionError as exc:
         raise _safe_error(exc) from exc
     _no_store(response)
-    return _member_response(request, identity["id"])
+    return _member_response(request, identity)
 
 
 @owner_router.get("", response_model=list[PendingMt5ApprovalRequestResponse])
