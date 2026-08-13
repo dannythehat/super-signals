@@ -182,9 +182,11 @@ async def account_dashboard(
     if mirror_user_id is not None:
         # The acceptance member borrows Owner broker/performance READS only. Its own
         # trading controls remain authoritative, so this mirror can never turn into a
-        # second execution path or a second MetaAPI account.
+        # second execution path or a second MetaAPI account. Present the connection
+        # with normal member semantics because production invited accounts are live-only.
         view = replace(
             view,
+            connection=replace(view.connection, account_environment="live"),
             trading=service._trading(identity["id"]),
             reconciled_external_positions=0,
         )
