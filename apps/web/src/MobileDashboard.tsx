@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 
+import { ManualMt5ActivityDay36 } from './ManualMt5ActivityDay36';
 import { TradeTimeline } from './TradeTimeline';
 
 type DashboardConnection = {
@@ -276,6 +277,8 @@ export function MobileDashboard({ apiBaseUrl, displayName, roleLabel, onOpenSett
     </div>
 
     <section className="day32-section" aria-labelledby="recent-trades-title"><div className="day32-section-head"><div><span>Account history</span><h2 id="recent-trades-title">Recent completed positions</h2></div></div>{data.recent_completed.length === 0 ? <div className="day32-empty day32-empty--compact"><strong>No completed Super Signals positions yet</strong></div> : <div className="day32-completed-list">{data.recent_completed.map((item) => <article key={item.position_id}><div><span className={`day32-side day32-side--${item.side.toLowerCase()}`}>{item.side}</span><strong>{item.symbol}</strong><small>TP{item.tp_index} · {shortTime(item.closed_at)}</small></div><strong className={pnlClass(item.pnl_amount)}>{item.pnl_amount === null ? 'Closed' : money(item.pnl_amount, currency)}</strong></article>)}</div>}</section>
+
+    <ManualMt5ActivityDay36 apiBaseUrl={apiBaseUrl} />
 
     <section className="day32-section" aria-labelledby="activity-title"><div className="day32-section-head"><div><span>Super Signals</span><h2 id="activity-title">Recent activity</h2></div></div>{data.activity.length === 0 ? <div className="day32-empty day32-empty--compact"><strong>No account activity to show yet</strong></div> : <ol className="day32-activity-list">{data.activity.map((item, index) => <li key={`${item.event_type}-${item.created_at}-${index}`}><i className={`day32-activity-dot day32-activity-dot--${item.tone}`} /><div><strong>{item.label}</strong><small>{shortTime(item.created_at)}</small></div></li>)}</ol>}</section>
 
