@@ -26,6 +26,8 @@ type StopResult = {
   external_positions_reconciled: number;
   already_stopped: boolean;
 };
+type Mt5ConnectionStatus = { configured: boolean; status: string };
+type Mt5OnboardingStatus = { connection_status: string };
 
 const apiBaseUrl = import.meta.env.VITE_API_BASE_URL ?? '/api';
 const allowedRisks = [0.5, 1, 1.5, 2];
@@ -43,6 +45,8 @@ async function readJson<T>(response: Response): Promise<T> {
 export function TradingActivationPanel() {
   const [eligible, setEligible] = useState(false);
   const [settings, setSettings] = useState<TradingSettings | null>(null);
+  const [realMt5Status, setRealMt5Status] = useState<Mt5ConnectionStatus | null>(null);
+  const [onboardingStatus, setOnboardingStatus] = useState<Mt5OnboardingStatus | null>(null);
   const [preview, setPreview] = useState<ActivationPreview | null>(null);
   const [confirmStop, setConfirmStop] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
@@ -55,14 +59,25 @@ export function TradingActivationPanel() {
       const account = await readJson<Account>(meResponse);
       if (account.role !== 'user') return;
       setEligible(true);
-      const response = await fetch(`${apiBaseUrl}/account/mt5/trading`, { credentials: 'include', headers: { Accept: 'application/json' } });
-      setSettings(await readJson<TradingSettings>(response));
+      const [settingsResponse, mt5Response, onboardingResponse] = await Promise.all([
+        fetch(`${apiBaseUrl}/account/mt5/trading`, { credentials: 'include', headers: { Accept: 'application/json' }, cache: 'no-store' }),
+        fetch(`${apiBaseUrl}/account/mt5/status`, { credentials: 'include', headers: { Accept: 'application/json' }, cache: 'no-store' }),
+        fetch(`${apiBaseUrl}/account/mt5/onboarding`, { credentials: 'include', headers: { Accept: 'application/json' }, cache: 'no-store' }),
+      ]);
+      setSettings(await readJson<TradingSettings>(settingsResponse));
+      setRealMt5Status(await readJson<Mt5ConnectionStatus>(mt5Response));
+      setOnboardingStatus(await readJson<Mt5OnboardingStatus>(onboardingResponse));
     } catch {
       // The core App owns global connectivity messages. Keep this user-only panel quiet until available.
     }
   }, []);
 
-  useEffect(() => { void refresh(); }, [refresh]);
+  useEffect(() => {
+    void refresh();
+    const onMt5Connected = () => void refresh();
+    window.addEventListener('super-signals-mt5-connected', onMt5Connected);
+    return () => window.removeEventListener('super-signals-mt5-connected', onMt5Connected);
+  }, [refresh]);
 
   async function saveRisk(riskPercent: number, allowDoubleLot: boolean) {
     setBusy(true); setNotice(null); setPreview(null);
@@ -79,6 +94,7 @@ export function TradingActivationPanel() {
   }
 
   async function prepareActivation() {
+    if (realMt5Status?.status !== 'connected') return;
     setBusy(true); setNotice(null); setConfirmStop(false);
     try {
       const response = await fetch(`${apiBaseUrl}/account/mt5/trading/activation-preview`, { credentials: 'include', headers: { Accept: 'application/json' } });
@@ -88,6 +104,7 @@ export function TradingActivationPanel() {
   }
 
   async function confirmActivation() {
+    if (realMt5Status?.status !== 'connected') return;
     setBusy(true); setNotice(null);
     try {
       const response = await fetch(`${apiBaseUrl}/account/mt5/trading/activate`, {
@@ -115,6 +132,9 @@ export function TradingActivationPanel() {
   if (!eligible || !settings) return null;
 
   const effectiveDouble = settings.allow_double_lot ? `${settings.effective_double_lot_risk_percent}%` : 'Off';
+  const realMt5Connected = realMt5Status?.status === 'connected';
+  const acceptanceMirror = onboardingStatus?.connection_status === 'connected' && !realMt5Connected;
+
   return <aside className="trading-activation-panel" aria-label="Automated trading controls">
     <div className="trading-activation-heading">
       <div><span className="status-label">My trading</span><strong>Risk &amp; automation</strong></div>
@@ -132,11 +152,11 @@ export function TradingActivationPanel() {
 
     <div className="effective-risk"><span>Normal signal <strong>{settings.effective_normal_risk_percent}%</strong></span><span>Double-lot signal <strong>{effectiveDouble}</strong></span></div>
 
-    {preview && <div className="activation-confirmation" role="dialog" aria-label={preview.confirmation_title}><strong>{preview.confirmation_title}</strong><p>{preview.confirmation_message}</p><ul>{preview.requirements.map((item) => <li key={item.key} className={item.passed ? 'requirement-pass' : 'requirement-fail'}>{item.passed ? '✓' : '×'} {item.label}</li>)}</ul>{preview.ready ? <div className="control-actions"><button className="button" type="button" disabled={busy} onClick={() => void confirmActivation()}>Confirm &amp; activate</button><button className="button button--quiet" type="button" disabled={busy} onClick={() => setPreview(null)}>Cancel</button></div> : <button className="button button--quiet" type="button" onClick={() => setPreview(null)}>Close</button>}</div>}
+    {preview && <div className="activation-confirmation" role="dialog" aria-label={preview.confirmation_title}><strong>{preview.confirmation_title}</strong><p>{preview.confirmation_message}</p><ul>{preview.requirements.map((item) => <li key={item.key} className={item.passed ? 'requirement-pass' : 'requirement-fail'}>{item.passed ? '✓' : '×'} {item.label}</li>)}</ul>{preview.ready ? <div className="control-actions"><button className="button" type="button" disabled={busy || !realMt5Connected} onClick={() => void confirmActivation()}>Confirm &amp; activate</button><button className="button button--quiet" type="button" disabled={busy} onClick={() => setPreview(null)}>Cancel</button></div> : <button className="button button--quiet" type="button" onClick={() => setPreview(null)}>Close</button>}</div>}
 
     {confirmStop && <div className="activation-confirmation activation-confirmation--danger"><strong>Stop automated trading and close bot positions?</strong><p>New trades will be blocked immediately. Super Signals will close only positions it opened and will not touch manual MT5 positions.</p><div className="control-actions"><button className="button" type="button" disabled={busy} onClick={() => void stopAndClose()}>Stop and close</button><button className="button button--quiet" type="button" disabled={busy} onClick={() => setConfirmStop(false)}>Cancel</button></div></div>}
 
-    {!preview && !confirmStop && <div className="control-actions">{settings.trading_status === 'active' ? <button className="button" type="button" disabled={busy} onClick={() => setConfirmStop(true)}>Stop and Close</button> : <button className="button" type="button" disabled={busy} onClick={() => void prepareActivation()}>Activate Trades</button>}</div>}
+    {!preview && !confirmStop && <div className="control-actions">{settings.trading_status === 'active' ? <button className="button" type="button" disabled={busy} onClick={() => setConfirmStop(true)}>Stop and Close</button> : acceptanceMirror ? <button className="button" type="button" disabled>Acceptance test · trading disabled</button> : !realMt5Connected ? <button className="button" type="button" disabled>Connect MT5 first</button> : <button className="button" type="button" disabled={busy} onClick={() => void prepareActivation()}>Activate Trades</button>}</div>}
     {notice && <p className="trading-control-notice" role="status">{notice}</p>}
   </aside>;
 }
