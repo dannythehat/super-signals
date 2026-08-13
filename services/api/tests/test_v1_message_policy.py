@@ -235,7 +235,7 @@ def test_provider_result_out_at_be_is_not_close_instruction() -> None:
     assert result.reason == "provider_result_only"
 
 
-@pytest.mark.parametrize("raw", ["BE", "Breakeven set!", "Make the trade risk free now"])
+@pytest.mark.parametrize("raw", ["BE now", "Breakeven set!", "Make the trade risk free now"])
 def test_supported_break_even_phrases_are_management(raw: str) -> None:
     result = apply_v1_message_policy(
         _decision(decision="trade_update", action="apply_update"),
@@ -243,6 +243,15 @@ def test_supported_break_even_phrases_are_management(raw: str) -> None:
     )
     assert result.action == "apply_update"
     assert result.extracted["update_type"] == "move_to_break_even"
+
+
+def test_bare_be_is_too_ambiguous_to_mutate_broker_state() -> None:
+    result = apply_v1_message_policy(
+        _decision(decision="trade_update", action="apply_update"),
+        raw_text="BE",
+    )
+    assert result.action == "ignore"
+    assert result.reason == "unsupported_management"
 
 
 @pytest.mark.parametrize("raw", ["Close all!!", "Closed all!!", "Out at entry on the rest"])

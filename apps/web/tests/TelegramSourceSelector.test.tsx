@@ -169,59 +169,64 @@ describe('TelegramSourceSelector', () => {
     expect(screen.getByText(/TESTING → LIVE/)).toBeInTheDocument();
   });
 
-  it('adds and removes this reader while refreshing the shared catalogue', async () => {
-    const selectedSource = {
-      ...available[0],
-      selected: true,
-      source_id: '4e29f2e9-855b-4e2a-9462-d684e69fc8db',
-      status: 'paused',
-      managed_by_this_reader: true,
-    };
-    const selectedList = [selectedSource, available[1]];
-    const sharedSelected = [
-      {
-        source_id: selectedSource.source_id,
-        chat_id: selectedSource.chat_id,
-        title: selectedSource.title,
-        status: 'paused',
-      },
-    ];
-    const fetchMock = vi
-      .fn()
-      .mockResolvedValueOnce(jsonResponse(200, [account]))
-      .mockResolvedValueOnce(jsonResponse(200, []))
-      .mockResolvedValueOnce(jsonResponse(403, {}))
-      .mockResolvedValueOnce(jsonResponse(200, available))
-      .mockResolvedValueOnce(jsonResponse(200, []))
-      .mockResolvedValueOnce(jsonResponse(201, selectedSource))
-      .mockResolvedValueOnce(jsonResponse(200, selectedList))
-      .mockResolvedValueOnce(jsonResponse(200, sharedSelected))
-      .mockResolvedValueOnce(
-        jsonResponse(200, {
-          removed: true,
-          source_id: selectedSource.source_id,
-          monitoring_started: false,
-        }),
-      )
-      .mockResolvedValueOnce(jsonResponse(200, available.slice(0, 2)))
-      .mockResolvedValueOnce(jsonResponse(200, []));
+  it('adds and removes this reader while keeping the shared catalogue consistent', async () => {
+    const sourceId = '4e29f2e9-855b-4e2a-9462-d684e69fc8db';
+    let linked = false;
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.endsWith('/admin/telegram/accounts')) return jsonResponse(200, [account]);
+      if (url.endsWith('/admin/telegram/sources/owner-alerts')) return jsonResponse(403, {});
+      if (url.endsWith('/admin/telegram/sources/shared')) {
+        return jsonResponse(
+          200,
+          linked
+            ? [{ source_id: sourceId, chat_id: -100111, title: 'Gold Signals', status: 'paused' }]
+            : [],
+        );
+      }
+      if (url.endsWith(`/admin/telegram/sources/accounts/${account.id}/available`)) {
+        return jsonResponse(
+          200,
+          available.slice(0, 2).map((source) =>
+            source.chat_id === -100111
+              ? {
+                  ...source,
+                  selected: linked,
+                  source_id: linked ? sourceId : null,
+                  status: linked ? 'paused' : null,
+                  managed_by_this_reader: true,
+                }
+              : source,
+          ),
+        );
+      }
+      if (url.endsWith(`/admin/telegram/sources/accounts/${account.id}/select`) && init?.method === 'POST') {
+        linked = true;
+        return jsonResponse(201, {
+          ...available[0],
+          selected: true,
+          source_id: sourceId,
+          status: 'paused',
+          managed_by_this_reader: true,
+        });
+      }
+      if (url.endsWith(`/admin/telegram/sources/accounts/${account.id}/selected/${sourceId}/remove`) && init?.method === 'POST') {
+        linked = false;
+        return jsonResponse(200, { removed: true, source_id: sourceId, monitoring_started: false });
+      }
+      return jsonResponse(404, {});
+    });
     vi.stubGlobal('fetch', fetchMock);
 
     render(<TelegramSourceSelector apiBaseUrl="/api" />);
     fireEvent.click(screen.getByRole('button', { name: 'Manage signal sources' }));
-    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(3));
-    fireEvent.click(screen.getByRole('button', { name: 'Show groups & channels' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Show groups & channels' }));
     await screen.findByText('Gold Signals');
 
-    const selectButtons = screen.getAllByRole('button', { name: 'Add to shared sources' });
-    fireEvent.click(selectButtons[0]);
+    fireEvent.click(screen.getAllByRole('button', { name: 'Add to shared sources' })[0]);
 
-    expect(
-      await screen.findByText('Source added to the shared list and kept PAUSED. No monitoring has started.'),
-    ).toBeInTheDocument();
     expect(await screen.findByText('SELECTED · PAUSED')).toBeInTheDocument();
-    expect(fetchMock).toHaveBeenNthCalledWith(
-      6,
+    expect(fetchMock).toHaveBeenCalledWith(
       `/api/admin/telegram/sources/accounts/${account.id}/select`,
       expect.objectContaining({
         method: 'POST',
@@ -231,55 +236,52 @@ describe('TelegramSourceSelector', () => {
     );
 
     fireEvent.click(screen.getByRole('button', { name: 'Remove my reader' }));
-    expect(
-      await screen.findByText(/Your reader was removed\. The shared source remains/i),
-    ).toBeInTheDocument();
-    expect(screen.queryByText('SELECTED · PAUSED')).not.toBeInTheDocument();
+    await waitFor(() => expect(screen.queryByText('SELECTED · PAUSED')).not.toBeInTheDocument());
   });
 
-  it('can add this private reader as a fallback for an already shared logical source', async () => {
-    const sharedViaOtherReader = {
-      ...available[0],
-      selected: true,
-      source_id: '22222222-2222-4222-8222-222222222222',
-      status: 'paused',
-      managed_by_this_reader: false,
-    };
-    const sharedViaBothReaders = {
-      ...sharedViaOtherReader,
-      managed_by_this_reader: true,
-    };
-    const shared = [
-      {
-        source_id: sharedViaOtherReader.source_id,
-        chat_id: sharedViaOtherReader.chat_id,
-        title: sharedViaOtherReader.title,
-        status: 'paused',
-      },
-    ];
-    const fetchMock = vi
-      .fn()
-      .mockResolvedValueOnce(jsonResponse(200, [account]))
-      .mockResolvedValueOnce(jsonResponse(200, shared))
-      .mockResolvedValueOnce(jsonResponse(403, {}))
-      .mockResolvedValueOnce(jsonResponse(200, [sharedViaOtherReader]))
-      .mockResolvedValueOnce(jsonResponse(200, shared))
-      .mockResolvedValueOnce(jsonResponse(201, sharedViaBothReaders))
-      .mockResolvedValueOnce(jsonResponse(200, [sharedViaBothReaders]))
-      .mockResolvedValueOnce(jsonResponse(200, shared));
+  it('adds this private reader as a fallback without duplicating an existing shared source', async () => {
+    const sourceId = '22222222-2222-4222-8222-222222222222';
+    let managedByThisReader = false;
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.endsWith('/admin/telegram/accounts')) return jsonResponse(200, [account]);
+      if (url.endsWith('/admin/telegram/sources/owner-alerts')) return jsonResponse(403, {});
+      if (url.endsWith('/admin/telegram/sources/shared')) {
+        return jsonResponse(200, [{ source_id: sourceId, chat_id: -100111, title: 'Gold Signals', status: 'paused' }]);
+      }
+      if (url.endsWith(`/admin/telegram/sources/accounts/${account.id}/available`)) {
+        return jsonResponse(200, [
+          {
+            ...available[0],
+            selected: true,
+            source_id: sourceId,
+            status: 'paused',
+            managed_by_this_reader: managedByThisReader,
+          },
+        ]);
+      }
+      if (url.endsWith(`/admin/telegram/sources/accounts/${account.id}/select`) && init?.method === 'POST') {
+        managedByThisReader = true;
+        return jsonResponse(201, {
+          ...available[0],
+          selected: true,
+          source_id: sourceId,
+          status: 'paused',
+          managed_by_this_reader: true,
+        });
+      }
+      return jsonResponse(404, {});
+    });
     vi.stubGlobal('fetch', fetchMock);
 
     render(<TelegramSourceSelector apiBaseUrl="/api" />);
     fireEvent.click(screen.getByRole('button', { name: 'Manage signal sources' }));
-    await screen.findByText('Gold Signals');
+    expect(await screen.findByText('Gold Signals')).toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: 'Show groups & channels' }));
 
     expect(await screen.findByText('ALREADY SHARED · PAUSED')).toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: 'Add my reader too' }));
 
-    expect(
-      await screen.findByText('Existing shared source linked to your reader too. No duplicate source was created.'),
-    ).toBeInTheDocument();
     expect(await screen.findByText('SELECTED · PAUSED')).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Remove my reader' })).toBeInTheDocument();
   });

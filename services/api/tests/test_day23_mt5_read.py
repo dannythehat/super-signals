@@ -58,17 +58,21 @@ def _synthetic_jwt(payload: dict[str, object]) -> str:
     return f"{encoded({'alg': 'none'})}.{encoded(payload)}.signature"
 
 
-def test_day23_read_gateway_has_no_trade_or_order_method() -> None:
-    public_names = {
-        name for name in dir(MetaApiReadGateway) if not name.startswith("_")
-    }
-    assert public_names == {
+def test_day23_read_gateway_exposes_reads_only_even_as_history_reads_expand() -> None:
+    public_names = {name for name in dir(MetaApiReadGateway) if not name.startswith("_")}
+    required_reads = {
         "read_account_information",
         "read_positions",
+        "read_orders",
+        "read_deals_by_position",
+        "read_deals_by_time_range",
         "read_symbol_price",
         "read_symbol_specification",
         "resolve_account_region",
     }
+
+    assert required_reads <= public_names
+    assert all(name == "resolve_account_region" or name.startswith("read_") for name in public_names)
 
 
 def test_management_only_token_is_detected_before_terminal_reads() -> None:

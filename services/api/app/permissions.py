@@ -29,7 +29,6 @@ PERMISSION_CATALOG: dict[str, tuple[str, str]] = {
     "signals.review": ("trading", "Review parsed signals and unclear messages."),
     "trades.review": ("trading", "Review trade execution and failures."),
     "activity.view": ("trading", "View user trading activity and system events."),
-    "emergency_stop.use": ("trading", "Use the emergency trading stop."),
     "account.connect": ("user", "Connect one approved Vantage MT5 account."),
     "risk.manage": ("user", "Choose an approved risk level per position."),
     "automation.toggle": ("user", "Activate or stop automated trading."),
@@ -50,7 +49,6 @@ ROLE_PERMISSIONS: dict[str, frozenset[str]] = {
             "signals.review",
             "trades.review",
             "activity.view",
-            "emergency_stop.use",
         }
     ),
     "user": frozenset(
@@ -84,7 +82,7 @@ SECTION_DEFINITIONS: tuple[dict[str, Any], ...] = (
     {
         "key": "trading",
         "label": "Trading operations",
-        "description": "Telegram sources, review activity and emergency trading controls.",
+        "description": "Telegram sources, review activity and system events.",
         "actions": (
             ("sources.manage", "Signal sources", "Add, pause, resume or remove sources."),
             (
@@ -96,7 +94,6 @@ SECTION_DEFINITIONS: tuple[dict[str, Any], ...] = (
             ("signals.review", "Signal review", "Inspect parsing and unclear messages."),
             ("trades.review", "Trade execution", "Review fills, failures and outcomes."),
             ("activity.view", "System activity", "View trading activity and system events."),
-            ("emergency_stop.use", "Emergency stop", "Stop automated trading in an emergency."),
         ),
     },
     {
