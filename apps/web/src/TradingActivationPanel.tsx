@@ -135,7 +135,7 @@ export function TradingActivationPanel() {
   const realMt5Connected = realMt5Status?.status === 'connected';
   const acceptanceMirror = onboardingStatus?.connection_status === 'connected' && !realMt5Connected;
 
-  return <aside className="trading-activation-panel" aria-label="Automated trading controls">
+  return <aside id="trading-risk-settings" className="trading-activation-panel" aria-label="Automated trading controls">
     <div className="trading-activation-heading">
       <div><span className="status-label">My trading</span><strong>Risk &amp; automation</strong></div>
       <span className={`trading-state trading-state--${settings.trading_status}`}>{settings.trading_status === 'active' ? 'ACTIVE' : 'STOPPED'}</span>
@@ -156,7 +156,9 @@ export function TradingActivationPanel() {
 
     {confirmStop && <div className="activation-confirmation activation-confirmation--danger"><strong>Stop automated trading and close bot positions?</strong><p>New trades will be blocked immediately. Super Signals will close only positions it opened and will not touch manual MT5 positions.</p><div className="control-actions"><button className="button" type="button" disabled={busy} onClick={() => void stopAndClose()}>Stop and close</button><button className="button button--quiet" type="button" disabled={busy} onClick={() => setConfirmStop(false)}>Cancel</button></div></div>}
 
-    {!preview && !confirmStop && <div className="control-actions">{settings.trading_status === 'active' ? <button className="button" type="button" disabled={busy} onClick={() => setConfirmStop(true)}>Stop and Close</button> : acceptanceMirror ? <button className="button" type="button" disabled>Acceptance test · trading disabled</button> : !realMt5Connected ? <button className="button" type="button" disabled>Connect MT5 first</button> : <button className="button" type="button" disabled={busy} onClick={() => void prepareActivation()}>Activate Trades</button>}</div>}
+    {!preview && !confirmStop && settings.trading_status !== 'active' && acceptanceMirror && <div className="settings-notice" role="status"><strong>Read-only test account.</strong> Trading activation is intentionally disabled while this user mirrors the Owner MT5 connection for acceptance testing.</div>}
+    {!preview && !confirmStop && settings.trading_status !== 'active' && !acceptanceMirror && !realMt5Connected && <div className="settings-notice" role="status">Connect your approved Vantage MT5 account below before activating automated trading.</div>}
+    {!preview && !confirmStop && <div className="control-actions">{settings.trading_status === 'active' ? <button className="button" type="button" disabled={busy} onClick={() => setConfirmStop(true)}>Stop and Close</button> : !acceptanceMirror && realMt5Connected ? <button className="button" type="button" disabled={busy} onClick={() => void prepareActivation()}>Activate Trades</button> : null}</div>}
     {notice && <p className="trading-control-notice" role="status">{notice}</p>}
   </aside>;
 }
