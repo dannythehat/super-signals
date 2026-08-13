@@ -70,7 +70,6 @@
 </main>
 <script>
 (() => {
-  const apiBase = '';
   const form = document.getElementById('joinForm');
   const notice = document.getElementById('notice');
   const approvedEmail = document.getElementById('approvedEmail');
@@ -111,7 +110,7 @@
     submitButton.textContent = 'Creating account…';
     notice.className = 'notice hidden';
     try {
-      const response = await fetch(`${apiBase}/auth/register`, {
+      const response = await fetch('/auth/register', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
         body: JSON.stringify({
