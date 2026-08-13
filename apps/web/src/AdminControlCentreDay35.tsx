@@ -1,8 +1,11 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 
+import { AdminEmergencyStopDay35 } from './AdminEmergencyStopDay35';
+import { AdminMemberControlsDay35 } from './AdminMemberControlsDay35';
 import './admin-control-centre-day35.css';
 
 type Tone = 'healthy' | 'attention' | 'critical' | 'neutral';
+type SafetyPanel = 'none' | 'members' | 'emergency';
 
 type ReviewStage = {
   stage: string;
@@ -127,6 +130,8 @@ export function AdminControlCentreDay35({
   const [data, setData] = useState<ControlCentreResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [safetyPanel, setSafetyPanel] = useState<SafetyPanel>('none');
+  const ownerView = roleLabel.toLowerCase().includes('owner');
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -249,12 +254,23 @@ export function AdminControlCentreDay35({
         <div><button type="button" onClick={onOpenPortfolio}><span>◈</span><strong>Signal Portfolio</strong><small>Rank provider performance</small></button><button type="button" onClick={onOpenSources}><span>⌁</span><strong>Signal sources</strong><small>Live, Testing and Paused</small></button><button type="button" onClick={onOpenSettings}><span>⚙</span><strong>Admin settings</strong><small>Connections and access</small></button></div>
       </section>
 
+      <section className="day35-danger-zone" aria-labelledby="day35-danger-zone-title">
+        <div className="day35-section-heading"><div><p className="eyebrow">Safety &amp; access</p><h2 id="day35-danger-zone-title">Confirmed account controls</h2></div><span>Separate from normal operations</span></div>
+        <p className="day35-danger-zone-copy">Opening a control below still does nothing by itself. Broker-affecting actions require an exact typed phrase and are audited against the administrator who initiated them.</p>
+        <div className="day35-danger-zone-actions">
+          {ownerView && <button type="button" className={safetyPanel === 'members' ? 'is-open' : ''} onClick={() => setSafetyPanel(safetyPanel === 'members' ? 'none' : 'members')}><span>Member access</span><strong>Review users &amp; revoke</strong><small>Owner only · mapped positions only</small></button>}
+          <button type="button" className={`is-emergency ${safetyPanel === 'emergency' ? 'is-open' : ''}`} onClick={() => setSafetyPanel(safetyPanel === 'emergency' ? 'none' : 'emergency')}><span>Emergency control</span><strong>Stop Super Signals automation</strong><small>Owner / Trading Admin · typed confirmation</small></button>
+        </div>
+        {safetyPanel === 'members' && ownerView && <div className="day35-danger-zone-panel"><AdminMemberControlsDay35 apiBaseUrl={apiBaseUrl} /></div>}
+        {safetyPanel === 'emergency' && <div className="day35-danger-zone-panel"><AdminEmergencyStopDay35 apiBaseUrl={apiBaseUrl} /></div>}
+      </section>
+
       <section className="day35-recent-events" aria-labelledby="day35-recent-events-title">
         <div className="day35-section-heading"><div><p className="eyebrow">Immutable audit trail</p><h2 id="day35-recent-events-title">Recent operator events</h2></div></div>
         {data.recent_events.length ? <div>{data.recent_events.map((event, index) => <article key={`${event.created_at}:${event.event_type}:${index}`}><span /><div><strong>{eventLabel(event.event_type)}</strong><small>{event.entity_type} · {dateTime(event.created_at)}</small></div></article>)}</div> : <div className="day35-control-empty">No recent operator events.</div>}
       </section>
 
-      <div className="day35-control-safety"><span aria-hidden="true">◎</span><div><strong>Observability only</strong><small>This Control Centre cannot place, modify or close a broker trade. Dangerous controls remain separate and require explicit confirmation plus audit evidence.</small></div></div>
+      <div className="day35-control-safety"><span aria-hidden="true">◎</span><div><strong>Normal Control Centre views are observability only</strong><small>Broker-affecting controls are isolated above, require explicit typed confirmation and reuse the mapped-only Day 31 close gateway.</small></div></div>
     </>}
   </section>;
 }
