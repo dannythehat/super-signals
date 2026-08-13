@@ -13,7 +13,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.db import get_engine
-from app.models import AuditEvent, Invitation, Role, User
+from app.models import AuditEvent, Invitation, Role, User, UserRole
 
 
 def main() -> None:
@@ -31,16 +31,17 @@ def main() -> None:
         raise RuntimeError("Acceptance invitation key hash must be SHA-256 hex")
 
     now = datetime.now(UTC)
+    owner_email = os.getenv("SUPER_SIGNALS_OWNER_EMAIL", "").strip().lower()
     with Session(get_engine()) as session:
-        owner_role = session.scalar(select(Role).where(Role.name == "owner"))
         user_role = session.scalar(select(Role).where(Role.name == "user"))
-        if owner_role is None or user_role is None:
-            raise RuntimeError("Required roles are not configured")
+        if user_role is None:
+            raise RuntimeError("Invited User role is not configured")
 
         owner = session.scalar(
             select(User)
-            .join(owner_role.user_links)
-            .where(User.email == os.getenv("SUPER_SIGNALS_OWNER_EMAIL", "").strip().lower())
+            .join(UserRole, UserRole.user_id == User.id)
+            .join(Role, Role.id == UserRole.role_id)
+            .where(User.email == owner_email, Role.name == "owner")
         )
         if owner is None or owner.status != "active":
             raise RuntimeError("Active configured Owner was not found")
