@@ -28,6 +28,7 @@ CORE_TABLES = {
     "signals",
     "positions",
     "audit_events",
+    "auth_rate_limits",
     "broker_deals",
     "performance_account_snapshots",
     "performance_trade_outcomes",
@@ -186,6 +187,15 @@ def test_audit_events_are_append_only(migrated_engine) -> None:
         with pytest.raises(DBAPIError, match="append-only"):
             connection.execute(
                 text("UPDATE audit_events SET event_type = 'changed' WHERE id = :id"),
+                {"id": event_id},
+            )
+        transaction.rollback()
+
+    with migrated_engine.connect() as connection:
+        transaction = connection.begin()
+        with pytest.raises(DBAPIError, match="append-only"):
+            connection.execute(
+                text("DELETE FROM audit_events WHERE id = :id"),
                 {"id": event_id},
             )
         transaction.rollback()
