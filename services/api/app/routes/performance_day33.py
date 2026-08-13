@@ -132,6 +132,9 @@ class AdminPortfolioResponse(BaseModel):
     performance_basis: str
     provider_identity_visible: bool
     broker_trade_action_created: bool
+    open_cash_pnl_live: bool
+    open_cash_pnl_as_of: datetime | None
+    open_cash_pnl_error_code: str | None
 
 
 def _service(request: Request) -> Day33PerformanceLedgerServiceV2:
@@ -302,7 +305,7 @@ async def admin_signal_portfolio(
     period: str = Query(default="today"),
     sort_by: str = Query(default="realized_pnl"),
 ) -> AdminPortfolioResponse:
-    """Day 35 admin-only source/trader comparison over Day 33 broker truth."""
+    """Day 35 admin-only source/trader comparison over Day 33 + live broker truth."""
 
     _admin_portfolio_role(identity)
     allowed_periods = {"today", "7d", "month", "year", "all"}
@@ -316,7 +319,7 @@ async def admin_signal_portfolio(
             },
         )
 
-    view = Day35AdminPortfolioService(_service(request)).read(
+    view = await Day35AdminPortfolioService(_service(request)).read_with_live_open_pnl(
         cast(PeriodKey, period),
         sort_by=cast(SortKey, sort_by),
     )
@@ -330,4 +333,7 @@ async def admin_signal_portfolio(
         performance_basis=view.performance_basis,
         provider_identity_visible=view.provider_identity_visible,
         broker_trade_action_created=view.broker_trade_action_created,
+        open_cash_pnl_live=view.open_cash_pnl_live,
+        open_cash_pnl_as_of=view.open_cash_pnl_as_of,
+        open_cash_pnl_error_code=view.open_cash_pnl_error_code,
     )
