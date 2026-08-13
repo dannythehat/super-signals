@@ -9,6 +9,12 @@ from pydantic import BaseModel, Field
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
+from app.auth_hardening_day39 import (
+    RateLimitExceeded,
+    check_rate_limit,
+    clear_rate_limit,
+    record_rate_limit_failure,
+)
 from app.auth_service import (
     authenticate_user,
     create_recovery_request,
@@ -25,6 +31,13 @@ from app.security import hash_password, hash_token
 router = APIRouter(prefix="/auth", tags=["authentication"])
 DbSession = Annotated[Session, Depends(get_db_session)]
 AppSettings = Annotated[Settings, Depends(get_settings)]
+
+_RATE_WINDOW_SECONDS = 15 * 60
+_RATE_BLOCK_SECONDS = 15 * 60
+_LOGIN_ACCOUNT_FAILURE_LIMIT = 5
+_LOGIN_IP_FAILURE_LIMIT = 30
+_SENSITIVE_FAILURE_LIMIT = 10
+_MAX_COOKIE_AGE_SECONDS = 30 * 24 * 60 * 60
 
 
 class LoginRequest(BaseModel):
@@ -84,6 +97,59 @@ def _client_ip(request: Request) -> str | None:
     return request.client.host if request.client else None
 
 
+def _rate_ip(request: Request) -> str:
+    return _client_ip(request) or "unknown-client"
+
+
+def _normalized_email(value: str) -> str:
+    return value.strip().lower()
+
+
+def _raise_rate_limit(exc: RateLimitExceeded) -> None:
+    raise HTTPException(
+        status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+        detail="Too many attempts. Try again later.",
+        headers={"Retry-After": str(exc.retry_after_seconds)},
+    ) from exc
+
+
+def _check_bucket(
+    session: Session,
+    settings: Settings,
+    *,
+    scope: str,
+    key_material: str,
+) -> None:
+    try:
+        check_rate_limit(
+            session,
+            scope=scope,
+            key_material=key_material,
+            secret=settings.session_fingerprint_secret,
+        )
+    except RateLimitExceeded as exc:
+        _raise_rate_limit(exc)
+
+
+def _record_failure(
+    session: Session,
+    settings: Settings,
+    *,
+    scope: str,
+    key_material: str,
+    limit: int,
+) -> None:
+    record_rate_limit_failure(
+        session,
+        scope=scope,
+        key_material=key_material,
+        secret=settings.session_fingerprint_secret,
+        limit=limit,
+        window_seconds=_RATE_WINDOW_SECONDS,
+        block_seconds=_RATE_BLOCK_SECONDS,
+    )
+
+
 def account_response(identity: dict[str, Any]) -> AccountResponse:
     return AccountResponse(
         id=str(identity["id"]),
@@ -115,7 +181,7 @@ def _set_session_cookie(response: Response, settings: Settings, token: str) -> N
     response.set_cookie(
         key=settings.session_cookie_name,
         value=token,
-        max_age=settings.session_ttl_seconds,
+        max_age=min(settings.session_ttl_seconds, _MAX_COOKIE_AGE_SECONDS),
         httponly=True,
         secure=settings.session_cookie_secure,
         samesite="strict",
@@ -131,13 +197,38 @@ def login(
     session: DbSession,
     settings: AppSettings,
 ) -> AccountResponse:
+    ip_key = _rate_ip(request)
+    account_key = f"{ip_key}|{_normalized_email(payload.email)}"
+    _check_bucket(session, settings, scope="login_account", key_material=account_key)
+    _check_bucket(session, settings, scope="login_ip", key_material=ip_key)
+
     identity = authenticate_user(session, payload.email, payload.password)
     if identity is None:
+        _record_failure(
+            session,
+            settings,
+            scope="login_account",
+            key_material=account_key,
+            limit=_LOGIN_ACCOUNT_FAILURE_LIMIT,
+        )
+        _record_failure(
+            session,
+            settings,
+            scope="login_ip",
+            key_material=ip_key,
+            limit=_LOGIN_IP_FAILURE_LIMIT,
+        )
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Email or password is incorrect.",
         )
 
+    clear_rate_limit(
+        session,
+        scope="login_account",
+        key_material=account_key,
+        secret=settings.session_fingerprint_secret,
+    )
     raw_token, _ = create_session(
         session,
         user_id=identity["id"],
@@ -154,8 +245,13 @@ def login(
 @router.post("/admin-setup", response_model=AdminSetupResponse)
 def complete_admin_setup(
     payload: AdminSetupRequest,
+    request: Request,
     session: DbSession,
+    settings: AppSettings,
 ) -> AdminSetupResponse:
+    ip_key = _rate_ip(request)
+    _check_bucket(session, settings, scope="admin_setup", key_material=ip_key)
+
     # Trading Admin setup tokens are deliberately single-use but do not expire
     # with time. They remain valid until completed or explicitly replaced by an
     # Owner, at which point the previous unused token is marked used. Ordinary
@@ -187,6 +283,13 @@ def complete_admin_setup(
         .first()
     )
     if setup is None:
+        _record_failure(
+            session,
+            settings,
+            scope="admin_setup",
+            key_material=ip_key,
+            limit=_SENSITIVE_FAILURE_LIMIT,
+        )
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="This administrator setup link is invalid, already used, or has been replaced.",
@@ -233,6 +336,12 @@ def complete_admin_setup(
         )
     )
     session.commit()
+    clear_rate_limit(
+        session,
+        scope="admin_setup",
+        key_material=ip_key,
+        secret=settings.session_fingerprint_secret,
+    )
 
     return AdminSetupResponse(
         message="Trading Admin account is ready. You can sign in now.",
@@ -248,7 +357,12 @@ def me(
     settings: AppSettings,
 ) -> AccountResponse:
     raw_token = _session_token(request, settings)
-    identity = get_user_for_session(session, raw_token)
+    identity = get_user_for_session(
+        session,
+        raw_token,
+        user_agent=request.headers.get("user-agent"),
+        fingerprint_secret=settings.session_fingerprint_secret,
+    )
     if identity is None:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
@@ -292,6 +406,15 @@ def recovery(
     session: DbSession,
     settings: AppSettings,
 ) -> RecoveryResponse:
+    ip_key = _rate_ip(request)
+    _check_bucket(session, settings, scope="recovery", key_material=ip_key)
+    _record_failure(
+        session,
+        settings,
+        scope="recovery",
+        key_material=ip_key,
+        limit=_SENSITIVE_FAILURE_LIMIT,
+    )
     create_recovery_request(
         session,
         email=payload.email,
