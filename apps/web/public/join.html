@@ -110,6 +110,7 @@
     submitButton.textContent = 'Creating account…';
     notice.className = 'notice hidden';
     try {
+      // Production serves FastAPI at the site root; /api/* belongs to the static mount.
       const response = await fetch('/auth/register', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
