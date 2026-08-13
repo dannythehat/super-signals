@@ -1,4 +1,8 @@
-"""Day 35 Owner member management and confirmed emergency controls."""
+"""Day 35 Owner member management controls.
+
+The historical global emergency-stop endpoints were removed on Day 40 after the
+Owner locked the product to per-user Stop & Close plus Owner member revoke.
+"""
 
 from __future__ import annotations
 
@@ -23,9 +27,6 @@ from app.trading_controls_day31 import Day31TradingControlService
 
 router = APIRouter(prefix="/user-controls", tags=["day35-admin-controls"])
 OwnerUsers = Annotated[dict[str, Any], Depends(require_permission("users.manage"))]
-EmergencyAdmin = Annotated[
-    dict[str, Any], Depends(require_permission("emergency_stop.use"))
-]
 
 
 class ManagedUserResponse(BaseModel):
@@ -73,29 +74,6 @@ class RevokeResultResponse(BaseModel):
     manual_or_unmapped_positions_touched: bool
 
 
-class EmergencyPreviewResponse(BaseModel):
-    active_users: int
-    automation_active_users: int
-    mapped_open_positions: int
-    confirmation_text: str
-    confirmation_title: str
-    confirmation_message: str
-    manual_or_unmapped_positions_touched: bool
-    broker_trade_action_created: bool
-
-
-class EmergencyResultResponse(BaseModel):
-    users_targeted: int
-    users_completed: int
-    users_failed: int
-    automation_users_stopped_first: int
-    broker_actions_sent: int
-    mapped_positions_closed: int
-    external_positions_reconciled: int
-    failures: tuple[dict[str, str], ...]
-    manual_or_unmapped_positions_touched: bool
-
-
 def _service(request: Request) -> Day35AdminUserControlService:
     existing = getattr(request.app.state, "day35_admin_user_control_service", None)
     if isinstance(existing, Day35AdminUserControlService):
@@ -136,7 +114,6 @@ def _raise_admin_error(exc: Day35AdminControlError) -> None:
         "day35_revoke_confirmation_required": "Type the exact revoke confirmation phrase before continuing.",
         "day35_owner_self_revoke_blocked": "The Owner account cannot revoke itself here.",
         "day35_user_state_changed": "The user's state changed while the revoke was running. Refresh before retrying.",
-        "day35_emergency_confirmation_required": "Type the exact emergency-stop confirmation phrase before continuing.",
         "mt5_account_not_connected": "The user's approved Vantage MT5 account is not connected. Automation remains stopped; retry the account action after broker connectivity is restored.",
         "broker_credential_decryption_failed": "MT5 connectivity needs administrator recovery. Automation remains stopped.",
     }
@@ -154,7 +131,10 @@ def _raise_admin_error(exc: Day35AdminControlError) -> None:
         ),
         detail={
             "code": exc.code,
-            "message": messages.get(exc.code, "The confirmed administrative action could not be completed safely."),
+            "message": messages.get(
+                exc.code,
+                "The confirmed administrative action could not be completed safely.",
+            ),
         },
     ) from exc
 
@@ -214,34 +194,3 @@ async def revoke_user(
         _raise_admin_error(exc)
     _no_store(response)
     return RevokeResultResponse(**asdict(result))
-
-
-@router.get("/emergency-preview", response_model=EmergencyPreviewResponse)
-def emergency_preview(
-    request: Request,
-    response: Response,
-    actor: EmergencyAdmin,
-) -> EmergencyPreviewResponse:
-    del actor
-    view = _service(request).emergency_preview()
-    _no_store(response)
-    return EmergencyPreviewResponse(**asdict(view))
-
-
-@router.post("/emergency-stop", response_model=EmergencyResultResponse)
-async def emergency_stop(
-    payload: ConfirmedActionRequest,
-    request: Request,
-    response: Response,
-    actor: EmergencyAdmin,
-) -> EmergencyResultResponse:
-    try:
-        result = await _service(request).emergency_stop(
-            actor_user_id=actor["id"],
-            confirmed=payload.confirmed,
-            confirmation_text=payload.confirmation_text,
-        )
-    except Day35AdminControlError as exc:
-        _raise_admin_error(exc)
-    _no_store(response)
-    return EmergencyResultResponse(**asdict(result))
