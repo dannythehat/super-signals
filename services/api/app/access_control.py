@@ -29,12 +29,25 @@ def _session_token(request: Request, settings: Settings) -> str:
     return token
 
 
+def _session_identity(
+    session: Session,
+    request: Request,
+    settings: Settings,
+) -> dict[str, Any] | None:
+    return get_user_for_session(
+        session,
+        _session_token(request, settings),
+        user_agent=request.headers.get("user-agent"),
+        fingerprint_secret=settings.session_fingerprint_secret,
+    )
+
+
 def get_current_identity(
     request: Request,
     session: DbSession,
     settings: AppSettings,
 ) -> dict[str, Any]:
-    identity = get_user_for_session(session, _session_token(request, settings))
+    identity = _session_identity(session, request, settings)
     if identity is None:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
@@ -83,7 +96,7 @@ def require_permission(permission: str):
         session: DbSession,
         settings: AppSettings,
     ) -> dict[str, Any]:
-        identity = get_user_for_session(session, _session_token(request, settings))
+        identity = _session_identity(session, request, settings)
         if identity is None:
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
