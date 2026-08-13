@@ -11,6 +11,8 @@ use TIG's second entry, or reinterpret missing provider values.
 from __future__ import annotations
 
 import asyncio
+import logging
+import os
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal, InvalidOperation
@@ -39,6 +41,8 @@ from app.risk_sizing_day24 import (
 )
 from app.trade_preflight_day25 import Day25TradePreflightService
 
+logger = logging.getLogger(__name__)
+
 
 class Day26ExecutionError(RuntimeError):
     """Sanitized Day 26 execution failure."""
@@ -46,6 +50,32 @@ class Day26ExecutionError(RuntimeError):
     def __init__(self, code: str) -> None:
         super().__init__(code)
         self.code = code
+
+
+"""Maximum distance between a provider's stated single-price entry and the live
+executable price that may still be filled, expressed in the instrument's price
+units. 0.50 on XAUUSD is roughly five pips. Set to 0 to restore strict equality."""
+DEFAULT_ENTRY_TOLERANCE = Decimal("0.50")
+
+
+def _resolve_entry_tolerance(value: Decimal | str | None) -> Decimal:
+    raw = value if value is not None else os.getenv("SUPER_SIGNALS_ENTRY_TOLERANCE")
+    if raw is None or str(raw).strip() == "":
+        return DEFAULT_ENTRY_TOLERANCE
+    try:
+        parsed = Decimal(str(raw).strip())
+    except (InvalidOperation, ValueError):
+        logger.error(
+            "Invalid SUPER_SIGNALS_ENTRY_TOLERANCE; using %s", DEFAULT_ENTRY_TOLERANCE
+        )
+        return DEFAULT_ENTRY_TOLERANCE
+    if not parsed.is_finite() or parsed < 0:
+        logger.error(
+            "SUPER_SIGNALS_ENTRY_TOLERANCE must be >= 0; using %s",
+            DEFAULT_ENTRY_TOLERANCE,
+        )
+        return DEFAULT_ENTRY_TOLERANCE
+    return parsed
 
 
 @dataclass(frozen=True, slots=True)
@@ -125,6 +155,7 @@ class Day26Mt5ExecutionService:
         trade_gateway: MetaApiTradeGateway,
         zone_wait_seconds: float = 300.0,
         zone_poll_seconds: float = 2.0,
+        entry_tolerance: Decimal | str | None = None,
     ) -> None:
         self._session_factory = session_factory
         self._cipher = cipher
@@ -133,6 +164,7 @@ class Day26Mt5ExecutionService:
         self._trade_gateway = trade_gateway
         self._zone_wait_seconds = max(0.0, float(zone_wait_seconds))
         self._zone_poll_seconds = max(0.05, float(zone_poll_seconds))
+        self._entry_tolerance = _resolve_entry_tolerance(entry_tolerance)
 
     async def execute_owner_demo_signal(
         self,
@@ -296,6 +328,33 @@ class Day26Mt5ExecutionService:
         initial_state: Day23LiveState,
     ) -> tuple[Decimal, Day23LiveState]:
         if not signal.is_zone:
+            # A provider posting a single round number ("SELL 4386") is stating where
+            # they want in, not asserting that the tick will print at exactly that
+            # cent. Requiring strict equality against the live bid/ask made almost
+            # every single-price provider signal unexecutable, because gold moves in
+            # cents and the price is sampled once with no chasing.
+            #
+            # Accept the current executable price when it sits within a bounded
+            # tolerance of the stated entry, and return that live price so the trade
+            # is sized off the actual fill. Risk therefore stays exactly the user's
+            # configured percentage rather than drifting with the difference. This is
+            # the same mechanism a zone already uses.
+            #
+            # Outside the tolerance nothing changes: the provider's price is returned
+            # unchanged and the Day 25 gate still blocks with entry_price_unavailable.
+            # There is no chase, no wait, no retry and no substitution of a "better"
+            # price - the sample is taken once, exactly as before.
+            if self._entry_tolerance <= 0:
+                return signal.entry_low, initial_state
+            try:
+                executable = Decimal(
+                    str(Day23Mt5ReadService.executable_price(initial_state, signal.side))
+                )
+            except Day23ReadError:
+                # Let the unchanged Day 25 preflight report the price failure.
+                return signal.entry_low, initial_state
+            if abs(executable - signal.entry_low) <= self._entry_tolerance:
+                return executable, initial_state
             return signal.entry_low, initial_state
 
         posted_at = signal.source_posted_at

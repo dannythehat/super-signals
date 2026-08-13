@@ -16,7 +16,12 @@ from app.mt5_execution_day26 import (
     _SignalInput,
 )
 from app.mt5_execution_day26_atomic import AtomicDay26Mt5ExecutionService
-from app.mt5_read_service_day23 import Day23AccountState, Day23LiveState, Day23PriceState
+from app.mt5_read_service_day23 import (
+    Day23AccountState,
+    Day23LiveState,
+    Day23Mt5ReadService,
+    Day23PriceState,
+)
 
 OWNER = UUID("ea604df2-f8ee-47d1-bc51-f0078dbf160d")
 SIGNAL = UUID("3e7ec830-9a9a-42df-b908-b331863ff6a4")
@@ -69,6 +74,10 @@ class _FakeDay23:
     async def read_owner_live_state(self, owner_user_id: UUID) -> Day23LiveState:
         assert owner_user_id == OWNER
         return _live_state()
+
+    # Delegate to the real side-selection rule rather than reimplementing it, so
+    # this stand-in cannot drift from the executable-price contract under test.
+    executable_price = Day23Mt5ReadService.executable_price
 
 
 class _ReadGateway:

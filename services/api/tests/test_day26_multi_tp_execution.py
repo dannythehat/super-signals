@@ -77,10 +77,12 @@ class _TradeGateway:
 
 class _Harness(Day26Mt5ExecutionService):
     def __init__(self, *, entry_low: str="4000", entry_high: str="4000", side: str="BUY",
-                 runner: bool=False, zone_wait_seconds: float=300.0, zone_poll_seconds: float=0.01) -> None:
+                 runner: bool=False, zone_wait_seconds: float=300.0, zone_poll_seconds: float=0.01,
+                 entry_tolerance: str|None=None) -> None:
         self.read, self.margin, self.trade = _ReadGateway(), _MarginGateway(), _TradeGateway()
         super().__init__(session_factory=None, cipher=None, read_gateway=self.read, margin_gateway=self.margin,
-            trade_gateway=self.trade, zone_wait_seconds=zone_wait_seconds, zone_poll_seconds=zone_poll_seconds)  # type: ignore[arg-type]
+            trade_gateway=self.trade, zone_wait_seconds=zone_wait_seconds, zone_poll_seconds=zone_poll_seconds,
+            entry_tolerance=entry_tolerance)  # type: ignore[arg-type]
         low, high = Decimal(entry_low), Decimal(entry_high)
         zone_buffer = Decimal("1") if low != high else Decimal("10")
         if side == "BUY": stop, tps = low-zone_buffer, (high+10, high+20, high+30)
@@ -116,8 +118,37 @@ def test_exact_three_tps_submit_three_orders_and_one_margin(monkeypatch: pytest.
     assert len(service.margin.calls)==1 and service.margin.calls[0]["volume"]==0.03
 
 
-def test_exact_mismatch_preserves_day25(monkeypatch: pytest.MonkeyPatch) -> None:
-    _patch_states(monkeypatch, _live_state(bid=4000.1, ask=4000.2)); service=_Harness()
+def test_exact_mismatch_beyond_tolerance_preserves_day25(monkeypatch: pytest.MonkeyPatch) -> None:
+    # Well outside the entry tolerance the provider's price is simply not available,
+    # and the trade is skipped. No chase, no wait, no substitution.
+    _patch_states(monkeypatch, _live_state(bid=4004.9, ask=4005.0)); service=_Harness()
+    with pytest.raises(Day26ExecutionError, match="entry_price_unavailable"):
+        asyncio.run(service.execute_owner_demo_signal(owner_user_id=OWNER, signal_id=SIGNAL, risk_percent="1", double_lot_approved=False))
+    assert service.trade.calls==[] and service.margin.calls==[]
+
+
+def test_exact_entry_within_tolerance_fills_and_sizes_off_actual_price(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A single-price provider entry is tradeable when the market is close enough.
+
+    Gold ticks in cents, so requiring the live price to equal the provider's round
+    number exactly made these signals effectively unexecutable. The fill is sized
+    off the real executable price rather than the provider's number, so the
+    configured risk percentage stays honest.
+    """
+    _patch_states(monkeypatch, _live_state(bid=3999.7, ask=3999.8)); service=_Harness()
+    result=asyncio.run(service.execute_owner_demo_signal(owner_user_id=OWNER, signal_id=SIGNAL, risk_percent="1", double_lot_approved=False))
+    # A BUY fills at the ask, and that actual price becomes the sizing basis rather
+    # than the provider's 4000, so the stop distance used for sizing is the real one.
+    assert result.signal_entry_price==Decimal("3999.8")
+    assert len(service.trade.calls)==3 and len(service.margin.calls)==1
+
+
+def test_zero_tolerance_restores_strict_equality(monkeypatch: pytest.MonkeyPatch) -> None:
+    # The tolerance is configurable and can be switched off entirely.
+    _patch_states(monkeypatch, _live_state(bid=4000.1, ask=4000.2))
+    service=_Harness(entry_tolerance="0")
     with pytest.raises(Day26ExecutionError, match="entry_price_unavailable"):
         asyncio.run(service.execute_owner_demo_signal(owner_user_id=OWNER, signal_id=SIGNAL, risk_percent="1", double_lot_approved=False))
     assert service.trade.calls==[] and service.margin.calls==[]
