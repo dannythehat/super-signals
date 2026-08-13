@@ -18,7 +18,6 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from app.models import AuditEvent
 from app.trading_controls_day31 import (
-    Day31StopResult,
     Day31TradingControlError,
     Day31TradingControlService,
 )
@@ -335,22 +334,31 @@ class Day35AdminUserControlService:
 
         user_ids = self._active_user_ids()
         now = datetime.now(UTC)
-        # Emergency invariant: block every existing automation control before the
-        # first broker close request. Users without a control row are already unable
-        # to execute, and Day31 will materialise them as stopped if needed.
+        # Emergency invariant: block every existing automation control belonging to
+        # an active invited user before the first broker close request. This query
+        # resolves the same role/status predicate directly in PostgreSQL instead of
+        # depending on a driver-specific UUID-array bind.
         with self._session_factory() as session:
             stopped_first = session.execute(
                 text(
                     """
                     UPDATE user_trading_controls utc
                     SET trading_status='stopped', stopped_at=:now, updated_at=:now
-                    WHERE utc.user_id=ANY(:user_ids)
-                      AND utc.trading_status<>'stopped'
+                    WHERE utc.trading_status<>'stopped'
+                      AND EXISTS (
+                          SELECT 1
+                          FROM users u
+                          JOIN user_roles ur ON ur.user_id=u.id
+                          JOIN roles r ON r.id=ur.role_id
+                          WHERE u.id=utc.user_id
+                            AND u.status='active'
+                            AND r.name='user'
+                      )
                     RETURNING user_id
                     """
                 ),
-                {"user_ids": list(user_ids), "now": now},
-            ).all() if user_ids else []
+                {"now": now},
+            ).all()
             session.add(
                 AuditEvent(
                     actor_user_id=actor_user_id,
