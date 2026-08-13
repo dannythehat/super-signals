@@ -292,13 +292,15 @@ def create_recovery_request(
     if user_id is None:
         return
 
+    # Only the newest recovery token may remain usable. Older unused requests
+    # stay in the audit history but are terminally marked used.
     session.execute(
         text(
             """
-            DELETE FROM password_recovery_requests
+            UPDATE password_recovery_requests
+            SET used_at = COALESCE(used_at, now())
             WHERE user_id = :user_id
               AND used_at IS NULL
-              AND expires_at <= now()
             """
         ),
         {"user_id": user_id},
