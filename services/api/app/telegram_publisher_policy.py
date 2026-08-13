@@ -1,4 +1,4 @@
-"""Minimum-permission policy and live connection test for the Day 19 publisher."""
+"""Minimum-permission policy and live connection test for the Telegram publisher."""
 
 from __future__ import annotations
 
@@ -23,10 +23,61 @@ class Day19TelegramPublisherManager(TelegramPublisherManager):
     def __init__(self, *, reader_exclusion_active: bool = False, **kwargs: Any) -> None:
         super().__init__(**kwargs)
         self._reader_exclusion_active = reader_exclusion_active
+        self._startup_status_task: asyncio.Task[None] | None = None
 
     async def start(self) -> None:
+        # The normal publisher loop is already fail-safe and runs independently.
+        # Telegram must never hold the whole FastAPI service in startup while DNS
+        # or the Bot API is slow. Record the startup verification in the background.
         await super().start()
-        status = await asyncio.to_thread(self.check_connection)
+        if self._startup_status_task is None or self._startup_status_task.done():
+            self._startup_status_task = asyncio.create_task(
+                self._record_startup_status(),
+                name="telegram-publisher-startup-status",
+            )
+
+    async def stop(self) -> None:
+        task = self._startup_status_task
+        self._startup_status_task = None
+        if task is not None and not task.done():
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+        await super().stop()
+
+    async def _record_startup_status(self) -> None:
+        try:
+            status = await asyncio.wait_for(
+                asyncio.to_thread(self.check_connection),
+                timeout=15,
+            )
+        except asyncio.TimeoutError:
+            status = PublisherConnectionStatus(
+                configured=self.configured,
+                enabled=self._enabled,
+                destination_chat_type=None,
+                bot_membership_status=None,
+                minimum_permissions_ok=False,
+                source_collision=False,
+                reason="Telegram startup verification timed out; background publishing will keep checking safely.",
+            )
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            status = PublisherConnectionStatus(
+                configured=self.configured,
+                enabled=self._enabled,
+                destination_chat_type=None,
+                bot_membership_status=None,
+                minimum_permissions_ok=False,
+                source_collision=False,
+                reason="Telegram startup verification could not complete; background publishing will keep checking safely.",
+            )
+        await asyncio.to_thread(self._persist_startup_status, status)
+
+    def _persist_startup_status(self, status: PublisherConnectionStatus) -> None:
         with self._session_factory() as session:
             session.add(
                 AuditEvent(
