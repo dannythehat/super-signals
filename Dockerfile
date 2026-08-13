@@ -21,6 +21,7 @@ COPY services/api /app/services/api
 COPY --from=web-build /build/apps/web/dist /app/web-dist
 RUN python -m pip install --no-cache-dir pytest pytest-asyncio && cd /app/services/api && pytest -q \
     tests/test_day38_multi_user_distribution.py \
+    tests/test_day38_live_atomic_rollback.py \
     tests/test_day37_reconnect_restart_safety.py \
     tests/test_day36_manual_mt5_reconciliation.py \
     tests/test_day36_provider_update_remaining_positions.py \
