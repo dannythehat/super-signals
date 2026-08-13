@@ -25,16 +25,6 @@ COPY services/api/requirements.txt /tmp/requirements.txt
 RUN python -m pip install --no-cache-dir -r /tmp/requirements.txt
 
 COPY services/api /app/services/api
-# Day 35 controlled validation checkpoint only. This line is removed again after
-# the suite passes so the permanent runtime image does not carry a build-only test dependency.
-RUN python -m pip install --no-cache-dir pytest && cd /app/services/api && python -m pytest -q \
-    tests/test_trade_identity_day35.py \
-    tests/test_admin_portfolio_day35.py \
-    tests/test_control_centre_day35.py \
-    tests/test_admin_user_controls_day35.py \
-    tests/test_day35_mapped_only_stop_behavior.py \
-    tests/test_day35_role_privacy.py \
-    tests/test_operations_day35.py
 COPY scripts/render-start.sh /app/scripts/render-start.sh
 COPY --from=web-build /build/apps/web/dist /app/web-dist
 RUN chmod 0755 /app/scripts/render-start.sh
