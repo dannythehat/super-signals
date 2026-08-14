@@ -18,8 +18,8 @@ from app.day27_management_policy import extract_day27_management_actions
 
 _NUMBER_TOKEN = re.compile(r"(?<![A-Za-z0-9_.])\d+(?:\.\d+)?(?![A-Za-z0-9_.])")
 _INSTRUMENT = re.compile(r"\b(?:XAUUSD|GOLD)\b", re.IGNORECASE)
-_BUY = re.compile(r"\bBUY(?:ING)?\b", re.IGNORECASE)
-_SELL = re.compile(r"\bSELL(?:ING)?\b", re.IGNORECASE)
+_BUY = re.compile(r"\bBUY(?:S|ING)?\b", re.IGNORECASE)
+_SELL = re.compile(r"\bSELL(?:S|ING)?\b", re.IGNORECASE)
 _PENDING = re.compile(r"\b(?:BUY|SELL)\s+(?:LIMITS?|STOPS?)\b|\bPENDING\b", re.IGNORECASE)
 _SECOND_ENTRY = re.compile(r"\b(?:SECOND|2ND)\s+ENTRY\b", re.IGNORECASE)
 _FIRST_ENTRY = re.compile(
