@@ -124,9 +124,12 @@ class Day23Mt5ReadService:
         row = self._load_row(owner_user_id)
         if row is None:
             raise Day23ReadError("mt5_account_not_configured")
-        if str(row["status"]) != "connected":
-            raise Day23ReadError("mt5_account_not_connected", retryable=True)
 
+        # Do not use the cached mt5_accounts.status as a precondition for a live read.
+        # That status is maintained by a background provisioning monitor and can lag
+        # reality after a transient MetaAPI outage. If the account exists and has not
+        # been revoked, ask the terminal now; the terminal/API response below is the
+        # authoritative execution-time connection truth.
         try:
             token = self._cipher.decrypt(bytes(row["metaapi_token_ciphertext"]))
         except BrokerCredentialDecryptionError as exc:
