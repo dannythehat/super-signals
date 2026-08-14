@@ -98,7 +98,18 @@ class Day28FullExecutionRouter:
         Historical messages may be supervised/audited during catch-up, but broker
         mutation belongs only to a live delivery (or its live edit) in Day 28.
         """
+        # Ignoring a message is by far the most common outcome, because most
+        # provider posts are commentary rather than instructions. It was also the
+        # only outcome that returned silently, which meant "correctly ignored
+        # chatter" and "the pipeline broke after the AI call" were
+        # indistinguishable from outside the database. Log it.
         if source_id not in self._allowed_source_ids:
+            logger.info(
+                "Message ignored source=%s telegram_message_id=%s reason=%s",
+                source_id,
+                telegram_message_id,
+                "source_not_in_day28_allowlist",
+            )
             return Day28RouteResult(
                 outcome="ignored",
                 decision=None,
@@ -112,6 +123,12 @@ class Day28FullExecutionRouter:
             revision_index=revision_index,
         )
         if stored is None:
+            logger.info(
+                "Message ignored source=%s telegram_message_id=%s reason=%s",
+                source_id,
+                telegram_message_id,
+                "day28_stored_decision_missing",
+            )
             return Day28RouteResult(
                 outcome="blocked",
                 decision=None,
@@ -121,11 +138,31 @@ class Day28FullExecutionRouter:
             )
 
         if stored.decision == "new_trade" and stored.action == "execute":
+            logger.info(
+                "Dispatching new trade source=%s telegram_message_id=%s revision=%s",
+                source_id,
+                telegram_message_id,
+                revision_index,
+            )
             return await self._dispatch_new_trade(stored, revision_index)
 
         if stored.decision == "trade_update" and stored.action == "apply_update":
+            logger.info(
+                "Dispatching management update source=%s telegram_message_id=%s revision=%s",
+                source_id,
+                telegram_message_id,
+                revision_index,
+            )
             return await self._dispatch_management(stored, revision_index)
 
+        logger.info(
+            "Message ignored source=%s telegram_message_id=%s decision=%s action=%s reason=%s",
+            source_id,
+            telegram_message_id,
+            stored.decision,
+            stored.action,
+            stored.reason,
+        )
         return Day28RouteResult(
             outcome="ignored",
             decision=stored.decision,
