@@ -72,7 +72,38 @@ _MOVE_BE = re.compile(
     r"|^\s*(?:BE|BREAKEVEN|BREAK\s+EVEN)\s+NOW\s*[.!✅🔥]*\s*$"
     r"|\bBREAKEVEN\s+SET\b"
     r"|\bMAKE\s+(?:(?:YOUR|MY|THE)\s+)?(?:TRADE|SETUP|SET\s*UP|POSITION)\s+(?:OVERALL\s+)?RISK\s*[- ]?FREE\b"
-    r"|\bI\s+WILL\s+MAKE\s+(?:MY|THE)\s+TRADE\s+RISK\s*[- ]?FREE\s+NOW\b",
+    r"|\bI\s+WILL\s+MAKE\s+(?:MY|THE)\s+TRADE\s+RISK\s*[- ]?FREE\s+NOW\b"
+    # Owner rule: protective wording moves the stop to breakeven.
+    r"|\b(?:MOVE|SET|PUT)\s+(?:THE\s+)?(?:SL|STOP\s*LOSS|STOP|STOPS)\s+(?:TO|AT)\s+ENTRY\b"
+    r"|\b(?:LOCK|LOCKING)\s+IN\s+(?:SOME\s+|THE\s+)?PROFITS?\b"
+    r"|\b(?:SECURE|PROTECT)\s+(?:SOME\s+|THE\s+|YOUR\s+)?PROFITS?\b"
+    r"|\bRISK\s*[- ]?FREE\s+(?:IT|NOW|THE\s+TRADE)\b",
+    re.IGNORECASE,
+)
+
+# Exit wording that means "get out of the trade" without using the word close.
+_EXIT_NOW = re.compile(
+    r"\b(?:EXIT|CLOSE)\s+(?:IT|NOW|THE\s+(?:TRADE|POSITIONS?|LOT))\b"
+    r"|\bGET\s+OUT\s+(?:NOW|OF\s+(?:IT|THE\s+TRADE))\b"
+    r"|\bGO\s+FLAT\b"
+    r"|\bCLOSE\s+(?:YOUR|MY|ALL)?\s*(?:REMAINING|OPEN)\s+(?:TRADES?|POSITIONS?)\b",
+    re.IGNORECASE,
+)
+
+# Optional wording that still concerns protecting an open trade. The Owner's rule is
+# that ambiguity here resolves to the cautious action rather than to doing nothing:
+# moving the stop to breakeven removes downside while leaving a winner running.
+# Deliberately narrow: it requires a breakeven/risk-free/profit-protection outcome to
+# be named. Optional wording about ENTERING a trade is never made executable by this.
+_OPTIONAL_PROTECTIVE = re.compile(
+    r"\b(?:BE|BREAKEVEN|BREAK\s+EVEN)\b"
+    r"|\bRISK\s*[- ]?FREE\b"
+    r"|\b(?:LOCK|LOCKING)\s+IN\b"
+    r"|\b(?:SECURE|PROTECT)\s+(?:SOME\s+|THE\s+|YOUR\s+)?PROFITS?\b",
+    re.IGNORECASE,
+)
+_OPTIONAL_ENTRY = re.compile(
+    r"\b(?:ENTER|ENTRY|ADD|BUY|SELL|LAYER|SCALE\s+IN)\b",
     re.IGNORECASE,
 )
 
@@ -110,6 +141,20 @@ def extract_day27_management_actions(raw_text: str) -> Day27ManagementPolicyResu
     if not text:
         return Day27ManagementPolicyResult((), "unsupported_management")
     if _OPTIONAL.search(text):
+        # Owner rule, 14 Aug 2026: when a provider offers a choice about protecting an
+        # open trade -- "bank the blue or go to BE", "make it risk free if you want" --
+        # take the cautious option instead of doing nothing. Moving the stop to
+        # breakeven removes the downside while leaving a winner running, so the
+        # trade is protected without being cut short on ambiguous wording.
+        #
+        # This is deliberately narrow. It fires only when the optional sentence names
+        # a protective outcome, and never when it concerns entering or adding to a
+        # position, where "if you want" must remain completely non-executable.
+        if _OPTIONAL_PROTECTIVE.search(text) and not _OPTIONAL_ENTRY.search(text):
+            return Day27ManagementPolicyResult(
+                ({"type": "move_to_break_even", "target": "all", "value": None},),
+                "optional_protective_resolved_to_breakeven",
+            )
         return Day27ManagementPolicyResult((), "optional_management_instruction")
     if _RESULT_BE.fullmatch(text):
         return Day27ManagementPolicyResult((), "provider_result_only")
@@ -118,7 +163,7 @@ def extract_day27_management_actions(raw_text: str) -> Day27ManagementPolicyResu
 
     # Close actions are first because a combined message such as "close TP1 and move
     # SL to BE" must close the intended leg before modifying the surviving positions.
-    if _CLOSE_ALL.search(text):
+    if _CLOSE_ALL.search(text) or _EXIT_NOW.search(text):
         actions.append({"type": "close", "target": "all", "value": None})
     else:
         for match in _CLOSE_NUMBERED.finditer(text):
