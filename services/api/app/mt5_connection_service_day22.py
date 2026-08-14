@@ -23,6 +23,12 @@ from app.mt5_connection_service import (
 )
 from app.mt5_crypto import BrokerCredentialDecryptionError
 
+_TRANSIENT_RECONCILE_CODES = {
+    "metaapi_timeout",
+    "metaapi_unreachable",
+    "metaapi_temporarily_unavailable",
+}
+
 
 class Day22Mt5DemoConnectionService(Mt5DemoConnectionService):
     """Day 22 service with deterministic, auditable restart reconciliation."""
@@ -212,35 +218,57 @@ class Day22Mt5DemoConnectionService(Mt5DemoConnectionService):
         retryable: bool = False,
     ) -> None:
         now = datetime.now(UTC)
-        status = (
-            "disconnected"
-            if error_code
-            in {
-                "metaapi_timeout",
-                "metaapi_unreachable",
-                "metaapi_temporarily_unavailable",
-            }
-            else "error"
-        )
+        transient = error_code in _TRANSIENT_RECONCILE_CODES
         with self._session_factory() as session:
-            session.execute(
-                text(
-                    """
-                    UPDATE mt5_accounts
-                    SET status = :status,
-                        last_error_code = :error_code,
-                        last_checked_at = :checked_at,
-                        updated_at = :checked_at
-                    WHERE id = :id
-                    """
-                ),
-                {
-                    "id": local_account_id,
-                    "status": status,
-                    "error_code": error_code,
-                    "checked_at": now,
-                },
-            )
+            previous = session.execute(
+                text("SELECT status FROM mt5_accounts WHERE id = :id FOR UPDATE"),
+                {"id": local_account_id},
+            ).scalar_one_or_none()
+
+            # A background provisioning/API timeout is not proof that the terminal is
+            # disconnected.  Downgrading a previously connected account here poisoned
+            # the cached status and could block valid signals until the next hourly
+            # reconciliation even when MT5 recovered seconds later.  Preserve the
+            # last known connection status for transient transport failures; the live
+            # execution read still has to succeed before any broker order is sent.
+            if transient:
+                session.execute(
+                    text(
+                        """
+                        UPDATE mt5_accounts
+                        SET last_error_code = :error_code,
+                            last_checked_at = :checked_at,
+                            updated_at = :checked_at
+                        WHERE id = :id
+                        """
+                    ),
+                    {
+                        "id": local_account_id,
+                        "error_code": error_code,
+                        "checked_at": now,
+                    },
+                )
+                resulting_status = previous
+            else:
+                session.execute(
+                    text(
+                        """
+                        UPDATE mt5_accounts
+                        SET status = 'error',
+                            last_error_code = :error_code,
+                            last_checked_at = :checked_at,
+                            updated_at = :checked_at
+                        WHERE id = :id
+                        """
+                    ),
+                    {
+                        "id": local_account_id,
+                        "error_code": error_code,
+                        "checked_at": now,
+                    },
+                )
+                resulting_status = "error"
+
             session.add(
                 AuditEvent(
                     actor_user_id=None,
@@ -252,6 +280,9 @@ class Day22Mt5DemoConnectionService(Mt5DemoConnectionService):
                         "error_code": error_code,
                         "error_kind": error_kind,
                         "retryable": retryable,
+                        "status_preserved": transient,
+                        "status_before": previous,
+                        "status_after": resulting_status,
                         "trade_action_created": False,
                     },
                 )
