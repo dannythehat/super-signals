@@ -81,6 +81,29 @@ _MOVE_BE = re.compile(
     re.IGNORECASE,
 )
 
+# Partial-taking wording. Deliberately requires a partial sense: a bare "close"
+# must not land here, and "close all" is matched earlier and wins.
+_TAKE_PARTIALS = re.compile(
+    r"\bTAKE\s+(?:SOME\s+|YOUR\s+|THE\s+)?PARTIALS?\b"
+    r"|\bTAKE\s+PARTIAL\s+PROFITS?\b"
+    r"|\b(?:CLOSE|BANK|SECURE|TAKE)\s+(?:OFF\s+)?HALF\b"
+    r"|\bCLOSE\s+(?:SOME|A\s+PORTION)\s+(?:OF\s+)?(?:IT|THE\s+(?:TRADE|POSITIONS?))?\b"
+    r"|\bBANK\s+(?:SOME|PART)\s+(?:OF\s+)?(?:IT|THE\s+PROFITS?)\b",
+    re.IGNORECASE,
+)
+
+# Statements of future intent are not instructions. "At TP2 I'll close half" tells
+# you what the provider plans to do later; acting on it closes a leg now, against a
+# message that instructed nothing. This guard is why partial wording alone is never
+# enough to act on.
+_FUTURE_INTENT = re.compile(
+    r"\b(?:I|WE)\s*(?:['’]LL|WILL)\b"
+    r"|\bGOING\s+TO\b"
+    r"|\bAT\s+TP\s*\d"
+    r"|\b(?:WHEN|ONCE)\s+(?:IT|PRICE|WE|TP\s*\d)",
+    re.IGNORECASE,
+)
+
 # Exit wording that means "get out of the trade" without using the word close.
 _EXIT_NOW = re.compile(
     r"\b(?:EXIT|CLOSE)\s+(?:IT|NOW|THE\s+(?:TRADE|POSITIONS?|LOT))\b"
@@ -168,7 +191,15 @@ def extract_day27_management_actions(raw_text: str) -> Day27ManagementPolicyResu
     else:
         for match in _CLOSE_NUMBERED.finditer(text):
             actions.append({"type": "close", "target": f"TP{match.group(1)}", "value": None})
-        if _CLOSE_FIRST_POSITION.search(text):
+        if _CLOSE_FIRST_POSITION.search(text) or (
+            _TAKE_PARTIALS.search(text) and not _FUTURE_INTENT.search(text)
+        ):
+            # Owner reading, 14 Aug 2026: "take partials" and "close half" are written
+            # for followers holding a single position, and mean bank some now and let
+            # the rest run. Super Signals opens one position per TP level, so the
+            # equivalent is closing the nearest leg and leaving the others open. That
+            # needs no partial-volume close: it is the same action as "close your
+            # first position", which providers already say.
             actions.append({"type": "close", "target": "TP1", "value": None})
         if _CLOSE_FIRST_ENTRY.search(text):
             # Day 26 V1 opens only one supported entry layer. Keep the semantic target
