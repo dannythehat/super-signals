@@ -20,6 +20,19 @@ _REGION = re.compile(r"^[a-z0-9-]{2,64}$")
 _CLIENT_ID = re.compile(r"^[A-Za-z0-9]+_[A-Za-z0-9]+_[A-Za-z0-9]+$")
 _MAX_CLIENT_ID_LENGTH = 26
 
+# MetaAPI documents these as the successful MetaTrader trade return codes.  Treating
+# only TRADE_RETCODE_DONE / 10009 as success can falsely reject a broker-accepted
+# command such as PLACED or DONE_PARTIAL.  The broker response remains authoritative;
+# this only fixes our interpretation of its documented success result.
+_SUCCESS_NUMERIC_CODES = {0, 10008, 10009, 10010, 10025}
+_SUCCESS_STRING_CODES = {
+    "ERR_NO_ERROR",
+    "TRADE_RETCODE_PLACED",
+    "TRADE_RETCODE_DONE",
+    "TRADE_RETCODE_DONE_PARTIAL",
+    "TRADE_RETCODE_NO_CHANGES",
+}
+
 
 @dataclass(frozen=True, slots=True)
 class MetaApiMarketOrderResult:
@@ -212,7 +225,10 @@ class MetaApiTradeGateway:
 
         numeric_code = self._numeric_code(payload)
         string_code = str(payload.get("stringCode") or "").strip()
-        if string_code != "TRADE_RETCODE_DONE" and numeric_code != 10009:
+        if (
+            numeric_code not in _SUCCESS_NUMERIC_CODES
+            and string_code not in _SUCCESS_STRING_CODES
+        ):
             raise MetaApiGatewayError("metaapi_trade_rejected")
         return payload
 
