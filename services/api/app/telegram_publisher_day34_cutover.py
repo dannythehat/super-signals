@@ -8,7 +8,9 @@ cutover-filtered: anything still broker-active at deployment belongs on the live
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
+import logging
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
@@ -19,11 +21,54 @@ from app.telegram_publisher_day20 import LifecyclePublicationAttempt
 from app.telegram_publisher_day34 import Day34TelegramPublisherManager
 from app.trade_identity import prefix_public_trade_identity, public_trade_identity
 
+logger = logging.getLogger(__name__)
+
 _BOARD_PIN_RETRY_BACKOFF = timedelta(minutes=1)
 
 
 class Day34CutoverTelegramPublisherManager(Day34TelegramPublisherManager):
     """Day34 publisher with a persisted forward-only member-notification boundary."""
+
+    async def _run(self) -> None:
+        """Keep group logging alive without auxiliary Bot API checks blocking sends.
+
+        ``Day19.start`` still performs and audits the full getMe/getChat/getChatMember
+        connection verification at startup. Re-running those three metadata calls before
+        every publisher cycle is not authoritative for delivery and can suppress an
+        otherwise valid ``sendMessage`` without ever incrementing ``attempt_count``.
+
+        The actual Telegram send is the only delivery authority after startup: _deliver
+        records a concrete Telegram failure if it cannot post. The private-reader
+        destination-collision check remains local/database-backed and is kept on every
+        cycle. Trading is never called from this loop.
+        """
+
+        while not self._stop_event.is_set():
+            try:
+                if self._active_reader_source_collision():
+                    logger.error(
+                        "Telegram group logger cycle skipped: destination is an active reader source"
+                    )
+                else:
+                    await asyncio.to_thread(self._seed_missing_publications)
+                    attempt = await asyncio.to_thread(self._claim_next)
+                    if attempt is not None:
+                        await self._deliver(attempt)
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                # A logger failure must be visible, but can never affect MT5 trading.
+                logger.exception("Telegram group logger cycle failed; MT5 trading unchanged")
+
+            if self._stop_event.is_set():
+                break
+            try:
+                await asyncio.wait_for(
+                    self._stop_event.wait(),
+                    timeout=self._poll_seconds,
+                )
+            except TimeoutError:
+                continue
 
     def _claim_next(self) -> Any:
         """Attach the same public trade identity to every root and lifecycle post."""
