@@ -6,18 +6,21 @@ and broker-history reads only. There is no trade/order mutation method here.
 
 from __future__ import annotations
 
-import re
 from datetime import datetime
 from urllib.parse import quote
 
 import httpx
 
 from app.metaapi_gateway import MetaApiGatewayError
+from app.metaapi_region_cache import (
+    get_metaapi_region,
+    normalize_metaapi_region,
+    remember_metaapi_region,
+)
 
 DEFAULT_METAAPI_PROVISIONING_URL = (
     "https://mt-provisioning-api-v1.agiliumtrade.agiliumtrade.ai"
 )
-_REGION = re.compile(r"^[a-z0-9-]{2,64}$")
 
 
 class MetaApiReadGateway:
@@ -25,10 +28,14 @@ class MetaApiReadGateway:
 
     def __init__(self, *, timeout_seconds: float = 30.0) -> None:
         self._timeout = httpx.Timeout(timeout_seconds)
-        self._region_cache: dict[str, str] = {}
 
     async def resolve_account_region(self, *, token: str, account_id: str) -> str:
-        cached = self._region_cache.get(account_id)
+        # Region is account metadata, not market data. The provisioning connection
+        # monitor learns it during startup reconciliation before the Telegram reader
+        # begins listening. Reuse that process-wide value here so a live trade does
+        # not depend on an extra provisioning round-trip just to rediscover which
+        # MetaAPI terminal hostname to call.
+        cached = get_metaapi_region(account_id)
         if cached:
             return cached
         response = await self._request(
@@ -39,10 +46,12 @@ class MetaApiReadGateway:
         payload = self._json(response)
         if not isinstance(payload, dict):
             raise MetaApiGatewayError("metaapi_invalid_response")
-        region = str(payload.get("region") or "").strip().lower()
-        if not _REGION.fullmatch(region):
+        region = remember_metaapi_region(
+            account_id,
+            str(payload.get("region") or ""),
+        )
+        if region is None:
             raise MetaApiGatewayError("metaapi_region_unavailable")
-        self._region_cache[account_id] = region
         return region
 
     async def read_account_information(
@@ -177,8 +186,8 @@ class MetaApiReadGateway:
     async def _read_terminal_json(
         self, *, token: str, region: str, path: str
     ) -> object:
-        normalized_region = region.strip().lower()
-        if not _REGION.fullmatch(normalized_region):
+        normalized_region = normalize_metaapi_region(region)
+        if normalized_region is None:
             raise MetaApiGatewayError("metaapi_region_unavailable")
         response = await self._request(
             "GET",

@@ -15,6 +15,8 @@ from uuid import uuid4
 
 import httpx
 
+from app.metaapi_region_cache import remember_metaapi_region
+
 DEFAULT_METAAPI_PROVISIONING_URL = (
     "https://mt-provisioning-api-v1.agiliumtrade.agiliumtrade.ai"
 )
@@ -247,8 +249,16 @@ class MetaApiProvisioningGateway:
         account_id = payload.get("_id") or payload.get("id") or fallback_account_id
         if not account_id:
             raise MetaApiGatewayError("metaapi_invalid_response")
+        account_id_text = str(account_id)
+        # Provisioning reconciliation runs before the Telegram listener starts.
+        # Capture MetaAPI's account shard there so terminal reads during a fresh
+        # trade do not make a second provisioning call just to rediscover it.
+        remember_metaapi_region(
+            account_id_text,
+            str(payload.get("region") or ""),
+        )
         return MetaApiAccountState(
-            account_id=str(account_id),
+            account_id=account_id_text,
             login=str(payload.get("login") or ""),
             server=str(payload.get("server") or ""),
             state=str(payload.get("state") or "UNKNOWN").upper(),
