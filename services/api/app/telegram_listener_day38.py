@@ -9,7 +9,7 @@ from uuid import UUID
 from sqlalchemy.orm import Session, sessionmaker
 
 from app.day28_zone_guard import Day28GuardedExecutionService
-from app.day38_full_execution import Day38FullExecutionRouter
+from app.day38_database_source_router import DatabaseSourceDay38FullExecutionRouter
 from app.metaapi_margin_gateway import MetaApiMarginGateway
 from app.metaapi_read_gateway import MetaApiReadGateway
 from app.metaapi_trade_gateway import MetaApiTradeGateway
@@ -31,30 +31,17 @@ def _enabled(value: str | None, *, default: bool = False) -> bool:
     return value.strip().lower() in {"1", "true", "yes", "on"}
 
 
-def _uuid_list(raw: str) -> tuple[UUID, ...]:
-    values: list[UUID] = []
-    for token in raw.split(","):
-        token = token.strip()
-        if token:
-            values.append(UUID(token))
-    return tuple(values)
-
-
 def build_day38_execution_router_from_env(
     *,
     session_factory: sessionmaker[Session],
-) -> Day38FullExecutionRouter | None:
-    """Use the existing Day 28 enable/source controls, adding member fan-out."""
+) -> DatabaseSourceDay38FullExecutionRouter | None:
+    """Build automatic execution using durable DB source status as source eligibility."""
     if not _enabled(os.getenv("SUPER_SIGNALS_DAY28_AUTO_EXECUTION_ENABLED")):
         return None
     try:
         owner_user_id = UUID(os.getenv("SUPER_SIGNALS_DAY28_OWNER_ID", "").strip())
-        source_ids = _uuid_list(os.getenv("SUPER_SIGNALS_DAY28_SOURCE_IDS", ""))
     except ValueError:
-        logger.error("Day 38 automatic execution disabled: invalid owner/source UUID configuration")
-        return None
-    if not source_ids:
-        logger.error("Day 38 automatic execution disabled: source allow-list is empty")
+        logger.error("Day 38 automatic execution disabled: invalid owner UUID configuration")
         return None
 
     broker_key_value = (
@@ -105,7 +92,7 @@ def build_day38_execution_router_from_env(
             read_gateway=read_gateway,
             trade_gateway=trade_gateway,
         )
-        return Day38FullExecutionRouter(
+        return DatabaseSourceDay38FullExecutionRouter(
             session_factory=session_factory,
             owner_user_id=owner_user_id,
             execution_service=owner_execution,
@@ -118,7 +105,6 @@ def build_day38_execution_router_from_env(
                 session_factory=session_factory,
                 management_service=member_management,
             ),
-            allowed_source_ids=source_ids,
             risk_percent=risk_percent,
             double_lot_approved=double_lot_approved,
         )
