@@ -1,11 +1,11 @@
 """Day 26 fail-closed XAUUSD demo execution for exact and simple-zone signals.
 
 The input is an already-canonical V1 Signal. This service reuses Day 23 broker state,
-Day 24 risk sizing and the Day 25 exact-price/funds preflight, then submits one market
+Day 24 risk sizing and the Day 25 price/funds preflight, then submits one market
 position per numeric provider TP plus an optional TP OPEN runner.
 
-V1 deliberately does not place pending orders, chase a zone edge, choose a midpoint,
-use TIG's second entry, or reinterpret missing provider values.
+Normal product execution never waits for a later zone touch, never retries a stale
+trade, and never reinterprets provider entry/SL/TP values.
 """
 
 from __future__ import annotations
@@ -54,8 +54,15 @@ class Day26ExecutionError(RuntimeError):
 
 """Maximum distance between a provider's stated single-price entry and the live
 executable price that may still be filled, expressed in the instrument's price
-units. 0.50 on XAUUSD is roughly five pips. Set to 0 to restore strict equality."""
+units. Set to 0 to restore strict equality."""
 DEFAULT_ENTRY_TOLERANCE = Decimal("0.50")
+
+# Broker orders are never retried. These attempts are only for the read-only mapping
+# check after all requested orders have already been accepted. MetaAPI terminal state
+# can lag a successful trade response by a fraction of a second; one empty/timeout
+# read must not immediately unwind a correctly opened multi-TP trade.
+_POST_ORDER_VERIFY_ATTEMPTS = 3
+_POST_ORDER_VERIFY_DELAY_SECONDS = 0.25
 
 
 def _resolve_entry_tolerance(value: Decimal | str | None) -> Decimal:
@@ -143,7 +150,7 @@ class _PlannedPosition:
 
 
 class Day26Mt5ExecutionService:
-    """Execute one accepted V1 signal on the owner's connected demo account."""
+    """Execute one accepted V1 signal on the owner's demo account."""
 
     def __init__(
         self,
@@ -153,7 +160,7 @@ class Day26Mt5ExecutionService:
         read_gateway: MetaApiReadGateway,
         margin_gateway: MetaApiMarginGateway,
         trade_gateway: MetaApiTradeGateway,
-        zone_wait_seconds: float = 300.0,
+        zone_wait_seconds: float = 0.0,
         zone_poll_seconds: float = 2.0,
         entry_tolerance: Decimal | str | None = None,
     ) -> None:
@@ -187,18 +194,6 @@ class Day26Mt5ExecutionService:
         except Day23ReadError as exc:
             raise Day26ExecutionError(exc.code) from exc
 
-        # Read the symbol specification BEFORE waiting for the entry, not after.
-        #
-        # A live zone signal was lost because the engine waited for price to enter
-        # the provider's zone, then spent the next several hundred milliseconds
-        # fetching the specification and calculating margin, by which time gold had
-        # ticked back out of the zone and the submission was refused. The
-        # specification is static contract data for the symbol and does not depend
-        # on the entry price, so fetching it here removes a broker round trip from
-        # the moment that actually matters: the instant price becomes tradeable.
-        #
-        # The account region is account-level and does not change while waiting, so
-        # the pre-wait live_state is the correct source for it.
         try:
             specification = await self._read_gateway.read_symbol_specification(
                 token=token,
@@ -226,10 +221,6 @@ class Day26Mt5ExecutionService:
             double_lot_approved=double_lot_approved,
         )
 
-        # Day 25 remains unchanged. For an exact signal, sizing carries the provider's
-        # exact price. For a zone, the deterministic zone gate has already authorized
-        # the current executable broker price, so that actual in-zone price is passed
-        # through the same one-shot price/funds preflight.
         preflight = Day25TradePreflightService(margin_gateway=self._margin_gateway)
         day25_result = await preflight.evaluate(
             live_state=live_state,
@@ -247,8 +238,6 @@ class Day26Mt5ExecutionService:
                 day25_result.block_reason or "day25_preflight_blocked"
             )
 
-        # Freeze-check immediately before any local position is created. An edit or
-        # cancellation arriving during a zone wait must stop the trade.
         self._assert_signal_still_current(owner_user_id, signal)
 
         planned = self._create_planned_positions(
@@ -287,30 +276,59 @@ class Day26Mt5ExecutionService:
             )
             raise Day26ExecutionError(exc.code) from exc
 
-        try:
-            broker_positions = await self._read_gateway.read_positions(
-                token=token,
-                account_id=account.metaapi_account_id,
-                region=live_state.region,
+        mapped: tuple[Day26MappedPosition, ...] | None = None
+        last_verify_error: Day26ExecutionError | MetaApiGatewayError | None = None
+        for attempt in range(1, _POST_ORDER_VERIFY_ATTEMPTS + 1):
+            try:
+                broker_positions = await self._read_gateway.read_positions(
+                    token=token,
+                    account_id=account.metaapi_account_id,
+                    region=live_state.region,
+                )
+                mapped = self._map_broker_positions(
+                    owner_user_id=owner_user_id,
+                    signal=signal,
+                    sizing=sizing,
+                    execution_entry=execution_entry,
+                    planned=planned,
+                    order_ids=order_ids,
+                    broker_positions=broker_positions,
+                )
+                last_verify_error = None
+                break
+            except MetaApiGatewayError as exc:
+                last_verify_error = exc
+                if not exc.retryable or attempt == _POST_ORDER_VERIFY_ATTEMPTS:
+                    break
+            except Day26ExecutionError as exc:
+                last_verify_error = exc
+                # A just-accepted broker position may not be visible in the terminal
+                # positions collection on the first immediate read. Retry only that
+                # missing-mapping case. Invalid/mismatched broker data remains a hard
+                # failure and is never papered over.
+                if (
+                    exc.code != "broker_position_mapping_missing"
+                    or attempt == _POST_ORDER_VERIFY_ATTEMPTS
+                ):
+                    break
+
+            logger.warning(
+                "Post-order verification retrying read-only attempt=%d code=%s",
+                attempt,
+                getattr(last_verify_error, "code", "broker_position_mapping_missing"),
             )
-        except MetaApiGatewayError as exc:
+            await asyncio.sleep(_POST_ORDER_VERIFY_DELAY_SECONDS)
+
+        if mapped is None:
+            code = getattr(last_verify_error, "code", "broker_position_mapping_missing")
             self._record_execution_failure(
                 owner_user_id=owner_user_id,
                 signal_id=signal.signal_id,
-                code=exc.code,
+                code=code,
                 submitted_order_count=len(order_ids),
             )
-            raise Day26ExecutionError(exc.code) from exc
+            raise Day26ExecutionError(code) from last_verify_error
 
-        mapped = self._map_broker_positions(
-            owner_user_id=owner_user_id,
-            signal=signal,
-            sizing=sizing,
-            execution_entry=execution_entry,
-            planned=planned,
-            order_ids=order_ids,
-            broker_positions=broker_positions,
-        )
         self._audit_success(
             owner_user_id=owner_user_id,
             signal=signal,
@@ -340,22 +358,6 @@ class Day26Mt5ExecutionService:
         initial_state: Day23LiveState,
     ) -> tuple[Decimal, Day23LiveState]:
         if not signal.is_zone:
-            # A provider posting a single round number ("SELL 4386") is stating where
-            # they want in, not asserting that the tick will print at exactly that
-            # cent. Requiring strict equality against the live bid/ask made almost
-            # every single-price provider signal unexecutable, because gold moves in
-            # cents and the price is sampled once with no chasing.
-            #
-            # Accept the current executable price when it sits within a bounded
-            # tolerance of the stated entry, and return that live price so the trade
-            # is sized off the actual fill. Risk therefore stays exactly the user's
-            # configured percentage rather than drifting with the difference. This is
-            # the same mechanism a zone already uses.
-            #
-            # Outside the tolerance nothing changes: the provider's price is returned
-            # unchanged and the Day 25 gate still blocks with entry_price_unavailable.
-            # There is no chase, no wait, no retry and no substitution of a "better"
-            # price - the sample is taken once, exactly as before.
             if self._entry_tolerance <= 0:
                 return signal.entry_low, initial_state
             try:
@@ -363,7 +365,6 @@ class Day26Mt5ExecutionService:
                     str(Day23Mt5ReadService.executable_price(initial_state, signal.side))
                 )
             except Day23ReadError:
-                # Let the unchanged Day 25 preflight report the price failure.
                 return signal.entry_low, initial_state
             if abs(executable - signal.entry_low) <= self._entry_tolerance:
                 return executable, initial_state
@@ -464,7 +465,7 @@ class Day26Mt5ExecutionService:
                 text(
                     """
                     SELECT id, metaapi_account_id, metaapi_token_ciphertext,
-                           account_environment, status
+                           account_environment
                     FROM mt5_accounts
                     WHERE owner_user_id = :owner_user_id
                       AND status != 'revoked'
@@ -477,8 +478,6 @@ class Day26Mt5ExecutionService:
                 raise Day26ExecutionError("mt5_account_not_configured")
             if str(account_row["account_environment"]).lower() != "demo":
                 raise Day26ExecutionError("day26_demo_account_required")
-            if str(account_row["status"]) != "connected":
-                raise Day26ExecutionError("mt5_account_not_connected")
 
         symbol = str(signal_row["symbol"] or "").strip().upper()
         side = str(signal_row["side"] or "").strip().upper()
