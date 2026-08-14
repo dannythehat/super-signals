@@ -419,3 +419,55 @@ def test_application_logging_exposes_info_diagnostics() -> None:
     finally:
         root.handlers = original_handlers
         root.setLevel(original_level)
+
+
+@pytest.mark.asyncio
+async def test_one_unreadable_source_does_not_stop_the_others(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A channel Telethon cannot resolve must not take the whole reader down.
+
+    Observed live: PipXpert's entity could not be resolved, the ValueError escaped
+    catch-up, killed the reader worker, and the worker then restarted into the same
+    failure. Every other provider on that reader stopped being watched.
+    """
+    bad = ListeningSource(source_id=uuid4(), chat_id=-1001821216397, title="Unreadable")
+    good = ListeningSource(source_id=uuid4(), chat_id=-100999, title="Readable")
+    plan = ReaderListeningPlan(
+        telegram_account_id=uuid4(), session_ciphertext=b"fixture", sources=(bad, good)
+    )
+    now = datetime.now(UTC)
+
+    class FakeClient:
+        async def get_messages(self, chat_id: int, limit: int):
+            if chat_id == bad.chat_id:
+                raise ValueError(
+                    "Could not find the input entity for PeerChannel(channel_id=1821216397)"
+                )
+            return [
+                SimpleNamespace(
+                    id=900,
+                    raw_text="SELL XAUUSD 4386\nSL 4410\nTP 4382",
+                    date=now - timedelta(seconds=5),
+                    edit_date=None,
+                    reply_to=None,
+                    media=None,
+                )
+            ]
+
+    persisted: list[int] = []
+    dispatched: list[int] = []
+    monkeypatch.setattr(
+        Day21TelegramListenerManager,
+        "_persist_message",
+        lambda _self, captured: (persisted.append(captured.telegram_message_id) or True),
+    )
+
+    manager = object.__new__(Day28TelegramListenerManager)
+    manager._dispatch_sync = lambda **kwargs: dispatched.append(kwargs["telegram_message_id"])
+
+    # Must not raise, and must still reach the readable source that follows it.
+    await manager._recover_live_gaps(FakeClient(), plan)
+
+    assert persisted == [900]
+    assert dispatched == [900]

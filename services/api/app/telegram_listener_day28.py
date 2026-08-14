@@ -280,7 +280,23 @@ class Day28TelegramListenerManager(Day21TelegramListenerManager):
             # whole sweep would drift by however long the earlier sources took,
             # progressively mislabelling genuinely fresh deliveries as stale.
             now = datetime.now(UTC)
-            messages = await client.get_messages(source.chat_id, limit=_DAY28_LIVE_RECOVERY_LIMIT)
+            try:
+                messages = await client.get_messages(
+                    source.chat_id, limit=_DAY28_LIVE_RECOVERY_LIMIT
+                )
+            except Exception:
+                # Same reasoning as catch-up. Without this the sweep aborts on the
+                # first unreadable source, so every source after it in the list is
+                # never reconciled at all -- the gap recovery would quietly cover
+                # only part of the catalogue.
+                logger.exception(
+                    "Telegram live recovery skipped one unreadable source",
+                    extra={
+                        "source_id": str(source.source_id),
+                        "chat_id": source.chat_id,
+                    },
+                )
+                continue
             for message in reversed(list(messages)):
                 message_id = getattr(message, "id", None)
                 if message_id is None:
@@ -380,7 +396,27 @@ class Day28TelegramListenerManager(Day21TelegramListenerManager):
     ) -> None:
         """Run Day 21 catch-up without any broker mutation."""
         for source in plan.sources:
-            messages = await client.get_messages(source.chat_id, limit=25)
+            try:
+                messages = await client.get_messages(source.chat_id, limit=25)
+            except Exception:
+                # One unreadable source must not take down the reader.
+                #
+                # Telethon raises when it cannot resolve a channel entity -- the
+                # reader account lost access, the channel changed, or the session
+                # cache no longer holds it. That exception used to propagate out of
+                # catch-up and kill the whole worker, which then restarted, hit the
+                # same source and died again. A single bad channel silently stopped
+                # every other provider on that reader from being watched at all.
+                #
+                # Skip it, record it, and carry on with the remaining sources.
+                logger.exception(
+                    "Telegram catch-up skipped one unreadable source",
+                    extra={
+                        "source_id": str(source.source_id),
+                        "chat_id": source.chat_id,
+                    },
+                )
+                continue
             for message in reversed(list(messages)):
                 message_id = getattr(message, "id", None)
                 if message_id is None:

@@ -122,3 +122,50 @@ def test_explicit_numeric_stop_still_wins_over_breakeven() -> None:
         action.get("value") == "4385" for action in result.actions
     ), result.actions
     assert "move_to_break_even" not in types
+
+
+def test_take_partials_closes_the_first_tp_leg() -> None:
+    """Owner reading, 14 Aug 2026: partial wording is written for followers holding
+    one position. Super Signals holds one per TP level, so the equivalent is closing
+    the nearest leg and leaving the rest running. No partial-volume close needed."""
+    for text in (
+        "TP1 hit, take partials",
+        "Take partial profits here",
+        "Close half now team",
+        "Bank half and let the rest run",
+        "Secure half here",
+    ):
+        result = extract_day27_management_actions(text)
+        assert {"type": "close", "target": "TP1", "value": None} in result.actions, text
+
+
+def test_take_partials_does_not_close_everything() -> None:
+    """The whole point is that the remaining legs keep running."""
+    result = extract_day27_management_actions("Take partials here")
+    targets = {action["target"] for action in result.actions if action["type"] == "close"}
+    assert "all" not in targets
+
+
+def test_close_all_still_wins_over_partial_wording() -> None:
+    """An explicit full exit is not downgraded into a partial."""
+    result = extract_day27_management_actions("Close all now, take partials if you missed it")
+    assert {"type": "close", "target": "all", "value": None} in result.actions
+    assert {"type": "close", "target": "TP1", "value": None} not in result.actions
+
+
+def test_partials_combined_with_breakeven_does_both() -> None:
+    """"TP1 hit, take partials and move SL to BE" is two instructions, not one."""
+    result = extract_day27_management_actions("TP1 hit, take partials and move SL to BE")
+    assert {"type": "close", "target": "TP1", "value": None} in result.actions
+    assert {"type": "move_to_break_even", "target": "all", "value": None} in result.actions
+
+
+def test_future_intent_to_take_partials_is_not_an_instruction() -> None:
+    """Telling you what they plan to do later is not telling you to do it now."""
+    for text in (
+        "At TP2 I'll close half profits & set breakeven for zero risk",
+        "I will take partials when we get there",
+        "We'll bank half once it moves",
+    ):
+        result = extract_day27_management_actions(text)
+        assert {"type": "close", "target": "TP1", "value": None} not in result.actions, text
