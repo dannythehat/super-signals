@@ -175,18 +175,43 @@ def test_broker_volume_step_rounds_down_and_never_exceeds_risk() -> None:
     assert result.actual_risk_per_position <= result.risk_budget_per_position
 
 
-def test_broker_minimum_is_not_forced_when_it_would_exceed_risk() -> None:
-    with pytest.raises(Day24RiskSizingError, match="volume_below_broker_minimum"):
-        Day24RiskSizer.size(
-            balance="1000",
-            risk_percent="0.5",
-            signal_entry_price="4000",
-            signal_stop_loss="4010",
-            tick_size="0.01",
-            tick_value="1",
-            take_profit_count=1,
-            volume_rules=rules(minimum="0.01", step="0.01"),
-        )
+def test_broker_minimum_is_used_when_target_volume_is_smaller() -> None:
+    result = Day24RiskSizer.size(
+        balance="1000",
+        risk_percent="0.5",
+        signal_entry_price="4000",
+        signal_stop_loss="4010",
+        tick_size="0.01",
+        tick_value="1",
+        take_profit_count=1,
+        volume_rules=rules(minimum="0.01", step="0.01"),
+    )
+
+    assert result.raw_volume == Decimal("0.005")
+    assert result.volume == Decimal("0.01")
+    assert result.risk_budget_per_position == Decimal("5")
+    assert result.actual_risk_per_position == Decimal("10.00")
+
+
+def test_live_small_account_shape_uses_broker_minimum_instead_of_blocking() -> None:
+    result = Day24RiskSizer.size(
+        balance="1025.35",
+        risk_percent="1",
+        signal_entry_price="4348.68",
+        signal_stop_loss="4325",
+        tick_size="0.01",
+        tick_value="1",
+        take_profit_count=3,
+        volume_rules=rules(minimum="0.01", step="0.01"),
+        signal_requests_double_lot=True,
+        double_lot_approved=True,
+    )
+
+    assert result.effective_risk_percent == Decimal("2")
+    assert result.raw_volume < Decimal("0.01")
+    assert result.volume == Decimal("0.01")
+    assert result.position_count == 3
+    assert result.actual_risk_per_position == Decimal("23.68")
 
 
 def test_broker_maximum_caps_volume_without_exceeding_risk() -> None:
