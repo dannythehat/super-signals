@@ -94,7 +94,7 @@ class Day24RiskSizingResult:
 
 
 class Day24RiskSizer:
-    """Calculate one safe broker volume for every TP position in a signal."""
+    """Calculate one broker-valid volume for every TP position in a signal."""
 
     @classmethod
     def size(
@@ -140,12 +140,17 @@ class Day24RiskSizer:
             raise Day24RiskSizingError("loss_per_lot_invalid")
 
         raw_volume = risk_budget / loss_per_lot
+        broker_minimum_applied = raw_volume < volume_rules.minimum
         volume = cls._round_volume_down(raw_volume, volume_rules)
         actual_risk = volume * loss_per_lot
 
-        # Broker rounding must never increase a position above the user's
-        # effective per-position risk instruction.
-        if actual_risk > risk_budget:
+        # Normal broker-step rounding must never increase risk above the user's
+        # calculated target. The one intentional exception is the broker's hard
+        # minimum trade size: if the target volume is smaller than that minimum,
+        # use the minimum lot instead of refusing an otherwise valid trade. The
+        # actual risk is still reported truthfully and the downstream margin/funds
+        # gate remains responsible for deciding whether the account can fund it.
+        if actual_risk > risk_budget and not broker_minimum_applied:
             raise Day24RiskSizingError("risk_budget_exceeded")
 
         positions = tuple(
@@ -186,7 +191,7 @@ class Day24RiskSizer:
     def _round_volume_down(raw_volume: Decimal, rules: BrokerVolumeRules) -> Decimal:
         rules.validate()
         if raw_volume < rules.minimum:
-            raise Day24RiskSizingError("volume_below_broker_minimum")
+            return rules.minimum
 
         capped = min(raw_volume, rules.maximum)
         steps_from_minimum = ((capped - rules.minimum) / rules.step).to_integral_value(
