@@ -456,17 +456,24 @@ class Day28FullExecutionRouter:
         entity_type: str,
         payload: dict[str, Any],
     ) -> None:
-        # Execution outcomes were previously recorded only as audit rows. That makes
-        # the single most important question about this service -- did the last
-        # provider signal actually place a trade, and if not why -- answerable only
-        # by querying the database. Mirror the outcome to the platform log so it is
-        # observable in real time. Identifiers and counts only; no credentials,
-        # balances, provider identity or message text.
+        # Execution outcomes were previously recorded only as audit rows, making the
+        # single most important question about this service -- did the last provider
+        # signal actually place a trade, and if not why -- answerable only by
+        # querying the database. Mirror the outcome to the platform log.
+        #
+        # Report what actually happened at the broker rather than the word
+        # "succeeded". A management route that finds no open positions completes
+        # without error and creates nothing, and calling that a success reads as a
+        # placed trade to anyone scanning the log. State the counts instead so a
+        # no-op can never be mistaken for an order.
+        positions = payload.get("position_count", payload.get("positions", 0))
+        broker_actions = payload.get("broker_actions_sent", payload.get("broker_actions", 0))
         logger.info(
-            "Execution route succeeded %s=%s positions=%s",
+            "Execution route completed %s=%s positions=%s broker_actions=%s",
             entity_type,
             entity_id,
-            payload.get("position_count", payload.get("positions", "n/a")),
+            positions,
+            broker_actions,
         )
         with self._session_factory() as session:
             session.add(
