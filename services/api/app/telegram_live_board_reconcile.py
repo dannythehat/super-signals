@@ -15,7 +15,6 @@ from __future__ import annotations
 
 import hashlib
 import logging
-from typing import Any
 
 from sqlalchemy import text
 
@@ -27,7 +26,9 @@ from app.telegram_publisher_day34_cutover import Day34CutoverTelegramPublisherMa
 logger = logging.getLogger(__name__)
 
 
-def _current_live_board_message_id(manager: Day34CutoverTelegramPublisherManager) -> int | None:
+def _current_live_board_message_id(
+    manager: Day34CutoverTelegramPublisherManager,
+) -> int | None:
     with manager._session_factory() as session:
         value = session.execute(
             text(
@@ -42,7 +43,10 @@ def _current_live_board_message_id(manager: Day34CutoverTelegramPublisherManager
 
 
 def _is_message_not_modified(exc: TelegramPublishError) -> bool:
-    return exc.code == "telegram_http_400" and "message is not modified" in exc.reason.lower()
+    return (
+        exc.code == "telegram_http_400"
+        and "message is not modified" in exc.reason.lower()
+    )
 
 
 def _is_benign_unpin(exc: TelegramPublishError) -> bool:
@@ -53,7 +57,7 @@ def _is_benign_unpin(exc: TelegramPublishError) -> bool:
 
 
 def force_reconcile_live_board(manager: Day34CutoverTelegramPublisherManager) -> bool:
-    """Force Telegram's stored board message to current DB truth and make it the active pin."""
+    """Force Telegram's board to current DB truth and make it the active pin."""
 
     # First run the normal state-change logic. This creates/replaces the board if the
     # stored Telegram message genuinely no longer exists.
@@ -130,8 +134,14 @@ def reconcile_live_board_on_startup() -> bool:
     """Best-effort startup repair. Failure is logged and never blocks trading startup."""
 
     settings = get_publisher_settings()
-    if not settings.enabled or settings.bot_token is None or settings.destination_chat_id is None:
-        logger.info("Telegram live board startup reconcile skipped: publisher is not configured")
+    if (
+        not settings.enabled
+        or settings.bot_token is None
+        or settings.destination_chat_id is None
+    ):
+        logger.info(
+            "Telegram live board startup reconcile skipped: publisher is not configured"
+        )
         return False
 
     manager = Day34CutoverTelegramPublisherManager(
@@ -147,7 +157,11 @@ def reconcile_live_board_on_startup() -> bool:
     try:
         repaired = force_reconcile_live_board(manager)
     except Exception as exc:
-        code = exc.code if isinstance(exc, TelegramPublishError) else "startup_live_board_reconcile_failed"
+        code = (
+            exc.code
+            if isinstance(exc, TelegramPublishError)
+            else "startup_live_board_reconcile_failed"
+        )
         reason = exc.reason if isinstance(exc, TelegramPublishError) else str(exc)
         try:
             manager._record_board_failure(str(code), str(reason)[:500])
