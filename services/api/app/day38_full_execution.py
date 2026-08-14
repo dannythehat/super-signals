@@ -238,6 +238,49 @@ class Day38FullExecutionRouter(Day28FullExecutionRouter):
             except Exception:
                 member_result = None
 
+            # A provider can keep publishing management for a setup that Super Signals
+            # never opened (for example an entry that was outside the literal zone).
+            # With zero Owner positions and zero member targets there is nothing to
+            # mutate. That is an expected not-applicable update, not an execution
+            # failure. Do not produce a scary broker-route warning or invent a retry.
+            # If target exposure exists, or member routing itself was unavailable,
+            # the normal failure path below remains authoritative.
+            no_exposure_anywhere = (
+                not owner_has_positions
+                and member_result is not None
+                and member_result.target_count == 0
+            )
+            if no_exposure_anywhere:
+                self._audit_success(
+                    entity_id=signal_id,
+                    entity_type="signal",
+                    payload={
+                        "route": "trade_update",
+                        "source_revision_index": revision_index,
+                        "lifecycle_event_id": str(lifecycle_event_id),
+                        "broker_actions_sent": 0,
+                        "automatic_execution": True,
+                        "day38_multi_user": True,
+                        "management_applicable": False,
+                        "no_mapped_exposure": True,
+                        "owner_reference_managed": False,
+                        "owner_reference_error_code": None,
+                        "member_target_count": 0,
+                        "member_managed_count": 0,
+                        "member_skipped_count": 0,
+                        "owner_failure_blocked_members": False,
+                    },
+                )
+                return Day28RouteResult(
+                    outcome="ignored",
+                    decision=stored.decision,
+                    action=stored.action,
+                    signal_id=signal_id,
+                    lifecycle_event_id=lifecycle_event_id,
+                    broker_actions_sent=0,
+                    reason="day38_management_not_applicable_no_positions",
+                )
+
             member_success = (
                 member_result.any_management_succeeded if member_result is not None else False
             )
