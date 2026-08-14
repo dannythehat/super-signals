@@ -16,6 +16,7 @@ from contextvars import ContextVar, Token
 from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
 from typing import Any
+from uuid import UUID
 
 from sqlalchemy import text
 from sqlalchemy.orm import Session, sessionmaker
@@ -23,7 +24,12 @@ from sqlalchemy.orm import Session, sessionmaker
 from app.metaapi_gateway import MetaApiGatewayError
 from app.metaapi_read_gateway import MetaApiReadGateway
 from app.metaapi_trade_gateway import MetaApiTradeGateway
-from app.mt5_execution_day26 import _resolve_entry_tolerance
+from app.mt5_execution_day26 import (
+    Day26ExecutionError,
+    _AccountInput,
+    _SignalInput,
+    _resolve_entry_tolerance,
+)
 from app.mt5_execution_day26_atomic import AtomicDay26Mt5ExecutionService
 
 
@@ -121,9 +127,6 @@ class Day28GuardedExecutionService(AtomicDay26Mt5ExecutionService):
             read_gateway=read_gateway,
             margin_gateway=margin_gateway,
             trade_gateway=self._day28_guard,
-            # Locked automatic-execution rule: sample the provider entry now.  Never
-            # wait for a later re-entry into a zone and never turn an old signal into
-            # a delayed market order.
             zone_wait_seconds=0.0,
             zone_poll_seconds=zone_poll_seconds,
         )
@@ -141,6 +144,138 @@ class Day28GuardedExecutionService(AtomicDay26Mt5ExecutionService):
         finally:
             if token is not None:
                 self._day28_guard.reset_zone(token)
+
+    def _load_inputs(
+        self,
+        owner_user_id: UUID,
+        signal_id: UUID,
+    ) -> tuple[_SignalInput, _AccountInput]:
+        """Owner paper inputs without a stale cached-connection veto.
+
+        The account must exist, be demo and not be revoked. The live Day 23 read that
+        immediately follows is responsible for proving whether MetaAPI/MT5 is actually
+        reachable and tradeable now.
+        """
+        with self._session_factory() as session:
+            signal_row = session.execute(
+                text(
+                    """
+                    SELECT id, symbol, side, order_type, entry_low, entry_high,
+                           stop_loss, take_profits, has_open_runner, parser_status,
+                           risk_multiplier, source_revision_index, source_posted_at
+                    FROM signals
+                    WHERE id = :signal_id
+                    FOR UPDATE
+                    """
+                ),
+                {"signal_id": signal_id},
+            ).mappings().first()
+            if signal_row is None:
+                raise Day26ExecutionError("signal_not_found")
+            if str(signal_row["parser_status"]) != "accepted":
+                raise Day26ExecutionError("signal_not_accepted")
+            if str(signal_row["order_type"]) != "market":
+                raise Day26ExecutionError("day26_market_signal_required")
+
+            existing_count = session.execute(
+                text(
+                    """
+                    SELECT COUNT(*)
+                    FROM positions
+                    WHERE signal_id = :signal_id AND user_id = :user_id
+                    """
+                ),
+                {"signal_id": signal_id, "user_id": owner_user_id},
+            ).scalar_one()
+            if int(existing_count) != 0:
+                raise Day26ExecutionError("signal_execution_already_started")
+
+            cancelled = bool(
+                session.execute(
+                    text(
+                        """
+                        SELECT EXISTS(
+                            SELECT 1
+                            FROM signal_lifecycle_events
+                            WHERE signal_id = :signal_id
+                              AND event_type = 'cancel'
+                        )
+                        """
+                    ),
+                    {"signal_id": signal_id},
+                ).scalar_one()
+            )
+            if cancelled:
+                raise Day26ExecutionError("signal_cancelled")
+
+            account_row = session.execute(
+                text(
+                    """
+                    SELECT id, metaapi_account_id, metaapi_token_ciphertext,
+                           account_environment
+                    FROM mt5_accounts
+                    WHERE owner_user_id = :owner_user_id
+                      AND status != 'revoked'
+                    LIMIT 1
+                    """
+                ),
+                {"owner_user_id": owner_user_id},
+            ).mappings().first()
+            if account_row is None:
+                raise Day26ExecutionError("mt5_account_not_configured")
+            if str(account_row["account_environment"]).lower() != "demo":
+                raise Day26ExecutionError("day26_demo_account_required")
+
+        symbol = str(signal_row["symbol"] or "").strip().upper()
+        side = str(signal_row["side"] or "").strip().upper()
+        if symbol != "XAUUSD":
+            raise Day26ExecutionError("day26_xauusd_required")
+        if side not in {"BUY", "SELL"}:
+            raise Day26ExecutionError("trade_side_invalid")
+
+        entry_low = self._required_decimal(signal_row["entry_low"], "signal_entry_invalid")
+        entry_high = self._required_decimal(signal_row["entry_high"], "signal_entry_invalid")
+        if entry_high < entry_low:
+            raise Day26ExecutionError("signal_entry_invalid")
+        stop_loss = self._required_decimal(signal_row["stop_loss"], "signal_stop_loss_invalid")
+        take_profits = self._take_profits(signal_row["take_profits"])
+        has_open_runner = bool(signal_row["has_open_runner"])
+        if not self._directionally_valid(
+            side=side,
+            entry_low=entry_low,
+            entry_high=entry_high,
+            stop_loss=stop_loss,
+            take_profits=take_profits,
+        ):
+            raise Day26ExecutionError("strict_directional_validation_failed")
+
+        risk_multiplier = self._required_decimal(
+            signal_row["risk_multiplier"], "signal_risk_multiplier_invalid"
+        )
+        source_posted_at = signal_row["source_posted_at"]
+        if source_posted_at is None:
+            raise Day26ExecutionError("signal_posted_at_invalid")
+
+        return (
+            _SignalInput(
+                signal_id=signal_id,
+                symbol=symbol,
+                side=side,
+                entry_low=entry_low,
+                entry_high=entry_high,
+                stop_loss=stop_loss,
+                take_profits=take_profits,
+                has_open_runner=has_open_runner,
+                signal_requests_double_lot=risk_multiplier > Decimal("1"),
+                source_revision_index=int(signal_row["source_revision_index"]),
+                source_posted_at=source_posted_at,
+            ),
+            _AccountInput(
+                local_account_id=account_row["id"],
+                metaapi_account_id=str(account_row["metaapi_account_id"]),
+                token_ciphertext=bytes(account_row["metaapi_token_ciphertext"]),
+            ),
+        )
 
     def _provider_zone(self, signal_id: Any) -> tuple[Decimal, Decimal]:
         with self._day28_session_factory() as session:
