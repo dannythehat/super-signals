@@ -187,13 +187,18 @@ class Day26Mt5ExecutionService:
         except Day23ReadError as exc:
             raise Day26ExecutionError(exc.code) from exc
 
-        execution_entry, live_state = await self._resolve_entry(
-            owner_user_id=owner_user_id,
-            signal=signal,
-            day23=day23,
-            initial_state=live_state,
-        )
-
+        # Read the symbol specification BEFORE waiting for the entry, not after.
+        #
+        # A live zone signal was lost because the engine waited for price to enter
+        # the provider's zone, then spent the next several hundred milliseconds
+        # fetching the specification and calculating margin, by which time gold had
+        # ticked back out of the zone and the submission was refused. The
+        # specification is static contract data for the symbol and does not depend
+        # on the entry price, so fetching it here removes a broker round trip from
+        # the moment that actually matters: the instant price becomes tradeable.
+        #
+        # The account region is account-level and does not change while waiting, so
+        # the pre-wait live_state is the correct source for it.
         try:
             specification = await self._read_gateway.read_symbol_specification(
                 token=token,
@@ -203,6 +208,13 @@ class Day26Mt5ExecutionService:
             )
         except MetaApiGatewayError as exc:
             raise Day26ExecutionError(exc.code) from exc
+
+        execution_entry, live_state = await self._resolve_entry(
+            owner_user_id=owner_user_id,
+            signal=signal,
+            day23=day23,
+            initial_state=live_state,
+        )
 
         sizing = self._size_signal(
             signal=signal,
