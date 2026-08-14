@@ -26,7 +26,6 @@ class FakeMarginGateway:
         self.error = error
         self.error_code = error_code
         self.retryable = retryable
-        # None means "fail every call"; an int fails only the first N calls.
         self.fail_times = fail_times
         self.calls: list[dict[str, object]] = []
 
@@ -193,7 +192,7 @@ def test_stale_price_blocks_before_margin_check() -> None:
     assert gateway.calls == []
 
 
-def test_insufficient_funds_blocks_entire_tp_set_not_partial_signal() -> None:
+def test_insufficient_funds_blocks_entire_tp_set_when_margin_calculation_succeeds() -> None:
     gateway = FakeMarginGateway(margin=250.01)
     result = run_preflight(
         live_state=state(ask=4000.0, free_margin=250.0), side="BUY", gateway=gateway
@@ -233,62 +232,43 @@ def test_terminal_trading_disabled_blocks_before_margin_call() -> None:
     assert gateway.calls == []
 
 
-def test_persistent_margin_failure_blocks_signal_after_bounded_retry() -> None:
+def test_persistent_margin_failure_is_advisory_and_proceeds_to_broker() -> None:
     gateway = FakeMarginGateway(error=True)
     result = run_preflight(live_state=state(ask=4000.0), side="BUY", gateway=gateway)
 
-    assert result.proceed is False
-    assert result.block_reason == "margin_check_unavailable"
-    # Retryable failures get exactly one bounded retry, never an unbounded loop.
-    assert result.margin_check_count == 2
-    assert result.positions_allowed == 0
+    assert result.proceed is True
+    assert result.block_reason is None
+    assert result.required_margin is None
+    assert result.margin_check_count == 1
+    assert result.positions_allowed == 3
     assert result.trade_action_created is False
-    assert len(gateway.calls) == 2
+    assert len(gateway.calls) == 1
 
 
-def test_non_retryable_margin_failure_blocks_immediately_without_retry() -> None:
-    # A permission/auth/config failure is a real condition, not a blip. Retrying
-    # it would waste a MetaAPI call and delay the honest fail-closed answer.
+def test_non_retryable_margin_endpoint_failure_is_also_advisory() -> None:
     gateway = FakeMarginGateway(
         error=True, error_code="metaapi_permission_denied", retryable=False
     )
     result = run_preflight(live_state=state(ask=4000.0), side="BUY", gateway=gateway)
 
-    assert result.proceed is False
-    assert result.block_reason == "margin_check_unavailable"
+    assert result.proceed is True
+    assert result.block_reason is None
+    assert result.required_margin is None
     assert result.margin_check_count == 1
-    assert result.positions_allowed == 0
-    assert result.trade_action_created is False
+    assert result.positions_allowed == 3
     assert len(gateway.calls) == 1
 
 
-def test_transient_margin_failure_recovers_on_retry_and_allows_signal() -> None:
-    # The exact paper-launch defect: one transient MetaAPI blip must not
-    # permanently discard a genuine provider signal.
+def test_margin_preflight_never_retries_a_stale_signal() -> None:
     gateway = FakeMarginGateway(margin=250.0, error=True, fail_times=1)
     result = run_preflight(
         live_state=state(ask=4000.0, free_margin=1000.0), side="BUY", gateway=gateway
     )
 
     assert result.proceed is True
-    assert result.block_reason is None
-    assert result.positions_allowed == 3
-    assert result.required_margin == Decimal("250.0")
-    assert result.margin_check_count == 2
-    assert len(gateway.calls) == 2
-
-
-def test_retry_never_bypasses_insufficient_funds() -> None:
-    # Recovering from a blip must still respect the all-or-nothing funds gate.
-    gateway = FakeMarginGateway(margin=5000.0, error=True, fail_times=1)
-    result = run_preflight(
-        live_state=state(ask=4000.0, free_margin=100.0), side="BUY", gateway=gateway
-    )
-
-    assert result.proceed is False
-    assert result.block_reason == "insufficient_funds"
-    assert result.positions_allowed == 0
-    assert result.trade_action_created is False
+    assert result.required_margin is None
+    assert result.margin_check_count == 1
+    assert len(gateway.calls) == 1
 
 
 class CaptureMarginGateway(MetaApiMarginGateway):
