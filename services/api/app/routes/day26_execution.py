@@ -1,4 +1,4 @@
-"""Owner-only Day 26 V1 exact/zone multi-position demo execution route."""
+"""Owner-only V1 exact/zone multi-position demo execution route."""
 
 from __future__ import annotations
 
@@ -10,11 +10,11 @@ from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from pydantic import BaseModel, Field
 
 from app.access_control import require_permission
+from app.day28_zone_guard import Day28GuardedExecutionService
 from app.metaapi_margin_gateway import MetaApiMarginGateway
 from app.metaapi_read_gateway import MetaApiReadGateway
 from app.metaapi_trade_gateway import MetaApiTradeGateway
 from app.mt5_execution_day26 import Day26ExecutionError
-from app.mt5_execution_day26_atomic import AtomicDay26Mt5ExecutionService
 from app.mt5_runtime import require_mt5_service
 
 router = APIRouter(prefix="/owner/mt5/day26", tags=["mt5", "day26"])
@@ -51,12 +51,12 @@ class Day26ExecutionResponse(BaseModel):
     positions: list[Day26PositionResponse]
 
 
-def _service(request: Request) -> AtomicDay26Mt5ExecutionService:
+def _service(request: Request) -> Day28GuardedExecutionService:
     cached = getattr(request.app.state, "day26_mt5_execution_service", None)
     if cached is not None:
         return cached
     mt5_service = require_mt5_service(request)
-    service = AtomicDay26Mt5ExecutionService(
+    service = Day28GuardedExecutionService(
         session_factory=mt5_service._session_factory,
         cipher=mt5_service._cipher,
         read_gateway=MetaApiReadGateway(),
@@ -69,19 +69,18 @@ def _service(request: Request) -> AtomicDay26Mt5ExecutionService:
 
 def _safe_message(code: str) -> str:
     messages = {
-        "day26_market_signal_required": "Day 26 V1 supports market signals only; pending orders are skipped.",
-        "day26_demo_account_required": "Day 26 can execute only on the connected Vantage demo account.",
-        "entry_price_unavailable": "The live XAUUSD price does not equal the provider's exact entry, so no order was sent.",
-        "zone_not_reached": "The live XAUUSD price did not enter the provider's zone within the five-minute V1 window.",
+        "day26_market_signal_required": "V1 supports market signals only; pending orders are skipped.",
+        "day26_demo_account_required": "This route can execute only on the connected Vantage demo account.",
+        "entry_price_unavailable": "The current XAUUSD price is outside the approved provider-entry tolerance, so no order was sent.",
+        "zone_not_reached": "The current XAUUSD price is outside the provider's entry zone, so no delayed order was created.",
         "signal_changed_before_execution": "The provider edited the signal before execution; this attempt was stopped so the latest version can be used.",
         "signal_no_longer_accepted": "The provider's latest signal version is no longer execution-eligible.",
         "signal_cancelled": "The provider cancelled the setup before execution.",
         "insufficient_funds": "The broker-reported free margin is insufficient for the complete position set.",
         "day26_partial_execution_rollback_failed": "A partial submission could not be fully compensated. Trading is blocked until the broker state is reconciled.",
         "mt5_account_not_configured": "The Vantage demo account is not configured.",
-        "mt5_account_not_connected": "The Vantage demo account is not connected.",
     }
-    return messages.get(code, "Day 26 demo execution was stopped safely.")
+    return messages.get(code, "Demo execution was stopped safely.")
 
 
 def _status_for(code: str) -> int:
@@ -99,7 +98,7 @@ async def execute_day26_demo_signal(
     response: Response,
     identity: OwnerIdentity,
 ) -> Day26ExecutionResponse:
-    """Execute one existing canonical V1 signal through Days 23-26 on demo only."""
+    """Execute one existing canonical V1 signal on the owner demo account."""
     try:
         result = await _service(request).execute_owner_demo_signal(
             owner_user_id=identity["id"],
