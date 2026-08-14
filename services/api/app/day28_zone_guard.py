@@ -27,6 +27,7 @@ from sqlalchemy.orm import Session, sessionmaker
 from app.metaapi_gateway import MetaApiGatewayError
 from app.metaapi_read_gateway import MetaApiReadGateway
 from app.metaapi_trade_gateway import MetaApiTradeGateway
+from app.mt5_execution_day26 import _resolve_entry_tolerance
 from app.mt5_execution_day26_atomic import AtomicDay26Mt5ExecutionService
 
 
@@ -44,9 +45,11 @@ class Day28ZoneGuardTradeGateway:
         *,
         base: MetaApiTradeGateway,
         read_gateway: MetaApiReadGateway,
+        tolerance: Decimal | str | None = None,
     ) -> None:
         self._base = base
         self._read = read_gateway
+        self._tolerance = _resolve_entry_tolerance(tolerance)
         self._zone: ContextVar[_Zone | None] = ContextVar("day28_provider_zone", default=None)
 
     def set_zone(self, low: Decimal, high: Decimal) -> Token[_Zone | None]:
@@ -73,7 +76,15 @@ class Day28ZoneGuardTradeGateway:
             current = self._positive_decimal(payload.get(field))
             if current is None:
                 raise MetaApiGatewayError("zone_submission_price_unavailable", retryable=True)
-            if current < zone.low or current > zone.high:
+            # Allow the same bounded tolerance used for single-price entries.
+            #
+            # A human following this provider clicks market and accepts a fill a
+            # cent or two either side of the zone edge. Demanding strict containment
+            # at the instant of submission means one ordinary tick between the price
+            # check and the order request cancels the entire signal, which is what
+            # cost a live TDC zone trade. The guard still refuses a genuine
+            # departure from the zone; it just stops treating a tick as one.
+            if current < zone.low - self._tolerance or current > zone.high + self._tolerance:
                 raise MetaApiGatewayError("zone_left_before_position_submission")
         return await self._base.place_market_order(**kwargs)
 

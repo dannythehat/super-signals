@@ -95,3 +95,62 @@ async def test_exact_entry_path_is_not_changed_by_day28_zone_guard() -> None:
 
     assert read.calls == 0
     assert len(base.market_calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_marginal_tick_outside_the_zone_still_submits() -> None:
+    """One ordinary tick past the zone edge must not cancel the whole signal.
+
+    A live TDC zone trade was lost this way: price entered the zone, the engine
+    spent a few hundred milliseconds on preflight, and the pre-submission check
+    found price a fraction outside the edge and refused every leg. A human
+    following the same signal clicks market and takes the fill.
+    """
+    read = FakeReadGateway([{"ask": 100.70, "bid": 100.60}])
+    base = FakeTradeGateway()
+    guarded = Day28ZoneGuardTradeGateway(
+        base=base, read_gateway=read, tolerance=Decimal("0.50")
+    )
+    token = guarded.set_zone(Decimal("99.50"), Decimal("100.50"))
+    try:
+        await guarded.place_market_order(**ORDER)
+    finally:
+        guarded.reset_zone(token)
+
+    # 100.70 is 0.20 above the zone high, inside the 0.50 tolerance.
+    assert len(base.market_calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_genuine_departure_from_the_zone_is_still_refused() -> None:
+    """The guard must still exist. Tolerance widens the edge, it does not remove it."""
+    read = FakeReadGateway([{"ask": 101.60, "bid": 101.50}])
+    base = FakeTradeGateway()
+    guarded = Day28ZoneGuardTradeGateway(
+        base=base, read_gateway=read, tolerance=Decimal("0.50")
+    )
+    token = guarded.set_zone(Decimal("99.50"), Decimal("100.50"))
+    try:
+        with pytest.raises(MetaApiGatewayError, match="zone_left_before_position_submission"):
+            await guarded.place_market_order(**ORDER)
+    finally:
+        guarded.reset_zone(token)
+
+    assert base.market_calls == []
+
+
+@pytest.mark.asyncio
+async def test_zero_tolerance_restores_strict_zone_containment() -> None:
+    read = FakeReadGateway([{"ask": 100.70, "bid": 100.60}])
+    base = FakeTradeGateway()
+    guarded = Day28ZoneGuardTradeGateway(
+        base=base, read_gateway=read, tolerance=Decimal("0")
+    )
+    token = guarded.set_zone(Decimal("99.50"), Decimal("100.50"))
+    try:
+        with pytest.raises(MetaApiGatewayError, match="zone_left_before_position_submission"):
+            await guarded.place_market_order(**ORDER)
+    finally:
+        guarded.reset_zone(token)
+
+    assert base.market_calls == []

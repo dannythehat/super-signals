@@ -197,3 +197,42 @@ def test_runner_gateway_omits_take_profit() -> None:
     gateway=_CaptureTradeGateway()
     asyncio.run(gateway.place_market_order(token="test-token",account_id="account-1",region="london",side="BUY",symbol="XAUUSD",volume=.01,stop_loss=3990,take_profit=None,client_id="SS_000000000004_4"))
     assert gateway.payload is not None and "takeProfit" not in gateway.payload and "takeProfitUnits" not in gateway.payload
+
+
+def test_symbol_specification_is_read_before_waiting_for_the_zone(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Static preflight data must not sit in the critical path after price is tradeable.
+
+    A live TDC zone signal was lost because the engine waited for price to enter the
+    provider's zone and only then fetched the symbol specification and calculated
+    margin. By the time it submitted, gold had ticked back out of the zone and every
+    leg was refused. The specification is static for the symbol, so it belongs before
+    the wait, not between the zone opening and the order.
+    """
+    reads_when_spec_fetched: list[int] = []
+
+    class _OrderedRead(_ReadGateway):
+        async def read_symbol_specification(self, **kwargs: object):
+            reads_when_spec_fetched.append(_FakeDay23.reads)
+            return await super().read_symbol_specification(**kwargs)
+
+    # First quote sits below the zone so the wait loop must run; the second is inside.
+    _patch_states(
+        monkeypatch,
+        _live_state(bid=4380.0, ask=4380.2),
+        _live_state(bid=4392.0, ask=4392.2),
+    )
+    service = _Harness(entry_low="4391", entry_high="4394", zone_poll_seconds=0.01)
+    service._read_gateway = _OrderedRead()
+
+    asyncio.run(
+        service.execute_owner_demo_signal(
+            owner_user_id=OWNER, signal_id=SIGNAL, risk_percent="1", double_lot_approved=False
+        )
+    )
+
+    # Exactly one live-state read (the pre-wait one) had happened when the
+    # specification was fetched. If it were fetched after the wait, the loop's
+    # additional reads would already be counted here.
+    assert reads_when_spec_fetched == [1]
