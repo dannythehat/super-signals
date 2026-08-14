@@ -62,6 +62,12 @@ _SL_PATTERNS = (
         r"\bUSE\s+(\d+(?:\.\d+)?)\s+AS\s+(?:AN?\s+)?(?:SL|STOP\s*LOSS)\b",
         re.IGNORECASE,
     ),
+    # TDC dialect, observed live: "+20 / RISK FREE 4324" means move the stop to
+    # 4324. The price is explicit, so it must win over a generic breakeven.
+    re.compile(
+        r"\bRISK\s*[- ]?FREE\s+(?:AT\s+|@\s*)?(\d+(?:\.\d+)?)\b",
+        re.IGNORECASE,
+    ),
 )
 _TP_CHANGE = re.compile(
     r"\b(?:MOVE|SET|CHANGE|UPDATE)\s+(?:THE\s+)?TP\s*([1-9]\d*)\s*(?:TO|AT)?\s*(\d+(?:\.\d+)?)\b",
@@ -84,7 +90,8 @@ _MOVE_BE = re.compile(
 # Partial-taking wording. Deliberately requires a partial sense: a bare "close"
 # must not land here, and "close all" is matched earlier and wins.
 _TAKE_PARTIALS = re.compile(
-    r"\bTAKE\s+(?:SOME\s+|YOUR\s+|THE\s+)?PARTIALS?\b"
+    r"\b(?:TAKE|BOOK)\s+(?:SOME\s+|YOUR\s+|THE\s+|MAXIMUM\s+)?(?:PARTIALS?|MORES?|PROFITS?)\b"
+    r"|\bBOOK\s+PARTIAL\b"
     r"|\bTAKE\s+PARTIAL\s+PROFITS?\b"
     r"|\b(?:CLOSE|BANK|SECURE|TAKE)\s+(?:OFF\s+)?HALF\b"
     r"|\bCLOSE\s+(?:SOME|A\s+PORTION)\s+(?:OF\s+)?(?:IT|THE\s+(?:TRADE|POSITIONS?))?\b"
@@ -153,35 +160,8 @@ def _dedupe(actions: list[dict[str, str | None]]) -> tuple[dict[str, str | None]
     return tuple(result)
 
 
-def extract_day27_management_actions(raw_text: str) -> Day27ManagementPolicyResult:
-    """Extract mechanically explicit Day 27 broker-management actions.
-
-    Optional/choice language is deliberately ignored rather than converted into a
-    broker action. Provider result statements such as "I'm at BE" are also evidence,
-    not instructions.
-    """
-    text = (raw_text or "").strip()
-    if not text:
-        return Day27ManagementPolicyResult((), "unsupported_management")
-    if _OPTIONAL.search(text):
-        # Owner rule, 14 Aug 2026: when a provider offers a choice about protecting an
-        # open trade -- "bank the blue or go to BE", "make it risk free if you want" --
-        # take the cautious option instead of doing nothing. Moving the stop to
-        # breakeven removes the downside while leaving a winner running, so the
-        # trade is protected without being cut short on ambiguous wording.
-        #
-        # This is deliberately narrow. It fires only when the optional sentence names
-        # a protective outcome, and never when it concerns entering or adding to a
-        # position, where "if you want" must remain completely non-executable.
-        if _OPTIONAL_PROTECTIVE.search(text) and not _OPTIONAL_ENTRY.search(text):
-            return Day27ManagementPolicyResult(
-                ({"type": "move_to_break_even", "target": "all", "value": None},),
-                "optional_protective_resolved_to_breakeven",
-            )
-        return Day27ManagementPolicyResult((), "optional_management_instruction")
-    if _RESULT_BE.fullmatch(text):
-        return Day27ManagementPolicyResult((), "provider_result_only")
-
+def _extract_actions(text: str) -> list[dict[str, str | None]]:
+    """Pull every mechanically explicit management action out of one message."""
     actions: list[dict[str, str | None]] = []
 
     # Close actions are first because a combined message such as "close TP1 and move
@@ -226,8 +206,63 @@ def extract_day27_management_actions(raw_text: str) -> Day27ManagementPolicyResu
 
     if _CANCEL.search(text):
         actions.append({"type": "cancel_pending", "target": "all", "value": None})
+    return actions
 
-    deduped = _dedupe(actions)
+
+def extract_day27_management_actions(raw_text: str) -> Day27ManagementPolicyResult:
+    """Extract mechanically explicit Day 27 broker-management actions.
+
+    Optional/choice language is deliberately ignored rather than converted into a
+    broker action. Provider result statements such as "I'm at BE" are also evidence,
+    not instructions.
+    """
+    text = (raw_text or "").strip()
+    if not text:
+        return Day27ManagementPolicyResult((), "unsupported_management")
+    optional = _OPTIONAL.search(text) is not None
+    if optional:
+        # An explicit instruction in the same message must survive optional wording.
+        #
+        # Observed live, TIG message 447:
+        #     "Trade is running +40pips from best entry
+        #      Move SL to 4314
+        #      Making Second entry Risk Free if you want team"
+        #
+        # That contains a precise "Move SL to 4314". The optional check used to
+        # return before extraction ran, so the explicit stop was discarded because
+        # a later sentence happened to say "if you want". The Blueprint already
+        # requires the opposite: a combined message such as "TP1 hit, move SL to
+        # 4385" must still produce the explicit action.
+        #
+        # Extract first. Explicit stop, target and breakeven instructions are kept.
+        # Close actions are deliberately dropped here: exiting a trade is not
+        # something to infer from a sentence offering a choice.
+        explicit = [
+            action
+            for action in _extract_actions(text)
+            if action.get("type") != "close"
+        ]
+        if explicit:
+            return Day27ManagementPolicyResult(
+                _dedupe(explicit), "explicit_instruction_within_optional_message"
+            )
+
+        # Owner rule, 14 Aug 2026: with no explicit instruction to follow, a choice
+        # about protecting an open trade takes the cautious option rather than doing
+        # nothing. Breakeven removes the downside while leaving a winner running.
+        #
+        # Narrow on purpose: only when the optional sentence names a protective
+        # outcome, and never when it concerns entering or adding to a position.
+        if _OPTIONAL_PROTECTIVE.search(text) and not _OPTIONAL_ENTRY.search(text):
+            return Day27ManagementPolicyResult(
+                ({"type": "move_to_break_even", "target": "all", "value": None},),
+                "optional_protective_resolved_to_breakeven",
+            )
+        return Day27ManagementPolicyResult((), "optional_management_instruction")
+    if _RESULT_BE.fullmatch(text):
+        return Day27ManagementPolicyResult((), "provider_result_only")
+
+    deduped = _dedupe(_extract_actions(text))
     if not deduped:
         return Day27ManagementPolicyResult((), "unsupported_management")
     return Day27ManagementPolicyResult(deduped, "day27_explicit_management")

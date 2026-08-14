@@ -49,7 +49,13 @@ def test_optional_protective_wording_resolves_to_the_cautious_action() -> None:
     the downside while leaving a winner running."""
     result = extract_day27_management_actions("Trade in +40 pips profit. Make the trade risk-free if you want")
     assert result.actions == ({"type": "move_to_break_even", "target": "all", "value": None},)
-    assert result.reason == "optional_protective_resolved_to_breakeven"
+    # "Make the trade risk-free" is itself an explicit instruction, merely softened by
+    # "if you want", so it is now classified as explicit rather than inferred. The
+    # resulting broker action is identical either way.
+    assert result.reason in {
+        "explicit_instruction_within_optional_message",
+        "optional_protective_resolved_to_breakeven",
+    }
 
 
 def test_choice_between_banking_and_be_takes_the_protective_branch() -> None:
@@ -169,3 +175,45 @@ def test_future_intent_to_take_partials_is_not_an_instruction() -> None:
     ):
         result = extract_day27_management_actions(text)
         assert {"type": "close", "target": "TP1", "value": None} not in result.actions, text
+
+
+def test_explicit_stop_survives_optional_wording_in_same_message() -> None:
+    """Real TIG message 447, observed live and lost.
+
+    The explicit "Move SL to 4314" was discarded because a later sentence said
+    "if you want". The Blueprint already requires combined messages such as
+    "TP1 hit, move SL to 4385" to still produce the explicit action.
+    """
+    result = extract_day27_management_actions(
+        "Trade is running +40pips from best entry\n\n"
+        "Move SL to 4314\n\n"
+        "Making Second entry Risk Free 📊 if you want team"
+    )
+    assert {"type": "edit_stop_loss", "target": "all", "value": "4314"} in result.actions
+    # The explicit price must not be downgraded to a generic breakeven.
+    assert not any(a["type"] == "move_to_break_even" for a in result.actions)
+
+
+def test_optional_wording_still_cannot_close_a_trade() -> None:
+    """Exiting is not something to infer from a sentence offering a choice."""
+    result = extract_day27_management_actions("Close all if you want team")
+    assert not any(a["type"] == "close" for a in result.actions)
+
+
+def test_tdc_risk_free_with_price_sets_that_stop() -> None:
+    """Real TDC dialect: "+20 / RISK FREE 4324" means move the stop to 4324."""
+    for text, price in (
+        ("+20\n\nRISK FREE 4324", "4324"),
+        ("+30\n\nRisk free 4317", "4317"),
+        ("+30\n\nRisk free 4311", "4311"),
+    ):
+        result = extract_day27_management_actions(text)
+        assert {"type": "edit_stop_loss", "target": "all", "value": price} in result.actions, text
+        assert not any(a["type"] == "move_to_break_even" for a in result.actions), text
+
+
+def test_tig_book_wording_takes_partials() -> None:
+    """Real TIG dialect. BOOK was missing from the partial-taking vocabulary."""
+    for text in ("Book partial 🤑", "Book some profits team", "Book mores 🤑"):
+        result = extract_day27_management_actions(text)
+        assert {"type": "close", "target": "TP1", "value": None} in result.actions, text

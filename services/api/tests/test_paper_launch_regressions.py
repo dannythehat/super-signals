@@ -471,3 +471,19 @@ async def test_one_unreadable_source_does_not_stop_the_others(
 
     assert persisted == [900]
     assert dispatched == [900]
+
+
+def test_plural_side_words_are_recognised() -> None:
+    """Real FXTradingVision wording: "OPEN GOLD SELLS" / "OPEN GOLD BUYS".
+
+    The side patterns ended at an optional ING, so the trailing S broke the word
+    boundary and SELLS/BUYS never matched, costing twelve refusals as missing_side.
+    """
+    from app.v1_message_policy import _BUY, _SELL
+
+    assert _SELL.search("OPEN GOLD SELLS") is not None
+    assert _SELL.search("OPEN EXTRA GOLD SELLS.") is not None
+    assert _BUY.search("OPEN GOLD BUYS") is not None
+    # Must not start matching unrelated words.
+    assert _SELL.search("RESELLER") is None
+    assert _BUY.search("BUYER") is None

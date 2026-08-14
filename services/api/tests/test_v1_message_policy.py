@@ -291,13 +291,22 @@ def test_results_and_hype_do_not_create_management_action(raw: str) -> None:
     assert result.action == "ignore"
 
 
-def test_unsupported_partial_management_is_ignored() -> None:
+def test_partial_taking_closes_the_first_tp_leg() -> None:
+    """Owner decision, 14 Aug 2026: partial wording is now supported.
+
+    Providers write "take some profit" for followers holding one position. Super
+    Signals holds one per TP level, so the equivalent is closing the nearest leg
+    and leaving the rest running. This previously returned ignore.
+    """
     result = apply_v1_message_policy(
         _decision(decision="trade_update", action="apply_update", update_type="close_half"),
         raw_text="Take some profit now",
     )
-    assert result.action == "ignore"
-    assert result.reason == "unsupported_management"
+    assert result.action == "apply_update"
+    assert {"type": "close", "target": "TP1", "value": None} in result.extracted[
+        "management_actions"
+    ]
+    assert result.reason == "day27_explicit_management"
 
 
 @pytest.mark.parametrize("decision", ["chatter", "preparation"])
