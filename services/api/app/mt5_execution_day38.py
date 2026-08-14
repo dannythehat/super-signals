@@ -1,15 +1,15 @@
 """Day 38 live-account execution boundary for ordinary invited users.
 
-The Owner keeps the accepted demo-only Day 28 path. Ordinary members use the same
-atomic execution + per-leg provider-zone guard, but their account gate is LIVE-only.
-Stored Day 31 risk/double-lot choices are loaded server-side and cannot be supplied
-by the caller. Atomic compensation is also LIVE-aware so a later-leg failure can close
-any earlier member legs from the same Signal instead of being blocked by Day 26's
-historical Owner-demo gate.
+The Owner keeps the accepted demo-only path. Ordinary members use the same atomic
+execution + per-leg provider-zone guard, but their account gate is LIVE-only. Stored
+Day 31 risk/double-lot choices are loaded server-side and cannot be supplied by the
+caller. Atomic compensation is LIVE-aware so a later-leg failure can close any earlier
+member legs from the same Signal.
 """
 
 from __future__ import annotations
 
+from decimal import Decimal
 from uuid import UUID
 
 from sqlalchemy import text
@@ -25,7 +25,7 @@ from app.mt5_execution_day26 import (
 
 
 class Day38LiveUserExecutionService(Day28GuardedExecutionService):
-    """Run the strongest accepted execution engine against one member LIVE account."""
+    """Run the same no-chase execution engine against one approved member LIVE account."""
 
     async def execute_live_user_signal(
         self,
@@ -64,24 +64,14 @@ class Day38LiveUserExecutionService(Day28GuardedExecutionService):
         return str(row["risk_percent"]), bool(row["allow_double_lot"])
 
     def _load_inputs(self, user_id: UUID, signal_id: UUID) -> tuple[_SignalInput, _AccountInput]:
-        """Accepted Day 26 input contract with the ordinary-member LIVE gate."""
+        """Load the canonical signal contract plus the member's approved LIVE account."""
         with self._session_factory() as session:
             signal_row = session.execute(
                 text(
                     """
-                    SELECT
-                        id,
-                        symbol,
-                        side,
-                        entry_low,
-                        entry_high,
-                        stop_loss,
-                        take_profits,
-                        canonical_payload,
-                        parser_status,
-                        order_type,
-                        source_revision_index,
-                        created_at
+                    SELECT id, symbol, side, order_type, entry_low, entry_high,
+                           stop_loss, take_profits, has_open_runner, parser_status,
+                           risk_multiplier, source_revision_index, source_posted_at
                     FROM signals
                     WHERE id=:signal_id
                     LIMIT 1
@@ -94,7 +84,7 @@ class Day38LiveUserExecutionService(Day28GuardedExecutionService):
             if str(signal_row["parser_status"] or "") != "accepted":
                 raise Day26ExecutionError("signal_not_accepted")
             if str(signal_row["order_type"] or "").lower() != "market":
-                raise Day26ExecutionError("day26_pending_order_unsupported")
+                raise Day26ExecutionError("day26_market_signal_required")
 
             existing_positions = int(
                 session.execute(
@@ -111,20 +101,23 @@ class Day38LiveUserExecutionService(Day28GuardedExecutionService):
             if existing_positions > 0:
                 raise Day26ExecutionError("signal_execution_already_started")
 
-            cancelled = session.execute(
-                text(
-                    """
-                    SELECT 1
-                    FROM signal_lifecycle_events
-                    WHERE signal_id=:signal_id
-                      AND event_type='cancelled'
-                    LIMIT 1
-                    """
-                ),
-                {"signal_id": signal_id},
-            ).scalar_one_or_none()
+            cancelled = bool(
+                session.execute(
+                    text(
+                        """
+                        SELECT EXISTS(
+                            SELECT 1
+                            FROM signal_lifecycle_events
+                            WHERE signal_id=:signal_id
+                              AND event_type='cancel'
+                        )
+                        """
+                    ),
+                    {"signal_id": signal_id},
+                ).scalar_one()
+            )
             if cancelled:
-                raise Day26ExecutionError("signal_cancelled_before_execution")
+                raise Day26ExecutionError("signal_cancelled")
 
             eligibility = session.execute(
                 text(
@@ -134,7 +127,6 @@ class Day38LiveUserExecutionService(Day28GuardedExecutionService):
                         m.metaapi_account_id,
                         m.metaapi_token_ciphertext,
                         m.account_environment,
-                        m.status AS account_status,
                         m.login,
                         m.server,
                         a.login AS approved_login,
@@ -161,39 +153,49 @@ class Day38LiveUserExecutionService(Day28GuardedExecutionService):
                 raise Day26ExecutionError("day38_user_not_execution_ready")
             self._validate_live_account_row(eligibility)
 
-        payload = signal_row["canonical_payload"] if isinstance(signal_row["canonical_payload"], dict) else {}
-        has_open_runner = any(
-            isinstance(item, str) and item.strip().upper() == "OPEN"
-            for item in (payload.get("take_profits") or [])
-        )
-        double_lot_requested = bool(payload.get("double_lot_requested", False))
+        symbol = str(signal_row["symbol"] or "").strip().upper()
+        side = str(signal_row["side"] or "").strip().upper()
+        if symbol != "XAUUSD":
+            raise Day26ExecutionError("day26_xauusd_required")
+        if side not in {"BUY", "SELL"}:
+            raise Day26ExecutionError("trade_side_invalid")
+
+        entry_low = self._required_decimal(signal_row["entry_low"], "signal_entry_invalid")
+        entry_high = self._required_decimal(signal_row["entry_high"], "signal_entry_invalid")
+        if entry_high < entry_low:
+            raise Day26ExecutionError("signal_entry_invalid")
+        stop_loss = self._required_decimal(signal_row["stop_loss"], "signal_stop_loss_invalid")
         take_profits = self._take_profits(signal_row["take_profits"])
-        source_posted_at = signal_row["created_at"]
+        has_open_runner = bool(signal_row["has_open_runner"])
+        if not self._directionally_valid(
+            side=side,
+            entry_low=entry_low,
+            entry_high=entry_high,
+            stop_loss=stop_loss,
+            take_profits=take_profits,
+        ):
+            raise Day26ExecutionError("strict_directional_validation_failed")
+
+        risk_multiplier = self._required_decimal(
+            signal_row["risk_multiplier"], "signal_risk_multiplier_invalid"
+        )
+        source_posted_at = signal_row["source_posted_at"]
         if source_posted_at is None:
-            raise Day26ExecutionError("signal_created_at_missing")
+            raise Day26ExecutionError("signal_posted_at_invalid")
 
         signal = _SignalInput(
-            signal_id=UUID(str(signal_row["id"])),
-            symbol=str(signal_row["symbol"] or "").upper(),
-            side=str(signal_row["side"] or "").lower(),
-            entry_low=self._required_decimal(signal_row["entry_low"], "entry_low_missing"),
-            entry_high=self._required_decimal(signal_row["entry_high"], "entry_high_missing"),
-            stop_loss=self._required_decimal(signal_row["stop_loss"], "stop_loss_missing"),
+            signal_id=signal_id,
+            symbol=symbol,
+            side=side,
+            entry_low=entry_low,
+            entry_high=entry_high,
+            stop_loss=stop_loss,
             take_profits=take_profits,
             has_open_runner=has_open_runner,
-            signal_requests_double_lot=double_lot_requested,
+            signal_requests_double_lot=risk_multiplier > Decimal("1"),
             source_revision_index=int(signal_row["source_revision_index"]),
             source_posted_at=source_posted_at,
         )
-        if signal.symbol != "XAUUSD":
-            raise Day26ExecutionError("day26_symbol_unsupported")
-        if signal.side not in {"buy", "sell"}:
-            raise Day26ExecutionError("day26_side_invalid")
-        if signal.position_count < 1:
-            raise Day26ExecutionError("day26_take_profit_required")
-        if not self._directionally_valid(signal):
-            raise Day26ExecutionError("day26_signal_prices_invalid")
-
         account = _AccountInput(
             local_account_id=UUID(str(eligibility["mt5_account_id"])),
             metaapi_account_id=str(eligibility["metaapi_account_id"]),
@@ -202,7 +204,7 @@ class Day38LiveUserExecutionService(Day28GuardedExecutionService):
         return signal, account
 
     def _rollback_account(self, user_id: UUID) -> tuple[str, str]:
-        """Atomic Day 26 rollback, but against the same approved member LIVE account."""
+        """Atomic rollback against the same approved member LIVE account."""
         with self._session_factory() as session:
             row = session.execute(
                 text(
@@ -211,7 +213,6 @@ class Day38LiveUserExecutionService(Day28GuardedExecutionService):
                         m.metaapi_account_id,
                         m.metaapi_token_ciphertext,
                         m.account_environment,
-                        m.status AS account_status,
                         m.login,
                         m.server,
                         a.login AS approved_login,
@@ -247,8 +248,6 @@ class Day38LiveUserExecutionService(Day28GuardedExecutionService):
     def _validate_live_account_row(row) -> None:  # noqa: ANN001
         if str(row["account_environment"] or "").lower() != "live":
             raise Day26ExecutionError("day38_live_account_required")
-        if str(row["account_status"] or "") != "connected":
-            raise Day26ExecutionError("mt5_account_not_connected")
         if str(row["login"] or "") != str(row["approved_login"] or ""):
             raise Day26ExecutionError("mt5_account_not_approved")
         if str(row["server"] or "").strip().lower() != str(
