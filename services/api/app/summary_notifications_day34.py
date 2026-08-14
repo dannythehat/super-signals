@@ -29,7 +29,7 @@ from app.scheduled_performance_reports_day34 import (
     ScheduledReportPeriod,
     SummarySeedResult,
 )
-from app.telegram_publisher import _bot_api_call
+from app.telegram_publisher import TelegramPublishError, _bot_api_call
 
 logger = logging.getLogger(__name__)
 
@@ -273,16 +273,20 @@ class Day34SummaryNotificationService(Day34ScheduledPerformanceReportService):
             if not settings.enabled or not settings.bot_token:
                 return
             for repair in self.build_sent_report_repairs():
-                _bot_api_call(
-                    settings.bot_token,
-                    "editMessageText",
-                    {
-                        "chat_id": repair.destination_chat_id,
-                        "message_id": repair.telegram_message_id,
-                        "text": repair.rendered_text,
-                        "disable_web_page_preview": "true",
-                    },
-                )
+                try:
+                    _bot_api_call(
+                        settings.bot_token,
+                        "editMessageText",
+                        {
+                            "chat_id": repair.destination_chat_id,
+                            "message_id": repair.telegram_message_id,
+                            "text": repair.rendered_text,
+                            "disable_web_page_preview": "true",
+                        },
+                    )
+                except TelegramPublishError as exc:
+                    if "message is not modified" not in exc.reason.lower():
+                        raise
                 self.record_sent_report_repair(repair)
                 logger.info(
                     "Telegram summary corrected in place notification_id=%s message_id=%s",
@@ -300,8 +304,7 @@ class Day34SummaryNotificationService(Day34ScheduledPerformanceReportService):
                     UPDATE notification_events
                     SET title=:title,
                         body=:body,
-                        payload=payload || CAST(:payload_patch AS jsonb),
-                        updated_at=now()
+                        payload=payload || CAST(:payload_patch AS jsonb)
                     WHERE id=:notification_id
                     """
                 ),
