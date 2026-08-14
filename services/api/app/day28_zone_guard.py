@@ -1,17 +1,13 @@
 """Day 28 per-leg provider-zone guard for multi-TP market execution.
 
-Day 26 authorises a zone signal using the current executable broker quote before the
-first market order.  Day 28 live acceptance showed why the full route needs one more
-check: Gold can move out of a narrow provider zone while several TP legs are being
-submitted sequentially.
+Automatic execution samples a provider zone once when the fresh signal arrives. It does
+not wait for price to come back later, chase the setup, or retry a stale entry. If the
+current executable price is not in the provider zone the trade is refused immediately.
 
-This module wraps the existing MetaAPI trade gateway.  For zone signals only, it reads
-a fresh current-price immediately before *every* market-order request and refuses to
-submit the next leg if BUY ask / SELL bid has left the provider's literal zone.  The
-existing AtomicDay26 executor then rolls back any earlier leg from the same signal.
-
-It does not change exact-entry logic, sizing, SL/TP values, provider targets or the
-Day 25 gate.
+For a zone that is executable now, this module still performs one fresh price check
+immediately before each market-order leg so a material move outside the provider's
+literal zone cannot create later legs at a stale price. The approved bounded entry
+tolerance is honoured at the edge.
 """
 
 from __future__ import annotations
@@ -76,14 +72,6 @@ class Day28ZoneGuardTradeGateway:
             current = self._positive_decimal(payload.get(field))
             if current is None:
                 raise MetaApiGatewayError("zone_submission_price_unavailable", retryable=True)
-            # Allow the same bounded tolerance used for single-price entries.
-            #
-            # A human following this provider clicks market and accepts a fill a
-            # cent or two either side of the zone edge. Demanding strict containment
-            # at the instant of submission means one ordinary tick between the price
-            # check and the order request cancels the entire signal, which is what
-            # cost a live TDC zone trade. The guard still refuses a genuine
-            # departure from the zone; it just stops treating a tick as one.
             if current < zone.low - self._tolerance or current > zone.high + self._tolerance:
                 raise MetaApiGatewayError("zone_left_before_position_submission")
         return await self._base.place_market_order(**kwargs)
@@ -109,7 +97,7 @@ class Day28ZoneGuardTradeGateway:
 
 
 class Day28GuardedExecutionService(AtomicDay26Mt5ExecutionService):
-    """Atomic Day 26 execution plus a fresh zone quote before every submitted leg."""
+    """Atomic execution with no delayed zone chase and a fresh per-leg zone guard."""
 
     def __init__(
         self,
@@ -119,7 +107,7 @@ class Day28GuardedExecutionService(AtomicDay26Mt5ExecutionService):
         read_gateway: MetaApiReadGateway,
         margin_gateway: Any,
         trade_gateway: MetaApiTradeGateway,
-        zone_wait_seconds: float = 300.0,
+        zone_wait_seconds: float = 0.0,
         zone_poll_seconds: float = 2.0,
     ) -> None:
         self._day28_session_factory = session_factory
@@ -133,7 +121,10 @@ class Day28GuardedExecutionService(AtomicDay26Mt5ExecutionService):
             read_gateway=read_gateway,
             margin_gateway=margin_gateway,
             trade_gateway=self._day28_guard,
-            zone_wait_seconds=zone_wait_seconds,
+            # Locked automatic-execution rule: sample the provider entry now.  Never
+            # wait for a later re-entry into a zone and never turn an old signal into
+            # a delayed market order.
+            zone_wait_seconds=0.0,
             zone_poll_seconds=zone_poll_seconds,
         )
 
