@@ -4,15 +4,16 @@ The Owner-approved reporting clock is Europe/Sofia: daily at 21:00, weekly on
 Friday at 21:00, and monthly on the first day at 08:00 for the complete previous
 calendar month.
 
-Live reports lead with the broker account's net change across the reporting
+Live reports lead with the broker account's net equity change across the reporting
 period when both boundary snapshots exist. Realised and floating P/L remain
-visible underneath as explanatory components. The legacy one-argument renderer
-is preserved for the existing Day 34 privacy/wording contract tests.
+visible underneath as context. The timezone is intentionally not printed into
+member-facing Telegram reports.
 """
 
 from __future__ import annotations
 
 import json
+import logging
 from dataclasses import dataclass
 from datetime import datetime
 from decimal import Decimal
@@ -21,12 +22,16 @@ from uuid import UUID
 
 from sqlalchemy import text
 
+from app.publisher_config import get_publisher_settings
 from app.scheduled_performance_reports_day34 import (
     SOFIA,
     Day34ScheduledPerformanceReportService,
     ScheduledReportPeriod,
     SummarySeedResult,
 )
+from app.telegram_publisher import _bot_api_call
+
+logger = logging.getLogger(__name__)
 
 _PERIOD_LABELS = {
     "daily": "DAILY",
@@ -48,7 +53,12 @@ class SentSummaryRepair:
 
 
 class Day34SummaryNotificationService(Day34ScheduledPerformanceReportService):
-    """Scheduled reports plus compatibility and sent-message truth repair."""
+    """Scheduled reports plus compatibility and one-time sent-message truth repair."""
+
+    def seed_due(self, *, now: datetime | None = None) -> SummarySeedResult:
+        result = super().seed_due(now=now)
+        self._repair_sent_messages_safely()
+        return result
 
     def _metrics(
         self,
@@ -147,21 +157,21 @@ class Day34SummaryNotificationService(Day34ScheduledPerformanceReportService):
         currency = str(metrics["currency"] or "USD")
 
         if period.period_type == "daily":
-            period_line = f"Period: {local_start:%d %b %H:%M} → {local_end:%d %b %H:%M} Sofia"
+            period_line = f"Period: {local_start:%d %b %H:%M} → {local_end:%d %b %H:%M}"
         elif period.period_type == "weekly":
             period_line = (
                 f"Period: {local_start:%a %d %b %H:%M} → "
-                f"{local_end:%a %d %b %H:%M} Sofia"
+                f"{local_end:%a %d %b %H:%M}"
             )
         else:
-            period_line = f"Period: {local_start:%d %b %Y} → {local_end:%d %b %Y} Sofia"
+            period_line = f"Period: {local_start:%d %b %Y} → {local_end:%d %b %Y}"
 
         period_net = metrics.get("period_net_pnl")
         if period_net is None:
-            net_line = "Net P/L at report time: unavailable — no period-start broker snapshot"
+            net_line = "NET P/L: unavailable — no opening broker snapshot"
         else:
             net_line = (
-                "Net P/L at report time: "
+                "NET P/L: "
                 + Day34ScheduledPerformanceReportService._money(period_net, currency)
             )
 
@@ -178,13 +188,14 @@ class Day34SummaryNotificationService(Day34ScheduledPerformanceReportService):
         lines = [
             period_line,
             net_line,
-            f"Realised: {realised_text} · Floating at cutoff: {floating_text}",
+            f"Realised during period: {realised_text}",
+            f"Floating at cutoff: {floating_text}",
             (
                 f"Closed positions: {metrics['closed_positions']} · "
                 f"Won: {metrics['wins']} · Lost: {metrics['losses']} · "
                 f"BE: {metrics['breakeven']}"
             ),
-            f"Open at report time: {metrics['open_positions']}",
+            f"Open at cutoff: {metrics['open_positions']}",
             "$500 model @ 1%: "
             + Day34ScheduledPerformanceReportService._money(metrics["model_500_pnl"], "USD"),
             "Broker-derived paper results · open P/L is not counted as realised",
@@ -212,7 +223,7 @@ class Day34SummaryNotificationService(Day34ScheduledPerformanceReportService):
                       AND d.status='sent'
                       AND d.destination_chat_id IS NOT NULL
                       AND d.telegram_message_id IS NOT NULL
-                      AND n.body NOT LIKE '%Net P/L at report time:%'
+                      AND COALESCE(n.payload->>'truthful_net_format','false')!='true'
                     ORDER BY n.created_at, n.id
                     """
                 )
@@ -255,6 +266,31 @@ class Day34SummaryNotificationService(Day34ScheduledPerformanceReportService):
                     )
                 )
         return tuple(repairs)
+
+    def _repair_sent_messages_safely(self) -> None:
+        try:
+            settings = get_publisher_settings()
+            if not settings.enabled or not settings.bot_token:
+                return
+            for repair in self.build_sent_report_repairs():
+                _bot_api_call(
+                    settings.bot_token,
+                    "editMessageText",
+                    {
+                        "chat_id": repair.destination_chat_id,
+                        "message_id": repair.telegram_message_id,
+                        "text": repair.rendered_text,
+                        "disable_web_page_preview": "true",
+                    },
+                )
+                self.record_sent_report_repair(repair)
+                logger.info(
+                    "Telegram summary corrected in place notification_id=%s message_id=%s",
+                    repair.notification_id,
+                    repair.telegram_message_id,
+                )
+        except Exception:
+            logger.exception("Telegram summary truth repair failed safely; trading unchanged")
 
     def record_sent_report_repair(self, repair: SentSummaryRepair) -> None:
         with self._session_factory() as session:
