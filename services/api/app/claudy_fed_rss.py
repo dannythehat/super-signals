@@ -7,13 +7,13 @@ append-only market evidence; this module has no trading or Telegram capability.
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import os
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from email.utils import parsedate_to_datetime
 from hashlib import sha256
-import json
 from uuid import UUID
 from xml.etree import ElementTree
 
@@ -179,14 +179,20 @@ class ClaudyFedRssRecorderService:
     def __init__(
         self,
         *,
+        reference_user_id: UUID,
         repository: ClaudyMarketRepository,
         gateway: FedRssGateway,
     ) -> None:
+        self._reference_user_id = reference_user_id
         self._repository = repository
         self._gateway = gateway
 
     async def capture_once(self, *, now: datetime | None = None) -> FedRssCaptureResult:
         observed_at = _utc(now or datetime.now(UTC))
+        if self._repository.load_reference_demo_account(self._reference_user_id) is None:
+            logger.warning("Claudy Fed RSS capture skipped: reference demo account unavailable")
+            return FedRssCaptureResult(0, 0, 0, 0)
+
         failures = 0
         seen = 0
         added = 0
@@ -274,7 +280,7 @@ def build_claudy_fed_rss_recorder_manager(*, session_factory) -> ClaudyFedRssRec
         return None
     reference_raw = os.getenv("SUPER_SIGNALS_CLAUDY_REFERENCE_USER_ID", "").strip()
     try:
-        UUID(reference_raw)
+        reference_user_id = UUID(reference_raw)
     except ValueError:
         logger.error(
             "Claudy Fed RSS recorder disabled: reference demo user id is missing or invalid"
@@ -290,5 +296,9 @@ def build_claudy_fed_rss_recorder_manager(*, session_factory) -> ClaudyFedRssRec
         logger.error("Claudy Fed RSS recorder disabled: poll interval must be positive")
         return None
     repository = ClaudyMarketRepository(session_factory)
-    service = ClaudyFedRssRecorderService(repository=repository, gateway=FedRssGateway())
+    service = ClaudyFedRssRecorderService(
+        reference_user_id=reference_user_id,
+        repository=repository,
+        gateway=FedRssGateway(),
+    )
     return ClaudyFedRssRecorderManager(service, poll_seconds=poll_seconds)
