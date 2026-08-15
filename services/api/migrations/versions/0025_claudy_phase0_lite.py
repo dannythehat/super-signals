@@ -40,6 +40,7 @@ def upgrade() -> None:
         sa.Column("spread", sa.Numeric(18, 8), nullable=True),
         sa.Column("volume", sa.Numeric(24, 8), nullable=True),
         sa.Column("source", sa.String(length=40), nullable=False, server_default="metaapi"),
+        sa.Column("revision_index", sa.Integer(), nullable=False),
         sa.Column("payload_digest", sa.String(length=64), nullable=False),
         sa.Column(
             "first_observed_at",
@@ -51,12 +52,25 @@ def upgrade() -> None:
             f"timeframe IN ({_TIMEFRAMES})",
             name="ck_market_candles_timeframe",
         ),
+        sa.CheckConstraint(
+            "revision_index >= 1",
+            name="ck_market_candles_revision",
+        ),
         sa.UniqueConstraint(
             "source",
             "symbol",
             "timeframe",
             "open_time_utc",
-            name="uq_market_candles_identity",
+            "revision_index",
+            name="uq_market_candles_revision",
+        ),
+        sa.UniqueConstraint(
+            "source",
+            "symbol",
+            "timeframe",
+            "open_time_utc",
+            "payload_digest",
+            name="uq_market_candles_payload",
         ),
     )
     op.create_index(
@@ -119,6 +133,12 @@ def upgrade() -> None:
             postgresql.JSONB(astext_type=sa.Text()),
             nullable=False,
             server_default=sa.text("'{}'::jsonb"),
+        ),
+        sa.Column(
+            "event_observation_ids_json",
+            postgresql.JSONB(astext_type=sa.Text()),
+            nullable=False,
+            server_default=sa.text("'[]'::jsonb"),
         ),
         sa.Column(
             "latest_m1_id",
@@ -223,9 +243,18 @@ def upgrade() -> None:
         "market_event_observations",
         ["published_at"],
     )
+    op.create_index(
+        "ix_market_event_observations_first_observed",
+        "market_event_observations",
+        ["first_observed_at"],
+    )
 
 
 def downgrade() -> None:
+    op.drop_index(
+        "ix_market_event_observations_first_observed",
+        table_name="market_event_observations",
+    )
     op.drop_index(
         "ix_market_event_observations_published",
         table_name="market_event_observations",
