@@ -70,8 +70,14 @@ def render_signal_post(row: Any) -> str:
         f"Entry: {_decimal_text(row['entry_price'])}",
         f"Stop Loss: {_decimal_text(row['stop_loss'])}",
     ]
-    for index, target in enumerate(row["take_profits"] or [], start=1):
+    take_profits = list(row["take_profits"] or [])
+    for index, target in enumerate(take_profits, start=1):
         lines.append(f"TP{index}: {_decimal_text(target)}")
+    # A provider OPEN target is a real broker-mapped runner, not decorative metadata.
+    # Keep it visible in the root post so a member never sees every numeric TP settle
+    # and reasonably concludes the whole trade is finished while the runner remains.
+    if bool(row.get("has_open_runner", False)):
+        lines.append(f"TP{len(take_profits) + 1}: OPEN")
     multiplier = Decimal(str(row["risk_multiplier"]))
     lines.append("Size: Double" if multiplier == Decimal("2") else "Size: Standard")
     return "\n".join(lines)
@@ -412,6 +418,7 @@ class TelegramPublisherManager:
                         sig.entry_low AS entry_price,
                         sig.stop_loss,
                         sig.take_profits,
+                        sig.has_open_runner,
                         sig.risk_multiplier
                     FROM telegram_publications AS pub
                     JOIN signals AS sig ON sig.id = pub.signal_id
