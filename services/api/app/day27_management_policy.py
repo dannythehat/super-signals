@@ -117,6 +117,16 @@ _FUTURE_INTENT = re.compile(
     re.IGNORECASE,
 )
 
+# A future trigger must never be promoted into an immediate protective broker action.
+# Keep this narrower than _FUTURE_INTENT so an explicit current instruction such as
+# "I will make my trade risk free now" remains executable, while "At TP2 ... set
+# breakeven" and "when price reaches ... move to BE" remain evidence only.
+_FUTURE_CONDITIONAL_BE = re.compile(
+    r"\bAT\s+TP\s*\d\b.*\b(?:BE|BREAKEVEN|BREAK\s+EVEN|RISK\s*[- ]?FREE)\b"
+    r"|\b(?:WHEN|ONCE)\b.*\b(?:BE|BREAKEVEN|BREAK\s+EVEN|RISK\s*[- ]?FREE)\b",
+    re.IGNORECASE | re.DOTALL,
+)
+
 # Exit wording that means "get out of the trade" without relying on one exact
 # provider dialect. These are imperative/current-action forms only. Past-result
 # wording such as "all positions closed" or "I've closed out" deliberately does not
@@ -214,7 +224,11 @@ def _extract_actions(text: str) -> list[dict[str, str | None]]:
                 {"type": "edit_take_profit", "target": f"TP{match.group(1)}", "value": value}
             )
 
-    if not numeric_sl_found and _MOVE_BE.search(text):
+    if (
+        not numeric_sl_found
+        and _MOVE_BE.search(text)
+        and not _FUTURE_CONDITIONAL_BE.search(text)
+    ):
         actions.append({"type": "move_to_break_even", "target": "all", "value": None})
 
     if _CANCEL.search(text):
