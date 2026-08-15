@@ -89,6 +89,7 @@ class FakeGateway:
         self.captured_at = captured_at
         self.close_offset = close_offset
         self.calls: list[str] = []
+        self.candle_limits: dict[str, int] = {}
 
     async def resolve_account_region(self, *, token: str, account_id: str) -> str:
         assert token == "super-secret-metaapi-token"
@@ -97,7 +98,7 @@ class FakeGateway:
 
     async def read_account_information(self, **kwargs):
         self.calls.append("account")
-        return {"tradeAllowed": True, "balance": 999999, "password": "must-not-store"}
+        raise AssertionError("Phase 0 must not call the account-information endpoint")
 
     async def read_positions(self, **kwargs):
         self.calls.append("positions")
@@ -120,19 +121,7 @@ class FakeGateway:
 
     async def read_orders(self, **kwargs):
         self.calls.append("orders")
-        return [
-            {
-                "id": "order-1",
-                "symbol": "XAUUSD",
-                "type": "ORDER_TYPE_BUY_LIMIT",
-                "state": "ORDER_STATE_PLACED",
-                "volume": 0.01,
-                "currentVolume": 0.01,
-                "openPrice": 4330,
-                "clientId": "safe-order-client",
-                "auth-token": "must-not-store",
-            }
-        ]
+        raise AssertionError("Phase 0 must not call the open-orders endpoint")
 
     async def read_symbol_price(self, **kwargs):
         self.calls.append("quote")
@@ -143,8 +132,9 @@ class FakeGateway:
             "time": (self.captured_at - timedelta(seconds=2)).isoformat(),
         }
 
-    async def read_historical_candles(self, *, timeframe: str, **kwargs):
+    async def read_historical_candles(self, *, timeframe: str, limit: int, **kwargs):
         self.calls.append(f"candles:{timeframe}")
+        self.candle_limits[timeframe] = limit
         seconds = {
             "1m": 60,
             "5m": 300,
@@ -179,12 +169,13 @@ def _service(
     now: datetime,
     *,
     close_offset: float = 0,
+    gateway: FakeGateway | None = None,
 ) -> ClaudyMarketRecorderService:
     return ClaudyMarketRecorderService(
         reference_user_id=uuid4(),
         repository=repository,  # type: ignore[arg-type]
         cipher=FakeCipher(),  # type: ignore[arg-type]
-        gateway=FakeGateway(now, close_offset=close_offset),  # type: ignore[arg-type]
+        gateway=gateway or FakeGateway(now, close_offset=close_offset),  # type: ignore[arg-type]
         market_closed_stale_seconds=300,
     )
 
@@ -200,8 +191,11 @@ def test_capture_records_only_closed_candles_sanitizes_state_and_links_known_eve
         },
         event_ids=known_event_ids,
     )
+    gateway = FakeGateway(now)
 
-    result = asyncio.run(_service(repository, now).capture_once(now=now))
+    result = asyncio.run(
+        _service(repository, now, gateway=gateway).capture_once(now=now)
+    )
 
     assert result.status == "complete"
     assert result.market_open is True
@@ -209,6 +203,16 @@ def test_capture_records_only_closed_candles_sanitizes_state_and_links_known_eve
     assert result.broker_trade_action_created is False
     assert repository.candle_revision_count == 6
     assert len(repository.snapshots) == 1
+    assert "account" not in gateway.calls
+    assert "orders" not in gateway.calls
+    assert gateway.candle_limits == {
+        "1m": 20,
+        "5m": 10,
+        "15m": 5,
+        "1h": 3,
+        "4h": 3,
+        "1d": 3,
+    }
 
     snapshot = repository.snapshots[0]
     assert snapshot["latest_m1_id"] is not None
@@ -217,6 +221,8 @@ def test_capture_records_only_closed_candles_sanitizes_state_and_links_known_eve
     assert snapshot["latest_h1_id"] is not None
     assert snapshot["latest_h4_id"] is not None
     assert snapshot["latest_d1_id"] is not None
+    assert snapshot["terminal_trade_allowed"] is None
+    assert snapshot["order_state_json"] == "[]"
     assert json.loads(str(snapshot["event_observation_ids_json"])) == [
         str(item) for item in known_event_ids
     ]
@@ -224,6 +230,8 @@ def test_capture_records_only_closed_candles_sanitizes_state_and_links_known_eve
     availability = json.loads(str(snapshot["data_availability_json"]))
     assert availability["external_events"] == "point_in_time_linked"
     assert availability["external_event_observation_count"] == 2
+    assert availability["account_information"] == "not_captured_phase0_cost_control"
+    assert availability["orders"] == "not_captured_phase0_pending_unsupported"
 
     stored_json = json.dumps(snapshot, default=str)
     assert "super-secret-metaapi-token" not in stored_json
@@ -333,6 +341,11 @@ class ClosedMarketService:
         return CaptureResult(uuid4(), "complete", False, 0)
 
 
+class OpenMarketService:
+    async def capture_once(self, **kwargs):
+        return CaptureResult(uuid4(), "complete", True, 0)
+
+
 def test_background_manager_failure_is_isolated_and_backs_off() -> None:
     delays: list[float] = []
 
@@ -373,6 +386,42 @@ def test_market_closed_uses_backoff_instead_of_hammering_metaapi() -> None:
         asyncio.run(manager._run())
 
     assert delays == [300]
+
+
+def test_default_open_market_cadence_is_five_minutes() -> None:
+    delays: list[float] = []
+
+    async def stop_after_sleep(delay: float) -> None:
+        delays.append(delay)
+        raise asyncio.CancelledError
+
+    manager = ClaudyMarketRecorderManager(
+        OpenMarketService(),  # type: ignore[arg-type]
+        sleep=stop_after_sleep,
+    )
+
+    with pytest.raises(asyncio.CancelledError):
+        asyncio.run(manager._run())
+
+    assert delays == [300]
+
+
+def test_default_closed_market_backoff_is_fifteen_minutes() -> None:
+    delays: list[float] = []
+
+    async def stop_after_sleep(delay: float) -> None:
+        delays.append(delay)
+        raise asyncio.CancelledError
+
+    manager = ClaudyMarketRecorderManager(
+        ClosedMarketService(),  # type: ignore[arg-type]
+        sleep=stop_after_sleep,
+    )
+
+    with pytest.raises(asyncio.CancelledError):
+        asyncio.run(manager._run())
+
+    assert delays == [900]
 
 
 def test_phase0_recorder_has_no_execution_or_telegram_mutation_path() -> None:
