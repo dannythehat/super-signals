@@ -6,12 +6,32 @@ Telegram, risk-sizing, or broker-mutation write path.
 
 from __future__ import annotations
 
+import json
 from datetime import datetime
 from typing import Any
 from uuid import UUID
 
 from sqlalchemy import text
 from sqlalchemy.orm import Session, sessionmaker
+
+
+def _persisted_position_state_json(snapshot: dict[str, object]) -> object | None:
+    """Persist position state only when the broker read explicitly succeeded.
+
+    ``[]`` means the broker was queried successfully and returned no positions. SQL
+    NULL means position state was not known at capture time, including read failure or
+    any snapshot created before the positions endpoint was reached.
+    """
+    raw_availability = snapshot.get("data_availability_json")
+    if not isinstance(raw_availability, str):
+        return None
+    try:
+        availability = json.loads(raw_availability)
+    except (json.JSONDecodeError, TypeError):
+        return None
+    if not isinstance(availability, dict) or availability.get("positions") != "available":
+        return None
+    return snapshot.get("position_state_json")
 
 
 class ClaudyMarketRepository:
@@ -176,6 +196,8 @@ class ClaudyMarketRepository:
         return [row[0] for row in rows]
 
     def store_snapshot(self, snapshot: dict[str, object]) -> UUID:
+        params = dict(snapshot)
+        params["position_state_json"] = _persisted_position_state_json(params)
         with self._session_factory() as session:
             snapshot_id = session.execute(
                 text(
@@ -207,7 +229,7 @@ class ClaudyMarketRepository:
                     RETURNING id
                     """
                 ),
-                snapshot,
+                params,
             ).scalar_one()
             session.commit()
             return snapshot_id
