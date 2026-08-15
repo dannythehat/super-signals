@@ -75,10 +75,10 @@ _TP_CHANGE = re.compile(
 )
 _MOVE_BE = re.compile(
     r"\b(?:MOVE|SET)\s+(?:THE\s+)?(?:SL|STOP\s*LOSS)\s+TO\s+(?:BE|BREAKEVEN|BREAK\s+EVEN)\b"
-    # Observed GTMO/David dialects: "set breakeven now", "Set Break Even".
-    # A leading MOVE/SET makes this an instruction; result-only wording such as
-    # "I'm at BE" is still protected by _RESULT_BE below.
-    r"|\b(?:MOVE|SET)\s+(?:TO\s+)?(?:BE|BREAKEVEN|BREAK\s+EVEN)\b"
+    # Observed GTMO/David dialects: "set breakeven now", "set fully breakeven",
+    # "Set Break Even". A leading MOVE/SET makes this an instruction; result-only
+    # wording such as "I'm at BE" is still protected by _RESULT_BE below.
+    r"|\b(?:MOVE|SET)\s+(?:TO\s+)?(?:FULLY\s+)?(?:BE|BREAKEVEN|BREAK\s+EVEN)\b"
     r"|^\s*(?:BE|BREAKEVEN|BREAK\s+EVEN)\s+NOW\s*[.!✅🔥]*\s*$"
     r"|\bBREAKEVEN\s+SET\b"
     r"|\bMAKE\s+(?:(?:YOUR|MY|THE)\s+)?(?:TRADE|SETUP|SET\s*UP|POSITION)\s+(?:OVERALL\s+)?RISK\s*[- ]?FREE\b"
