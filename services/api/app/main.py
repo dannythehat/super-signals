@@ -14,6 +14,10 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
 from app.broker_settlement_day34 import Day34BrokerSettlementManager
+from app.claudy_fed_rss import (
+    ClaudyFedRssRecorderManager,
+    build_claudy_fed_rss_recorder_manager,
+)
 from app.claudy_market_recorder import (
     ClaudyMarketRecorderManager,
     build_claudy_market_recorder_manager,
@@ -165,6 +169,11 @@ async def _lifespan(application: FastAPI) -> AsyncIterator[None]:
         os.getenv("SUPER_SIGNALS_CLAUDY_CAPTURE_ENABLED", "").strip().lower()
         in {"1", "true", "yes", "on"}
     )
+    claudy_fed_rss_manager: ClaudyFedRssRecorderManager | None = (
+        build_claudy_fed_rss_recorder_manager(session_factory=session_factory)
+    )
+    if claudy_fed_rss_manager is not None:
+        application.state.claudy_fed_rss_manager = claudy_fed_rss_manager
     claudy_market_recorder_manager: ClaudyMarketRecorderManager | None = None
     mt5_connection_manager: Mt5ConnectionManager | None = None
     mt5_bootstrap_task: asyncio.Task[None] | None = None
@@ -278,7 +287,7 @@ async def _lifespan(application: FastAPI) -> AsyncIterator[None]:
         )
     elif claudy_capture_requested:
         logger.error(
-            "Claudy Phase 0-lite recorder disabled: broker credential encryption keys "
+            "Claudy Phase 0-lite market recorder disabled: broker credential encryption keys "
             "are unavailable"
         )
 
@@ -336,6 +345,8 @@ async def _lifespan(application: FastAPI) -> AsyncIterator[None]:
         application.state.telegram_listener = listener
         await listener.start()
 
+    if claudy_fed_rss_manager is not None:
+        await claudy_fed_rss_manager.start()
     if claudy_market_recorder_manager is not None:
         await claudy_market_recorder_manager.start()
     if day34_settlement_manager is not None:
@@ -364,6 +375,8 @@ async def _lifespan(application: FastAPI) -> AsyncIterator[None]:
                 pass
         if claudy_market_recorder_manager is not None:
             await claudy_market_recorder_manager.stop()
+        if claudy_fed_rss_manager is not None:
+            await claudy_fed_rss_manager.stop()
         await publisher.stop()
         if push_manager is not None:
             await push_manager.stop()
