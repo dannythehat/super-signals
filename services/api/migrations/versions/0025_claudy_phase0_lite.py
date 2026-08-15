@@ -98,11 +98,12 @@ def upgrade() -> None:
         sa.Column("quote_age_seconds", sa.Numeric(18, 3), nullable=True),
         sa.Column("session_code", sa.String(length=40), nullable=False),
         sa.Column("terminal_trade_allowed", sa.Boolean(), nullable=True),
+        # Nullable on purpose: NULL means position state was not known at capture time;
+        # [] means the broker read succeeded and returned no positions.
         sa.Column(
             "position_state_json",
             postgresql.JSONB(astext_type=sa.Text()),
-            nullable=False,
-            server_default=sa.text("'[]'::jsonb"),
+            nullable=True,
         ),
         # Nullable on purpose: NULL means "not captured", which is not the same claim as
         # an empty array ("captured, and there were none").
