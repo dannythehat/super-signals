@@ -1,7 +1,7 @@
 import asyncio
-from datetime import UTC, datetime, timedelta
 import inspect
 import json
+from datetime import UTC, datetime, timedelta
 from uuid import UUID, uuid4
 
 import pytest
@@ -9,9 +9,9 @@ import pytest
 import app.claudy_market_recorder as recorder_module
 import app.claudy_market_repository as repository_module
 from app.claudy_market_recorder import (
+    CaptureResult,
     ClaudyMarketRecorderManager,
     ClaudyMarketRecorderService,
-    CaptureResult,
     _closed_candle,
     _session_code,
 )
@@ -24,9 +24,18 @@ class FakeCipher:
 
 
 class InMemoryRepository:
-    def __init__(self, *, account: dict[str, object] | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        account: dict[str, object] | None = None,
+        event_ids: list[UUID] | None = None,
+    ) -> None:
         self.account = account
-        self.candles: dict[tuple[str, str, str, datetime], tuple[UUID, dict[str, object]]] = {}
+        self.event_ids = list(event_ids or [])
+        self.candles: dict[
+            tuple[str, str, str, datetime],
+            list[tuple[UUID, dict[str, object]]],
+        ] = {}
         self.snapshots: list[dict[str, object]] = []
 
     def load_reference_demo_account(self, owner_user_id: UUID):
@@ -35,7 +44,10 @@ class InMemoryRepository:
     def provider_state_summary(self) -> dict[str, int]:
         return {"testing": 2, "live": 1, "paused": 1}
 
-    def store_candle(self, candle: dict[str, object]) -> UUID:
+    def event_observation_ids_known_at(self, *, captured_at: datetime) -> list[UUID]:
+        return list(self.event_ids)
+
+    def store_candle(self, candle: dict[str, object]) -> tuple[UUID, int, bool]:
         key = (
             str(candle["source"]),
             str(candle["symbol"]),
@@ -43,31 +55,39 @@ class InMemoryRepository:
             candle["open_time_utc"],
         )
         assert isinstance(key[3], datetime)
-        existing = self.candles.get(key)
-        if existing is not None:
-            return existing[0]
+        revisions = self.candles.setdefault(key, [])
+        for index, (candle_id, existing) in enumerate(revisions, start=1):
+            if existing["payload_digest"] == candle["payload_digest"]:
+                return candle_id, index, False
         candle_id = uuid4()
-        self.candles[key] = (candle_id, dict(candle))
-        return candle_id
+        revisions.append((candle_id, dict(candle)))
+        return candle_id, len(revisions), True
 
     def latest_candle_ids(self, *, symbol: str) -> dict[str, UUID]:
-        latest: dict[str, tuple[datetime, UUID]] = {}
-        for (_, candle_symbol, timeframe, open_time), (candle_id, _) in self.candles.items():
+        latest: dict[str, tuple[datetime, int, UUID]] = {}
+        for (_, candle_symbol, timeframe, open_time), revisions in self.candles.items():
             if candle_symbol != symbol:
                 continue
+            revision_index = len(revisions)
+            candle_id = revisions[-1][0]
             current = latest.get(timeframe)
-            if current is None or open_time > current[0]:
-                latest[timeframe] = (open_time, candle_id)
-        return {timeframe: value[1] for timeframe, value in latest.items()}
+            if current is None or (open_time, revision_index) > (current[0], current[1]):
+                latest[timeframe] = (open_time, revision_index, candle_id)
+        return {timeframe: value[2] for timeframe, value in latest.items()}
 
     def store_snapshot(self, snapshot: dict[str, object]) -> UUID:
         self.snapshots.append(dict(snapshot))
         return uuid4()
 
+    @property
+    def candle_revision_count(self) -> int:
+        return sum(len(revisions) for revisions in self.candles.values())
+
 
 class FakeGateway:
-    def __init__(self, captured_at: datetime) -> None:
+    def __init__(self, captured_at: datetime, *, close_offset: float = 0) -> None:
         self.captured_at = captured_at
+        self.close_offset = close_offset
         self.calls: list[str] = []
 
     async def resolve_account_region(self, *, token: str, account_id: str) -> str:
@@ -143,9 +163,9 @@ class FakeGateway:
                 "time": open_time.isoformat(),
                 "brokerTime": "2026-08-15 00:00:00.000",
                 "open": 4300,
-                "high": 4360,
+                "high": 4360 + self.close_offset,
                 "low": 4290,
-                "close": 4350,
+                "close": 4350 + self.close_offset,
                 "tickVolume": 100,
                 "spread": 20,
                 "volume": 5,
@@ -154,32 +174,40 @@ class FakeGateway:
         return [row(forming_open), row(closed_open)]
 
 
-def _service(repository: InMemoryRepository, now: datetime) -> ClaudyMarketRecorderService:
+def _service(
+    repository: InMemoryRepository,
+    now: datetime,
+    *,
+    close_offset: float = 0,
+) -> ClaudyMarketRecorderService:
     return ClaudyMarketRecorderService(
         reference_user_id=uuid4(),
         repository=repository,  # type: ignore[arg-type]
         cipher=FakeCipher(),  # type: ignore[arg-type]
-        gateway=FakeGateway(now),  # type: ignore[arg-type]
+        gateway=FakeGateway(now, close_offset=close_offset),  # type: ignore[arg-type]
         market_closed_stale_seconds=300,
     )
 
 
-def test_capture_records_only_closed_candles_and_sanitizes_broker_state() -> None:
+def test_capture_records_only_closed_candles_sanitizes_state_and_links_known_events() -> None:
     now = datetime(2026, 8, 15, 5, 30, tzinfo=UTC)
+    known_event_ids = [uuid4(), uuid4()]
     repository = InMemoryRepository(
         account={
             "metaapi_account_id": "account-1",
             "metaapi_token_ciphertext": b"encrypted",
             "account_environment": "demo",
-        }
+        },
+        event_ids=known_event_ids,
     )
 
     result = asyncio.run(_service(repository, now).capture_once(now=now))
 
     assert result.status == "complete"
     assert result.market_open is True
+    assert result.stored_candles == 6
     assert result.broker_trade_action_created is False
-    assert len(repository.candles) == 6
+    assert repository.candle_revision_count == 6
     assert len(repository.snapshots) == 1
 
     snapshot = repository.snapshots[0]
@@ -189,6 +217,13 @@ def test_capture_records_only_closed_candles_and_sanitizes_broker_state() -> Non
     assert snapshot["latest_h1_id"] is not None
     assert snapshot["latest_h4_id"] is not None
     assert snapshot["latest_d1_id"] is not None
+    assert json.loads(str(snapshot["event_observation_ids_json"])) == [
+        str(item) for item in known_event_ids
+    ]
+
+    availability = json.loads(str(snapshot["data_availability_json"]))
+    assert availability["external_events"] == "point_in_time_linked"
+    assert availability["external_event_observation_count"] == 2
 
     stored_json = json.dumps(snapshot, default=str)
     assert "super-secret-metaapi-token" not in stored_json
@@ -198,7 +233,7 @@ def test_capture_records_only_closed_candles_and_sanitizes_broker_state() -> Non
     assert '"status":"not_configured_phase0_lite"' in str(snapshot["cross_market_state_json"])
 
 
-def test_duplicate_polling_keeps_immutable_candle_identity() -> None:
+def test_duplicate_polling_keeps_same_candle_revisions_and_adds_no_new_candles() -> None:
     now = datetime(2026, 8, 15, 5, 30, tzinfo=UTC)
     repository = InMemoryRepository(
         account={
@@ -208,19 +243,46 @@ def test_duplicate_polling_keeps_immutable_candle_identity() -> None:
     )
     service = _service(repository, now)
 
-    asyncio.run(service.capture_once(now=now))
-    first_ids = {key: value[0] for key, value in repository.candles.items()}
-    asyncio.run(service.capture_once(now=now))
-    second_ids = {key: value[0] for key, value in repository.candles.items()}
+    first = asyncio.run(service.capture_once(now=now))
+    first_ids = repository.latest_candle_ids(symbol="XAUUSD")
+    second = asyncio.run(service.capture_once(now=now))
+    second_ids = repository.latest_candle_ids(symbol="XAUUSD")
 
-    assert len(repository.candles) == 6
+    assert first.stored_candles == 6
+    assert second.stored_candles == 0
+    assert repository.candle_revision_count == 6
     assert first_ids == second_ids
     assert len(repository.snapshots) == 2
 
 
+def test_corrected_closed_candle_becomes_new_revision_and_snapshot_uses_it() -> None:
+    now = datetime(2026, 8, 15, 5, 30, tzinfo=UTC)
+    repository = InMemoryRepository(
+        account={
+            "metaapi_account_id": "account-1",
+            "metaapi_token_ciphertext": b"encrypted",
+        }
+    )
+
+    first = asyncio.run(_service(repository, now).capture_once(now=now))
+    first_ids = repository.latest_candle_ids(symbol="XAUUSD")
+    second = asyncio.run(
+        _service(repository, now, close_offset=1).capture_once(now=now)
+    )
+    second_ids = repository.latest_candle_ids(symbol="XAUUSD")
+
+    assert first.stored_candles == 6
+    assert second.stored_candles == 6
+    assert repository.candle_revision_count == 12
+    assert first_ids.keys() == second_ids.keys()
+    assert all(first_ids[key] != second_ids[key] for key in first_ids)
+    assert repository.snapshots[-1]["latest_m5_id"] == second_ids["5m"]
+
+
 def test_missing_demo_account_is_recorded_as_unavailable_evidence() -> None:
     now = datetime(2026, 8, 15, 5, 30, tzinfo=UTC)
-    repository = InMemoryRepository(account=None)
+    event_id = uuid4()
+    repository = InMemoryRepository(account=None, event_ids=[event_id])
 
     result = asyncio.run(_service(repository, now).capture_once(now=now))
 
@@ -228,8 +290,11 @@ def test_missing_demo_account_is_recorded_as_unavailable_evidence() -> None:
     assert result.market_open is False
     assert result.snapshot_id is not None
     assert len(repository.snapshots) == 1
-    availability = json.loads(str(repository.snapshots[0]["data_availability_json"]))
+    snapshot = repository.snapshots[0]
+    availability = json.loads(str(snapshot["data_availability_json"]))
     assert availability["reference_demo_account"] == "not_configured"
+    assert availability["external_events"] == "point_in_time_linked"
+    assert json.loads(str(snapshot["event_observation_ids_json"])) == [str(event_id)]
 
 
 def test_forming_candle_is_never_written_as_closed_history() -> None:
