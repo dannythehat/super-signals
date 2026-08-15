@@ -8,13 +8,13 @@ messages, size risk, or call a broker trade gateway.
 from __future__ import annotations
 
 import asyncio
+import json
+import logging
+import os
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal, InvalidOperation
 from hashlib import sha256
-import json
-import logging
-import os
 from typing import Protocol
 from uuid import UUID
 from zoneinfo import ZoneInfo
@@ -276,7 +276,7 @@ class ClaudyMarketRecorderService:
         availability: dict[str, object] = {
             "account_environment": "demo",
             "cross_market": "not_configured_phase0_lite",
-            "external_events": "schema_ready_no_feed_adapter",
+            "external_events": "fed_rss_separate_loop",
         }
 
         try:
@@ -363,11 +363,8 @@ class ClaudyMarketRecorderService:
                 )
                 if candle is None:
                     continue
-                candle_id = self._repository.store_candle(candle)
-                stored_candles += 1
-                _ = candle_id
-            # The repository identity constraint makes repeated polling idempotent.
-            # Snapshot linkage is resolved from database truth after all writes.
+                _, _, created = self._repository.store_candle(candle)
+                stored_candles += int(created)
 
         latest_candle_ids = self._repository.latest_candle_ids(symbol=SYMBOL)
         candle_ids: dict[str, UUID | None] = {
@@ -407,6 +404,9 @@ class ClaudyMarketRecorderService:
             else []
         )
         provider_state = self._repository.provider_state_summary()
+        event_ids = self._repository.event_observation_ids_known_at(captured_at=captured_at)
+        availability["external_events"] = "point_in_time_linked"
+        availability["external_event_observation_count"] = len(event_ids)
 
         available_components = sum(
             1 for value in availability.values() if value == "available"
@@ -453,6 +453,7 @@ class ClaudyMarketRecorderService:
                 }
             ),
             "data_availability_json": _canonical_json(availability),
+            "event_observation_ids_json": _canonical_json([str(item) for item in event_ids]),
             **candle_ids,
         }
         snapshot["snapshot_digest"] = _digest(
@@ -473,6 +474,10 @@ class ClaudyMarketRecorderService:
         availability: dict[str, object],
         provider_state: dict[str, int],
     ) -> UUID:
+        event_ids = self._repository.event_observation_ids_known_at(captured_at=captured_at)
+        availability = dict(availability)
+        availability["external_events"] = "point_in_time_linked"
+        availability["external_event_observation_count"] = len(event_ids)
         snapshot: dict[str, object] = {
             "captured_at": captured_at,
             "symbol": SYMBOL,
@@ -499,6 +504,7 @@ class ClaudyMarketRecorderService:
                 }
             ),
             "data_availability_json": _canonical_json(availability),
+            "event_observation_ids_json": _canonical_json([str(item) for item in event_ids]),
             "latest_m1_id": None,
             "latest_m5_id": None,
             "latest_m15_id": None,
