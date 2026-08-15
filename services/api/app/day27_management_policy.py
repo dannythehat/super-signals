@@ -22,7 +22,7 @@ class Day27ManagementPolicyResult:
 _OPTIONAL = re.compile(
     r"\b(?:IF\s+YOU\s+(?:WANT|WISH)|CONSIDER|UP\s+TO\s+YOU|YOUR\s+CHOICE)\b"
     r"|\b(?:BANK|TAKE)\s+(?:THE\s+)?BLUE\b.*\bOR\b"
-    r"|\bOR\s+GO\s+TO\s+(?:BE|BREAKEVEN|BREAK\s+EVEN)\b",
+    r"|\bOR\s+(?:(?:GO|MOVE|SET)\s+(?:(?:THE\s+)?(?:SL|STOP\s*LOSS)\s+)?(?:TO\s+)?)?(?:BE|BREAKEVEN|BREAK\s+EVEN)\b",
     re.IGNORECASE | re.DOTALL,
 )
 _RESULT_BE = re.compile(
@@ -75,6 +75,10 @@ _TP_CHANGE = re.compile(
 )
 _MOVE_BE = re.compile(
     r"\b(?:MOVE|SET)\s+(?:THE\s+)?(?:SL|STOP\s*LOSS)\s+TO\s+(?:BE|BREAKEVEN|BREAK\s+EVEN)\b"
+    # Observed GTMO/David dialects: "set breakeven now", "Set Break Even".
+    # A leading MOVE/SET makes this an instruction; result-only wording such as
+    # "I'm at BE" is still protected by _RESULT_BE below.
+    r"|\b(?:MOVE|SET)\s+(?:TO\s+)?(?:BE|BREAKEVEN|BREAK\s+EVEN)\b"
     r"|^\s*(?:BE|BREAKEVEN|BREAK\s+EVEN)\s+NOW\s*[.!✅🔥]*\s*$"
     r"|\bBREAKEVEN\s+SET\b"
     r"|\bMAKE\s+(?:(?:YOUR|MY|THE)\s+)?(?:TRADE|SETUP|SET\s*UP|POSITION)\s+(?:OVERALL\s+)?RISK\s*[- ]?FREE\b"
@@ -90,9 +94,11 @@ _MOVE_BE = re.compile(
 # Partial-taking wording. Deliberately requires a partial sense: a bare "close"
 # must not land here, and "close all" is matched earlier and wins.
 _TAKE_PARTIALS = re.compile(
-    r"\b(?:TAKE|BOOK)\s+(?:SOME\s+|YOUR\s+|THE\s+|MAXIMUM\s+)?(?:PARTIALS?|MORES?|PROFITS?)\b"
+    r"\b(?:TAKE|BOOK)\s+(?:SOME\s+|YOUR\s+|THE\s+|MAXIMUM\s+)?(?:PARTIALS?|PARTIALLY\s+PROFITS?|MORES?|PROFITS?)\b"
     r"|\bBOOK\s+PARTIAL\b"
     r"|\bTAKE\s+PARTIAL\s+PROFITS?\b"
+    # SureShot's observed command is "XAUUSD CLOSE PARTIAL ...".
+    r"|\bCLOSE\s+PARTIALS?\b"
     r"|\b(?:CLOSE|BANK|SECURE|TAKE)\s+(?:OFF\s+)?HALF\b"
     r"|\bCLOSE\s+(?:SOME|A\s+PORTION)\s+(?:OF\s+)?(?:IT|THE\s+(?:TRADE|POSITIONS?))?\b"
     r"|\bBANK\s+(?:SOME|PART)\s+(?:OF\s+)?(?:IT|THE\s+PROFITS?)\b",
@@ -111,9 +117,16 @@ _FUTURE_INTENT = re.compile(
     re.IGNORECASE,
 )
 
-# Exit wording that means "get out of the trade" without using the word close.
+# Exit wording that means "get out of the trade" without relying on one exact
+# provider dialect. These are imperative/current-action forms only. Past-result
+# wording such as "all positions closed" or "I've closed out" deliberately does not
+# match, so broker truth remains the authority for provider result statements.
 _EXIT_NOW = re.compile(
-    r"\b(?:EXIT|CLOSE)\s+(?:IT|NOW|THE\s+(?:TRADE|POSITIONS?|LOT))\b"
+    r"\b(?:EXIT|CLOSE)\s+(?:IT|NOW|THE\s+(?:TRADE|POSITIONS?|LOT|BUY|SELL))\b"
+    r"|\bCLOSE\s+(?:(?:OUR|MY|YOUR|THE|THIS)\s+)?(?:TRADE|SETUP|SET\s*UP)\b"
+    r"|\bCLOSE\s+THIS\s+OUT\b"
+    r"|\bCLOSE\s+OUT(?:\s+OVERALL)?\b"
+    r"|\bCLOSING\s+OUT\s+NOW\b"
     r"|\bGET\s+OUT\s+(?:NOW|OF\s+(?:IT|THE\s+TRADE))\b"
     r"|\bGO\s+FLAT\b"
     r"|\bCLOSE\s+(?:YOUR|MY|ALL)?\s*(?:REMAINING|OPEN)\s+(?:TRADES?|POSITIONS?)\b",
