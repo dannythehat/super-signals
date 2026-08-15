@@ -1,7 +1,7 @@
-import os
-from datetime import UTC, datetime
-from hashlib import sha256
 import json
+import os
+from datetime import UTC, datetime, timedelta
+from hashlib import sha256
 from pathlib import Path
 
 import pytest
@@ -36,7 +36,7 @@ def phase0_engine():
     engine.dispose()
 
 
-def test_phase0_migration_creates_point_in_time_tables_and_identity_constraints(
+def test_phase0_migration_creates_point_in_time_tables_and_revision_constraints(
     phase0_engine,
 ) -> None:
     inspector = inspect(phase0_engine)
@@ -50,12 +50,19 @@ def test_phase0_migration_creates_point_in_time_tables_and_identity_constraints(
         item["name"]
         for item in inspector.get_unique_constraints("market_event_observations")
     }
-    assert "uq_market_candles_identity" in candle_unique
+    snapshot_columns = {
+        item["name"] for item in inspector.get_columns("market_snapshots")
+    }
+    assert "uq_market_candles_revision" in candle_unique
+    assert "uq_market_candles_payload" in candle_unique
     assert "uq_market_event_observations_revision" in event_unique
     assert "uq_market_event_observations_payload" in event_unique
+    assert "event_observation_ids_json" in snapshot_columns
 
 
-def test_closed_candle_persistence_is_idempotent(phase0_engine) -> None:
+def test_closed_candle_revisions_are_append_only_and_identical_payload_is_noop(
+    phase0_engine,
+) -> None:
     factory = sessionmaker(bind=phase0_engine, future=True)
     repository = ClaudyMarketRepository(factory)
     observed_at = datetime(2026, 8, 15, 5, 30, tzinfo=UTC)
@@ -76,30 +83,47 @@ def test_closed_candle_persistence_is_idempotent(phase0_engine) -> None:
         "first_observed_at": observed_at,
     }
 
-    first_id = repository.store_candle(candle)
-    second_id = repository.store_candle(candle)
+    first = repository.store_candle(candle)
+    duplicate = repository.store_candle(candle)
+    revised_candle = {
+        **candle,
+        "close": "4356",
+        "high": "4361",
+        "payload_digest": "b" * 64,
+        "first_observed_at": observed_at + timedelta(minutes=1),
+    }
+    revised = repository.store_candle(revised_candle)
 
-    assert first_id == second_id
+    assert first[1:] == (1, True)
+    assert duplicate == (first[0], 1, False)
+    assert revised[1:] == (2, True)
+    assert revised[0] != first[0]
+
     with phase0_engine.connect() as connection:
-        count = connection.scalar(
+        rows = connection.execute(
             text(
                 """
-                SELECT COUNT(*)
+                SELECT revision_index, payload_digest
                 FROM market_candles
                 WHERE symbol='XAUUSD'
                   AND timeframe='5m'
                   AND open_time_utc=:open_time
+                ORDER BY revision_index
                 """
             ),
             {"open_time": candle["open_time_utc"]},
-        )
-    assert count == 1
+        ).all()
+    assert rows == [(1, "a" * 64), (2, "b" * 64)]
+    assert repository.latest_candle_ids(symbol="XAUUSD")["5m"] == revised[0]
 
 
-def test_event_revisions_append_and_identical_payload_is_noop(phase0_engine) -> None:
+def test_event_revisions_are_point_in_time_and_identical_payload_is_noop(
+    phase0_engine,
+) -> None:
     factory = sessionmaker(bind=phase0_engine, future=True)
     repository = ClaudyMarketRepository(factory)
-    observed = datetime(2026, 8, 15, 5, 30, tzinfo=UTC)
+    first_observed = datetime(2026, 8, 15, 5, 30, tzinfo=UTC)
+    revised_observed = first_observed + timedelta(minutes=10)
 
     def digest(payload: dict[str, object]) -> str:
         raw = json.dumps(payload, sort_keys=True, separators=(",", ":"))
@@ -112,8 +136,8 @@ def test_event_revisions_append_and_identical_payload_is_noop(phase0_engine) -> 
         source="test-feed",
         external_id="event-1",
         event_type="speech",
-        published_at=observed,
-        first_observed_at=observed,
+        published_at=first_observed,
+        first_observed_at=first_observed,
         headline="Fed speaker starts",
         structured_data_json=json.dumps(first_payload),
         raw_payload_json=json.dumps(first_payload),
@@ -123,8 +147,8 @@ def test_event_revisions_append_and_identical_payload_is_noop(phase0_engine) -> 
         source="test-feed",
         external_id="event-1",
         event_type="speech",
-        published_at=observed,
-        first_observed_at=observed,
+        published_at=first_observed,
+        first_observed_at=first_observed + timedelta(minutes=1),
         headline="Fed speaker starts",
         structured_data_json=json.dumps(first_payload),
         raw_payload_json=json.dumps(first_payload),
@@ -134,8 +158,8 @@ def test_event_revisions_append_and_identical_payload_is_noop(phase0_engine) -> 
         source="test-feed",
         external_id="event-1",
         event_type="speech",
-        published_at=observed,
-        first_observed_at=observed,
+        published_at=first_observed,
+        first_observed_at=revised_observed,
         headline="Fed speaker starts",
         structured_data_json=json.dumps(revised_payload),
         raw_payload_json=json.dumps(revised_payload),
@@ -146,6 +170,15 @@ def test_event_revisions_append_and_identical_payload_is_noop(phase0_engine) -> 
     assert duplicate == (first[0], 1, False)
     assert revised[1:] == (2, True)
     assert revised[0] != first[0]
+
+    before_revision = repository.event_observation_ids_known_at(
+        captured_at=first_observed + timedelta(minutes=5)
+    )
+    after_revision = repository.event_observation_ids_known_at(
+        captured_at=revised_observed + timedelta(minutes=1)
+    )
+    assert before_revision == [first[0]]
+    assert after_revision == [revised[0]]
 
     with phase0_engine.connect() as connection:
         rows = connection.execute(
