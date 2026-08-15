@@ -18,7 +18,11 @@ DATABASE_URL = os.getenv("DATABASE_URL")
 API_ROOT = Path(__file__).resolve().parents[1]
 
 
-def _snapshot_for_helper(*, availability: dict[str, object], position_state_json: str) -> dict[str, object]:
+def _snapshot_for_helper(
+    *,
+    availability: dict[str, object],
+    position_state_json: str,
+) -> dict[str, object]:
     return {
         "data_availability_json": json.dumps(availability, sort_keys=True),
         "position_state_json": position_state_json,
@@ -34,7 +38,10 @@ def test_successful_empty_position_read_preserves_known_empty_state() -> None:
 
 
 def test_successful_populated_position_read_preserves_sanitized_list() -> None:
-    positions = json.dumps([{"id": "position-1", "symbol": "XAUUSD"}], sort_keys=True)
+    positions = json.dumps(
+        [{"id": "position-1", "symbol": "XAUUSD"}],
+        sort_keys=True,
+    )
     snapshot = _snapshot_for_helper(
         availability={"positions": "available"},
         position_state_json=positions,
@@ -42,7 +49,7 @@ def test_successful_populated_position_read_preserves_sanitized_list() -> None:
     assert _persisted_position_state_json(snapshot) == positions
 
 
-def test_failed_position_read_becomes_unknown_even_if_recorder_supplies_empty_json() -> None:
+def test_failed_position_read_becomes_unknown_on_persistence() -> None:
     snapshot = _snapshot_for_helper(
         availability={"positions": "metaapi_timeout"},
         position_state_json="[]",
@@ -50,7 +57,7 @@ def test_failed_position_read_becomes_unknown_even_if_recorder_supplies_empty_js
     assert _persisted_position_state_json(snapshot) is None
 
 
-def test_pre_position_snapshot_is_unknown_when_positions_were_never_attempted() -> None:
+def test_pre_position_snapshot_is_unknown_when_never_attempted() -> None:
     snapshot = _snapshot_for_helper(
         availability={"reference_demo_account": "not_configured"},
         position_state_json="[]",
@@ -68,7 +75,9 @@ def _alembic_config() -> Config:
 @pytest.fixture(scope="module")
 def phase0_engine():
     if not DATABASE_URL:
-        pytest.skip("DATABASE_URL is required for PostgreSQL Phase 0-lite schema tests")
+        pytest.skip(
+            "DATABASE_URL is required for PostgreSQL Phase 0-lite schema tests"
+        )
     engine = create_engine(DATABASE_URL, future=True)
     config = _alembic_config()
     command.downgrade(config, "base")
@@ -86,12 +95,19 @@ def test_position_state_column_is_nullable(phase0_engine) -> None:
     assert columns["position_state_json"]["nullable"] is True
 
 
-def test_repository_persists_known_empty_populated_and_unknown_states(phase0_engine) -> None:
+def test_repository_persists_known_empty_populated_and_unknown_states(
+    phase0_engine,
+) -> None:
     factory = sessionmaker(bind=phase0_engine, future=True)
     repository = ClaudyMarketRepository(factory)
     captured_at = datetime(2026, 8, 15, 9, 0, tzinfo=UTC)
 
-    def snapshot(*, positions: str, availability: dict[str, object], digest: str) -> dict[str, object]:
+    def snapshot(
+        *,
+        positions: str,
+        availability: dict[str, object],
+        digest: str,
+    ) -> dict[str, object]:
         return {
             "captured_at": captured_at,
             "symbol": "XAUUSD",
@@ -121,7 +137,11 @@ def test_repository_persists_known_empty_populated_and_unknown_states(phase0_eng
         }
 
     known_empty_id = repository.store_snapshot(
-        snapshot(positions="[]", availability={"positions": "available"}, digest="a" * 64)
+        snapshot(
+            positions="[]",
+            availability={"positions": "available"},
+            digest="a" * 64,
+        )
     )
     populated_id = repository.store_snapshot(
         snapshot(
@@ -131,7 +151,11 @@ def test_repository_persists_known_empty_populated_and_unknown_states(phase0_eng
         )
     )
     failed_id = repository.store_snapshot(
-        snapshot(positions="[]", availability={"positions": "metaapi_timeout"}, digest="c" * 64)
+        snapshot(
+            positions="[]",
+            availability={"positions": "metaapi_timeout"},
+            digest="c" * 64,
+        )
     )
     not_attempted_id = repository.store_snapshot(
         snapshot(
@@ -149,7 +173,12 @@ def test_repository_persists_known_empty_populated_and_unknown_states(phase0_eng
                     """
                     SELECT id, position_state_json
                     FROM market_snapshots
-                    WHERE id IN (:known_empty_id, :populated_id, :failed_id, :not_attempted_id)
+                    WHERE id IN (
+                        :known_empty_id,
+                        :populated_id,
+                        :failed_id,
+                        :not_attempted_id
+                    )
                     """
                 ),
                 {
@@ -162,6 +191,8 @@ def test_repository_persists_known_empty_populated_and_unknown_states(phase0_eng
         }
 
     assert rows[known_empty_id] == []
-    assert rows[populated_id] == [{"id": "position-1", "symbol": "XAUUSD"}]
+    assert rows[populated_id] == [
+        {"id": "position-1", "symbol": "XAUUSD"}
+    ]
     assert rows[failed_id] is None
     assert rows[not_attempted_id] is None
