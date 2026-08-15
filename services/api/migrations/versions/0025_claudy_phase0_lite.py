@@ -37,7 +37,7 @@ def upgrade() -> None:
         sa.Column("low", sa.Numeric(24, 10), nullable=False),
         sa.Column("close", sa.Numeric(24, 10), nullable=False),
         sa.Column("tick_volume", sa.BigInteger(), nullable=True),
-        sa.Column("spread", sa.Numeric(18, 8), nullable=True),
+        sa.Column("spread", sa.Numeric(24, 10), nullable=True),
         sa.Column("volume", sa.Numeric(24, 8), nullable=True),
         sa.Column("source", sa.String(length=40), nullable=False, server_default="metaapi"),
         sa.Column("revision_index", sa.Integer(), nullable=False),
@@ -104,11 +104,12 @@ def upgrade() -> None:
             nullable=False,
             server_default=sa.text("'[]'::jsonb"),
         ),
+        # Nullable on purpose: NULL means "not captured", which is not the same claim as
+        # an empty array ("captured, and there were none").
         sa.Column(
             "order_state_json",
             postgresql.JSONB(astext_type=sa.Text()),
-            nullable=False,
-            server_default=sa.text("'[]'::jsonb"),
+            nullable=True,
         ),
         sa.Column(
             "cross_market_state_json",

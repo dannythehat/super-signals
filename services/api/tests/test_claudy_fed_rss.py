@@ -2,6 +2,7 @@ import asyncio
 from datetime import UTC, datetime
 from uuid import uuid4
 
+import httpx
 import pytest
 
 from app.claudy_fed_rss import (
@@ -122,7 +123,6 @@ def test_recorder_is_idempotent_across_repeated_feed_polls() -> None:
     assert first.feeds_failed == 0
     assert first.observations_added == 3
     assert second.observations_added == 0
-    assert first.broker_trade_action_created is False
 
 
 def test_missing_reference_demo_account_blocks_external_feed_requests() -> None:
@@ -177,3 +177,108 @@ def test_feed_manager_failure_is_isolated_and_keeps_two_minute_cadence() -> None
     with pytest.raises(asyncio.CancelledError):
         asyncio.run(manager._run())
     assert delays == [120]
+
+
+NAIVE_RSS = """<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0"><channel><title>Fed</title>
+<item><guid>naive-1</guid><title>No offset stated</title>
+<pubDate>Wed, 29 Jul 2026 14:00:00</pubDate></item>
+</channel></rss>"""
+
+BILLION_LAUGHS = """<?xml version="1.0"?>
+<!DOCTYPE lolz [
+ <!ENTITY lol "lol">
+ <!ENTITY lol2 "&lol;&lol;&lol;&lol;&lol;&lol;&lol;&lol;&lol;&lol;">
+]>
+<rss version="2.0"><channel><item><title>&lol2;</title></item></channel></rss>"""
+
+FEED_KEY = "fed_press_monetary"
+FEED_URL = FED_RSS_FEEDS[FEED_KEY]
+
+
+def test_naive_publication_time_is_unknown_rather_than_assumed_utc() -> None:
+    rows = parse_fed_rss(NAIVE_RSS, feed_key=FEED_KEY)
+
+    assert len(rows) == 1
+    # The Fed publishes in Eastern Time. Assuming UTC would mis-stamp this by four hours,
+    # so an offset-less timestamp must be recorded as unknown instead of guessed.
+    assert rows[0]["published_at"] is None
+    assert "14:00:00" in str(rows[0]["raw_payload_json"])
+
+
+def test_entity_bearing_xml_is_refused_before_parsing() -> None:
+    with pytest.raises(FedRssError, match="doctype_not_allowed"):
+        parse_fed_rss(BILLION_LAUGHS, feed_key=FEED_KEY)
+
+
+def test_unchanged_feed_is_revalidated_and_never_reparsed() -> None:
+    seen_requests: list[dict[str, str]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen_requests.append(dict(request.headers))
+        if request.headers.get("If-None-Match") == '"v1"':
+            return httpx.Response(304, headers={"ETag": '"v1"'})
+        return httpx.Response(200, text=RSS, headers={"ETag": '"v1"'})
+
+    gateway = FedRssGateway(transport=httpx.MockTransport(handler))
+
+    first = asyncio.run(gateway.fetch(feed_key=FEED_KEY, url=FEED_URL))
+    second = asyncio.run(gateway.fetch(feed_key=FEED_KEY, url=FEED_URL))
+
+    assert first is not None
+    assert second is None
+    assert "If-None-Match" not in seen_requests[0]
+    assert seen_requests[1]["if-none-match"] == '"v1"'
+
+
+def test_unchanged_feed_costs_no_parsing_and_no_dedupe_queries() -> None:
+    class ConditionalGateway:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        async def fetch(self, *, feed_key: str, url: str) -> str | None:
+            self.calls += 1
+            return RSS if self.calls <= len(FED_RSS_FEEDS) else None
+
+    repository = FakeRepository()
+    gateway = ConditionalGateway()
+    service = _service(repository, gateway)
+    now = datetime(2026, 8, 15, 5, 30, tzinfo=UTC)
+
+    first = asyncio.run(service.capture_once(now=now))
+    stored_after_first = len(repository.rows)
+    second = asyncio.run(service.capture_once(now=now))
+
+    assert first.observations_added == 3
+    assert first.feeds_unchanged == 0
+    assert second.feeds_unchanged == 3
+    assert second.observations_seen == 0
+    assert len(repository.rows) == stored_after_first
+
+
+def test_declared_oversize_feed_is_refused_without_reading_the_body() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            content=b"<rss/>",
+            headers={"Content-Length": "9000000"},
+        )
+
+    gateway = FedRssGateway(transport=httpx.MockTransport(handler))
+
+    with pytest.raises(FedRssError, match="too_large"):
+        asyncio.run(gateway.fetch(feed_key=FEED_KEY, url=FEED_URL))
+
+
+def test_streamed_body_stops_at_the_two_megabyte_ceiling() -> None:
+    async def oversized():
+        for _ in range(4):
+            yield b"x" * 600_000
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, content=oversized())
+
+    gateway = FedRssGateway(transport=httpx.MockTransport(handler))
+
+    with pytest.raises(FedRssError, match="too_large"):
+        asyncio.run(gateway.fetch(feed_key=FEED_KEY, url=FEED_URL))

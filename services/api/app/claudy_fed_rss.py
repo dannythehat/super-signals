@@ -10,6 +10,7 @@ import asyncio
 import json
 import logging
 import os
+import re
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from email.utils import parsedate_to_datetime
@@ -29,6 +30,9 @@ FED_RSS_FEEDS = {
     "fed_testimony": "https://www.federalreserve.gov/feeds/testimony.xml",
 }
 _MAX_FEED_BYTES = 2_000_000
+# A document type declaration is the entry point for entity-expansion attacks. Real Fed
+# feeds carry none, so the safe move is to refuse the document rather than parse it.
+_DOCTYPE_PATTERN = re.compile(r"<!\s*(?:DOCTYPE|ENTITY)", re.IGNORECASE)
 
 
 class FedRssError(RuntimeError):
@@ -41,7 +45,7 @@ class FedRssCaptureResult:
     feeds_failed: int
     observations_seen: int
     observations_added: int
-    broker_trade_action_created: bool = False
+    feeds_unchanged: int = 0
 
 
 def _utc(value: datetime) -> datetime:
@@ -75,6 +79,12 @@ def _atom_link(element: ElementTree.Element) -> str | None:
 
 
 def _published_at(raw: str | None) -> datetime | None:
+    """Return an aware UTC publication time, or None when the feed did not state one.
+
+    A naive timestamp is rejected rather than assumed to be UTC. The Federal Reserve
+    publishes in Eastern Time, so guessing an offset would silently mis-stamp
+    point-in-time evidence by four or five hours. Unknown is the honest answer.
+    """
     if not raw:
         return None
     value = raw.strip()
@@ -84,7 +94,7 @@ def _published_at(raw: str | None) -> datetime | None:
         parsed = None
     if parsed is not None:
         if parsed.tzinfo is None:
-            parsed = parsed.replace(tzinfo=UTC)
+            return None
         return parsed.astimezone(UTC)
     if value.endswith("Z"):
         value = f"{value[:-1]}+00:00"
@@ -102,6 +112,8 @@ def parse_fed_rss(xml_text: str, *, feed_key: str) -> list[dict[str, object]]:
     encoded = xml_text.encode("utf-8")
     if len(encoded) > _MAX_FEED_BYTES:
         raise FedRssError("fed_rss_feed_too_large")
+    if _DOCTYPE_PATTERN.search(xml_text):
+        raise FedRssError("fed_rss_doctype_not_allowed")
     try:
         root = ElementTree.fromstring(xml_text)
     except ElementTree.ParseError as exc:
@@ -148,31 +160,71 @@ def parse_fed_rss(xml_text: str, *, feed_key: str) -> list[dict[str, object]]:
 
 
 class FedRssGateway:
-    def __init__(self, *, timeout_seconds: float = 15.0) -> None:
-        self._timeout = httpx.Timeout(timeout_seconds)
+    """Fetch fixed official feeds with conditional retrieval and a real size ceiling."""
 
-    async def fetch(self, *, feed_key: str, url: str) -> str:
+    def __init__(
+        self,
+        *,
+        timeout_seconds: float = 15.0,
+        transport: httpx.AsyncBaseTransport | None = None,
+    ) -> None:
+        self._timeout = httpx.Timeout(timeout_seconds)
+        self._transport = transport
+        self._validators: dict[str, tuple[str | None, str | None]] = {}
+
+    async def fetch(self, *, feed_key: str, url: str) -> str | None:
+        """Return feed text, or None when the feed is unchanged since the last poll."""
         expected = FED_RSS_FEEDS.get(feed_key)
         if expected is None or url != expected:
             raise FedRssError("fed_rss_feed_not_allowed")
+
+        headers = {
+            "Accept": "application/rss+xml, application/xml, text/xml",
+            "User-Agent": "SuperSignals-ClaudyRecorder/1.0",
+        }
+        etag, last_modified = self._validators.get(feed_key, (None, None))
+        if etag:
+            headers["If-None-Match"] = etag
+        if last_modified:
+            headers["If-Modified-Since"] = last_modified
+
         try:
-            async with httpx.AsyncClient(timeout=self._timeout, follow_redirects=False) as client:
-                response = await client.get(
-                    url,
-                    headers={
-                        "Accept": "application/rss+xml, application/xml, text/xml",
-                        "User-Agent": "SuperSignals-ClaudyRecorder/1.0",
-                    },
-                )
+            async with httpx.AsyncClient(
+                timeout=self._timeout,
+                follow_redirects=False,
+                transport=self._transport,
+            ) as client:
+                async with client.stream("GET", url, headers=headers) as response:
+                    if response.status_code == 304:
+                        return None
+                    if response.status_code != 200:
+                        raise FedRssError(f"fed_rss_http_{response.status_code}")
+                    declared = response.headers.get("content-length", "").strip()
+                    if declared.isdigit() and int(declared) > _MAX_FEED_BYTES:
+                        raise FedRssError("fed_rss_feed_too_large")
+                    # Stop reading at the ceiling instead of buffering the whole body and
+                    # measuring it afterwards, which would already have paid the cost.
+                    body = bytearray()
+                    async for chunk in response.aiter_bytes():
+                        body.extend(chunk)
+                        if len(body) > _MAX_FEED_BYTES:
+                            raise FedRssError("fed_rss_feed_too_large")
+                    encoding = response.encoding or "utf-8"
+                    new_validators = (
+                        response.headers.get("etag"),
+                        response.headers.get("last-modified"),
+                    )
         except httpx.TimeoutException as exc:
             raise FedRssError("fed_rss_timeout") from exc
         except httpx.HTTPError as exc:
             raise FedRssError("fed_rss_unreachable") from exc
-        if response.status_code != 200:
-            raise FedRssError(f"fed_rss_http_{response.status_code}")
-        if len(response.content) > _MAX_FEED_BYTES:
-            raise FedRssError("fed_rss_feed_too_large")
-        return response.text
+
+        try:
+            text = bytes(body).decode(encoding)
+        except (LookupError, UnicodeDecodeError) as exc:
+            raise FedRssError("fed_rss_undecodable") from exc
+        self._validators[feed_key] = new_validators
+        return text
 
 
 class ClaudyFedRssRecorderService:
@@ -194,11 +246,16 @@ class ClaudyFedRssRecorderService:
             return FedRssCaptureResult(0, 0, 0, 0)
 
         failures = 0
+        unchanged = 0
         seen = 0
         added = 0
         for feed_key, url in FED_RSS_FEEDS.items():
             try:
                 xml_text = await self._gateway.fetch(feed_key=feed_key, url=url)
+                if xml_text is None:
+                    # Unchanged since the last poll: no parse, no dedupe queries.
+                    unchanged += 1
+                    continue
                 observations = parse_fed_rss(xml_text, feed_key=feed_key)
             except FedRssError as exc:
                 failures += 1
@@ -227,6 +284,7 @@ class ClaudyFedRssRecorderService:
             feeds_failed=failures,
             observations_seen=seen,
             observations_added=added,
+            feeds_unchanged=unchanged,
         )
 
 

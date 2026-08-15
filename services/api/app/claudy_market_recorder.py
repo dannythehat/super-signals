@@ -62,11 +62,18 @@ class CaptureResult:
     status: str
     market_open: bool
     stored_candles: int
-    broker_trade_action_created: bool = False
 
 
 class Sleep(Protocol):
     async def __call__(self, delay: float) -> None: ...
+
+
+class Clock(Protocol):
+    def __call__(self) -> datetime: ...
+
+
+def _utc_now() -> datetime:
+    return datetime.now(UTC)
 
 
 def _utc(value: datetime) -> datetime:
@@ -405,7 +412,9 @@ class ClaudyMarketRecorderService:
             "session_code": _session_code(captured_at),
             "terminal_trade_allowed": None,
             "position_state_json": _canonical_json(positions),
-            "order_state_json": "[]",
+            # Phase 0-lite never reads open orders. An empty list would claim we looked
+            # and found none, so the unknown state is stored as SQL NULL instead.
+            "order_state_json": None,
             "cross_market_state_json": _canonical_json(
                 {"status": "not_configured_phase0_lite"}
             ),
@@ -458,7 +467,7 @@ class ClaudyMarketRecorderService:
             "session_code": _session_code(captured_at),
             "terminal_trade_allowed": None,
             "position_state_json": "[]",
-            "order_state_json": "[]",
+            "order_state_json": None,
             "cross_market_state_json": _canonical_json(
                 {"status": "not_configured_phase0_lite"}
             ),
@@ -490,18 +499,26 @@ class ClaudyMarketRecorderService:
 
 
 class ClaudyMarketRecorderManager:
-    """Failure-isolated background loop; recorder failure cannot stop the API."""
+    """Failure-isolated background loop; recorder failure cannot stop the API.
+
+    Two cadences run from one loop. Every cycle reads the fast timeframes; the slow
+    timeframes only re-enter once ``slow_poll_seconds`` has elapsed since they were last
+    read. The tiering is only real while ``slow_poll_seconds`` exceeds ``poll_seconds`` —
+    equal values collapse it into reading everything every cycle.
+    """
 
     def __init__(
         self,
         service: ClaudyMarketRecorderService,
         *,
-        poll_seconds: float = 300.0,
+        poll_seconds: float = 60.0,
         slow_poll_seconds: float = 300.0,
         market_closed_backoff_seconds: float = 900.0,
         sleep: Sleep = asyncio.sleep,
+        clock: Clock = _utc_now,
     ) -> None:
         self._service = service
+        self._clock = clock
         self._poll_seconds = max(float(poll_seconds), 60.0)
         self._slow_poll_seconds = max(float(slow_poll_seconds), self._poll_seconds)
         self._market_closed_backoff_seconds = max(
@@ -532,7 +549,7 @@ class ClaudyMarketRecorderManager:
     async def _run(self) -> None:
         last_slow_at: datetime | None = None
         while True:
-            started_at = datetime.now(UTC)
+            started_at = self._clock()
             include_slow = (
                 last_slow_at is None
                 or (started_at - last_slow_at).total_seconds() >= self._slow_poll_seconds
@@ -592,7 +609,7 @@ def build_claudy_market_recorder_manager(
             return None
         return value
 
-    poll = positive_float("SUPER_SIGNALS_CLAUDY_CAPTURE_POLL_SECONDS", 300.0)
+    poll = positive_float("SUPER_SIGNALS_CLAUDY_CAPTURE_POLL_SECONDS", 60.0)
     slow_poll = positive_float("SUPER_SIGNALS_CLAUDY_CAPTURE_SLOW_POLL_SECONDS", 300.0)
     closed_backoff = positive_float(
         "SUPER_SIGNALS_CLAUDY_CAPTURE_MARKET_CLOSED_BACKOFF_SECONDS",

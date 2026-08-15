@@ -200,7 +200,6 @@ def test_capture_records_only_closed_candles_sanitizes_state_and_links_known_eve
     assert result.status == "complete"
     assert result.market_open is True
     assert result.stored_candles == 6
-    assert result.broker_trade_action_created is False
     assert repository.candle_revision_count == 6
     assert len(repository.snapshots) == 1
     assert "account" not in gateway.calls
@@ -222,7 +221,9 @@ def test_capture_records_only_closed_candles_sanitizes_state_and_links_known_eve
     assert snapshot["latest_h4_id"] is not None
     assert snapshot["latest_d1_id"] is not None
     assert snapshot["terminal_trade_allowed"] is None
-    assert snapshot["order_state_json"] == "[]"
+    # Orders are never read in Phase 0-lite, so the column must stay unknown (NULL).
+    # An empty array would falsely claim we looked and found no open orders.
+    assert snapshot["order_state_json"] is None
     assert json.loads(str(snapshot["event_observation_ids_json"])) == [
         str(item) for item in known_event_ids
     ]
@@ -388,7 +389,7 @@ def test_market_closed_uses_backoff_instead_of_hammering_metaapi() -> None:
     assert delays == [300]
 
 
-def test_default_open_market_cadence_is_five_minutes() -> None:
+def test_default_open_market_cadence_is_sixty_seconds() -> None:
     delays: list[float] = []
 
     async def stop_after_sleep(delay: float) -> None:
@@ -403,7 +404,56 @@ def test_default_open_market_cadence_is_five_minutes() -> None:
     with pytest.raises(asyncio.CancelledError):
         asyncio.run(manager._run())
 
-    assert delays == [300]
+    assert delays == [60]
+
+
+class RecordingTimeframeService:
+    def __init__(self) -> None:
+        self.timeframe_calls: list[tuple[str, ...]] = []
+
+    async def capture_once(self, *, timeframes: tuple[str, ...], now: datetime):
+        self.timeframe_calls.append(timeframes)
+        return CaptureResult(uuid4(), "complete", True, 0)
+
+
+def test_fast_cycles_run_alone_and_the_slow_set_re_enters_after_five_minutes() -> None:
+    """The two cadences must be real, not collapsed into one.
+
+    With the shipped defaults the fast set runs every 60s and the slow set may only
+    re-enter once 300s have passed. If slow_poll ever drops to poll_seconds this test
+    fails, because every cycle would read all six timeframes.
+    """
+    service = RecordingTimeframeService()
+    clock = {"now": datetime(2026, 8, 15, 5, 0, tzinfo=UTC)}
+    delays: list[float] = []
+
+    async def advance(delay: float) -> None:
+        delays.append(delay)
+        clock["now"] += timedelta(seconds=delay)
+        if len(delays) >= 6:
+            raise asyncio.CancelledError
+
+    manager = ClaudyMarketRecorderManager(
+        service,  # type: ignore[arg-type]
+        poll_seconds=60,
+        slow_poll_seconds=300,
+        market_closed_backoff_seconds=900,
+        sleep=advance,
+        clock=lambda: clock["now"],
+    )
+
+    with pytest.raises(asyncio.CancelledError):
+        asyncio.run(manager._run())
+
+    assert delays == [60, 60, 60, 60, 60, 60]
+    assert service.timeframe_calls == [
+        recorder_module.ALL_TIMEFRAMES,
+        recorder_module.FAST_TIMEFRAMES,
+        recorder_module.FAST_TIMEFRAMES,
+        recorder_module.FAST_TIMEFRAMES,
+        recorder_module.FAST_TIMEFRAMES,
+        recorder_module.ALL_TIMEFRAMES,
+    ]
 
 
 def test_default_closed_market_backoff_is_fifteen_minutes() -> None:
