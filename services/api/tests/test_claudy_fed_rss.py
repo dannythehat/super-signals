@@ -1,5 +1,6 @@
 import asyncio
 from datetime import UTC, datetime
+from uuid import uuid4
 
 import pytest
 
@@ -67,8 +68,12 @@ def test_gateway_rejects_non_allowlisted_url_before_network() -> None:
 
 
 class FakeRepository:
-    def __init__(self) -> None:
+    def __init__(self, *, has_demo_account: bool = True) -> None:
+        self.has_demo_account = has_demo_account
         self.rows: dict[tuple[str, str, str], int] = {}
+
+    def load_reference_demo_account(self, owner_user_id):
+        return {"id": "demo"} if self.has_demo_account else None
 
     def store_event_observation(self, **kwargs):
         key = (kwargs["source"], kwargs["external_id"], kwargs["payload_digest"])
@@ -87,17 +92,27 @@ class FakeRepository:
 
 
 class ThreeFeedGateway:
+    def __init__(self) -> None:
+        self.calls = 0
+
     async def fetch(self, *, feed_key: str, url: str) -> str:
+        self.calls += 1
         assert url == FED_RSS_FEEDS[feed_key]
         return RSS
 
 
+def _service(repository: FakeRepository, gateway) -> ClaudyFedRssRecorderService:
+    return ClaudyFedRssRecorderService(
+        reference_user_id=uuid4(),
+        repository=repository,  # type: ignore[arg-type]
+        gateway=gateway,  # type: ignore[arg-type]
+    )
+
+
 def test_recorder_is_idempotent_across_repeated_feed_polls() -> None:
     repository = FakeRepository()
-    service = ClaudyFedRssRecorderService(
-        repository=repository,  # type: ignore[arg-type]
-        gateway=ThreeFeedGateway(),  # type: ignore[arg-type]
-    )
+    gateway = ThreeFeedGateway()
+    service = _service(repository, gateway)
     now = datetime(2026, 8, 15, 5, 30, tzinfo=UTC)
 
     first = asyncio.run(service.capture_once(now=now))
@@ -110,6 +125,20 @@ def test_recorder_is_idempotent_across_repeated_feed_polls() -> None:
     assert first.broker_trade_action_created is False
 
 
+def test_missing_reference_demo_account_blocks_external_feed_requests() -> None:
+    repository = FakeRepository(has_demo_account=False)
+    gateway = ThreeFeedGateway()
+    service = _service(repository, gateway)
+
+    result = asyncio.run(
+        service.capture_once(now=datetime(2026, 8, 15, 5, 30, tzinfo=UTC))
+    )
+
+    assert result.feeds_checked == 0
+    assert result.observations_added == 0
+    assert gateway.calls == 0
+
+
 class OneFailingFeedGateway:
     async def fetch(self, *, feed_key: str, url: str) -> str:
         if feed_key == "fed_speeches":
@@ -119,10 +148,7 @@ class OneFailingFeedGateway:
 
 def test_one_feed_failure_does_not_erase_other_official_evidence() -> None:
     repository = FakeRepository()
-    service = ClaudyFedRssRecorderService(
-        repository=repository,  # type: ignore[arg-type]
-        gateway=OneFailingFeedGateway(),  # type: ignore[arg-type]
-    )
+    service = _service(repository, OneFailingFeedGateway())
     result = asyncio.run(
         service.capture_once(now=datetime(2026, 8, 15, 5, 30, tzinfo=UTC))
     )
