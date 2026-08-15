@@ -55,33 +55,33 @@ class ClaudyMarketRepository:
             ).mappings().all()
         return {str(row["status"]): int(row["count"]) for row in rows}
 
-    def store_candle(self, candle: dict[str, object]) -> UUID:
+    def store_candle(self, candle: dict[str, object]) -> tuple[UUID, int, bool]:
+        """Append a candle revision only when its broker payload actually changes."""
         params = dict(candle)
         with self._session_factory() as session:
-            candle_id = session.execute(
+            existing = session.execute(
                 text(
                     """
-                    INSERT INTO market_candles (
-                        symbol,timeframe,open_time_utc,broker_open_time,
-                        open,high,low,close,tick_volume,spread,volume,
-                        source,payload_digest,first_observed_at
-                    )
-                    VALUES (
-                        :symbol,:timeframe,:open_time_utc,:broker_open_time,
-                        :open,:high,:low,:close,:tick_volume,:spread,:volume,
-                        :source,:payload_digest,:first_observed_at
-                    )
-                    ON CONFLICT (source,symbol,timeframe,open_time_utc) DO NOTHING
-                    RETURNING id
+                    SELECT id, revision_index
+                    FROM market_candles
+                    WHERE source=:source
+                      AND symbol=:symbol
+                      AND timeframe=:timeframe
+                      AND open_time_utc=:open_time_utc
+                      AND payload_digest=:payload_digest
+                    LIMIT 1
                     """
                 ),
                 params,
-            ).scalar_one_or_none()
-            if candle_id is None:
-                candle_id = session.execute(
+            ).mappings().first()
+            if existing is not None:
+                return existing["id"], int(existing["revision_index"]), False
+
+            revision_index = int(
+                session.execute(
                     text(
                         """
-                        SELECT id
+                        SELECT COALESCE(MAX(revision_index),0) + 1
                         FROM market_candles
                         WHERE source=:source
                           AND symbol=:symbol
@@ -91,10 +91,30 @@ class ClaudyMarketRepository:
                     ),
                     params,
                 ).scalar_one()
+            )
+            candle_id = session.execute(
+                text(
+                    """
+                    INSERT INTO market_candles (
+                        symbol,timeframe,open_time_utc,broker_open_time,
+                        open,high,low,close,tick_volume,spread,volume,
+                        source,revision_index,payload_digest,first_observed_at
+                    )
+                    VALUES (
+                        :symbol,:timeframe,:open_time_utc,:broker_open_time,
+                        :open,:high,:low,:close,:tick_volume,:spread,:volume,
+                        :source,:revision_index,:payload_digest,:first_observed_at
+                    )
+                    RETURNING id
+                    """
+                ),
+                {**params, "revision_index": revision_index},
+            ).scalar_one()
             session.commit()
-            return candle_id
+            return candle_id, revision_index, True
 
     def latest_candle_ids(self, *, symbol: str) -> dict[str, UUID]:
+        """Return the latest broker revision of the latest closed candle per timeframe."""
         with self._session_factory() as session:
             rows = session.execute(
                 text(
@@ -102,12 +122,58 @@ class ClaudyMarketRepository:
                     SELECT DISTINCT ON (timeframe) timeframe, id
                     FROM market_candles
                     WHERE source='metaapi' AND symbol=:symbol
-                    ORDER BY timeframe, open_time_utc DESC
+                    ORDER BY timeframe, open_time_utc DESC, revision_index DESC
                     """
                 ),
                 {"symbol": symbol},
             ).mappings().all()
         return {str(row["timeframe"]): row["id"] for row in rows}
+
+    def event_observation_ids_known_at(
+        self,
+        *,
+        captured_at: datetime,
+        lookback_hours: int = 24,
+    ) -> list[UUID]:
+        """Return latest revisions that had actually been observed by capture time.
+
+        The first-observed timestamp is the point-in-time boundary. A later revision
+        cannot leak backwards into an older market snapshot.
+        """
+        if lookback_hours <= 0:
+            raise ValueError("Event lookback must be positive.")
+        with self._session_factory() as session:
+            rows = session.execute(
+                text(
+                    """
+                    SELECT id
+                    FROM (
+                        SELECT DISTINCT ON (source, external_id)
+                            id,
+                            source,
+                            external_id,
+                            first_observed_at,
+                            revision_index
+                        FROM market_event_observations
+                        WHERE first_observed_at <= :captured_at
+                          AND first_observed_at >= (
+                              :captured_at - make_interval(hours => :lookback_hours)
+                          )
+                        ORDER BY
+                            source,
+                            external_id,
+                            revision_index DESC,
+                            first_observed_at DESC
+                    ) AS known
+                    ORDER BY first_observed_at, source, external_id
+                    """
+                ),
+                {
+                    "captured_at": captured_at,
+                    "lookback_hours": lookback_hours,
+                },
+            ).all()
+        return [row[0] for row in rows]
 
     def store_snapshot(self, snapshot: dict[str, object]) -> UUID:
         with self._session_factory() as session:
@@ -120,6 +186,7 @@ class ClaudyMarketRepository:
                         session_code,terminal_trade_allowed,
                         position_state_json,order_state_json,cross_market_state_json,
                         provider_state_json,claudy_state_json,data_availability_json,
+                        event_observation_ids_json,
                         latest_m1_id,latest_m5_id,latest_m15_id,
                         latest_h1_id,latest_h4_id,latest_d1_id,snapshot_digest
                     )
@@ -133,6 +200,7 @@ class ClaudyMarketRepository:
                         CAST(:provider_state_json AS jsonb),
                         CAST(:claudy_state_json AS jsonb),
                         CAST(:data_availability_json AS jsonb),
+                        CAST(:event_observation_ids_json AS jsonb),
                         :latest_m1_id,:latest_m5_id,:latest_m15_id,
                         :latest_h1_id,:latest_h4_id,:latest_d1_id,:snapshot_digest
                     )
