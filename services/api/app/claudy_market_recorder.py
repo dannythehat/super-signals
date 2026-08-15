@@ -38,6 +38,14 @@ _TIMEFRAME_SECONDS = {
     "4h": 14400,
     "1d": 86400,
 }
+_CANDLE_LIMITS = {
+    "1m": 20,
+    "5m": 10,
+    "15m": 5,
+    "1h": 3,
+    "4h": 3,
+    "1d": 3,
+}
 _SNAPSHOT_CANDLE_KEYS = {
     "1m": "latest_m1_id",
     "5m": "latest_m5_id",
@@ -138,25 +146,6 @@ def _sanitize_positions(payloads: list[dict[str, object]]) -> list[dict[str, obj
         "time",
         "updateTime",
         "clientId",
-    )
-    return [{key: row.get(key) for key in allowed if key in row} for row in payloads]
-
-
-def _sanitize_orders(payloads: list[dict[str, object]]) -> list[dict[str, object]]:
-    allowed = (
-        "id",
-        "symbol",
-        "type",
-        "state",
-        "volume",
-        "currentVolume",
-        "openPrice",
-        "stopLoss",
-        "takeProfit",
-        "time",
-        "doneTime",
-        "clientId",
-        "positionId",
     )
     return [{key: row.get(key) for key in allowed if key in row} for row in payloads]
 
@@ -277,6 +266,8 @@ class ClaudyMarketRecorderService:
             "account_environment": "demo",
             "cross_market": "not_configured_phase0_lite",
             "external_events": "fed_rss_separate_loop",
+            "account_information": "not_captured_phase0_cost_control",
+            "orders": "not_captured_phase0_pending_unsupported",
         }
 
         try:
@@ -303,25 +294,9 @@ class ClaudyMarketRecorderService:
             availability[name] = "available"
             return value
 
-        account_payload = await read(
-            "account_information",
-            self._gateway.read_account_information(
-                token=token,
-                account_id=account_id,
-                region=region,
-            ),
-        )
         positions_payload = await read(
             "positions",
             self._gateway.read_positions(
-                token=token,
-                account_id=account_id,
-                region=region,
-            ),
-        )
-        orders_payload = await read(
-            "orders",
-            self._gateway.read_orders(
                 token=token,
                 account_id=account_id,
                 region=region,
@@ -347,7 +322,7 @@ class ClaudyMarketRecorderService:
                     region=region,
                     symbol=SYMBOL,
                     timeframe=timeframe,
-                    limit=3,
+                    limit=_CANDLE_LIMITS[timeframe],
                 ),
             )
             if not isinstance(payloads, list):
@@ -388,19 +363,9 @@ class ClaudyMarketRecorderService:
             and quote_age <= self._market_closed_stale_seconds
         )
 
-        terminal_trade_allowed = (
-            bool(account_payload.get("tradeAllowed", False))
-            if isinstance(account_payload, dict)
-            else None
-        )
         positions = (
             _sanitize_positions(positions_payload)
             if isinstance(positions_payload, list)
-            else []
-        )
-        orders = (
-            _sanitize_orders(orders_payload)
-            if isinstance(orders_payload, list)
             else []
         )
         provider_state = self._repository.provider_state_summary()
@@ -411,7 +376,7 @@ class ClaudyMarketRecorderService:
         available_components = sum(
             1 for value in availability.values() if value == "available"
         )
-        expected_components = 4 + len(timeframes)
+        expected_components = 2 + len(timeframes)
         status = (
             "complete"
             if available_components == expected_components
@@ -438,9 +403,9 @@ class ClaudyMarketRecorderService:
             "quote_time": quote_time,
             "quote_age_seconds": quote_age,
             "session_code": _session_code(captured_at),
-            "terminal_trade_allowed": terminal_trade_allowed,
+            "terminal_trade_allowed": None,
             "position_state_json": _canonical_json(positions),
-            "order_state_json": _canonical_json(orders),
+            "order_state_json": "[]",
             "cross_market_state_json": _canonical_json(
                 {"status": "not_configured_phase0_lite"}
             ),
@@ -476,6 +441,8 @@ class ClaudyMarketRecorderService:
     ) -> UUID:
         event_ids = self._repository.event_observation_ids_known_at(captured_at=captured_at)
         availability = dict(availability)
+        availability.setdefault("account_information", "not_captured_phase0_cost_control")
+        availability.setdefault("orders", "not_captured_phase0_pending_unsupported")
         availability["external_events"] = "point_in_time_linked"
         availability["external_event_observation_count"] = len(event_ids)
         snapshot: dict[str, object] = {
@@ -529,13 +496,13 @@ class ClaudyMarketRecorderManager:
         self,
         service: ClaudyMarketRecorderService,
         *,
-        poll_seconds: float = 60.0,
+        poll_seconds: float = 300.0,
         slow_poll_seconds: float = 300.0,
-        market_closed_backoff_seconds: float = 300.0,
+        market_closed_backoff_seconds: float = 900.0,
         sleep: Sleep = asyncio.sleep,
     ) -> None:
         self._service = service
-        self._poll_seconds = max(float(poll_seconds), 5.0)
+        self._poll_seconds = max(float(poll_seconds), 60.0)
         self._slow_poll_seconds = max(float(slow_poll_seconds), self._poll_seconds)
         self._market_closed_backoff_seconds = max(
             float(market_closed_backoff_seconds),
@@ -625,11 +592,11 @@ def build_claudy_market_recorder_manager(
             return None
         return value
 
-    poll = positive_float("SUPER_SIGNALS_CLAUDY_CAPTURE_POLL_SECONDS", 60.0)
+    poll = positive_float("SUPER_SIGNALS_CLAUDY_CAPTURE_POLL_SECONDS", 300.0)
     slow_poll = positive_float("SUPER_SIGNALS_CLAUDY_CAPTURE_SLOW_POLL_SECONDS", 300.0)
     closed_backoff = positive_float(
         "SUPER_SIGNALS_CLAUDY_CAPTURE_MARKET_CLOSED_BACKOFF_SECONDS",
-        300.0,
+        900.0,
     )
     stale = positive_float(
         "SUPER_SIGNALS_CLAUDY_CAPTURE_MARKET_STALE_SECONDS",
