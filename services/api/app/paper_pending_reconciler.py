@@ -268,7 +268,7 @@ class PaperPendingReconciler:
     @staticmethod
     def _decimal(value: object, *, optional: bool = False) -> Decimal | None:
         if value is None:
-            return None if optional else None
+            return None
         if isinstance(value, bool):
             return None
         try:
@@ -348,7 +348,7 @@ class PaperPendingReconciler:
             )
             if exists:
                 return
-            payload = json_payload = (
+            payload = (
                 '{"code":"' + code.replace('"', "") + '",'
                 '"paper_demo_only":true,"trade_action_created":false}'
             )
