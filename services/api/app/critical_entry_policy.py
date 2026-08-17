@@ -163,7 +163,14 @@ def augment_management_actions(
     raw_text: str,
     actions: Iterable[dict[str, str | None]],
 ) -> tuple[dict[str, str | None], ...]:
-    """Add layer-aware targets without changing generic one-position-per-TP partials."""
+    """Preserve explicit partial and layer scope for the demo management boundary.
+
+    The legacy Day-27 extractor deliberately represented "take partials" as "close
+    TP1" because a normal multi-TP signal has one broker tranche per target. That is
+    still the execution strategy when multiple tranches exist, but retaining a
+    ``partial_*`` target lets the critical demo manager detect a single-tranche case
+    and use a true broker partial close instead of accidentally closing everything.
+    """
     text = raw_text or ""
     result = [dict(action) for action in actions]
 
@@ -171,10 +178,11 @@ def augment_management_actions(
     if close_layers is not None:
         count = int(close_layers.group(1))
         if count > 0:
-            # This selector ranks actual mapped entry prices at execution time. When
-            # the provider explicitly says to leave the best running, it closes the
-            # requested worst entry groups and never closes by symbol.
-            target = f"worst_{count}_layers" if _LEAVE_BEST.search(text) else f"first_{count}_layers"
+            target = (
+                f"worst_{count}_layers"
+                if _LEAVE_BEST.search(text)
+                else f"first_{count}_layers"
+            )
             result.insert(0, {"type": "close", "target": target, "value": None})
 
     layer_index: int | None = None
@@ -183,16 +191,25 @@ def augment_management_actions(
     elif _FIRST_ENTRY_CONTEXT.search(text):
         layer_index = 1
 
-    if layer_index is not None:
-        for action in result:
-            action_type = str(action.get("type") or "")
-            target = str(action.get("target") or "all").lower()
-            if action_type == "close" and target == "tp1" and _PARTIAL.search(text):
-                action["target"] = f"entry_{layer_index}_tp1"
-            elif action_type in {"move_to_break_even", "edit_stop_loss"} and target in {"all", ""}:
-                action["target"] = f"entry_{layer_index}"
+    partial_command = _PARTIAL.search(text) is not None
+    for action in result:
+        action_type = str(action.get("type") or "")
+        target = str(action.get("target") or "all").lower()
 
-    # Stable de-duplication preserves command order.
+        if action_type == "close" and target == "tp1" and partial_command:
+            action["target"] = (
+                f"entry_{layer_index}_partial_tp1"
+                if layer_index is not None
+                else "partial_tp1"
+            )
+            continue
+
+        if layer_index is not None and action_type in {
+            "move_to_break_even",
+            "edit_stop_loss",
+        } and target in {"all", ""}:
+            action["target"] = f"entry_{layer_index}"
+
     seen: set[tuple[str | None, str | None, str | None]] = set()
     deduped: list[dict[str, str | None]] = []
     for action in result:
