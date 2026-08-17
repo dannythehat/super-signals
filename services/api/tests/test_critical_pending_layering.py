@@ -144,7 +144,11 @@ def test_tdc_risk_free_close_table_closes_named_layers_and_keeps_best_only() -> 
     assert {"type": "close", "target": "entry_price_4396", "value": None} in actions
     assert {"type": "close", "target": "entry_price_4397", "value": None} in actions
     assert {"type": "close", "target": "all_but_best", "value": None} in actions
-    assert {"type": "edit_stop_loss", "target": "best_entry", "value": "4393"} in actions
+    assert {
+        "type": "edit_stop_loss",
+        "target": "best_entry_risk_free_4393",
+        "value": "4393",
+    } in actions
 
 
 def test_tdc_bare_numeric_risk_free_is_not_blanket_stop_on_layered_trade() -> None:
@@ -153,7 +157,11 @@ def test_tdc_bare_numeric_risk_free_is_not_blanket_stop_on_layered_trade() -> No
         ({"type": "edit_stop_loss", "target": "all", "value": "4393"},),
     )
     assert actions[0] == {"type": "close", "target": "all_but_best", "value": None}
-    assert {"type": "edit_stop_loss", "target": "best_entry", "value": "4393"} in actions
+    assert {
+        "type": "edit_stop_loss",
+        "target": "best_entry_risk_free_4393",
+        "value": "4393",
+    } in actions
 
 
 def test_leave_best_buy_closes_highest_price_layers_only() -> None:
@@ -193,6 +201,53 @@ def test_best_entry_buy_is_lowest_actual_fill() -> None:
         side="BUY",
     )
     assert {item.entry_index for item in worse} == {1, 2, 3, 4, 5}
+
+
+def test_buy_risk_free_stop_is_allowed_when_best_layer_really_filled_at_that_price() -> None:
+    positions = (
+        _position(1, 1, "4397.51"),
+        _position(2, 1, "4397"),
+        _position(3, 1, "4396"),
+        _position(4, 1, "4395"),
+        _position(5, 1, "4394"),
+        _position(6, 1, "4393"),
+    )
+    selected = PaperCriticalManagementV2._select_layer_positions(
+        positions,
+        "best_entry_risk_free_4393",
+        side="BUY",
+    )
+    assert {item.entry_index for item in selected} == {6}
+
+
+def test_buy_risk_free_stop_fails_if_only_worse_layer_has_filled() -> None:
+    positions = (_position(1, 1, "4397.51"),)
+    with pytest.raises(Day27ManagementError, match="risk_free_stop_not_protective"):
+        PaperCriticalManagementV2._select_layer_positions(
+            positions,
+            "best_entry_risk_free_4393",
+            side="BUY",
+        )
+
+
+def test_sell_risk_free_stop_uses_inverse_protection_rule() -> None:
+    positions = (
+        _position(1, 1, "4393"),
+        _position(2, 1, "4394"),
+        _position(3, 1, "4395"),
+    )
+    selected = PaperCriticalManagementV2._select_layer_positions(
+        positions,
+        "best_entry_risk_free_4395",
+        side="SELL",
+    )
+    assert {item.entry_index for item in selected} == {3}
+    with pytest.raises(Day27ManagementError, match="risk_free_stop_not_protective"):
+        PaperCriticalManagementV2._select_layer_positions(
+            (_position(1, 1, "4393"),),
+            "best_entry_risk_free_4395",
+            side="SELL",
+        )
 
 
 def test_provider_close_price_maps_to_unique_nearest_actual_layer() -> None:
