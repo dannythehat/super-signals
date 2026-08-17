@@ -97,8 +97,22 @@ def test_relationships_and_key_unique_constraints_exist(migrated_engine) -> None
     assert position_foreign_keys == {"signals", "users"}
     assert role_permission_foreign_keys == {"roles", "permissions"}
     assert "uq_messages_source_telegram_id" in message_unique_names
-    assert "uq_positions_signal_user_tp" in position_unique_names
+    assert "uq_positions_signal_user_entry_tp" in position_unique_names
     assert "uq_broker_deals_account_deal" in broker_deal_unique_names
+
+
+def test_layered_position_columns_and_pending_status_exist(migrated_engine) -> None:
+    inspector = inspect(migrated_engine)
+    columns = {column["name"] for column in inspector.get_columns("positions")}
+    checks = {
+        constraint["name"]: constraint.get("sqltext", "")
+        for constraint in inspector.get_check_constraints("positions")
+    }
+    assert {"entry_index", "entry_order_type"} <= columns
+    assert "ck_positions_entry_index" in checks
+    assert "ck_positions_entry_order_type" in checks
+    assert "ck_positions_status" in checks
+    assert "pending" in str(checks["ck_positions_status"])
 
 
 def test_permission_matrix_is_seeded(migrated_engine) -> None:
