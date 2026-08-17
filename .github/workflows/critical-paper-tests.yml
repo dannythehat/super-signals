@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - feature/critical-pending-layering-20260817
+      - feature/execution-catchup-20260817
 
 permissions:
   contents: read
