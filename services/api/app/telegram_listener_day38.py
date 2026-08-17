@@ -14,11 +14,11 @@ from app.metaapi_read_gateway import MetaApiReadGateway
 from app.metaapi_trade_gateway import MetaApiTradeGateway
 from app.mt5_crypto import MetaApiTokenCipher
 from app.mt5_execution_day38 import Day38LiveUserExecutionService
-from app.mt5_management_day27 import Day27Mt5ManagementService
 from app.mt5_management_day38 import Day38LiveUserManagementService
 from app.multi_user_distribution_day38 import Day38MultiUserDistributionService
 from app.multi_user_management_day38 import Day38MultiUserManagementService
 from app.paper_critical_execution import PaperCriticalExecutionService
+from app.paper_critical_management import PaperCriticalManagementService
 from app.telegram_crypto import TelegramSessionCipher
 from app.telegram_listener_day28 import Day28TelegramListenerManager
 
@@ -66,10 +66,10 @@ def build_day38_execution_router_from_env(
         trade_gateway = MetaApiTradeGateway()
         margin_gateway = MetaApiMarginGateway()
 
-        # Pending orders and declared multi-entry layering are enabled only on the
-        # Owner's Vantage DEMO paper boundary. Member LIVE execution intentionally
-        # remains on the previously accepted market-only engine until a separate live
-        # safety gate explicitly promotes these new capabilities.
+        # Pending orders, true partials and declared multi-entry layering are enabled
+        # only on the Owner's Vantage DEMO paper boundary. Member LIVE execution and
+        # management intentionally remain on the previously accepted market-only
+        # engines until a separate live safety gate explicitly promotes them.
         owner_execution = PaperCriticalExecutionService(
             session_factory=session_factory,
             cipher=cipher,
@@ -77,7 +77,7 @@ def build_day38_execution_router_from_env(
             margin_gateway=margin_gateway,
             trade_gateway=trade_gateway,
         )
-        owner_management = Day27Mt5ManagementService(
+        owner_management = PaperCriticalManagementService(
             session_factory=session_factory,
             cipher=cipher,
             read_gateway=read_gateway,
