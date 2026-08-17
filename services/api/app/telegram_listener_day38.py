@@ -15,9 +15,10 @@ from app.metaapi_trade_gateway import MetaApiTradeGateway
 from app.mt5_crypto import MetaApiTokenCipher
 from app.mt5_execution_day38 import Day38LiveUserExecutionService
 from app.mt5_management_day38 import Day38LiveUserManagementService
-from app.paper_critical_execution import PaperCriticalExecutionService
 from app.paper_critical_management_v2 import PaperCriticalManagementV2
+from app.paper_execution_priority import PaperExecutionPriorityService
 from app.paper_pending_reconciler import PaperPendingReconciler
+from app.paper_resilient_read_gateway import PaperResilientMetaApiReadGateway
 from app.paper_safe_member_routing import (
     PaperSafeMemberDistribution,
     PaperSafeMemberManagement,
@@ -69,39 +70,41 @@ def build_day38_execution_router_from_env(
 
     try:
         cipher = MetaApiTokenCipher(broker_keys)
-        read_gateway = MetaApiReadGateway()
+        owner_read_gateway = PaperResilientMetaApiReadGateway()
+        member_read_gateway = MetaApiReadGateway()
         trade_gateway = MetaApiTradeGateway()
         margin_gateway = MetaApiMarginGateway()
 
         # Pending orders, true partials and declared multi-entry layering are enabled
-        # only on the Owner's Vantage DEMO paper boundary. The member wrappers below
-        # explicitly skip those structures before the existing LIVE member mutation
-        # services can be called. A separate future live safety gate is required to
-        # promote them beyond paper testing.
-        owner_execution = PaperCriticalExecutionService(
+        # only on the Owner's Vantage DEMO paper boundary. The Owner paper executor
+        # prioritises placing fresh market instructions at the broker's current price,
+        # permits the broker's 0.01 minimum to exceed the configured sizing percentage,
+        # and retries only safe read-only MetaAPI calls. LIVE member execution keeps the
+        # existing stricter policy unchanged.
+        owner_execution = PaperExecutionPriorityService(
             session_factory=session_factory,
             cipher=cipher,
-            read_gateway=read_gateway,
+            read_gateway=owner_read_gateway,
             margin_gateway=margin_gateway,
             trade_gateway=trade_gateway,
         )
         owner_management = PaperCriticalManagementV2(
             session_factory=session_factory,
             cipher=cipher,
-            read_gateway=read_gateway,
+            read_gateway=owner_read_gateway,
             trade_gateway=trade_gateway,
         )
         member_execution = Day38LiveUserExecutionService(
             session_factory=session_factory,
             cipher=cipher,
-            read_gateway=read_gateway,
+            read_gateway=member_read_gateway,
             margin_gateway=margin_gateway,
             trade_gateway=trade_gateway,
         )
         member_management = Day38LiveUserManagementService(
             session_factory=session_factory,
             cipher=cipher,
-            read_gateway=read_gateway,
+            read_gateway=member_read_gateway,
             trade_gateway=trade_gateway,
         )
         return DatabaseSourceDay38FullExecutionRouter(
@@ -168,7 +171,7 @@ def _build_pending_reconciler(
         return PaperPendingReconciler(
             session_factory=session_factory,
             cipher=MetaApiTokenCipher(broker_keys),
-            gateway=MetaApiReadGateway(),
+            gateway=PaperResilientMetaApiReadGateway(),
             owner_user_id=owner_user_id,
             poll_seconds=poll_seconds,
         )
