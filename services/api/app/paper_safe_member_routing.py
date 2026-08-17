@@ -1,9 +1,10 @@
 """Keep paper-only critical execution structures away from LIVE member accounts.
 
-The Owner paper boundary now understands exact pending orders and explicit entry
-layers. Day 38 member fan-out is intentionally not promoted with it. These wrappers
-preserve the existing member target/audit machinery while returning an explicit
-paper-only skip before any LIVE broker service is called.
+The Owner paper boundary understands broker pending orders, explicit entry layers and
+TDC's proven layered HIGH RISK zone dialect. Day 38 member fan-out is intentionally
+not promoted with it. These wrappers preserve the existing member target/audit
+machinery while returning an explicit paper-only skip before any LIVE broker service
+is called.
 """
 
 from __future__ import annotations
@@ -25,8 +26,23 @@ from app.multi_user_management_day38 import (
     Day38UserManagementOutcome,
 )
 
-_LAYER = re.compile(r"\b(?:SECOND|2ND|THIRD|3RD|FOURTH|4TH|FIFTH|5TH)\s+ENTRY\b", re.IGNORECASE)
-_CRITICAL_TARGET = re.compile(r"(?:^|_)(?:ENTRY|LAYER|PARTIAL)(?:_|$)", re.IGNORECASE)
+_LAYER = re.compile(
+    r"\b(?:SECOND|2ND|THIRD|3RD|FOURTH|4TH|FIFTH|5TH)\s+ENTRY\b",
+    re.IGNORECASE,
+)
+_TDC_LAYER_ZONE = re.compile(
+    r"(?is)\b(?:BUY|SELL)(?:\s+(?:LIMITS?|STOPS?))?\s+(?:GOLD|XAUUSD)\s*@\s*"
+    r"\d+(?:\.\d+)?\s*/\s*\d+(?:\.\d+)?"
+    r".*\bTP\s*(?:\d+\s*)?OPEN\b.*\bHIGH\s+RISK\s+TRADE\b"
+    r"|\b(?:BUY|SELL)(?:\s+(?:LIMITS?|STOPS?))?\s+(?:GOLD|XAUUSD)\s*@\s*"
+    r"\d+(?:\.\d+)?\s*/\s*\d+(?:\.\d+)?"
+    r".*\bHIGH\s+RISK\s+TRADE\b.*\bTP\s*(?:\d+\s*)?OPEN\b"
+)
+_CRITICAL_TARGET = re.compile(
+    r"(?:^|_)(?:ENTRY|LAYER|PARTIAL|BEST)(?:_|$)"
+    r"|^ALL_BUT_BEST$|^ENTRY_PRICE_|^PENDING_LAYERS$",
+    re.IGNORECASE,
+)
 
 
 class PaperSafeMemberDistribution(Day38MultiUserDistributionService):
@@ -80,7 +96,8 @@ class PaperSafeMemberDistribution(Day38MultiUserDistributionService):
             return True
         if str(row["order_type"] or "").strip().lower() == "pending":
             return True
-        return _LAYER.search(str(row["original_text"] or "")) is not None
+        original = str(row["original_text"] or "")
+        return _LAYER.search(original) is not None or _TDC_LAYER_ZONE.search(original) is not None
 
 
 class PaperSafeMemberManagement(Day38MultiUserManagementService):
