@@ -16,7 +16,7 @@ from app.mt5_crypto import MetaApiTokenCipher
 from app.mt5_execution_day38 import Day38LiveUserExecutionService
 from app.mt5_management_day38 import Day38LiveUserManagementService
 from app.paper_critical_execution import PaperCriticalExecutionService
-from app.paper_critical_management import PaperCriticalManagementService
+from app.paper_critical_management_v2 import PaperCriticalManagementV2
 from app.paper_pending_reconciler import PaperPendingReconciler
 from app.paper_safe_member_routing import (
     PaperSafeMemberDistribution,
@@ -85,7 +85,7 @@ def build_day38_execution_router_from_env(
             margin_gateway=margin_gateway,
             trade_gateway=trade_gateway,
         )
-        owner_management = PaperCriticalManagementService(
+        owner_management = PaperCriticalManagementV2(
             session_factory=session_factory,
             cipher=cipher,
             read_gateway=read_gateway,
