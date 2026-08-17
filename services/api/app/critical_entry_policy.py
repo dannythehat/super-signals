@@ -35,9 +35,6 @@ _TDC_LAYER_TEMPLATE = re.compile(
 )
 _HIGH_RISK = re.compile(r"\bHIGH\s+RISK\s+TRADE\b", re.IGNORECASE)
 _TP_OPEN = re.compile(r"\bTP\s*(?:\d+\s*)?OPEN\b", re.IGNORECASE)
-
-# A plural pending zone outside the proven TDC template declares a zone but not its
-# actual layer count/prices. Never silently convert it into one order or invent a grid.
 _AMBIGUOUS_PENDING_ZONE = re.compile(
     r"\b(?:BUY|SELL)\s+(?:LIMITS|STOPS)\b[^\n]{0,60}"
     r"\d+(?:\.\d+)?\s*(?:/|-|TO)\s*\d+(?:\.\d+)?",
@@ -113,11 +110,8 @@ def _tdc_layer_grid(text: str, normalized_side: str) -> tuple[CriticalEntry, ...
     match = _TDC_LAYER_TEMPLATE.search(text)
     if match is None:
         return None
-    # The two template markers distinguish the proven TDC layered framework from a
-    # generic slash-separated entry zone used by other providers.
     if _HIGH_RISK.search(text) is None or _TP_OPEN.search(text) is None:
         return None
-
     provider_side = match.group(1).upper()
     if provider_side != normalized_side:
         raise ValueError("pending_side_mismatch")
@@ -129,7 +123,6 @@ def _tdc_layer_grid(text: str, normalized_side: str) -> tuple[CriticalEntry, ...
         raise ValueError("layer_grid_direction_invalid")
     if normalized_side == "SELL" and last <= first:
         raise ValueError("layer_grid_direction_invalid")
-
     distance = abs(first - last)
     quotient = distance / _GRID_STEP
     if quotient != quotient.to_integral_value():
@@ -137,7 +130,6 @@ def _tdc_layer_grid(text: str, normalized_side: str) -> tuple[CriticalEntry, ...
     count = int(quotient) + 1
     if count < 2 or count > _MAX_GRID_LAYERS:
         raise ValueError("layer_grid_size_invalid")
-
     direction = Decimal("-1") if normalized_side == "BUY" else Decimal("1")
     plural_pending = bool(match.group(2))
     entries: list[CriticalEntry] = []
@@ -160,19 +152,15 @@ def parse_critical_entries(
     entry_low: object,
     entry_high: object,
 ) -> tuple[CriticalEntry, ...]:
-    """Return exact pending/layer entries, or an empty tuple for an ordinary market zone."""
     text = raw_text or ""
     normalized_side = side.strip().upper()
     if normalized_side not in {"BUY", "SELL"}:
         raise ValueError("trade_side_invalid")
-
     proven_grid = _tdc_layer_grid(text, normalized_side)
     if proven_grid is not None:
         return proven_grid
-
     if _AMBIGUOUS_PENDING_ZONE.search(text) is not None:
         raise ValueError("pending_layer_grid_unspecified")
-
     pending = _EXPLICIT_PENDING.search(text)
     if pending is not None:
         pending_side = pending.group(1).upper()
@@ -188,7 +176,6 @@ def parse_critical_entries(
                 price=price,
             ),
         )
-
     second_match = _SECOND_ENTRY.search(text)
     if second_match is not None:
         first_match = _FIRST_ENTRY.search(text)
@@ -219,7 +206,6 @@ def parse_critical_entries(
                 )
             )
         return tuple(sorted(entries, key=lambda item: item.entry_index))
-
     low = _price(entry_low)
     high = _price(entry_high)
     if low is None or high is None:
@@ -243,9 +229,6 @@ def augment_management_actions(
     """Preserve explicit partial, layer and TDC risk-free scope for paper management."""
     text = raw_text or ""
     result = [dict(action) for action in actions]
-
-    # TDC's close table is literal layer management, e.g. "4394 CLOSE +15". Close
-    # those provider-price layers before applying the surviving stop instruction.
     close_prices: list[Decimal] = []
     for match in _CLOSE_PRICE_ROW.finditer(text):
         value = _price(match.group(1))
@@ -256,59 +239,44 @@ def augment_management_actions(
             0,
             {"type": "close", "target": f"entry_price_{_format_price(value)}", "value": None},
         )
-
     close_layers = _CLOSE_LAYERS.search(text)
     if close_layers is not None:
         count = int(close_layers.group(1))
         if count > 0:
             target = f"worst_{count}_layers" if _LEAVE_BEST.search(text) else f"first_{count}_layers"
             result.insert(0, {"type": "close", "target": target, "value": None})
-
     layer_index: int | None = None
     if _SECOND_ENTRY_CONTEXT.search(text):
         layer_index = 2
     elif _FIRST_ENTRY_CONTEXT.search(text):
         layer_index = 1
-
     partial_command = _PARTIAL.search(text) is not None
     risk_free = _RISK_FREE_PRICE.search(text)
     leave_best = _LEAVE_BEST.search(text) is not None
     keep_best_side = _KEEP_BEST_SIDE.search(text) is not None
-
-    # A bare TDC "RISK FREE <price>" on a layered setup is not a blanket stop move.
-    # Their published framework closes worse exposure and leaves the best layer at the
-    # stated protective price. The executor will fail closed if the signal has no
-    # layer structure or the stated stop is not genuinely risk-free for the best layer.
-    if risk_free is not None and not close_prices and not partial_command:
-        value = _price(risk_free.group(1))
-        if value is not None:
-            result.insert(0, {"type": "close", "target": "all_but_best", "value": None})
-
+    risk_free_price = _price(risk_free.group(1)) if risk_free is not None else None
+    if risk_free_price is not None and not close_prices and not partial_command:
+        result.insert(0, {"type": "close", "target": "all_but_best", "value": None})
     for action in result:
         action_type = str(action.get("type") or "")
         target = str(action.get("target") or "all").lower()
-
         if action_type == "cancel_pending":
             action["target"] = "pending_layers"
             continue
-
         if action_type == "close" and target == "tp1" and partial_command:
             action["target"] = (
                 f"entry_{layer_index}_partial_tp1" if layer_index is not None else "partial_tp1"
             )
             continue
-
         if action_type in {"move_to_break_even", "edit_stop_loss"} and target in {"all", ""}:
             if layer_index is not None:
                 action["target"] = f"entry_{layer_index}"
-            elif leave_best or risk_free is not None:
+            elif risk_free_price is not None:
+                action["target"] = f"best_entry_risk_free_{_format_price(risk_free_price)}"
+            elif leave_best:
                 action["target"] = "best_entry"
             elif close_prices or keep_best_side:
                 action["target"] = "remaining"
-
-    # "... BEST ENTRY STILL RUNNING" is an explicit statement that every worse
-    # filled layer should be gone. This also catches a market first layer whose actual
-    # fill did not line up exactly with the provider's rounded CLOSE table.
     if leave_best and not any(
         action.get("type") == "close" and action.get("target") == "all_but_best"
         for action in result
@@ -317,7 +285,6 @@ def augment_management_actions(
         while insert_at < len(result) and result[insert_at].get("type") == "close":
             insert_at += 1
         result.insert(insert_at, {"type": "close", "target": "all_but_best", "value": None})
-
     seen: set[tuple[str | None, str | None, str | None]] = set()
     deduped: list[dict[str, str | None]] = []
     for action in result:
