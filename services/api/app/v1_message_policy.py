@@ -40,6 +40,16 @@ _RESULT_ONLY = re.compile(
     r"|(?:^|\s)[+-]\s*\d+(?:\.\d+)?\s*PIPS?\b",
     re.IGNORECASE,
 )
+# Some providers intentionally post a bare immediate entry and edit the same Telegram
+# message seconds later into the complete structured signal. An edit may create the
+# first canonical trade only when the edited message itself is unmistakably structured:
+# explicit ENTRY, SL and numeric TP labels are all present. The normal literal-value,
+# directional and no-chase broker guards still apply afterwards.
+_STRUCTURED_EDIT_COMPLETION = re.compile(
+    r"(?is)\bENTRY\s*[:=@-]?\s*\d+(?:\.\d+)?\b"
+    r".*\bSL\s*[:=@-]?\s*\d+(?:\.\d+)?\b"
+    r".*\bTP\s*\d*\s*[:=@-]?\s*\d+(?:\.\d+)?\b"
+)
 
 
 def _decimal(value: Any) -> Decimal | None:
@@ -114,8 +124,6 @@ def _normalise_trade_values(
         if parsed is not None
     )
     extracted["tp_open"] = bool(_OPEN_TARGET.search(raw_text))
-    # Provider sizing is mechanical: only an explicit literal in the current message
-    # can enable double size. Do not depend on the AI model echoing the boolean.
     extracted["double_lot"] = bool(_DOUBLE_SIZE.search(raw_text))
     return extracted, entry_low, entry_high, stop_loss, take_profits
 
@@ -159,7 +167,8 @@ def apply_v1_message_policy(
     text = raw_text or ""
 
     if decision.decision == "new_trade":
-        if is_edit and not original_has_signal:
+        edit_completed_first_trade = is_edit and not original_has_signal
+        if edit_completed_first_trade and _STRUCTURED_EDIT_COMPLETION.search(text) is None:
             return _skip(decision, "edit_cannot_create_first_trade")
 
         extracted, entry_low, entry_high, stop_loss, take_profits = _normalise_trade_values(
@@ -179,8 +188,6 @@ def apply_v1_message_policy(
         if side not in {"BUY", "SELL"} or has_buy == has_sell:
             return _skip(decision, "missing_side", extracted)
 
-        # Explicit pending and discrete layer prices are derived mechanically from
-        # literal text. This deliberately does not infer grids from a broad entry zone.
         try:
             critical_entries = parse_critical_entries(
                 text,
@@ -204,13 +211,8 @@ def apply_v1_message_policy(
                 for item in critical_entries
             ]
             pending_only = len(critical_entries) == 1 and critical_entries[0].order_type != "market"
-            # Canonical Signal keeps the historic broad market/pending flag. Mixed
-            # first-market + later-pending setups remain 'market'; exact entry-layer
-            # intent is preserved in the stored decision and original provider text.
             extracted["order_type"] = "pending" if pending_only else "market"
         elif _PENDING.search(text) or str(extracted.get("order_type") or "").lower() == "pending":
-            # A generic 'pending' without BUY/SELL LIMIT/STOP is not enough to decide
-            # which MT5 pending order family to submit.
             return _skip(decision, "pending_order_type_ambiguous", extracted)
 
         if entry_low is None or entry_high is None:
@@ -260,6 +262,8 @@ def apply_v1_message_policy(
             reason = "v1_complete_zone_signal"
         else:
             reason = "v1_complete_exact_signal"
+        if edit_completed_first_trade:
+            reason = f"{reason}_from_structured_edit"
 
         return replace(
             decision,
