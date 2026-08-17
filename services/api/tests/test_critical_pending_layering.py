@@ -14,6 +14,7 @@ from app.mt5_execution_day26 import Day26ExecutionError
 from app.mt5_management_day27 import Day27ManagementError
 from app.paper_critical_execution import PaperCriticalExecutionService
 from app.paper_critical_management import PaperCriticalManagementService, _LayerPosition
+from app.paper_critical_management_v2 import PaperCriticalManagementV2
 from app.paper_partial_close_gateway import PaperPartialCloseGateway
 from app.paper_pending_gateway import PaperPendingOrderGateway, PaperPendingOrderRequest
 from app.paper_pending_reconciler import PaperPendingReconciler
@@ -47,6 +48,58 @@ def test_sureshot_pending_order_is_exact_buy_limit() -> None:
     assert entries[0].price == Decimal("4390")
 
 
+def test_tdc_buy_limits_high_risk_zone_becomes_exact_broker_layer_grid() -> None:
+    raw = (
+        "BUY LIMITS GOLD @ 4386/4381 AREA\n\n"
+        "TP 4389\nTP 4393\nTP 4398\nTP OPEN\nSL 4380\n\nHIGH RISK TRADE"
+    )
+    entries = parse_critical_entries(
+        raw,
+        side="BUY",
+        entry_low="4381",
+        entry_high="4386",
+    )
+    assert [(item.entry_index, item.order_type, item.price) for item in entries] == [
+        (1, "buy_limit", Decimal("4386")),
+        (2, "buy_limit", Decimal("4385")),
+        (3, "buy_limit", Decimal("4384")),
+        (4, "buy_limit", Decimal("4383")),
+        (5, "buy_limit", Decimal("4382")),
+        (6, "buy_limit", Decimal("4381")),
+    ]
+
+
+def test_tdc_immediate_buy_zone_opens_one_layer_then_uses_pending_retracement_layers() -> None:
+    raw = (
+        "BUY GOLD @ 4398/4393\n\n"
+        "TP 4400\nTP 4403\nTP 4407\nTP OPEN\nSL 4392\n\nHIGH RISK TRADE"
+    )
+    entries = parse_critical_entries(
+        raw,
+        side="BUY",
+        entry_low="4393",
+        entry_high="4398",
+    )
+    assert [(item.entry_index, item.order_type, item.price) for item in entries] == [
+        (1, "market", Decimal("4398")),
+        (2, "buy_limit", Decimal("4397")),
+        (3, "buy_limit", Decimal("4396")),
+        (4, "buy_limit", Decimal("4395")),
+        (5, "buy_limit", Decimal("4394")),
+        (6, "buy_limit", Decimal("4393")),
+    ]
+
+
+def test_unknown_plural_pending_zone_never_invents_a_grid() -> None:
+    with pytest.raises(ValueError, match="pending_layer_grid_unspecified"):
+        parse_critical_entries(
+            "BUY LIMITS GOLD @ 4332/4326 AREA\nTP 4335\nSL 4325",
+            side="BUY",
+            entry_low="4326",
+            entry_high="4332",
+        )
+
+
 def test_tig_second_entry_becomes_retracement_limit_not_a_second_market_chase() -> None:
     entries = parse_critical_entries(
         "BUY XAUUSD\nENTRY: 4320\nSecond entry: 4315\nSL: 4303\nTP1: 4326",
@@ -72,6 +125,37 @@ def test_layer_management_keeps_second_entry_scope() -> None:
     assert {"type": "edit_stop_loss", "target": "entry_2", "value": "4373"} in actions
 
 
+def test_tdc_risk_free_close_table_closes_named_layers_and_keeps_best_only() -> None:
+    raw = (
+        "+25\n\nRISK FREEE 4393\n\n"
+        "4393 SL TO BE\n"
+        "4394 CLOSE +15\n"
+        "4395 CLOSE +5\n"
+        "4396 CLOSE -0\n"
+        "4397 CLOSE +5\n\n"
+        "TOTAL CLOSED PROFIT +15 PIPS AND BEST ENTRY STILL RUNNING WITH SL AT BE AT 4393"
+    )
+    actions = augment_management_actions(
+        raw,
+        ({"type": "edit_stop_loss", "target": "all", "value": "4393"},),
+    )
+    assert {"type": "close", "target": "entry_price_4394", "value": None} in actions
+    assert {"type": "close", "target": "entry_price_4395", "value": None} in actions
+    assert {"type": "close", "target": "entry_price_4396", "value": None} in actions
+    assert {"type": "close", "target": "entry_price_4397", "value": None} in actions
+    assert {"type": "close", "target": "all_but_best", "value": None} in actions
+    assert {"type": "edit_stop_loss", "target": "best_entry", "value": "4393"} in actions
+
+
+def test_tdc_bare_numeric_risk_free_is_not_blanket_stop_on_layered_trade() -> None:
+    actions = augment_management_actions(
+        "+20\n\nRISK FREEE 4393",
+        ({"type": "edit_stop_loss", "target": "all", "value": "4393"},),
+    )
+    assert actions[0] == {"type": "close", "target": "all_but_best", "value": None}
+    assert {"type": "edit_stop_loss", "target": "best_entry", "value": "4393"} in actions
+
+
 def test_leave_best_buy_closes_highest_price_layers_only() -> None:
     positions = (
         _position(1, 1, "4350"),
@@ -79,13 +163,63 @@ def test_leave_best_buy_closes_highest_price_layers_only() -> None:
         _position(3, 1, "4342"),
         _position(4, 1, "4338"),
     )
-    selected = PaperCriticalManagementService._select_layer_positions(
+    selected = PaperCriticalManagementV2._select_layer_positions(
         positions,
         "worst_3_layers",
         side="BUY",
     )
     assert {item.entry_index for item in selected} == {1, 2, 3}
     assert {item.entry_index for item in positions if item not in selected} == {4}
+
+
+def test_best_entry_buy_is_lowest_actual_fill() -> None:
+    positions = (
+        _position(1, 1, "4397.51"),
+        _position(2, 1, "4397"),
+        _position(3, 1, "4396"),
+        _position(4, 1, "4395"),
+        _position(5, 1, "4394"),
+        _position(6, 1, "4393"),
+    )
+    selected = PaperCriticalManagementV2._select_layer_positions(
+        positions,
+        "best_entry",
+        side="BUY",
+    )
+    assert {item.entry_index for item in selected} == {6}
+    worse = PaperCriticalManagementV2._select_layer_positions(
+        positions,
+        "all_but_best",
+        side="BUY",
+    )
+    assert {item.entry_index for item in worse} == {1, 2, 3, 4, 5}
+
+
+def test_provider_close_price_maps_to_unique_nearest_actual_layer() -> None:
+    positions = (
+        _position(1, 1, "4397.51"),
+        _position(2, 1, "4397.00"),
+        _position(3, 1, "4396.00"),
+        _position(4, 1, "4395.00"),
+        _position(5, 1, "4394.00"),
+        _position(6, 1, "4393.00"),
+    )
+    selected = PaperCriticalManagementV2._select_layer_positions(
+        positions,
+        "entry_price_4394",
+        side="BUY",
+    )
+    assert {item.entry_index for item in selected} == {5}
+
+
+def test_provider_close_price_fails_closed_when_no_layer_is_close_enough() -> None:
+    positions = (_position(1, 1, "4397.5"), _position(2, 1, "4396.5"))
+    with pytest.raises(Day27ManagementError, match="layer_provider_price_unresolved"):
+        PaperCriticalManagementV2._select_layer_positions(
+            positions,
+            "entry_price_4394",
+            side="BUY",
+        )
 
 
 def test_leave_best_sell_closes_lowest_price_layers_only() -> None:
@@ -95,7 +229,7 @@ def test_leave_best_sell_closes_lowest_price_layers_only() -> None:
         _position(3, 1, "4358"),
         _position(4, 1, "4362"),
     )
-    selected = PaperCriticalManagementService._select_layer_positions(
+    selected = PaperCriticalManagementV2._select_layer_positions(
         positions,
         "worst_3_layers",
         side="SELL",
