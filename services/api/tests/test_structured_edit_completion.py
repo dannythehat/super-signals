@@ -32,7 +32,7 @@ def _decision(raw: str, *, side: str, entry_low: str, entry_high: str, stop_loss
     )
 
 
-def test_tig_structured_edit_can_create_first_layered_signal() -> None:
+def test_tig_structured_edit_can_complete_matching_activation_stub() -> None:
     raw = (
         "🔴SELL  XAUUSD\n\n"
         "ENTRY: 4394\n"
@@ -56,6 +56,7 @@ def test_tig_structured_edit_can_create_first_layered_signal() -> None:
         raw_text=raw,
         is_edit=True,
         original_has_signal=False,
+        previous_text="SELL XAUUSD NOW 4394",
     )
     assert result.action == "execute"
     assert result.reason == "v1_complete_layered_signal_from_structured_edit"
@@ -64,6 +65,67 @@ def test_tig_structured_edit_can_create_first_layered_signal() -> None:
         {"entry_index": 1, "order_type": "market", "price": "4394"},
         {"entry_index": 2, "order_type": "sell_limit", "price": "4398"},
     ]
+
+
+def test_structured_edit_with_no_prior_activation_stays_fail_closed() -> None:
+    raw = (
+        "SELL XAUUSD\nENTRY 4394\nSL 4410\nTP1 4389\nTP2 4383\nTP3 4377\nTP4 OPEN"
+    )
+    result = apply_v1_message_policy(
+        _decision(
+            raw,
+            side="SELL",
+            entry_low="4394",
+            entry_high="4394",
+            stop_loss="4410",
+            tps=["4389", "4383", "4377"],
+        ),
+        raw_text=raw,
+        is_edit=True,
+        original_has_signal=False,
+    )
+    assert result.action == "skip"
+    assert result.reason == "edit_cannot_create_first_trade"
+
+
+def test_structured_edit_cannot_change_activation_price() -> None:
+    raw = "SELL XAUUSD\nENTRY 4394\nSL 4410\nTP1 4389"
+    result = apply_v1_message_policy(
+        _decision(
+            raw,
+            side="SELL",
+            entry_low="4394",
+            entry_high="4394",
+            stop_loss="4410",
+            tps=["4389"],
+        ),
+        raw_text=raw,
+        is_edit=True,
+        original_has_signal=False,
+        previous_text="SELL GOLD NOW 4395",
+    )
+    assert result.action == "skip"
+    assert result.reason == "edit_cannot_create_first_trade"
+
+
+def test_structured_edit_cannot_flip_activation_side() -> None:
+    raw = "SELL XAUUSD\nENTRY 4394\nSL 4410\nTP1 4389"
+    result = apply_v1_message_policy(
+        _decision(
+            raw,
+            side="SELL",
+            entry_low="4394",
+            entry_high="4394",
+            stop_loss="4410",
+            tps=["4389"],
+        ),
+        raw_text=raw,
+        is_edit=True,
+        original_has_signal=False,
+        previous_text="BUY GOLD NOW 4394",
+    )
+    assert result.action == "skip"
+    assert result.reason == "edit_cannot_create_first_trade"
 
 
 def test_unstructured_edit_still_cannot_create_first_trade() -> None:
@@ -80,6 +142,7 @@ def test_unstructured_edit_still_cannot_create_first_trade() -> None:
         raw_text=raw,
         is_edit=True,
         original_has_signal=False,
+        previous_text="SELL GOLD NOW 4394",
     )
     assert result.action == "skip"
     assert result.reason == "edit_cannot_create_first_trade"
