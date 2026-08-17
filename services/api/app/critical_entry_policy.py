@@ -197,6 +197,13 @@ def augment_management_actions(
         action_type = str(action.get("type") or "")
         target = str(action.get("target") or "all").lower()
 
+        if action_type == "cancel_pending":
+            # The legacy manager cancels the broker order but has no pending local
+            # status to reconcile. Mark this as a critical target so the paper manager
+            # both cancels exact mapped order IDs and settles local pending rows.
+            action["target"] = "pending_layers"
+            continue
+
         if action_type == "close" and target == "tp1" and partial_command:
             action["target"] = (
                 f"entry_{layer_index}_partial_tp1"
