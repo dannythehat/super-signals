@@ -34,10 +34,10 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.13'
-          cache: pip
-          cache-dependency-path: services/api/requirements-dev.txt
-      - name: Install API dependencies
-        run: python -m pip install -r services/api/requirements-dev.txt
+      - name: Install API and test dependencies
+        run: |
+          python -m pip install -r services/api/requirements.txt
+          python -m pip install pytest pytest-asyncio
       - name: Compile API
         run: PYTHONPATH=services/api python -m compileall -q services/api/app services/api/migrations services/api/tests
       - name: Run API tests
