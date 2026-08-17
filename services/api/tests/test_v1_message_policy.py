@@ -154,7 +154,7 @@ def test_context_donated_sl_or_tp_cannot_pass_literal_gate() -> None:
     assert result.reason == "literal_value_verification_failed"
 
 
-def test_pending_limit_skips_even_when_complete() -> None:
+def test_pending_limit_executes_with_literal_broker_plan() -> None:
     raw = "BUY LIMIT GOLD @ 4394\nSL 4385\nTP 4398"
     result = apply_v1_message_policy(
         _decision(
@@ -166,11 +166,15 @@ def test_pending_limit_skips_even_when_complete() -> None:
         ),
         raw_text=raw,
     )
-    assert result.action == "skip"
-    assert result.reason == "unsupported_pending_order"
+    assert result.action == "execute"
+    assert result.reason == "v1_complete_pending_signal"
+    assert result.extracted["order_type"] == "pending"
+    assert result.extracted["entry_plan"] == [
+        {"entry_index": 1, "order_type": "buy_limit", "price": "4394"}
+    ]
 
 
-def test_tig_second_entry_is_ignored_and_first_entry_executes() -> None:
+def test_tig_second_entry_is_preserved_as_second_broker_layer() -> None:
     raw = (
         "🟢BUY XAUUSD\n"
         "ENTRY: 4375\n"
@@ -190,9 +194,13 @@ def test_tig_second_entry_is_ignored_and_first_entry_executes() -> None:
         raw_text=raw,
     )
     assert result.action == "execute"
-    assert result.reason == "v1_complete_exact_signal"
-    assert result.extracted["entry_low"] == "4375"
+    assert result.reason == "v1_complete_layered_signal"
+    assert result.extracted["entry_low"] == "4370"
     assert result.extracted["entry_high"] == "4375"
+    assert result.extracted["entry_plan"] == [
+        {"entry_index": 1, "order_type": "market", "price": "4375"},
+        {"entry_index": 2, "order_type": "buy_limit", "price": "4370"},
+    ]
 
 
 def test_tp_open_with_numeric_targets_adds_runner_marker() -> None:
@@ -291,22 +299,45 @@ def test_results_and_hype_do_not_create_management_action(raw: str) -> None:
     assert result.action == "ignore"
 
 
-def test_partial_taking_closes_the_first_tp_leg() -> None:
-    """Owner decision, 14 Aug 2026: partial wording is now supported.
-
-    Providers write "take some profit" for followers holding one position. Super
-    Signals holds one per TP level, so the equivalent is closing the nearest leg
-    and leaving the rest running. This previously returned ignore.
-    """
+def test_partial_taking_preserves_partial_intent() -> None:
     result = apply_v1_message_policy(
         _decision(decision="trade_update", action="apply_update", update_type="close_half"),
         raw_text="Take some profit now",
     )
     assert result.action == "apply_update"
-    assert {"type": "close", "target": "TP1", "value": None} in result.extracted[
+    assert {"type": "close", "target": "partial_tp1", "value": None} in result.extracted[
         "management_actions"
     ]
     assert result.reason == "day27_explicit_management"
+
+
+def test_second_entry_partial_and_stop_update_are_scoped_to_layer_two() -> None:
+    result = apply_v1_message_policy(
+        _decision(decision="trade_update", action="apply_update"),
+        raw_text="Second entry is running +50 pips, Book partial. Move SL to 4373",
+    )
+    assert result.action == "apply_update"
+    assert {"type": "close", "target": "entry_2_partial_tp1", "value": None} in result.extracted[
+        "management_actions"
+    ]
+    assert {
+        "type": "edit_stop_loss",
+        "target": "entry_2",
+        "value": "4373",
+    } in result.extracted["management_actions"]
+
+
+def test_close_layers_leave_best_is_preserved_as_layer_target() -> None:
+    result = apply_v1_message_policy(
+        _decision(decision="trade_update", action="apply_update"),
+        raw_text="CLOSE 3 LAYERS NOW TO FULLY RECOVER THE SL AND LEAVE BEST RUNNING",
+    )
+    assert result.action == "apply_update"
+    assert result.extracted["management_actions"][0] == {
+        "type": "close",
+        "target": "worst_3_layers",
+        "value": None,
+    }
 
 
 @pytest.mark.parametrize("decision", ["chatter", "preparation"])
