@@ -325,7 +325,7 @@ def apply_v1_message_policy(
             extracted["update_type"] = first.get("type")
             extracted["update_target"] = first.get("target")
             extracted["update_value"] = first.get("value")
-            critical_targets = ("layer", "entry_", "best_entry", "all_but_best", "partial")
+            critical_targets = ("layer", "entry_", "best_entry", "all_but_best")
             return replace(
                 decision,
                 decision="trade_update",
