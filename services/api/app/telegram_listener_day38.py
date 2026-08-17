@@ -15,11 +15,13 @@ from app.metaapi_trade_gateway import MetaApiTradeGateway
 from app.mt5_crypto import MetaApiTokenCipher
 from app.mt5_execution_day38 import Day38LiveUserExecutionService
 from app.mt5_management_day38 import Day38LiveUserManagementService
-from app.multi_user_distribution_day38 import Day38MultiUserDistributionService
-from app.multi_user_management_day38 import Day38MultiUserManagementService
 from app.paper_critical_execution import PaperCriticalExecutionService
 from app.paper_critical_management import PaperCriticalManagementService
 from app.paper_pending_reconciler import PaperPendingReconciler
+from app.paper_safe_member_routing import (
+    PaperSafeMemberDistribution,
+    PaperSafeMemberManagement,
+)
 from app.telegram_crypto import TelegramSessionCipher
 from app.telegram_listener_day28 import Day28TelegramListenerManager
 
@@ -72,9 +74,10 @@ def build_day38_execution_router_from_env(
         margin_gateway = MetaApiMarginGateway()
 
         # Pending orders, true partials and declared multi-entry layering are enabled
-        # only on the Owner's Vantage DEMO paper boundary. Member LIVE execution and
-        # management intentionally remain on the previously accepted market-only
-        # engines until a separate live safety gate explicitly promotes them.
+        # only on the Owner's Vantage DEMO paper boundary. The member wrappers below
+        # explicitly skip those structures before the existing LIVE member mutation
+        # services can be called. A separate future live safety gate is required to
+        # promote them beyond paper testing.
         owner_execution = PaperCriticalExecutionService(
             session_factory=session_factory,
             cipher=cipher,
@@ -106,11 +109,11 @@ def build_day38_execution_router_from_env(
             owner_user_id=owner_user_id,
             execution_service=owner_execution,
             management_service=owner_management,
-            member_distribution=Day38MultiUserDistributionService(
+            member_distribution=PaperSafeMemberDistribution(
                 session_factory=session_factory,
                 execution_service=member_execution,
             ),
-            member_management=Day38MultiUserManagementService(
+            member_management=PaperSafeMemberManagement(
                 session_factory=session_factory,
                 management_service=member_management,
             ),
