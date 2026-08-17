@@ -183,6 +183,7 @@ class AiMessagePipeline:
             raw_text=raw_text,
             is_edit=revision_index > 0,
             original_has_signal=existing_signal_id is not None,
+            previous_text=previous_text,
         )
         self._store_decision(row["message_id"], revision_index, decision)
 

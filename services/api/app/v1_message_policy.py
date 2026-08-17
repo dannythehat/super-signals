@@ -1,9 +1,10 @@
-"""Fail-closed Super Signals V1 message policy.
+"""Fail-closed Super Signals message policy.
 
 The OpenAI supervisor may understand provider grammar using bounded same-source context,
 but this module is the final mechanical contract for what may progress to execution.
 Only values literally present in the current Telegram message are allowed to satisfy a
-new-trade execution gate. Unsupported or ambiguous content is skipped safely.
+new-trade execution gate. Explicit broker pending orders and explicitly declared entry
+layers are supported; ambiguous or implicit layering still fails closed.
 """
 
 from __future__ import annotations
@@ -14,6 +15,11 @@ from decimal import Decimal, InvalidOperation
 from typing import Any
 
 from app.ai_message_supervisor import AiMessageDecision
+from app.critical_entry_policy import (
+    augment_management_actions,
+    envelope,
+    parse_critical_entries,
+)
 from app.day27_management_policy import extract_day27_management_actions
 
 _NUMBER_TOKEN = re.compile(r"(?<![A-Za-z0-9_.])\d+(?:\.\d+)?(?![A-Za-z0-9_.])")
@@ -21,10 +27,6 @@ _INSTRUMENT = re.compile(r"\b(?:XAUUSD|GOLD)\b", re.IGNORECASE)
 _BUY = re.compile(r"\bBUY(?:S|ING)?\b", re.IGNORECASE)
 _SELL = re.compile(r"\bSELL(?:S|ING)?\b", re.IGNORECASE)
 _PENDING = re.compile(r"\b(?:BUY|SELL)\s+(?:LIMITS?|STOPS?)\b|\bPENDING\b", re.IGNORECASE)
-_SECOND_ENTRY = re.compile(r"\b(?:SECOND|2ND)\s+ENTRY\b", re.IGNORECASE)
-_FIRST_ENTRY = re.compile(
-    r"(?im)^\s*(?:FIRST\s+)?ENTRY\s*[:=@-]?\s*(\d+(?:\.\d+)?)\b"
-)
 _OPEN_TARGET = re.compile(
     r"\b(?:TP\s*\d*\s*[:=@-]?\s*OPEN|TP\s+OPEN|RUNNER|LEAVE\s+(?:IT\s+)?OPEN)\b",
     re.IGNORECASE,
@@ -37,6 +39,24 @@ _RESULT_ONLY = re.compile(
     r"\b(?:OUT\s+AT\s+BE|STOPPED\s+OUT|SL\s+HIT|TP\s*\d*\s+HIT|TP\s*\d*\s+INCOMING)\b"
     r"|(?:^|\s)[+-]\s*\d+(?:\.\d+)?\s*PIPS?\b",
     re.IGNORECASE,
+)
+# Some providers intentionally post a bare immediate activation and then edit the same
+# Telegram message into the complete structured signal. The edit may create the first
+# canonical Signal only when the previous revision was already an unmistakable trade
+# activation with the same side, instrument and first entry. This prevents arbitrary
+# chatter/preparation from being "resurrected" into a broker order by a later edit.
+_STRUCTURED_EDIT_COMPLETION = re.compile(
+    r"(?is)\bENTRY\s*[:=@-]?\s*\d+(?:\.\d+)?\b"
+    r".*\bSL\s*[:=@-]?\s*\d+(?:\.\d+)?\b"
+    r".*\bTP\s*\d*\s*[:=@-]?\s*\d+(?:\.\d+)?\b"
+)
+_EDIT_FIRST_ENTRY = re.compile(
+    r"(?im)^\s*(?:FIRST\s+)?ENTRY(?:\s*1)?\s*[:=@-]?\s*(\d+(?:\.\d+)?)\b"
+)
+_ACTIVATION_STUB = re.compile(
+    r"(?is)^\s*(?:🔴|🟢|🔥|⚡|✅|🚨|\s)*"
+    r"(BUY|SELL)\s+(?:XAUUSD|GOLD)\b"
+    r"(?:\s+(?:NOW|AT))?\s*(?:@|:|=)?\s*(\d+(?:\.\d+)?)\s*[.!🔥✅\s]*$"
 )
 
 
@@ -59,6 +79,25 @@ def _literal_numbers(raw_text: str) -> set[Decimal]:
         if parsed is not None:
             values.add(parsed.normalize())
     return values
+
+
+def _matching_activation_stub(
+    previous_text: str | None,
+    current_text: str,
+    *,
+    side: str,
+) -> bool:
+    if not previous_text:
+        return False
+    stub = _ACTIVATION_STUB.fullmatch(previous_text.strip())
+    current_entry_match = _EDIT_FIRST_ENTRY.search(current_text)
+    if stub is None or current_entry_match is None:
+        return False
+    if stub.group(1).upper() != side.strip().upper():
+        return False
+    old_price = _decimal(stub.group(2))
+    new_price = _decimal(current_entry_match.group(1))
+    return old_price is not None and new_price is not None and old_price == new_price
 
 
 def _skip(
@@ -103,16 +142,6 @@ def _normalise_trade_values(
     tuple[Decimal, ...],
 ]:
     extracted = dict(decision.extracted)
-
-    # TIG V1: when the provider explicitly labels a second entry, use only ENTRY 1.
-    # We do not infer a layer, range, or risk split.
-    if _SECOND_ENTRY.search(raw_text):
-        first = _FIRST_ENTRY.search(raw_text)
-        if first is None:
-            return extracted, None, None, None, ()
-        extracted["entry_low"] = first.group(1)
-        extracted["entry_high"] = first.group(1)
-
     entry_low = _decimal(extracted.get("entry_low"))
     entry_high = _decimal(extracted.get("entry_high"))
     stop_loss = _decimal(extracted.get("stop_loss"))
@@ -122,8 +151,6 @@ def _normalise_trade_values(
         if parsed is not None
     )
     extracted["tp_open"] = bool(_OPEN_TARGET.search(raw_text))
-    # Provider sizing is mechanical: only an explicit literal in the current message
-    # can enable double size. Do not depend on the AI model echoing the boolean.
     extracted["double_lot"] = bool(_DOUBLE_SIZE.search(raw_text))
     return extracted, entry_low, entry_high, stop_loss, take_profits
 
@@ -138,15 +165,10 @@ def _directionally_valid(
     if entry_high < entry_low:
         return False
     if side == "BUY":
-        # A market-zone fill can happen anywhere in the provider's zone. Requiring
-        # SL below the low edge and TPs above the high edge keeps every allowed fill valid.
         return (
             stop_loss < entry_low
             and all(target > entry_high for target in take_profits)
-            and all(
-                right > left
-                for left, right in zip(take_profits, take_profits[1:])
-            )
+            and all(right > left for left, right in zip(take_profits, take_profits[1:]))
         )
     return (
         stop_loss > entry_high
@@ -161,51 +183,70 @@ def apply_v1_message_policy(
     raw_text: str,
     is_edit: bool = False,
     original_has_signal: bool = False,
+    previous_text: str | None = None,
 ) -> AiMessageDecision:
-    """Return the mechanically allowed V1 decision.
+    """Return the mechanically allowed decision.
 
-    Context can help the AI classify semantics, but cannot make a trade executable.
-    The current message alone must contain instrument, side, entry, SL and >=1 numeric TP.
-    Day 27 management is similarly current-message-only and fail-closed.
-
-    An edit can revalidate a signal that already exists, but it can never author the
-    first one. ``original_has_signal`` states whether the edited provider message had
-    already produced a canonical Signal, and defaults to False so any caller that
-    cannot answer that question fails closed.
+    Context can help the AI classify semantics, but cannot donate trade numbers. The
+    current message alone must contain instrument, side, entry structure, SL and at
+    least one numeric TP. Pending orders require an explicit LIMIT/STOP family. Entry
+    layering requires explicit prices in a mechanically proven provider structure.
     """
     text = raw_text or ""
 
     if decision.decision == "new_trade":
-        # Working Blueprint, locked: "An initially skipped setup is not resurrected
-        # into a new trade by a later edit." A preparation, incomplete or invalid
-        # original produced no Signal, so an edit that now looks complete must not
-        # become the first executable trade. This is enforced mechanically rather
-        # than left to the supervisor happening to classify the edit conservatively.
-        # Edits to a message that already owns a Signal still revalidate normally,
-        # and Day 18's unique (provider_chat_id, provider_message_id) constraint
-        # keeps that path from ever creating a second Signal.
-        if is_edit and not original_has_signal:
-            return _skip(decision, "edit_cannot_create_first_trade")
-
         extracted, entry_low, entry_high, stop_loss, take_profits = _normalise_trade_values(
             decision, text
         )
+        side = str(extracted.get("side") or "").strip().upper()
 
-        if _PENDING.search(text) or str(extracted.get("order_type") or "").lower() == "pending":
-            return _skip(decision, "unsupported_pending_order", extracted)
+        edit_completed_first_trade = is_edit and not original_has_signal
+        if edit_completed_first_trade:
+            if _STRUCTURED_EDIT_COMPLETION.search(text) is None or not _matching_activation_stub(
+                previous_text,
+                text,
+                side=side,
+            ):
+                return _skip(decision, "edit_cannot_create_first_trade", extracted)
 
         if _INSTRUMENT.search(text) is None:
             return _skip(decision, "missing_instrument", extracted)
 
         has_buy = _BUY.search(text) is not None
         has_sell = _SELL.search(text) is not None
-        side = str(extracted.get("side") or "").strip().upper()
         if side == "BUY" and not has_buy:
             return _skip(decision, "missing_side", extracted)
         if side == "SELL" and not has_sell:
             return _skip(decision, "missing_side", extracted)
         if side not in {"BUY", "SELL"} or has_buy == has_sell:
             return _skip(decision, "missing_side", extracted)
+
+        try:
+            critical_entries = parse_critical_entries(
+                text,
+                side=side,
+                entry_low=entry_low,
+                entry_high=entry_high,
+            )
+        except ValueError as exc:
+            return _skip(decision, str(exc), extracted)
+
+        if critical_entries:
+            plan_low, plan_high = envelope(critical_entries)
+            entry_low = plan_low
+            entry_high = plan_high
+            extracted["entry_plan"] = [
+                {
+                    "entry_index": item.entry_index,
+                    "order_type": item.order_type,
+                    "price": str(item.price),
+                }
+                for item in critical_entries
+            ]
+            all_pending = all(item.order_type != "market" for item in critical_entries)
+            extracted["order_type"] = "pending" if all_pending else "market"
+        elif _PENDING.search(text) or str(extracted.get("order_type") or "").lower() == "pending":
+            return _skip(decision, "pending_order_type_ambiguous", extracted)
 
         if entry_low is None or entry_high is None:
             return _skip(decision, "missing_entry", extracted)
@@ -221,6 +262,19 @@ def apply_v1_message_policy(
             stop_loss.normalize(),
             *(value.normalize() for value in take_profits),
         }
+        # Intermediate TDC grid prices are mechanically derived from the two literal
+        # zone endpoints. They are allowed only because parse_critical_entries proved
+        # the exact HIGH RISK template; they are not required to appear as extra text.
+        plan = extracted.get("entry_plan") or []
+        literal_plan_prices = [
+            _decimal(item.get("price"))
+            for item in plan
+            if isinstance(item, dict)
+        ]
+        if len(plan) <= 2:
+            for parsed in literal_plan_prices:
+                if parsed is not None:
+                    required.add(parsed.normalize())
         if not required.issubset(literals):
             return _skip(decision, "literal_value_verification_failed", extracted)
 
@@ -231,54 +285,69 @@ def apply_v1_message_policy(
             {
                 "symbol": "XAUUSD",
                 "side": side,
-                "order_type": "market",
                 "entry_low": str(entry_low),
                 "entry_high": str(entry_high),
                 "stop_loss": str(stop_loss),
                 "take_profits": [str(value) for value in take_profits],
             }
         )
+
+        has_pending = any(
+            isinstance(item, dict) and item.get("order_type") != "market" for item in plan
+        )
+        if len(plan) > 1:
+            reason = "v1_complete_layered_signal"
+        elif has_pending:
+            reason = "v1_complete_pending_signal"
+        elif entry_low != entry_high:
+            reason = "v1_complete_zone_signal"
+        else:
+            reason = "v1_complete_exact_signal"
+        if edit_completed_first_trade:
+            reason = f"{reason}_from_structured_edit"
+
         return replace(
             decision,
             decision="new_trade",
             action="execute",
-            reason=(
-                "v1_complete_zone_signal"
-                if entry_low != entry_high
-                else "v1_complete_exact_signal"
-            ),
+            reason=reason,
             extracted=extracted,
         )
 
     if decision.decision == "trade_update":
         policy = extract_day27_management_actions(text)
-        if policy.actions:
+        actions = augment_management_actions(text, policy.actions)
+        if actions:
             extracted = dict(decision.extracted)
-            actions = [dict(action) for action in policy.actions]
-            extracted["management_actions"] = actions
-            first = actions[0]
+            normalized_actions = [dict(action) for action in actions]
+            extracted["management_actions"] = normalized_actions
+            first = normalized_actions[0]
             extracted["update_type"] = first.get("type")
             extracted["update_target"] = first.get("target")
             extracted["update_value"] = first.get("value")
+            critical_targets = ("layer", "entry_", "best_entry", "all_but_best")
             return replace(
                 decision,
                 decision="trade_update",
                 action="apply_update",
-                reason=policy.reason,
+                reason=(
+                    "layer_management_instruction"
+                    if any(
+                        any(token in str(action.get("target") or "") for token in critical_targets)
+                        for action in normalized_actions
+                    )
+                    else policy.reason
+                ),
                 extracted=extracted,
             )
 
         if policy.reason in {"optional_management_instruction", "provider_result_only"}:
             return _ignore_update(decision, policy.reason)
 
-        # Provider result statements never create a new management action. This check
-        # deliberately runs after the Day 27 extractor so a combined explicit command
-        # such as "TP1 hit, move SL to 4385" may still produce the explicit SL action.
         if _RESULT_ONLY.search(text):
             return _ignore_update(decision, "provider_result_only")
         return _ignore_update(decision)
 
-    # Chatter, preparation and genuinely unclear messages remain non-executable.
     if decision.decision in {"chatter", "preparation"}:
         return replace(decision, action="ignore")
     return replace(decision, action="skip")
