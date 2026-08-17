@@ -21,18 +21,27 @@ class CriticalEntry:
     price: Decimal
 
 
+# "BUY LIMITS ... 4332/4326 AREA" declares a layer *zone* but not the actual
+# layer count or prices. Never silently convert that into one order at the first
+# number or invent a grid. A future provider-specific rule can only promote it once
+# the provider's exact layer convention is proven.
+_AMBIGUOUS_PENDING_ZONE = re.compile(
+    r"\b(?:BUY|SELL)\s+(?:LIMITS|STOPS)\b[^\n]{0,60}"
+    r"\d+(?:\.\d+)?\s*(?:/|-|TO)\s*\d+(?:\.\d+)?",
+    re.IGNORECASE,
+)
 _EXPLICIT_PENDING = re.compile(
     r"\b(BUY|SELL)\s+(LIMIT|STOP)S?\b(?:\s+(?:XAUUSD|GOLD))?\s*(?:@|AT|:|=)?\s*(\d+(?:\.\d+)?)\b",
     re.IGNORECASE,
 )
 _FIRST_ENTRY = re.compile(
-    r"(?im)^\s*(?:FIRST\s+)?ENTRY\s*[:=@-]?\s*(\d+(?:\.\d+)?)\b"
+    r"(?im)^\s*(?:FIRST\s+ENTRY|ENTRY(?:\s*1)?)\s*[:=@-]?\s*(\d+(?:\.\d+)?)\b"
 )
 _SECOND_ENTRY = re.compile(
-    r"(?im)^\s*(?:SECOND|2ND)\s+ENTRY\s*[:=@-]?\s*(\d+(?:\.\d+)?)\b"
+    r"(?im)^\s*(?:SECOND\s+ENTRY|2ND\s+ENTRY|ENTRY\s*2)\s*[:=@-]?\s*(\d+(?:\.\d+)?)\b"
 )
 _NTH_ENTRY = re.compile(
-    r"(?im)^\s*(?:(THIRD|3RD)|(FOURTH|4TH)|(FIFTH|5TH))\s+ENTRY\s*[:=@-]?\s*(\d+(?:\.\d+)?)\b"
+    r"(?im)^\s*(?:(THIRD\s+ENTRY|3RD\s+ENTRY|ENTRY\s*3)|(FOURTH\s+ENTRY|4TH\s+ENTRY|ENTRY\s*4)|(FIFTH\s+ENTRY|5TH\s+ENTRY|ENTRY\s*5))\s*[:=@-]?\s*(\d+(?:\.\d+)?)\b"
 )
 _CLOSE_LAYERS = re.compile(
     r"\bCLOSE\s+(\d+)\s+LAYERS?\b",
@@ -42,8 +51,8 @@ _LEAVE_BEST = re.compile(
     r"\b(?:LEAVE|KEEP)\s+(?:THE\s+)?BEST(?:\s+(?:ENTRY|LAYER|ONE))?\s+(?:RUNNING|OPEN)\b",
     re.IGNORECASE,
 )
-_SECOND_ENTRY_CONTEXT = re.compile(r"\b(?:SECOND|2ND)\s+ENTRY\b", re.IGNORECASE)
-_FIRST_ENTRY_CONTEXT = re.compile(r"\bFIRST\s+ENTRY\b", re.IGNORECASE)
+_SECOND_ENTRY_CONTEXT = re.compile(r"\b(?:SECOND|2ND)\s+ENTRY\b|\bENTRY\s*2\b", re.IGNORECASE)
+_FIRST_ENTRY_CONTEXT = re.compile(r"\bFIRST\s+ENTRY\b|\bENTRY\s*1\b", re.IGNORECASE)
 _PARTIAL = re.compile(
     r"\b(?:BOOK|TAKE|CLOSE|BANK|SECURE)\b[^\n]{0,35}"
     r"\b(?:PARTIALS?|HALF|SOME\s+PROFIT|PROFIT\s+OFF)\b",
@@ -66,12 +75,7 @@ def _pending_type(side: str, word: str) -> str:
 
 
 def _derived_layer_type(side: str, *, first: Decimal, later: Decimal) -> str:
-    """Derive the broker order family from the provider's declared entry sequence.
-
-    A later BUY below the first entry and a later SELL above it are retracement limits.
-    The opposite relationship is a stop-entry continuation. Equality is rejected by
-    the caller because it is not a distinct layer.
-    """
+    """Derive the broker order family from the provider's declared entry sequence."""
     normalized = side.strip().upper()
     if normalized == "BUY":
         return "buy_limit" if later < first else "buy_stop"
@@ -92,6 +96,9 @@ def parse_critical_entries(
     normalized_side = side.strip().upper()
     if normalized_side not in {"BUY", "SELL"}:
         raise ValueError("trade_side_invalid")
+
+    if _AMBIGUOUS_PENDING_ZONE.search(text) is not None:
+        raise ValueError("pending_layer_grid_unspecified")
 
     pending = _EXPLICIT_PENDING.search(text)
     if pending is not None:
@@ -164,14 +171,7 @@ def augment_management_actions(
     raw_text: str,
     actions: Iterable[dict[str, str | None]],
 ) -> tuple[dict[str, str | None], ...]:
-    """Preserve explicit partial and layer scope for the demo management boundary.
-
-    The legacy Day-27 extractor deliberately represented "take partials" as "close
-    TP1" because a normal multi-TP signal has one broker tranche per target. That is
-    still the execution strategy when multiple tranches exist, but retaining a
-    ``partial_*`` target lets the critical demo manager detect a single-tranche case
-    and use a true broker partial close instead of accidentally closing everything.
-    """
+    """Preserve explicit partial and layer scope for the demo management boundary."""
     text = raw_text or ""
     result = [dict(action) for action in actions]
 
@@ -198,9 +198,6 @@ def augment_management_actions(
         target = str(action.get("target") or "all").lower()
 
         if action_type == "cancel_pending":
-            # The legacy manager cancels the broker order but has no pending local
-            # status to reconcile. Mark this as a critical target so the paper manager
-            # both cancels exact mapped order IDs and settles local pending rows.
             action["target"] = "pending_layers"
             continue
 
