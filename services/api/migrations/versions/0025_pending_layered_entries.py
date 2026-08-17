@@ -35,18 +35,6 @@ def upgrade() -> None:
             server_default="market",
         ),
     )
-    # Preserve the provider-declared layer separately from the broker's actual fill.
-    # This is essential for follow-ups such as "4394 CLOSE +15": market fills can
-    # slip/fractionally fill while the provider continues to refer to the declared
-    # layer price in later Telegram management messages.
-    op.add_column(
-        "positions",
-        sa.Column("provider_entry_price", sa.Numeric(24, 10), nullable=True),
-    )
-    op.execute(
-        "UPDATE positions SET provider_entry_price=entry_price "
-        "WHERE provider_entry_price IS NULL AND entry_price IS NOT NULL"
-    )
 
     op.drop_constraint("uq_positions_signal_user_tp", "positions", type_="unique")
     op.create_unique_constraint(
@@ -54,7 +42,11 @@ def upgrade() -> None:
         "positions",
         ["signal_id", "user_id", "entry_index", "tp_index"],
     )
-    op.create_check_constraint("ck_positions_entry_index", "positions", "entry_index > 0")
+    op.create_check_constraint(
+        "ck_positions_entry_index",
+        "positions",
+        "entry_index > 0",
+    )
     op.create_check_constraint(
         "ck_positions_entry_order_type",
         "positions",
@@ -116,6 +108,5 @@ def downgrade() -> None:
         "positions",
         ["signal_id", "user_id", "tp_index"],
     )
-    op.drop_column("positions", "provider_entry_price")
     op.drop_column("positions", "entry_order_type")
     op.drop_column("positions", "entry_index")
