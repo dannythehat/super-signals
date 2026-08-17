@@ -3,10 +3,10 @@ import pytest
 from app.critical_entry_policy import parse_critical_entries
 
 
-def test_tdc_plural_pending_zone_fails_closed_instead_of_using_first_number() -> None:
+def test_unproven_plural_pending_zone_fails_closed_instead_of_inventing_grid() -> None:
     raw = (
         "BUY LIMITS GOLD @ 4332/4326 AREA\n\n"
-        "TP 4335\nTP 4339\nTP 4344\nTP OPEN\nSL 4325\n\nHIGH RISK TRADE"
+        "TP 4335\nTP 4339\nTP 4344\nSL 4325"
     )
     with pytest.raises(ValueError, match="pending_layer_grid_unspecified"):
         parse_critical_entries(
