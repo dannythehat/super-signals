@@ -39,7 +39,7 @@ _TDC_LAYER_ZONE = re.compile(
     r".*\bHIGH\s+RISK\s+TRADE\b.*\bTP\s*(?:\d+\s*)?OPEN\b"
 )
 _CRITICAL_TARGET = re.compile(
-    r"(?:^|_)(?:ENTRY|LAYER|PARTIAL|BEST)(?:_|$)"
+    r"(?:^|_)(?:ENTRY|LAYERS?|PARTIAL|BEST)(?:_|$)"
     r"|^ALL_BUT_BEST$|^ENTRY_PRICE_|^PENDING_LAYERS$",
     re.IGNORECASE,
 )
