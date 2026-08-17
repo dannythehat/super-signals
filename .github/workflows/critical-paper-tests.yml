@@ -1,9 +1,7 @@
 name: Critical paper branch verification
 
 on:
-  push:
-    branches:
-      - feature/critical-pending-layering-20260817
+  workflow_dispatch:
 
 permissions:
   contents: read
