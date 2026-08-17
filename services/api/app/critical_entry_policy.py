@@ -145,6 +145,24 @@ def _tdc_layer_grid(text: str, normalized_side: str) -> tuple[CriticalEntry, ...
     return tuple(entries)
 
 
+def _plain_entry_fallback(
+    entry_low: object, entry_high: object
+) -> tuple[CriticalEntry, ...]:
+    """Treat the message as an ordinary (non-layered) signal.
+
+    This is the pre-Day-43 V1 behavior: an entry/zone that the layering dialect
+    cannot unambiguously interpret is not a reason to skip an otherwise complete
+    signal. It falls back to the exact/zone entry already extracted upstream.
+    """
+    low = _price(entry_low)
+    high = _price(entry_high)
+    if low is None or high is None:
+        raise ValueError("signal_entry_invalid")
+    if low == high:
+        return (CriticalEntry(entry_index=1, order_type="market", price=low),)
+    return ()
+
+
 def parse_critical_entries(
     raw_text: str,
     *,
@@ -160,7 +178,11 @@ def parse_critical_entries(
     if proven_grid is not None:
         return proven_grid
     if _AMBIGUOUS_PENDING_ZONE.search(text) is not None:
-        raise ValueError("pending_layer_grid_unspecified")
+        # Plural LIMIT/STOP wording next to a zone that is not the proven TDC
+        # HIGH RISK TRADE template used to simply be read as an ordinary zone
+        # entry (V1 never supported pending orders). Keep that safe behavior
+        # instead of skipping an otherwise complete, executable signal.
+        return _plain_entry_fallback(entry_low, entry_high)
     pending = _EXPLICIT_PENDING.search(text)
     if pending is not None:
         pending_side = pending.group(1).upper()
@@ -179,12 +201,16 @@ def parse_critical_entries(
     second_match = _SECOND_ENTRY.search(text)
     if second_match is not None:
         first_match = _FIRST_ENTRY.search(text)
-        if first_match is None:
-            raise ValueError("layer_first_entry_missing")
-        first = _price(first_match.group(1))
+        # V1 has always executed the first entry only and ignored "Second
+        # entry" wording. When the first entry cannot be matched in the new
+        # layering grammar (e.g. "BUY GOLD @4385" instead of "ENTRY 4385"),
+        # or the two entries cannot be resolved into a valid layer pair, fall
+        # back to that original ignore-second-entry behavior rather than
+        # skipping a signal that was otherwise complete.
+        first = _price(first_match.group(1)) if first_match is not None else None
         second = _price(second_match.group(1))
         if first is None or second is None or first == second:
-            raise ValueError("layer_entry_invalid")
+            return _plain_entry_fallback(entry_low, entry_high)
         entries: list[CriticalEntry] = [
             CriticalEntry(entry_index=1, order_type="market", price=first),
             CriticalEntry(
@@ -197,7 +223,9 @@ def parse_critical_entries(
             index = 3 if match.group(1) else 4 if match.group(2) else 5
             later = _price(match.group(4))
             if later is None or any(item.price == later for item in entries):
-                raise ValueError("layer_entry_invalid")
+                # An unresolvable extra layer does not invalidate the already
+                # confirmed first/second layers; just omit it.
+                continue
             entries.append(
                 CriticalEntry(
                     entry_index=index,
@@ -206,13 +234,7 @@ def parse_critical_entries(
                 )
             )
         return tuple(sorted(entries, key=lambda item: item.entry_index))
-    low = _price(entry_low)
-    high = _price(entry_high)
-    if low is None or high is None:
-        raise ValueError("signal_entry_invalid")
-    if low == high:
-        return (CriticalEntry(entry_index=1, order_type="market", price=low),)
-    return ()
+    return _plain_entry_fallback(entry_low, entry_high)
 
 
 def envelope(entries: Iterable[CriticalEntry]) -> tuple[Decimal, Decimal]:

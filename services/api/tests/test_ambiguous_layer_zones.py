@@ -1,20 +1,25 @@
-import pytest
-
 from app.critical_entry_policy import parse_critical_entries
 
 
-def test_unproven_plural_pending_zone_fails_closed_instead_of_inventing_grid() -> None:
+def test_unproven_plural_pending_zone_falls_back_to_plain_zone_instead_of_skipping() -> None:
+    """An unrecognized pending-layer dialect must not skip an otherwise complete signal.
+
+    Before layering support existed, V1 had no pending-order concept at all and this
+    exact wording would simply have been read as an ordinary zone entry using the
+    entry_low/entry_high already extracted upstream. Regression: on 17 Aug 2026 this
+    was changed to raise/skip, which silently stopped otherwise-executable signals.
+    """
     raw = (
         "BUY LIMITS GOLD @ 4332/4326 AREA\n\n"
         "TP 4335\nTP 4339\nTP 4344\nSL 4325"
     )
-    with pytest.raises(ValueError, match="pending_layer_grid_unspecified"):
-        parse_critical_entries(
-            raw,
-            side="BUY",
-            entry_low="4326",
-            entry_high="4332",
-        )
+    entries = parse_critical_entries(
+        raw,
+        side="BUY",
+        entry_low="4326",
+        entry_high="4332",
+    )
+    assert entries == ()
 
 
 def test_explicit_numbered_entry_list_is_supported() -> None:
