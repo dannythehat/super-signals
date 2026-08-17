@@ -45,7 +45,8 @@ _LEAVE_BEST = re.compile(
 _SECOND_ENTRY_CONTEXT = re.compile(r"\b(?:SECOND|2ND)\s+ENTRY\b", re.IGNORECASE)
 _FIRST_ENTRY_CONTEXT = re.compile(r"\bFIRST\s+ENTRY\b", re.IGNORECASE)
 _PARTIAL = re.compile(
-    r"\b(?:BOOK|TAKE|CLOSE|BANK|SECURE)\b[^\n]{0,30}\b(?:PARTIALS?|HALF)\b",
+    r"\b(?:BOOK|TAKE|CLOSE|BANK|SECURE)\b[^\n]{0,35}"
+    r"\b(?:PARTIALS?|HALF|SOME\s+PROFIT|PROFIT\s+OFF)\b",
     re.IGNORECASE,
 )
 
