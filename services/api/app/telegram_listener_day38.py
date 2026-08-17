@@ -19,6 +19,7 @@ from app.multi_user_distribution_day38 import Day38MultiUserDistributionService
 from app.multi_user_management_day38 import Day38MultiUserManagementService
 from app.paper_critical_execution import PaperCriticalExecutionService
 from app.paper_critical_management import PaperCriticalManagementService
+from app.paper_pending_reconciler import PaperPendingReconciler
 from app.telegram_crypto import TelegramSessionCipher
 from app.telegram_listener_day28 import Day28TelegramListenerManager
 
@@ -29,6 +30,15 @@ def _enabled(value: str | None, *, default: bool = False) -> bool:
     if value is None or not value.strip():
         return default
     return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _broker_keys() -> tuple[str, ...]:
+    raw = (
+        os.getenv("SUPER_SIGNALS_BROKER_CREDENTIAL_KEYS")
+        or os.getenv("SUPER_SIGNALS_MT5_ENCRYPTION_KEYS")
+        or ""
+    )
+    return tuple(value.strip() for value in raw.split(",") if value.strip())
 
 
 def build_day38_execution_router_from_env(
@@ -44,12 +54,7 @@ def build_day38_execution_router_from_env(
         logger.error("Day 38 automatic execution disabled: invalid owner UUID configuration")
         return None
 
-    broker_key_value = (
-        os.getenv("SUPER_SIGNALS_BROKER_CREDENTIAL_KEYS")
-        or os.getenv("SUPER_SIGNALS_MT5_ENCRYPTION_KEYS")
-        or ""
-    )
-    broker_keys = tuple(value.strip() for value in broker_key_value.split(",") if value.strip())
+    broker_keys = _broker_keys()
     if not broker_keys:
         logger.error("Day 38 automatic execution disabled: broker encryption keys are unavailable")
         return None
@@ -117,6 +122,58 @@ def build_day38_execution_router_from_env(
         return None
 
 
+class PaperPendingAwareListenerManager(Day28TelegramListenerManager):
+    """Run broker pending-fill observation alongside the proven Telegram reader."""
+
+    def __init__(self, *, pending_reconciler: PaperPendingReconciler | None, **kwargs) -> None:
+        super().__init__(**kwargs)
+        self._paper_pending_reconciler = pending_reconciler
+
+    async def start(self) -> None:
+        if self._paper_pending_reconciler is not None:
+            await self._paper_pending_reconciler.start()
+        try:
+            await super().start()
+        except Exception:
+            if self._paper_pending_reconciler is not None:
+                await self._paper_pending_reconciler.stop()
+            raise
+
+    async def stop(self) -> None:
+        try:
+            await super().stop()
+        finally:
+            if self._paper_pending_reconciler is not None:
+                await self._paper_pending_reconciler.stop()
+
+
+def _build_pending_reconciler(
+    *,
+    session_factory: sessionmaker[Session],
+    router: DatabaseSourceDay38FullExecutionRouter | None,
+) -> PaperPendingReconciler | None:
+    if router is None:
+        return None
+    try:
+        owner_user_id = UUID(os.getenv("SUPER_SIGNALS_DAY28_OWNER_ID", "").strip())
+        poll_seconds = int(
+            os.getenv("SUPER_SIGNALS_PAPER_PENDING_POLL_SECONDS", "3").strip() or "3"
+        )
+        broker_keys = _broker_keys()
+        if not broker_keys:
+            return None
+        return PaperPendingReconciler(
+            session_factory=session_factory,
+            cipher=MetaApiTokenCipher(broker_keys),
+            gateway=MetaApiReadGateway(),
+            owner_user_id=owner_user_id,
+            poll_seconds=poll_seconds,
+        )
+    except (ValueError, TypeError):
+        logger.error("Paper pending reconciler disabled: invalid owner/key/poll configuration")
+        return None
+
+
 def build_day38_listener_manager(
     *,
     api_id: int,
@@ -126,18 +183,25 @@ def build_day38_listener_manager(
     refresh_seconds: int,
     excluded_chat_id: int | None,
 ) -> Day28TelegramListenerManager:
-    """Preserve the proven Day 28 listener/catch-up mechanics with a Day 38 router."""
-    return Day28TelegramListenerManager(
+    """Preserve Day 28 mechanics and observe broker-held pending fills in paper mode."""
+    router = build_day38_execution_router_from_env(session_factory=session_factory)
+    return PaperPendingAwareListenerManager(
         api_id=api_id,
         api_hash=api_hash,
         cipher=cipher,
         session_factory=session_factory,
         refresh_seconds=refresh_seconds,
         excluded_chat_id=excluded_chat_id,
-        day28_router=build_day38_execution_router_from_env(
+        day28_router=router,
+        pending_reconciler=_build_pending_reconciler(
             session_factory=session_factory,
+            router=router,
         ),
     )
 
 
-__all__ = ["build_day38_execution_router_from_env", "build_day38_listener_manager"]
+__all__ = [
+    "PaperPendingAwareListenerManager",
+    "build_day38_execution_router_from_env",
+    "build_day38_listener_manager",
+]
