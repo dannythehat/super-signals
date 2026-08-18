@@ -1,19 +1,18 @@
-"""Keep paper-only critical execution structures away from LIVE member accounts.
+"""Global LIVE execution switch without trading-policy divergence.
 
-The Owner paper boundary understands broker pending orders, explicit entry layers and
-TDC's proven layered HIGH RISK zone dialect. Day 38 member fan-out is intentionally
-not promoted with it. These wrappers preserve the existing member target/audit
-machinery while returning an explicit paper-only skip before any LIVE broker service
-is called.
+Paper testing remains the active production mode. Ordinary member LIVE broker mutation
+is therefore disabled by default and requires the explicit environment switch
+``SUPER_SIGNALS_LIVE_EXECUTION_ENABLED=true``.
+
+Crucially, this wrapper does NOT inspect signal structure. When LIVE is enabled every
+canonical trade and management instruction is delegated to the same paper-tested engine,
+including layered entries, pending orders, partials and layer-scoped management.
 """
 
 from __future__ import annotations
 
-import re
-from typing import Any
+import os
 from uuid import UUID
-
-from sqlalchemy import text
 
 from app.multi_user_distribution_day38 import (
     Day38DistributionResult,
@@ -26,30 +25,21 @@ from app.multi_user_management_day38 import (
     Day38UserManagementOutcome,
 )
 
-_LAYER = re.compile(
-    r"\b(?:SECOND|2ND|THIRD|3RD|FOURTH|4TH|FIFTH|5TH)\s+ENTRY\b",
-    re.IGNORECASE,
-)
-_TDC_LAYER_ZONE = re.compile(
-    r"(?is)\b(?:BUY|SELL)(?:\s+(?:LIMITS?|STOPS?))?\s+(?:GOLD|XAUUSD)\s*@\s*"
-    r"\d+(?:\.\d+)?\s*/\s*\d+(?:\.\d+)?"
-    r".*\bTP\s*(?:\d+\s*)?OPEN\b.*\bHIGH\s+RISK\s+TRADE\b"
-    r"|\b(?:BUY|SELL)(?:\s+(?:LIMITS?|STOPS?))?\s+(?:GOLD|XAUUSD)\s*@\s*"
-    r"\d+(?:\.\d+)?\s*/\s*\d+(?:\.\d+)?"
-    r".*\bHIGH\s+RISK\s+TRADE\b.*\bTP\s*(?:\d+\s*)?OPEN\b"
-)
-_CRITICAL_TARGET = re.compile(
-    r"(?:^|_)(?:ENTRY|LAYERS?|PARTIAL|BEST)(?:_|$)"
-    r"|^ALL_BUT_BEST$|^ENTRY_PRICE_|^PENDING_LAYERS$",
-    re.IGNORECASE,
-)
+
+def live_execution_enabled() -> bool:
+    return os.getenv("SUPER_SIGNALS_LIVE_EXECUTION_ENABLED", "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
 
 
 class PaperSafeMemberDistribution(Day38MultiUserDistributionService):
-    """Block pending/layered canonical signals before LIVE member execution."""
+    """Disable all LIVE member entries until the explicit global switch is flipped."""
 
     async def distribute(self, *, signal_id: UUID) -> Day38DistributionResult:
-        if not self._critical_signal(signal_id):
+        if live_execution_enabled():
             return await super().distribute(signal_id=signal_id)
 
         targets = self._targets()
@@ -61,7 +51,7 @@ class PaperSafeMemberDistribution(Day38MultiUserDistributionService):
                 allow_double_lot=target.allow_double_lot,
                 position_count=0,
                 volume_per_position=(),
-                error_code="critical_structure_paper_only",
+                error_code="live_execution_disabled",
             )
             for target in targets
         )
@@ -77,31 +67,9 @@ class PaperSafeMemberDistribution(Day38MultiUserDistributionService):
         self._audit_summary(result)
         return result
 
-    def _critical_signal(self, signal_id: UUID) -> bool:
-        with self._session_factory() as session:
-            row = session.execute(
-                text(
-                    """
-                    SELECT order_type, original_text
-                    FROM signals
-                    WHERE id=:signal_id
-                    LIMIT 1
-                    """
-                ),
-                {"signal_id": signal_id},
-            ).mappings().first()
-        if row is None:
-            # Missing canonical identity must never be allowed to fall through to a
-            # LIVE mutation just because this guard could not classify it.
-            return True
-        if str(row["order_type"] or "").strip().lower() == "pending":
-            return True
-        original = str(row["original_text"] or "")
-        return _LAYER.search(original) is not None or _TDC_LAYER_ZONE.search(original) is not None
-
 
 class PaperSafeMemberManagement(Day38MultiUserManagementService):
-    """Block layer/true-partial management from the existing LIVE member engine."""
+    """Disable all LIVE member management until the same global switch is flipped."""
 
     async def distribute(
         self,
@@ -109,7 +77,7 @@ class PaperSafeMemberManagement(Day38MultiUserManagementService):
         signal_id: UUID,
         lifecycle_event_id: UUID,
     ) -> Day38ManagementDistributionResult:
-        if not self._critical_event(lifecycle_event_id):
+        if live_execution_enabled():
             return await super().distribute(
                 signal_id=signal_id,
                 lifecycle_event_id=lifecycle_event_id,
@@ -124,7 +92,7 @@ class PaperSafeMemberManagement(Day38MultiUserManagementService):
                 positions_closed=0,
                 positions_modified=0,
                 orders_cancelled=0,
-                error_code="critical_management_paper_only",
+                error_code="live_execution_disabled",
             )
             for user_id in targets
         )
@@ -142,35 +110,9 @@ class PaperSafeMemberManagement(Day38MultiUserManagementService):
         self._audit_summary(result)
         return result
 
-    def _critical_event(self, lifecycle_event_id: UUID) -> bool:
-        with self._session_factory() as session:
-            aggregate = session.execute(
-                text(
-                    """
-                    SELECT aggregate_result
-                    FROM signal_lifecycle_events
-                    WHERE id=:event_id
-                    LIMIT 1
-                    """
-                ),
-                {"event_id": lifecycle_event_id},
-            ).scalar_one_or_none()
-        if not isinstance(aggregate, dict):
-            return True
-        revised = aggregate.get("revised_instruction")
-        if not isinstance(revised, dict):
-            return True
-        actions = revised.get("management_actions")
-        if not isinstance(actions, list):
-            target = str(revised.get("update_target") or "")
-            return _CRITICAL_TARGET.search(target) is not None
-        for action in actions:
-            if not isinstance(action, dict):
-                return True
-            target = str(action.get("target") or "")
-            if _CRITICAL_TARGET.search(target):
-                return True
-        return False
 
-
-__all__ = ["PaperSafeMemberDistribution", "PaperSafeMemberManagement"]
+__all__ = [
+    "PaperSafeMemberDistribution",
+    "PaperSafeMemberManagement",
+    "live_execution_enabled",
+]
