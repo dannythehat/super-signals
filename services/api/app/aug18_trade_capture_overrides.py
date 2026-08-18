@@ -14,7 +14,8 @@ Recovery now treats PostgreSQL as a durable hand-off: every still-fresh actionab
 message/revision is reconsidered by the idempotent router even when already persisted.
 Successful or previously-blocked new-trade routes remain protected by the router's
 existing audit/idempotency gate. Recovered management is routed only when its durable
-lifecycle event exists. Stale new trades remain evidence only.
+lifecycle event exists when the concrete router exposes that resolution contract. Stale
+new trades remain evidence only.
 """
 
 from __future__ import annotations
@@ -63,24 +64,30 @@ def install_aug18_trade_capture_overrides() -> None:
                 return
 
             if stored.decision == "trade_update" and stored.action == "apply_update":
-                lifecycle_event_id, signal_id = await asyncio.to_thread(
-                    router._resolve_lifecycle_event,
-                    stored.message_id,
-                    revision_index,
-                )
-                if lifecycle_event_id is None or signal_id is None:
-                    # The semantic decision is retained as evidence. Re-running the
-                    # same unresolved management revision every recovery sweep cannot
-                    # create a valid broker target and only floods the audit trail.
-                    logger.info(
-                        "Recovered management retained as evidence: lifecycle target unresolved",
-                        extra={
-                            "source_id": str(source_id),
-                            "telegram_message_id": telegram_message_id,
-                            "revision_index": revision_index,
-                        },
+                # DatabaseSourceDay38FullExecutionRouter exposes the durable lifecycle
+                # resolver used in production. Keep alternate/test router adapters
+                # compatible by delegating to their existing dispatch contract if they
+                # do not expose this private resolution helper.
+                resolver = getattr(router, "_resolve_lifecycle_event", None)
+                if resolver is not None:
+                    lifecycle_event_id, signal_id = await asyncio.to_thread(
+                        resolver,
+                        stored.message_id,
+                        revision_index,
                     )
-                    return
+                    if lifecycle_event_id is None or signal_id is None:
+                        # The semantic decision is retained as evidence. Re-running the
+                        # same unresolved management revision every recovery sweep cannot
+                        # create a valid broker target and only floods the audit trail.
+                        logger.info(
+                            "Recovered management retained as evidence: lifecycle target unresolved",
+                            extra={
+                                "source_id": str(source_id),
+                                "telegram_message_id": telegram_message_id,
+                                "revision_index": revision_index,
+                            },
+                        )
+                        return
 
             await original_dispatch_recovered(
                 self,
