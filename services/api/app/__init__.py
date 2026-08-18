@@ -89,3 +89,7 @@ install_performance_account_truth_override()
 from app.account_truth_poll_override import install_account_truth_poll_override
 
 install_account_truth_poll_override()
+
+from app.aug18_trade_capture_overrides import install_aug18_trade_capture_overrides
+
+install_aug18_trade_capture_overrides()
