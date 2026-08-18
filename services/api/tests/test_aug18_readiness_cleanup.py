@@ -9,7 +9,10 @@ from uuid import uuid4
 import app.performance_account_truth_override as account_truth
 import app.telegram_publisher as publisher
 from app.ai_message_supervisor import AiMessageDecision
-from app.aug18_readiness_cleanup import install_aug18_readiness_cleanup
+from app.aug18_readiness_cleanup import (
+    _PROFITABLE_BROKER_IDS,
+    install_aug18_readiness_cleanup,
+)
 from app.paper_critical_management_v2 import PaperCriticalManagementV2
 from app.v1_message_policy import apply_v1_message_policy
 
@@ -76,15 +79,33 @@ def test_provider_numeric_risk_free_stop_is_not_semantically_vetoed() -> None:
     assert selected == (surviving,)
 
 
-def test_tdc_close_profit_when_seen_never_becomes_unconditional_loss_close() -> None:
+def test_tdc_close_profit_when_seen_is_broker_profit_qualified() -> None:
     """Regression for TDC 6607, which historically closed a losing mapped trade."""
     raw = "+70 pips\n\nClose profit when you see it\n\nThis set up is now more risky"
     result = apply_v1_message_policy(_trade_update_decision(raw), raw_text=raw)
 
     assert result.decision == "trade_update"
-    assert result.action == "ignore"
-    assert result.extracted.get("management_actions") == []
-    assert result.extracted.get("update_type") is None
+    assert result.action == "apply_update"
+    assert result.extracted.get("management_actions") == [
+        {"type": "close", "target": "profitable_only", "value": None}
+    ]
+    assert result.extracted.get("update_type") == "close"
+    assert result.extracted.get("update_target") == "profitable_only"
+
+
+def test_profit_qualified_close_never_selects_a_losing_broker_position() -> None:
+    winner = SimpleNamespace(broker_position_id="broker-win")
+    loser = SimpleNamespace(broker_position_id="broker-loss")
+    token = _PROFITABLE_BROKER_IDS.set(frozenset({"broker-win"}))
+    try:
+        selected = PaperCriticalManagementV2._select_layer_positions(
+            (winner, loser),
+            "profitable_only",
+            side="BUY",
+        )
+    finally:
+        _PROFITABLE_BROKER_IDS.reset(token)
+    assert selected == (winner,)
 
 
 def test_best_entry_still_running_is_state_not_an_extra_close_command() -> None:
