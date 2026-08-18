@@ -39,3 +39,7 @@ install_paper_live_entry_guard()
 from app.provider_entry_reliability_overrides import install_provider_entry_reliability_overrides
 
 install_provider_entry_reliability_overrides()
+
+from app.execution_path_reliability_overrides import install_execution_path_reliability_overrides
+
+install_execution_path_reliability_overrides()
