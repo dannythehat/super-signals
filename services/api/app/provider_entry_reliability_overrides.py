@@ -1,19 +1,18 @@
 """Narrow production corrections for provider entry dialects observed in paper testing.
 
 This module deliberately handles only mechanically explicit forms seen in production:
-* plural pending two-price entries such as BUY LIMITS GOLD @ 4391/4387 AREA;
+* the TDC plural two-price pending form with TP OPEN;
 * present-tense numeric entries such as "I'm selling 4390" are never chatter;
 * linked "OPEN EXTRA GOLD SELLS/BUYS" duplicates the currently-open protected
   tranches as one new paper-only entry layer.
 
-No absent SL/TP is invented.  The existing BUY/SELL GOLD NOW fallback remains a
+No absent SL/TP is invented. The existing BUY/SELL GOLD NOW fallback remains a
 separate rule and is not widened here.
 """
 
 from __future__ import annotations
 
 import re
-from dataclasses import replace
 from datetime import UTC, datetime
 from decimal import Decimal, InvalidOperation
 from typing import Any
@@ -35,10 +34,12 @@ _PRESENT_TENSE_ENTRY = re.compile(
     r"(?:(?:GOLD|XAUUSD)\s+)?(\d+(?:\.\d+)?)\b",
     re.IGNORECASE,
 )
+# The explicit instruction is the first line. Providers may append emotional/hype text
+# on later lines; that must not erase the command.
 _OPEN_EXTRA = re.compile(
-    r"^\s*OPEN\s+EXTRA\s+(?:GOLD|XAUUSD)\s+(BUYS?|SELLS?)\s*[.!]*\s*$",
-    re.IGNORECASE,
+    r"(?im)^\s*OPEN\s+EXTRA\s+(?:GOLD|XAUUSD)\s+(BUYS?|SELLS?)\b"
 )
+_TP_OPEN = re.compile(r"(?im)^\s*TP\s+OPEN\s*$")
 
 _installed = False
 
@@ -72,12 +73,20 @@ def _install_two_point_pending() -> None:
         except ValueError as exc:
             if str(exc) != "pending_layer_grid_unspecified":
                 raise
+
         text_value = raw_text or ""
         match = _TWO_POINT_PENDING.search(text_value)
-        if match is None or re.search(r"\bSL\b", text_value, re.IGNORECASE) is None or re.search(
-            r"\bTP\b", text_value, re.IGNORECASE
-        ) is None:
+        # This exception is deliberately narrower than the generic plural-zone grammar.
+        # The exact observed TDC form includes TP OPEN. Unknown plural zones continue to
+        # fail closed instead of having a grid or two-point plan invented for them.
+        if (
+            match is None
+            or _TP_OPEN.search(text_value) is None
+            or re.search(r"\bSL\b", text_value, re.IGNORECASE) is None
+            or re.search(r"\bTP\b", text_value, re.IGNORECASE) is None
+        ):
             raise ValueError("pending_layer_grid_unspecified")
+
         requested_side = match.group(1).upper()
         normalized_side = side.strip().upper()
         if requested_side != normalized_side:
@@ -130,7 +139,7 @@ def _install_extra_entry_management() -> None:
     if not getattr(original_extract, "_provider_extra_entry", False):
         def wrapped_extract(raw_text: str):
             existing = original_extract(raw_text)
-            match = _OPEN_EXTRA.match(raw_text or "")
+            match = _OPEN_EXTRA.search(raw_text or "")
             if match is None:
                 return existing
             word = match.group(1).upper()
@@ -189,7 +198,9 @@ def _install_extra_entry_management() -> None:
             )
         except Exception as exc:
             code = getattr(exc, "code", "broker_credential_decryption_failed")
-            raise Day27ManagementError(str(code), retryable=bool(getattr(exc, "retryable", False))) from exc
+            raise Day27ManagementError(
+                str(code), retryable=bool(getattr(exc, "retryable", False))
+            ) from exc
 
         with self._session_factory() as session:
             signal = session.execute(
@@ -265,8 +276,6 @@ def _install_extra_entry_management() -> None:
         created: list[dict[str, Any]] = []
         try:
             for item in planned:
-                # Deterministic client IDs make a retry after a process interruption
-                # observable rather than silently duplicating exposure.
                 current_positions = await self._broker_positions(
                     token=token,
                     account_id=account.account_id,
@@ -306,14 +315,14 @@ def _install_extra_entry_management() -> None:
                             account_id=account.account_id,
                             region=region,
                         )
-                        match = next(
+                        matched = next(
                             (
                                 p for p in refreshed.values()
                                 if str(p.get("clientId") or "") == item["client_id"]
                             ),
                             None,
                         )
-                        position_id = str((match or {}).get("id") or "")
+                        position_id = str((matched or {}).get("id") or "")
                 if not position_id:
                     raise Day27ManagementError("day27_add_market_position_unresolved")
                 created.append({**item, "order_id": order_id, "position_id": position_id})
