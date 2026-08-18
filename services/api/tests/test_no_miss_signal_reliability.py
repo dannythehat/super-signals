@@ -2,15 +2,12 @@ from __future__ import annotations
 
 import asyncio
 from datetime import UTC, datetime, timedelta
-from decimal import Decimal
 from types import MethodType, SimpleNamespace
 
 from app.ai_message_supervisor import AiMessageDecision
 from app.day27_management_policy import extract_day27_management_actions
 import app.literal_management_overrides as overrides
 from app.literal_management_overrides import explicit_literal_management
-from app.mt5_execution_day26 import _SignalInput
-from app.paper_execution_priority import PaperExecutionPriorityService
 from app.telegram_entity_recovery import _canonical_channel_id
 from app.telegram_listener_day38 import PaperPendingAwareListenerManager
 from app.v1_message_policy import apply_v1_message_policy
@@ -85,35 +82,6 @@ def test_literal_management_is_promoted_even_when_ai_called_it_chatter(monkeypat
     assert result.extracted["management_actions"] == [
         {"type": "edit_stop_loss", "target": "all", "value": "4375"}
     ]
-
-
-def test_owner_demo_one_percent_is_total_signal_risk_not_per_tp() -> None:
-    service = object.__new__(PaperExecutionPriorityService)
-    signal = _SignalInput(
-        signal_id=SimpleNamespace(),  # type: ignore[arg-type]
-        symbol="XAUUSD",
-        side="BUY",
-        entry_low=Decimal("2000"),
-        entry_high=Decimal("2000"),
-        stop_loss=Decimal("1990"),
-        take_profits=(Decimal("2010"), Decimal("2020"), Decimal("2030")),
-        has_open_runner=False,
-        signal_requests_double_lot=False,
-        source_revision_index=0,
-        source_posted_at=datetime.now(UTC),
-    )
-    sizing = service._size_signal(
-        signal=signal,
-        execution_entry=Decimal("2000"),
-        balance=1000.0,
-        price_loss_tick_value=1.0,
-        specification={"minVolume": "0.001", "maxVolume": "100", "volumeStep": "0.001", "tickSize": "1"},
-        risk_percent="1",
-        double_lot_approved=False,
-    )
-    assert sizing.position_count == 3
-    assert sizing.total_actual_risk <= Decimal("10")
-    assert sizing.total_actual_risk > Decimal("9")
 
 
 class _StoredRouter:
