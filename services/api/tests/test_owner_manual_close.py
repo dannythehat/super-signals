@@ -90,6 +90,27 @@ async def test_close_trade_addresses_each_exact_broker_position_without_symbol_c
 
 
 @pytest.mark.asyncio
+async def test_close_all_addresses_every_mapped_position_by_exact_broker_id(monkeypatch) -> None:
+    user_id = uuid4()
+    first = manual_close._Position(id=uuid4(), signal_id=uuid4(), broker_position_id="broker-1")
+    second = manual_close._Position(id=uuid4(), signal_id=uuid4(), broker_position_id="broker-2")
+    third = manual_close._Position(id=uuid4(), signal_id=uuid4(), broker_position_id="broker-3")
+    service, trade, recorded = _service(monkeypatch, broker_ids=["broker-1", "broker-2", "broker-3"])
+    monkeypatch.setattr(service, "_all_positions", lambda **kwargs: (first, second, third))
+
+    result = await service.close_all(user_id)
+
+    assert trade.closed == ["broker-1", "broker-2", "broker-3"]
+    assert result.closed_count == 3
+    assert result.failed_count == 0
+    assert recorded == [
+        (str(first.id), "all"),
+        (str(second.id), "all"),
+        (str(third.id), "all"),
+    ]
+
+
+@pytest.mark.asyncio
 async def test_close_position_does_not_retry_a_position_already_absent_at_broker(monkeypatch) -> None:
     user_id = uuid4()
     position = manual_close._Position(id=uuid4(), signal_id=uuid4(), broker_position_id="already-gone")
