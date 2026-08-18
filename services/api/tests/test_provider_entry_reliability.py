@@ -48,6 +48,25 @@ def test_tgc_present_tense_buy_is_never_chatter() -> None:
     assert result.decision_status == "review"
 
 
+def test_tgc_observed_seling_typo_is_never_chatter() -> None:
+    result = classify_message("Im seling 4390")
+    assert result.classification == "uncertain"
+    assert result.decision_status == "review"
+    assert "tgc_present_tense_numeric_entry" in result.matched_rules
+
+
+def test_tgc_newline_present_tense_entry_is_never_chatter() -> None:
+    result = classify_message("Im\nSelling 4404")
+    assert result.classification == "uncertain"
+    assert result.decision_status == "review"
+
+
+def test_tgc_conditional_present_tense_entry_reaches_semantic_review() -> None:
+    result = classify_message("Im selling if we tap 4390")
+    assert result.classification == "uncertain"
+    assert result.decision_status == "review"
+
+
 def test_fx_open_extra_sells_is_explicit_active_trade_management() -> None:
     result = extract_day27_management_actions("OPEN EXTRA GOLD SELLS\n\nFUCK IT.")
     assert {"type": "add_market", "target": "same_trade", "value": "SELL"} in result.actions
