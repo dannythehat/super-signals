@@ -8,6 +8,7 @@ import './workspace-enhancements.css';
 import './onboarding.css';
 import './trading-controls.css';
 import './dashboard-day32.css';
+import './owner-manual-close.css';
 import './settings-day32.css';
 import './trade-timeline-day33.css';
 
