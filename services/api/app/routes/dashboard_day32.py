@@ -13,6 +13,7 @@ from pydantic import BaseModel
 from app.acceptance_self_test import acceptance_mirror_owner_user_id
 from app.access_control import get_current_identity
 from app.dashboard_day32 import Day32DashboardService, QuietDay23Mt5ReadService
+from app.dashboard_today_summary import TodayTradingSummaryService
 from app.metaapi_read_gateway import MetaApiReadGateway
 from app.mt5_connection_service_day30 import Day30Mt5ConnectionService
 from app.mt5_runtime import require_mt5_service
@@ -115,6 +116,19 @@ class ActivityResponse(BaseModel):
     created_at: datetime
 
 
+class TodayTradingSummaryResponse(BaseModel):
+    timezone: str
+    trades: int
+    wins: int
+    losses: int
+    breakeven: int
+    open: int
+    pending: int
+    settling: int
+    realised_pnl: float
+    broker_trade_action_created: bool = False
+
+
 class DashboardResponse(BaseModel):
     connection: ConnectionResponse
     account: AccountResponse | None
@@ -167,6 +181,34 @@ def _safe_open_profit(view: Any) -> float | None:
     if view.open_positions and all(item.profit is None for item in view.open_positions):
         return None
     return view.open_profit
+
+
+@router.get("/today", response_model=TodayTradingSummaryResponse)
+def account_dashboard_today(
+    request: Request,
+    response: Response,
+    identity: Identity,
+    timezone_name: str = "UTC",
+) -> TodayTradingSummaryResponse:
+    service = _service(request)
+    mirror_user_id = acceptance_mirror_owner_user_id(identity, service._session_factory)
+    data_user_id = mirror_user_id or identity["id"]
+    summary = TodayTradingSummaryService(session_factory=service._session_factory).read(
+        data_user_id,
+        timezone_name=timezone_name,
+    )
+    _no_store(response)
+    return TodayTradingSummaryResponse(
+        timezone=summary.timezone,
+        trades=summary.trades,
+        wins=summary.wins,
+        losses=summary.losses,
+        breakeven=summary.breakeven,
+        open=summary.open,
+        pending=summary.pending,
+        settling=summary.settling,
+        realised_pnl=float(summary.realised_pnl),
+    )
 
 
 @router.get("", response_model=DashboardResponse)
