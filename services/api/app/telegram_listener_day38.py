@@ -9,6 +9,7 @@ from uuid import UUID
 from sqlalchemy.orm import Session, sessionmaker
 
 from app.day38_database_source_router import DatabaseSourceDay38FullExecutionRouter
+from app.literal_management_overrides import install_literal_management_overrides
 from app.metaapi_margin_gateway import MetaApiMarginGateway
 from app.metaapi_read_gateway import MetaApiReadGateway
 from app.metaapi_trade_gateway import MetaApiTradeGateway
@@ -16,7 +17,7 @@ from app.mt5_crypto import MetaApiTokenCipher
 from app.mt5_execution_day38 import Day38LiveUserExecutionService
 from app.mt5_management_day38 import Day38LiveUserManagementService
 from app.paper_critical_management_v2 import PaperCriticalManagementV2
-from app.paper_execution_priority import PaperExecutionPriorityService
+from app.paper_fresh_start_execution import PaperFreshStartExecutionService
 from app.paper_pending_reconciler import PaperPendingReconciler
 from app.paper_resilient_read_gateway import PaperResilientMetaApiReadGateway
 from app.paper_safe_member_routing import (
@@ -69,19 +70,23 @@ def build_day38_execution_router_from_env(
     )
 
     try:
+        # Install mechanical corrections before any Telegram decision is routed. This
+        # makes literal instructions such as "Move your SL back to entry" actionable
+        # even when the same message also reports that TPs were hit.
+        install_literal_management_overrides()
+
         cipher = MetaApiTokenCipher(broker_keys)
         owner_read_gateway = PaperResilientMetaApiReadGateway()
         member_read_gateway = MetaApiReadGateway()
         trade_gateway = MetaApiTradeGateway()
         margin_gateway = MetaApiMarginGateway()
 
-        # Pending orders, true partials and declared multi-entry layering are enabled
-        # only on the Owner's Vantage DEMO paper boundary. The Owner paper executor
-        # prioritises placing fresh market instructions at the broker's current price,
-        # permits the broker's 0.01 minimum to exceed the configured sizing percentage,
-        # and retries only safe read-only MetaAPI calls. LIVE member execution keeps the
-        # existing stricter policy unchanged.
-        owner_execution = PaperExecutionPriorityService(
+        # Owner DEMO paper execution prioritises actually exercising provider trades:
+        # fresh market instructions use the current broker price, broker-minimum risk
+        # overruns do not veto a paper trade, retryable reads are retried briefly, and
+        # layered structures use a minimal atomic allocation instead of entry x TP
+        # Cartesian multiplication. LIVE member execution remains unchanged.
+        owner_execution = PaperFreshStartExecutionService(
             session_factory=session_factory,
             cipher=cipher,
             read_gateway=owner_read_gateway,

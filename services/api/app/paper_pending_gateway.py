@@ -9,6 +9,7 @@ pending-order semantics without creating a live-money path.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Any
 
 from app.metaapi_gateway import MetaApiGatewayError
 from app.metaapi_trade_gateway import MetaApiMarketOrderResult, MetaApiTradeGateway
@@ -33,8 +34,29 @@ class PaperPendingOrderRequest:
 
 
 class PaperPendingOrderGateway:
-    def __init__(self, base: MetaApiTradeGateway) -> None:
+    def __init__(self, base: MetaApiTradeGateway | Any) -> None:
         self._base = base
+
+    @staticmethod
+    def _transport(base: Any) -> MetaApiTradeGateway:
+        """Resolve the real MetaAPI transport through narrow guard wrappers.
+
+        The Owner executor passes Day28ZoneGuardTradeGateway, which intentionally
+        exposes market/close/modify/cancel methods but not the private transport used
+        by this pending adapter. Walk only the explicit ``_base`` wrapper chain until
+        the real MetaApiTradeGateway is reached. Fail closed for any unknown object.
+        """
+        current = base
+        seen: set[int] = set()
+        while not isinstance(current, MetaApiTradeGateway):
+            marker = id(current)
+            if marker in seen:
+                raise MetaApiGatewayError("pending_trade_gateway_invalid")
+            seen.add(marker)
+            current = getattr(current, "_base", None)
+            if current is None:
+                raise MetaApiGatewayError("pending_trade_gateway_invalid")
+        return current
 
     async def place_pending_order(
         self,
@@ -53,12 +75,11 @@ class PaperPendingOrderGateway:
         if request.open_price <= 0 or request.volume <= 0:
             raise MetaApiGatewayError("trade_request_invalid")
 
-        # Reuse the proven transport/return-code handling while keeping this mutation
-        # behind the explicit demo-only gate above.
-        payload = await self._base._trade_request(  # noqa: SLF001 - intentional narrow adapter
+        transport = self._transport(self._base)
+        payload = await transport._trade_request(  # noqa: SLF001 - narrow demo adapter
             token=token,
             account_id=account_id,
-            region=self._base._normalize_region(region),  # noqa: SLF001
+            region=transport._normalize_region(region),  # noqa: SLF001
             json_body={
                 "actionType": action_type,
                 "symbol": request.symbol.strip().upper(),
@@ -84,7 +105,7 @@ class PaperPendingOrderGateway:
         return MetaApiMarketOrderResult(
             order_id=order_id,
             position_id=position_id,
-            numeric_code=self._base._numeric_code(payload),  # noqa: SLF001
+            numeric_code=transport._numeric_code(payload),  # noqa: SLF001
             string_code=str(payload.get("stringCode") or "").strip() or "TRADE_RETCODE_PLACED",
         )
 
