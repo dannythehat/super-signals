@@ -73,14 +73,10 @@ def test_v1_fxt_result_plus_management_overrides_ai_ignore() -> None:
     ]
 
 
-def test_standalone_tp_hit_closes_exact_tranche_if_still_open() -> None:
+def test_standalone_tp_hit_remains_result_only() -> None:
     raw = "TP2 HIT ✅"
     allowed = apply_v1_message_policy(_decision(), raw_text=raw)
-    assert allowed.decision == "trade_update"
-    assert allowed.action == "apply_update"
-    assert allowed.extracted["management_actions"] == [
-        {"type": "close", "target": "tp2", "value": None}
-    ]
+    assert allowed.action != "apply_update"
 
 
 def test_gtmo_set_breakeven_nowww_remains_actionable() -> None:
