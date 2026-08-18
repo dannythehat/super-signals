@@ -1,21 +1,26 @@
 """Fast live Telegram ingress for production paper testing.
 
-The live event handler must do one thing first: durably persist the provider message or
-edit. Classification, AI supervision, canonical signal creation and broker dispatch then
-run on an ordered per-source worker. This prevents slow AI/broker work for one provider
-message from blocking Telethon from receiving the next update.
+The live event handler durably persists the provider message or edit first. Classification,
+AI supervision, canonical signal creation and broker dispatch then run on an ordered
+per-source worker so slow downstream work never blocks Telethon receipt.
 
-Recovery/catch-up paths deliberately call the explicit persistence methods and retain
-their own freshness controls. This module only changes the live dynamic listener
-persistence hooks used by the push event handlers.
+Edits need one extra guarantee: the background worker must process the exact revision
+which the fast ingress just committed. Re-entering the normal edit persistence chain
+would attempt to insert the same edit twice; the duplicate is correctly rejected and the
+old pipeline then mistakes that rejection for "nothing to process". Exact-revision
+processing prevents that silent trade loss and also prevents a later edit from overtaking
+the revision that triggered the worker.
 """
 
 from __future__ import annotations
 
 import logging
 from concurrent.futures import Future, ThreadPoolExecutor
+from hashlib import sha256
 from threading import Lock
 from typing import Any, Callable
+
+from sqlalchemy import text
 
 logger = logging.getLogger(__name__)
 
@@ -55,7 +60,6 @@ class _SourceProcessingPool:
             executors = tuple(self._executors.values())
             self._executors.clear()
         for executor in executors:
-            # Already-accepted work is allowed to finish. New work is rejected.
             executor.shutdown(wait=False, cancel_futures=False)
 
 
@@ -108,6 +112,102 @@ def _submit_processing(
     )
 
 
+def _submit_exact_edit_processing(
+    manager: Any,
+    captured: Any,
+    revision_index: int,
+    fallback_downstream: Callable[[Any, Any], Any],
+) -> None:
+    future = _pool_for(manager).submit(
+        captured.source_id,
+        _process_exact_saved_edit,
+        manager,
+        captured,
+        revision_index,
+        fallback_downstream,
+    )
+    future.add_done_callback(
+        lambda done: _report_future(
+            done,
+            source_id=captured.source_id,
+            telegram_message_id=int(captured.telegram_message_id),
+            kind=f"edit-r{revision_index}",
+        )
+    )
+
+
+def _exact_saved_revision_index(manager: Any, captured: Any) -> int | None:
+    """Resolve the exact revision committed by the just-completed raw edit save."""
+    session_factory = getattr(manager, "_session_factory", None)
+    if session_factory is None:
+        session_factory = getattr(manager, "_session_factory_day28", None)
+    if session_factory is None:
+        return None
+
+    content_hash = sha256(str(captured.raw_text or "").encode("utf-8")).hexdigest()
+    with session_factory() as session:
+        value = session.execute(
+            text(
+                """
+                SELECT mr.revision_index
+                FROM messages m
+                JOIN message_revisions mr ON mr.message_id=m.id
+                WHERE m.source_id=:source_id
+                  AND m.telegram_message_id=:telegram_message_id
+                  AND mr.content_sha256=:content_sha256
+                  AND mr.edited_at=:edited_at
+                ORDER BY mr.revision_index DESC
+                LIMIT 1
+                """
+            ),
+            {
+                "source_id": captured.source_id,
+                "telegram_message_id": int(captured.telegram_message_id),
+                "content_sha256": content_hash,
+                "edited_at": captured.edited_at,
+            },
+        ).scalar_one_or_none()
+    return int(value) if value is not None else None
+
+
+def _process_exact_saved_edit(
+    manager: Any,
+    captured: Any,
+    revision_index: int,
+    fallback_downstream: Callable[[Any, Any], Any],
+) -> Any:
+    """Process and dispatch exactly the revision already persisted by fast ingress."""
+    pipeline = getattr(manager, "_ai_pipeline", None)
+    exact_processor = getattr(pipeline, "_process_revision", None) if pipeline is not None else None
+    dispatch = getattr(manager, "_dispatch_sync", None)
+
+    if callable(exact_processor):
+        result = exact_processor(
+            captured.source_id,
+            int(captured.telegram_message_id),
+            revision_index=revision_index,
+        )
+        if callable(dispatch):
+            dispatch(
+                source_id=captured.source_id,
+                telegram_message_id=int(captured.telegram_message_id),
+                revision_index=revision_index,
+            )
+        return result
+
+    # Legacy/test configurations without the AI decision pipeline retain their old
+    # downstream lifecycle behaviour. If a broker router exists, dispatch the exact
+    # revision after that fallback rather than relying on a MAX(revision_index) lookup.
+    result = fallback_downstream(manager, captured)
+    if callable(dispatch):
+        dispatch(
+            source_id=captured.source_id,
+            telegram_message_id=int(captured.telegram_message_id),
+            revision_index=revision_index,
+        )
+    return result
+
+
 def _fast_persist_message(
     manager: Any,
     captured: Any,
@@ -115,9 +215,6 @@ def _fast_persist_message(
 ) -> bool:
     from app.telegram_listener import TelegramListenerManager
 
-    # Call the raw-ingestion implementation directly so no classifier/AI/broker code
-    # runs before the row is committed. The downstream call intentionally re-enters the
-    # full idempotent pipeline after this commit; its duplicate raw insert is harmless.
     inserted = TelegramListenerManager._persist_message(manager, captured)
     if inserted:
         _submit_processing(manager, captured, downstream, kind="message")
@@ -133,7 +230,20 @@ def _fast_persist_edit(
 
     inserted = Day13TelegramListenerManager._persist_edit(manager, captured)
     if inserted:
-        _submit_processing(manager, captured, downstream, kind="edit")
+        revision_index = _exact_saved_revision_index(manager, captured)
+        if revision_index is None or revision_index <= 0:
+            logger.error(
+                "Telegram saved edit revision could not be resolved source=%s message=%s",
+                captured.source_id,
+                captured.telegram_message_id,
+            )
+            return True
+        _submit_exact_edit_processing(
+            manager,
+            captured,
+            revision_index,
+            downstream,
+        )
     return inserted
 
 
@@ -188,7 +298,9 @@ def install_telegram_fast_ingress() -> None:
 
 __all__ = [
     "_SourceProcessingPool",
+    "_exact_saved_revision_index",
     "_fast_persist_edit",
     "_fast_persist_message",
+    "_process_exact_saved_edit",
     "install_telegram_fast_ingress",
 ]
