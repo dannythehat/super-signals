@@ -56,11 +56,16 @@ def _wrap_decider(cls: type[Any]) -> None:
 
     def wrapped(self: Any, **kwargs: Any):
         decision = original(self, **kwargs)
+        # The TGC source profile only changes NEW ENTRY interpretation. Explicit
+        # management must remain database-free and immediate, so never perform a
+        # provider lookup for close/SL/BE/partial/cancel decisions.
+        if decision.decision != "new_trade":
+            return decision
         if not _is_tgc_source(self, kwargs.get("source_id")):
             return decision
         extracted = dict(decision.extracted)
         extracted["source_profile"] = _PROFILE
-        if decision.decision == "new_trade" and not extracted.get("symbol"):
+        if not extracted.get("symbol"):
             extracted["symbol"] = "XAUUSD"
         return replace(decision, extracted=extracted)
 
