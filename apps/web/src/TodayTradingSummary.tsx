@@ -1,5 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
 
+import './today-trading-summary.css';
+
 type TodaySummary = {
   timezone: string;
   trades: number;
