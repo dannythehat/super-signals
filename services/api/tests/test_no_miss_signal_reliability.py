@@ -1,16 +1,19 @@
 from __future__ import annotations
 
 import asyncio
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from types import MethodType, SimpleNamespace
 
 from app.ai_message_supervisor import AiMessageDecision
-from app.day27_management_policy import extract_day27_management_actions
+from app.day27_management_policy import (
+    Day27ManagementPolicyResult,
+    extract_day27_management_actions,
+)
 import app.literal_management_overrides as overrides
 from app.literal_management_overrides import explicit_literal_management
 from app.telegram_entity_recovery import _canonical_channel_id
 from app.telegram_listener_day38 import PaperPendingAwareListenerManager
-from app.v1_message_policy import apply_v1_message_policy
 
 
 CLOSE_ALL = {"type": "close", "target": "all", "value": None}
@@ -71,11 +74,18 @@ def test_true_close_or_be_choice_remains_protective_not_forced_exit() -> None:
 
 
 def test_literal_management_is_promoted_even_when_ai_called_it_chatter(monkeypatch) -> None:
-    monkeypatch.setattr(overrides, "_original", extract_day27_management_actions)
+    def no_management(_raw_text: str) -> Day27ManagementPolicyResult:
+        return Day27ManagementPolicyResult((), "unsupported_management")
+
+    def unchanged(decision: AiMessageDecision, *, raw_text: str, **kwargs):
+        del raw_text, kwargs
+        return replace(decision)
+
+    monkeypatch.setattr(overrides, "_original", no_management)
     result = overrides._promote_literal_management(
         _decision(),
         raw_text="Move gold stoploss to 4375",
-        original=apply_v1_message_policy,
+        original=unchanged,
     )
     assert result.decision == "trade_update"
     assert result.action == "apply_update"
