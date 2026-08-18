@@ -1,41 +1,92 @@
-.owner-close-position-stack {
-  display: grid;
-  gap: 0.7rem;
-  margin: 0.9rem 0;
-}
-
-.owner-close-position-row {
+.owner-position-card-footer {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 0.8rem;
-  padding: 0.8rem;
-  border: 1px solid rgba(255, 255, 255, 0.1);
-  border-radius: 12px;
-  background: rgba(255, 255, 255, 0.025);
+  gap: 12px;
+  margin-top: 2px;
 }
 
-.owner-close-position-row > div {
+.owner-inline-close {
   display: grid;
-  gap: 0.15rem;
-}
-
-.owner-close-position-row span {
-  color: var(--muted, #9aa3b2);
-  font-size: 0.82rem;
-}
-
-.owner-close-position-row .button {
+  justify-items: end;
+  gap: 5px;
   flex: 0 0 auto;
 }
 
+.owner-inline-close__position {
+  min-height: 36px;
+  padding: 8px 13px;
+  border: 1px solid rgba(255, 139, 139, 0.24);
+  border-radius: 11px;
+  color: #ffd0d0;
+  background: rgba(255, 103, 103, 0.08);
+  font-size: 0.76rem;
+  font-weight: 800;
+}
+
+.owner-inline-close__position:hover:not(:disabled) {
+  border-color: rgba(255, 139, 139, 0.45);
+  background: rgba(255, 103, 103, 0.14);
+}
+
+.owner-inline-close__position:disabled,
+.owner-close-all button:disabled {
+  cursor: wait;
+  opacity: 0.6;
+}
+
+.owner-inline-close__error {
+  max-width: 420px;
+  color: #ffaaaa !important;
+  font-size: 0.72rem !important;
+  line-height: 1.35;
+  white-space: normal;
+}
+
+.owner-close-all {
+  display: grid;
+  gap: 7px;
+  margin-top: 14px;
+  padding-top: 14px;
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.owner-close-all button {
+  width: 100%;
+  min-height: 46px;
+  padding: 11px 16px;
+  border: 1px solid rgba(255, 112, 112, 0.3);
+  border-radius: 13px;
+  color: #fff0f0;
+  background: rgba(255, 83, 83, 0.1);
+  font-size: 0.86rem;
+  font-weight: 850;
+}
+
+.owner-close-all button:hover:not(:disabled) {
+  border-color: rgba(255, 112, 112, 0.55);
+  background: rgba(255, 83, 83, 0.16);
+}
+
+.owner-close-all > small {
+  color: #7d8899;
+  font-size: 0.7rem;
+  line-height: 1.4;
+  text-align: center;
+}
+
 @media (max-width: 640px) {
-  .owner-close-position-row {
+  .owner-position-card-footer {
     align-items: stretch;
     flex-direction: column;
   }
 
-  .owner-close-position-row .button {
+  .owner-inline-close,
+  .owner-inline-close__position {
     width: 100%;
+  }
+
+  .owner-inline-close {
+    justify-items: stretch;
   }
 }
