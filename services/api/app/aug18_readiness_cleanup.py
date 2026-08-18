@@ -9,10 +9,11 @@ These corrections preserve broker truth and the shared paper/future-LIVE engine:
 * ``broker_deals`` is an append-only ledger enforced by a PostgreSQL trigger. Account
   truth sync therefore inserts unseen broker deal IDs and ignores duplicates. It never
   updates immutable broker history.
-* A provider-supplied numeric stop remains authoritative even if the provider labels it
-  "risk free" and our actual broker fill means the price is slightly below/above break
-  even. Super Signals may observe that semantic mismatch; it must not veto the literal
-  stop value. This exact veto blocked TDC message 6665 after its layer close succeeded.
+* A provider-supplied numeric stop remains authoritative when the provider's intended
+  entry and our actual broker fill differ modestly. A one-dollar XAUUSD fill mismatch
+  must not turn ``RISK FREE 4357`` into a veto merely because our surviving fill was
+  4358. Only a much larger contradiction remains fail-closed as evidence that the
+  lifecycle update may have been linked to the wrong trade.
 """
 
 from __future__ import annotations
@@ -24,8 +25,11 @@ from uuid import UUID
 
 from sqlalchemy import text
 
+from app.mt5_management_day27 import Day27ManagementError
+
 _installed = False
 _RISK_FREE_PREFIX = "best_entry_risk_free_"
+_RISK_FREE_FILL_TOLERANCE = Decimal("1.00")
 
 
 def _install_total_telegram_decimal_rendering() -> None:
@@ -50,7 +54,7 @@ def _install_total_telegram_decimal_rendering() -> None:
 
 
 def _install_literal_provider_risk_free_stop() -> None:
-    """Select the intended surviving layer without second-guessing literal stop value."""
+    """Follow the literal stop unless the lifecycle target is implausibly mismatched."""
     from app.paper_critical_management_v2 import PaperCriticalManagementV2
 
     current = PaperCriticalManagementV2._select_layer_positions
@@ -61,10 +65,7 @@ def _install_literal_provider_risk_free_stop() -> None:
     def select_layer_positions(cls, positions, target: str, *, side: str):
         normalized = target.strip().lower()
         if normalized.startswith(_RISK_FREE_PREFIX):
-            # Validate the provider supplied an actual positive price, then use the
-            # same best-layer targeting as before. The management action itself carries
-            # this exact price into modify_position(); no replacement value is invented.
-            cls._target_price(
+            wanted = cls._target_price(
                 normalized.removeprefix(_RISK_FREE_PREFIX),
                 "risk_free_stop_invalid",
             )
@@ -72,6 +73,22 @@ def _install_literal_provider_risk_free_stop() -> None:
             if not groups:
                 return ()
             best_index = cls._best_entry_index(representative, side=side)
+            best_fill = representative[best_index]
+            normalized_side = side.strip().upper()
+            if normalized_side not in {"BUY", "SELL"}:
+                raise Day27ManagementError("trade_side_invalid")
+
+            protective = (
+                wanted >= best_fill
+                if normalized_side == "BUY"
+                else wanted <= best_fill
+            )
+            # A small discrepancy is normal broker-fill slippage versus the provider's
+            # intended entry and must not block the literal instruction. A much larger
+            # contradiction is more likely a wrong lifecycle link than normal slippage,
+            # so retain the existing fail-closed safety for that distinct condition.
+            if not protective and abs(wanted - best_fill) > _RISK_FREE_FILL_TOLERANCE:
+                raise Day27ManagementError("risk_free_stop_not_protective")
             return tuple(groups[best_index])
         return original(cls, positions, target, side=side)
 
