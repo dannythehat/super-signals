@@ -118,7 +118,6 @@ class ActivityResponse(BaseModel):
 
 class TodayTradingSummaryResponse(BaseModel):
     timezone: str
-    session_started_at: datetime
     trades: int
     wins: int
     losses: int
@@ -129,9 +128,10 @@ class TodayTradingSummaryResponse(BaseModel):
     realised_pnl: float
     winning_pips: float
     net_pips: float
-    balance_adjustment: float | None
-    reconciliation_ready: bool
-    reconciled: bool
+    session_started_at: datetime | None = None
+    balance_adjustment: float | None = None
+    reconciliation_ready: bool = False
+    reconciled: bool = False
     broker_trade_action_created: bool = False
 
 
