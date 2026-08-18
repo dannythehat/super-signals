@@ -11,3 +11,7 @@ from app.plain_range_order_type_override import install_plain_range_order_type_o
 
 install_literal_management_overrides()
 install_plain_range_order_type_override()
+
+from app.deterministic_first_ai import install_deterministic_first_ai
+
+install_deterministic_first_ai()
