@@ -41,6 +41,16 @@ _RESULT_ONLY = re.compile(
     re.IGNORECASE,
 )
 
+# Some providers construct one trade in-place. TIG may post a terse activation and then
+# expand it into the structured setup. TDC repeatedly posts "Buy Gold Now" plus a range,
+# then adds TP/SL lines over several edits. An edit may create the first canonical signal
+# only when the immediately previous revision already proves the same trade intent.
+_ACTIVATION_STUB = re.compile(
+    r"(?is)^\s*(?:🔴|🟢|🔥|⚡|✅|🚨|\s)*"
+    r"(BUY|SELL)\s+(?:XAUUSD|GOLD)\b"
+    r"(?:\s+(?:NOW|AT))?\s*(?:@|:|=)?\s*(\d+(?:\.\d+)?)\s*[.!🔥✅\s]*$"
+)
+
 
 def _decimal(value: Any) -> Decimal | None:
     if value is None or isinstance(value, bool):
@@ -61,6 +71,47 @@ def _literal_numbers(raw_text: str) -> set[Decimal]:
         if parsed is not None:
             values.add(parsed.normalize())
     return values
+
+
+def _same_trade_progressive_edit(
+    previous_text: str | None,
+    *,
+    side: str,
+    entry_low: Decimal | None,
+    entry_high: Decimal | None,
+) -> bool:
+    """Prove that an edited setup is continuation of the immediately prior trade post."""
+    if not previous_text or side not in {"BUY", "SELL"}:
+        return False
+    previous = previous_text.strip()
+
+    # Preserve the already-approved TIG terse-activation completion path.
+    stub = _ACTIVATION_STUB.fullmatch(previous)
+    if stub is not None:
+        if stub.group(1).upper() != side:
+            return False
+        stub_price = _decimal(stub.group(2))
+        current_entries = {value for value in (entry_low, entry_high) if value is not None}
+        return stub_price is not None and stub_price in current_entries
+
+    # TDC and similar progressive builders: the previous revision must already contain
+    # the same unambiguous side + Gold/XAUUSD intent and at least one of the current
+    # entry-zone endpoints. This prevents unrelated chatter/preparation from becoming a
+    # trade merely because a later edit happens to be complete.
+    if _INSTRUMENT.search(previous) is None:
+        return False
+    previous_has_buy = _BUY.search(previous) is not None
+    previous_has_sell = _SELL.search(previous) is not None
+    if side == "BUY" and (not previous_has_buy or previous_has_sell):
+        return False
+    if side == "SELL" and (not previous_has_sell or previous_has_buy):
+        return False
+    current_entries = {
+        value.normalize() for value in (entry_low, entry_high) if value is not None
+    }
+    if not current_entries:
+        return False
+    return bool(_literal_numbers(previous) & current_entries)
 
 
 def _skip(
@@ -145,7 +196,7 @@ def apply_v1_message_policy(
     *,
     raw_text: str,
     is_edit: bool = False,
-    original_has_signal: bool = False,
+    original_has_signal: bool | None = None,
     previous_text: str | None = None,
 ) -> AiMessageDecision:
     """Return the mechanically allowed decision.
@@ -155,13 +206,11 @@ def apply_v1_message_policy(
     least one numeric TP. Pending orders require an explicit LIMIT/STOP family. Entry
     layering requires explicit prices in a mechanically proven provider structure.
 
-    A Telegram edit may create the first canonical signal when the edited message is
-    itself a complete valid instruction. Providers such as TDC deliberately construct
-    a signal in-place by progressively adding range, targets and SL. The edit timestamp
-    becomes signal freshness evidence, while every normal literal/directional gate below
-    still applies. No value may be borrowed from the earlier incomplete revision.
+    A first trade completed by edit is allowed only when the caller explicitly proves
+    that no canonical signal exists yet and the immediately previous revision already
+    proves the same trade intent. The current edited message must still pass every
+    normal literal and directional gate below.
     """
-    del previous_text
     text = raw_text or ""
 
     if decision.decision == "new_trade":
@@ -169,7 +218,17 @@ def apply_v1_message_policy(
             decision, text
         )
         side = str(extracted.get("side") or "").strip().upper()
-        edit_completed_first_trade = is_edit and not original_has_signal
+
+        if is_edit and original_has_signal is None:
+            return _skip(decision, "edit_signal_state_unknown", extracted)
+        edit_completed_first_trade = is_edit and original_has_signal is False
+        if edit_completed_first_trade and not _same_trade_progressive_edit(
+            previous_text,
+            side=side,
+            entry_low=entry_low,
+            entry_high=entry_high,
+        ):
+            return _skip(decision, "edit_cannot_create_first_trade", extracted)
 
         if _INSTRUMENT.search(text) is None:
             return _skip(decision, "missing_instrument", extracted)
@@ -266,7 +325,7 @@ def apply_v1_message_policy(
         else:
             reason = "v1_complete_exact_signal"
         if edit_completed_first_trade:
-            reason = f"{reason}_from_complete_edit"
+            reason = f"{reason}_from_structured_edit"
 
         return replace(
             decision,
