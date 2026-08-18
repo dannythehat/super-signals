@@ -20,6 +20,10 @@ from app.market_at_best_price_override import install_market_at_best_price_overr
 
 install_market_at_best_price_override()
 
+from app.bare_gold_now_override import install_bare_gold_now_override
+
+install_bare_gold_now_override()
+
 from app.paper_live_entry_guard import install_paper_live_entry_guard
 
 install_paper_live_entry_guard()
