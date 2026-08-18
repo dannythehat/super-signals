@@ -129,9 +129,6 @@ class TodayTradingSummaryResponse(BaseModel):
     winning_pips: float
     net_pips: float
     session_started_at: datetime | None = None
-    balance_adjustment: float | None = None
-    reconciliation_ready: bool = False
-    reconciled: bool = False
     broker_trade_action_created: bool = False
 
 
@@ -217,13 +214,6 @@ def account_dashboard_today(
         realised_pnl=float(summary.realised_pnl),
         winning_pips=float(summary.winning_pips),
         net_pips=float(summary.net_pips),
-        balance_adjustment=(
-            float(summary.balance_adjustment)
-            if summary.balance_adjustment is not None
-            else None
-        ),
-        reconciliation_ready=summary.reconciliation_ready,
-        reconciled=summary.reconciled,
     )
 
 
