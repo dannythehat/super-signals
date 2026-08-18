@@ -66,6 +66,15 @@ _OR_PROTECTIVE_CHOICE = re.compile(
     re.IGNORECASE | re.DOTALL,
 )
 
+# Never upgrade a targeted/partial close into close-all. The native Day27 parser owns
+# these forms and already maps them to the correct tranche (for example Close TP1 now
+# or Close half now). The override exists only for decisive whole-trade exits that the
+# normal optional/result logic could otherwise erase.
+_TARGETED_OR_PARTIAL_CLOSE = re.compile(
+    r"\bCLOSE\s+(?:THE\s+)?(?:TP\s*\d+|HALF|PARTIAL(?:LY)?|ONE|FIRST|SECOND|THIRD)\b",
+    re.IGNORECASE,
+)
+
 _installed = False
 _original = None
 _original_v1 = None
@@ -84,6 +93,8 @@ def _price(value: str) -> str | None:
 def _decisive_close(text: str) -> bool:
     if _OUT_THIS_SETUP.search(text):
         return True
+    if _TARGETED_OR_PARTIAL_CLOSE.search(text):
+        return False
     return _CLOSE_NOW.search(text) is not None and _OR_PROTECTIVE_CHOICE.search(text) is None
 
 
@@ -97,6 +108,7 @@ def explicit_literal_management(
     # Close is intentionally checked before the fallback. The old optional-language
     # branch could otherwise turn "CLOSE our trade now and set BE if you wish to hold"
     # into BE-only management, leaving the trade open against the provider instruction.
+    # Targeted/partial closes are excluded above so their native TP scope is preserved.
     if _decisive_close(text):
         return Day27ManagementPolicyResult(
             ({"type": "close", "target": "all", "value": None},),
