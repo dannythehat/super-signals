@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 
 import { ManualMt5ActivityDay36 } from './ManualMt5ActivityDay36';
 import { OwnerCloseAllButton, OwnerPositionCloseButton } from './OwnerInlineCloseControls';
+import { TodayTradingSummary } from './TodayTradingSummary';
 import { TradeTimeline } from './TradeTimeline';
 
 type DashboardConnection = {
@@ -248,6 +249,8 @@ export function MobileDashboard({ apiBaseUrl, displayName, roleLabel, onOpenSett
       <div className="day32-equity-copy"><span>Equity</span><strong>{money(data.account?.equity, currency)}</strong><small>Free margin {money(data.account?.free_margin, currency)}</small></div>
       <button className="day32-refresh" type="button" onClick={() => void refresh()} disabled={refreshing}>{refreshing ? 'Refreshing…' : 'Refresh'}</button>
     </section>
+
+    <TodayTradingSummary apiBaseUrl={apiBaseUrl} currency={currency} />
 
     <div className="day32-performance-grid" aria-label="Performance summary">
       {data.performance.map((period) => {
