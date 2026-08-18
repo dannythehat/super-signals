@@ -50,9 +50,12 @@ ORDER = {
 
 
 @pytest.mark.asyncio
-async def test_zone_is_rechecked_before_every_market_leg() -> None:
+async def test_zone_is_admitted_once_for_atomic_multi_tp_batch() -> None:
+    """Sibling TP positions are one execution decision, not repeated zone decisions."""
     read = FakeReadGateway([
         {"ask": 100.00, "bid": 99.90},
+        # If the old per-leg guard were still active this second value would abort
+        # the signal after TP1 and trigger a rollback.
         {"ask": 101.25, "bid": 101.15},
     ])
     base = FakeTradeGateway()
@@ -60,14 +63,12 @@ async def test_zone_is_rechecked_before_every_market_leg() -> None:
     token = guarded.set_zone(Decimal("99.50"), Decimal("100.50"))
     try:
         await guarded.place_market_order(**ORDER)
-        with pytest.raises(MetaApiGatewayError) as exc:
-            await guarded.place_market_order(**ORDER)
+        await guarded.place_market_order(**{**ORDER, "client_id": "SS_D28_DEF"})
     finally:
         guarded.reset_zone(token)
 
-    assert exc.value.code == "zone_left_before_position_submission"
-    assert read.calls == 2
-    assert len(base.market_calls) == 1
+    assert read.calls == 1
+    assert len(base.market_calls) == 2
 
 
 @pytest.mark.asyncio
@@ -122,8 +123,8 @@ async def test_marginal_tick_outside_the_zone_still_submits() -> None:
 
 
 @pytest.mark.asyncio
-async def test_genuine_departure_from_the_zone_is_still_refused() -> None:
-    """The guard must still exist. Tolerance widens the edge, it does not remove it."""
+async def test_genuine_departure_from_the_zone_is_still_refused_before_first_leg() -> None:
+    """The initial fresh guard still exists; only sibling-leg re-decisions are removed."""
     read = FakeReadGateway([{"ask": 101.60, "bid": 101.50}])
     base = FakeTradeGateway()
     guarded = Day28ZoneGuardTradeGateway(
