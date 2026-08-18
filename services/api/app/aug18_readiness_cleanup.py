@@ -15,6 +15,8 @@ These corrections preserve broker truth and the shared paper/future-LIVE engine:
 * Descriptive wording such as ``BEST ENTRY STILL RUNNING`` is not converted into a
   command to ``close all but best``. Explicit close prices in that same provider edit
   remain literal close instructions.
+* Profit-qualified provider exits such as ``Close profit when you see it`` close only
+  broker positions that are actually in profit. They can never crystallise a loss.
 """
 
 from __future__ import annotations
@@ -34,10 +36,46 @@ _installed = False
 _RISK_FREE_PREFIX = "best_entry_risk_free_"
 _RISK_FREE_FILL_TOLERANCE = Decimal("1.00")
 _BEST_STILL_RUNNING = re.compile(r"\bBEST\s+ENTRY\s+STILL\s+RUNNING\b", re.IGNORECASE)
+_CLOSE_PROFIT_WHEN_VISIBLE = re.compile(
+    r"\bCLOSE\s+(?:THE\s+)?PROFITS?\s+(?:WHEN|ONCE)\b",
+    re.IGNORECASE,
+)
 _MANAGEMENT_EVENT_CUTOFF: ContextVar[Any | None] = ContextVar(
     "super_signals_management_event_cutoff",
     default=None,
 )
+_PROFITABLE_BROKER_IDS: ContextVar[frozenset[str]] = ContextVar(
+    "super_signals_profitable_broker_ids",
+    default=frozenset(),
+)
+
+
+def _decimal_or_none(value: object) -> Decimal | None:
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        parsed = Decimal(str(value))
+    except (InvalidOperation, TypeError, ValueError):
+        return None
+    return parsed if parsed.is_finite() else None
+
+
+def _broker_position_is_profitable(payload: dict[str, object]) -> bool:
+    """Use broker-reported floating P/L, with price geometry only as a fallback."""
+    profit = _decimal_or_none(payload.get("profit"))
+    if profit is not None:
+        return profit > 0
+
+    opened = _decimal_or_none(payload.get("openPrice"))
+    current = _decimal_or_none(payload.get("currentPrice"))
+    if opened is None or current is None:
+        return False
+    raw_type = str(payload.get("type") or "").upper()
+    if raw_type in {"POSITION_TYPE_BUY", "BUY"}:
+        return current > opened
+    if raw_type in {"POSITION_TYPE_SELL", "SELL"}:
+        return current < opened
+    return False
 
 
 def _install_total_telegram_decimal_rendering() -> None:
@@ -61,33 +99,51 @@ def _install_total_telegram_decimal_rendering() -> None:
 
 
 def _install_descriptive_best_entry_parser_fix() -> None:
-    """Filter descriptive provider state only at the final executable policy boundary."""
+    """Filter descriptive/conditional wording at the final executable policy boundary."""
     import app.v1_message_policy as v1_policy
 
-    # Keep the low-level parser's historical contract intact. The final V1 policy is
-    # where semantic text becomes broker actions, so that is the correct place to
-    # remove an invented close without changing parser-only callers/tests.
     current = v1_policy.augment_management_actions
-    if getattr(current, "_best_still_running_is_descriptive", False):
+    if getattr(current, "_aug18_final_management_filter", False):
         return
     original = current
 
     def augment_management_actions(raw_text: str, actions):
-        result = original(raw_text, actions)
-        if _BEST_STILL_RUNNING.search(raw_text or "") is None:
-            return result
-        # "Best entry still running" reports state; it does not ask us to close a
-        # different layer. Keep explicit entry-price closes and stop edits untouched.
-        return tuple(
-            action
-            for action in result
-            if not (
-                str(action.get("type") or "") == "close"
-                and str(action.get("target") or "").lower() == "all_but_best"
-            )
-        )
+        result = tuple(original(raw_text, actions))
+        text_value = raw_text or ""
 
-    augment_management_actions._best_still_running_is_descriptive = True  # type: ignore[attr-defined]
+        if _CLOSE_PROFIT_WHEN_VISIBLE.search(text_value) is not None:
+            # AI/history may have labelled this as a blanket close. Preserve the
+            # provider's condition explicitly: only positions that broker truth says
+            # are currently profitable are eligible for closure.
+            result = tuple(
+                action
+                for action in result
+                if not (
+                    str(action.get("type") or "") == "close"
+                    and str(action.get("target") or "").lower() in {"", "all", "remaining", "rest"}
+                )
+            )
+            if not any(
+                str(action.get("type") or "") == "close"
+                and str(action.get("target") or "").lower() == "profitable_only"
+                for action in result
+            ):
+                result = ({"type": "close", "target": "profitable_only", "value": None}, *result)
+
+        if _BEST_STILL_RUNNING.search(text_value) is not None:
+            # "Best entry still running" reports state; it does not ask us to close a
+            # different layer. Keep explicit entry-price closes and stop edits untouched.
+            result = tuple(
+                action
+                for action in result
+                if not (
+                    str(action.get("type") or "") == "close"
+                    and str(action.get("target") or "").lower() == "all_but_best"
+                )
+            )
+        return result
+
+    augment_management_actions._aug18_final_management_filter = True  # type: ignore[attr-defined]
     v1_policy.augment_management_actions = augment_management_actions
 
 
@@ -122,6 +178,67 @@ def _install_literal_provider_risk_free_stop() -> None:
 
     select_layer_positions._literal_provider_stop = True  # type: ignore[attr-defined]
     PaperCriticalManagementV2._select_layer_positions = classmethod(select_layer_positions)
+
+
+def _install_profit_qualified_close() -> None:
+    """Execute conditional profit-taking only against broker-profitable positions."""
+    from app.paper_critical_management import PaperCriticalManagementService
+    from app.paper_critical_management_v2 import PaperCriticalManagementV2
+
+    current_broker_positions = PaperCriticalManagementService._broker_positions
+    if not getattr(current_broker_positions, "_captures_profitability", False):
+        original_broker_positions = current_broker_positions
+
+        async def broker_positions(self, *, token: str, account_id: str, region: str):
+            result = await original_broker_positions(
+                self,
+                token=token,
+                account_id=account_id,
+                region=region,
+            )
+            profitable = frozenset(
+                broker_id
+                for broker_id, payload in result.items()
+                if _broker_position_is_profitable(payload)
+            )
+            _PROFITABLE_BROKER_IDS.set(profitable)
+            return result
+
+        broker_positions._captures_profitability = True  # type: ignore[attr-defined]
+        PaperCriticalManagementService._broker_positions = broker_positions
+
+    current_needs = PaperCriticalManagementV2._needs_critical_management
+    if not getattr(current_needs, "_supports_profit_qualified_close", False):
+        original_needs = current_needs
+
+        def needs_critical_management(actions):
+            if any(
+                str(action.get("target") or "").strip().lower() == "profitable_only"
+                for action in actions
+            ):
+                return True
+            return original_needs(actions)
+
+        needs_critical_management._supports_profit_qualified_close = True  # type: ignore[attr-defined]
+        PaperCriticalManagementV2._needs_critical_management = staticmethod(needs_critical_management)
+
+    current_select = PaperCriticalManagementV2._select_layer_positions
+    if not getattr(current_select, "_supports_profit_qualified_close", False):
+        original_select = current_select.__func__
+
+        def select_layer_positions(cls, positions, target: str, *, side: str):
+            if target.strip().lower() == "profitable_only":
+                profitable_ids = _PROFITABLE_BROKER_IDS.get()
+                return tuple(
+                    item
+                    for item in positions
+                    if item.broker_position_id is not None
+                    and item.broker_position_id in profitable_ids
+                )
+            return original_select(cls, positions, target, side=side)
+
+        select_layer_positions._supports_profit_qualified_close = True  # type: ignore[attr-defined]
+        PaperCriticalManagementV2._select_layer_positions = classmethod(select_layer_positions)
 
 
 def _install_temporal_management_scope() -> None:
@@ -358,6 +475,7 @@ def install_aug18_readiness_cleanup() -> None:
     _install_total_telegram_decimal_rendering()
     _install_descriptive_best_entry_parser_fix()
     _install_literal_provider_risk_free_stop()
+    _install_profit_qualified_close()
     _install_temporal_management_scope()
     _install_typed_full_backfill_marker()
     _install_append_only_broker_deal_sync()
