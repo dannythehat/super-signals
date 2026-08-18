@@ -97,3 +97,21 @@ def test_account_truth_sync_obeys_append_only_broker_deal_ledger() -> None:
     assert "ON CONFLICT" in sql
     assert "DO NOTHING" in sql
     assert "DO UPDATE" not in sql
+
+
+def test_full_backfill_marker_explicitly_types_reused_postgres_binds() -> None:
+    """Regression for the production text/varchar AmbiguousParameter failure."""
+    harness = _LedgerHarness()
+    now = datetime.now(UTC)
+    account_truth._mark_full_backfill(
+        harness,
+        user_id=uuid4(),
+        mt5_account_id=uuid4(),
+        start_time=now,
+        end_time=now,
+        deal_count=3,
+    )
+    sql = "\n".join(harness.statements).upper()
+    assert "CAST(:EVENT_TYPE AS VARCHAR)" in sql
+    assert "CAST(:ACCOUNT_ID AS UUID)" in sql
+    assert "CAST(:USER_ID AS UUID)" in sql
