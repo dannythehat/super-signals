@@ -46,12 +46,6 @@ ACCESS_MATRIX = (
         {"owner", "trading_admin"},
         "activity.view",
     ),
-    (
-        "GET",
-        "/access/trading/emergency-stop",
-        {"owner", "trading_admin"},
-        "emergency_stop.use",
-    ),
     ("GET", "/access/user/account", {"owner", "user"}, "account.connect"),
     ("GET", "/access/user/automation", {"owner", "user"}, "automation.toggle"),
     ("GET", "/access/user/performance", {"owner", "user"}, "performance.view"),
@@ -175,6 +169,16 @@ def test_every_role_is_limited_to_its_allowed_actions(
             "message": "You do not have permission to perform this action.",
             "permission": permission,
         }
+
+
+@pytest.mark.parametrize("role", ("owner", "trading_admin", "user"))
+def test_removed_global_emergency_stop_is_not_exposed(role_environment, role: str) -> None:
+    """Day 40 intentionally removed the old system-wide emergency-stop endpoint."""
+    app, _ = role_environment
+    with TestClient(app) as client:
+        _login(client, role)
+        response = client.get("/access/trading/emergency-stop")
+    assert response.status_code == 404
 
 
 def test_forbidden_request_is_audited(role_environment) -> None:
