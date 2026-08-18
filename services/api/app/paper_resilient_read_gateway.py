@@ -1,9 +1,9 @@
-"""Bounded retry wrapper for Owner DEMO MetaAPI reads only.
+"""Bounded retry wrapper for read-only MetaAPI broker state.
 
-Trade mutations are intentionally not retried here. GETs are idempotent and may be
-retried briefly on MetaAPI 429/5xx/network timeout responses before a fresh signal is
-abandoned. The execution service re-checks signal freshness immediately before any
-broker mutation.
+DEMO and LIVE execution use the same broker-read reliability policy. Trade mutations are
+never retried here. GETs are idempotent and may be retried briefly on MetaAPI
+429/5xx/network timeout responses before a fresh signal is abandoned. The execution
+engine still re-checks signal freshness immediately before any broker mutation.
 """
 
 from __future__ import annotations
@@ -18,7 +18,7 @@ logger = logging.getLogger(__name__)
 
 
 class PaperResilientMetaApiReadGateway(MetaApiReadGateway):
-    """Retry only retryable read-only MetaAPI requests on the DEMO paper boundary."""
+    """Shared bounded retry policy for read-only MetaAPI requests."""
 
     def __init__(
         self,
@@ -44,7 +44,7 @@ class PaperResilientMetaApiReadGateway(MetaApiReadGateway):
                 if not exc.retryable or attempt >= self._paper_read_attempts:
                     raise
                 logger.warning(
-                    "Retrying DEMO MetaAPI read attempt=%d/%d code=%s",
+                    "Retrying MetaAPI read attempt=%d/%d code=%s",
                     attempt,
                     self._paper_read_attempts,
                     exc.code,
@@ -56,4 +56,8 @@ class PaperResilientMetaApiReadGateway(MetaApiReadGateway):
         raise last_error
 
 
-__all__ = ["PaperResilientMetaApiReadGateway"]
+# Neutral name for new wiring while retaining the original import for compatibility.
+ResilientMetaApiReadGateway = PaperResilientMetaApiReadGateway
+
+
+__all__ = ["PaperResilientMetaApiReadGateway", "ResilientMetaApiReadGateway"]
