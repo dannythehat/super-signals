@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 
 import './today-trading-summary.css';
 
@@ -50,6 +50,7 @@ function pnlClass(value: number): string {
 export function TodayTradingSummary({ apiBaseUrl, currency }: Props) {
   const [summary, setSummary] = useState<TodaySummary | null>(null);
   const [stale, setStale] = useState(false);
+  const brokerSyncRunning = useRef(false);
 
   const refresh = useCallback(async () => {
     try {
@@ -69,19 +70,47 @@ export function TodayTradingSummary({ apiBaseUrl, currency }: Props) {
     }
   }, [apiBaseUrl]);
 
+  const reconcileBroker = useCallback(async () => {
+    if (brokerSyncRunning.current) return;
+    brokerSyncRunning.current = true;
+    try {
+      const response = await fetch(`${apiBaseUrl}/account/mt5/dashboard/performance/sync`, {
+        method: 'POST',
+        credentials: 'include',
+        headers: { Accept: 'application/json' },
+        cache: 'no-store',
+      });
+      if (!response.ok) throw new Error('broker_reconciliation_unavailable');
+      window.dispatchEvent(new Event('super-signals-ledger-synced'));
+      await refresh();
+    } catch {
+      // Keep showing the last broker-confirmed summary. The five-second read loop
+      // will recover automatically as soon as reconciliation is available again.
+      setStale(true);
+    } finally {
+      brokerSyncRunning.current = false;
+    }
+  }, [apiBaseUrl, refresh]);
+
   useEffect(() => {
     void refresh();
-    const interval = window.setInterval(() => void refresh(), 5000);
-    const onFocus = () => void refresh();
+    void reconcileBroker();
+    const readInterval = window.setInterval(() => void refresh(), 5000);
+    const brokerInterval = window.setInterval(() => void reconcileBroker(), 30000);
+    const onFocus = () => {
+      void refresh();
+      void reconcileBroker();
+    };
     const onLedgerSynced = () => void refresh();
     window.addEventListener('focus', onFocus);
     window.addEventListener('super-signals-ledger-synced', onLedgerSynced);
     return () => {
-      window.clearInterval(interval);
+      window.clearInterval(readInterval);
+      window.clearInterval(brokerInterval);
       window.removeEventListener('focus', onFocus);
       window.removeEventListener('super-signals-ledger-synced', onLedgerSynced);
     };
-  }, [refresh]);
+  }, [reconcileBroker, refresh]);
 
   if (!summary) {
     return <section className="today-trading-card today-trading-card--loading" aria-label="Today's trading summary" aria-live="polite">
@@ -94,7 +123,7 @@ export function TodayTradingSummary({ apiBaseUrl, currency }: Props) {
       <div className="today-trading-primary"><span>Today</span><strong>{summary.trades} trade{summary.trades === 1 ? '' : 's'}</strong></div>
       <div className="today-trading-headline"><span>Pips won</span><strong className={pnlClass(summary.winning_pips)}>{pips(summary.winning_pips)}</strong></div>
       <div className="today-trading-headline"><span>Net pips</span><strong className={pnlClass(summary.net_pips)}>{pips(summary.net_pips)}</strong></div>
-      <div className="today-trading-headline"><span>Realised P/L</span><strong className={pnlClass(summary.realised_pnl)}>{money(summary.realised_pnl, currency)}</strong></div>
+      <div className="today-trading-headline"><span>Trading P/L</span><strong className={pnlClass(summary.realised_pnl)}>{money(summary.realised_pnl, currency)}</strong></div>
     </div>
     <div className="today-trading-stats">
       <div><strong>{summary.wins}</strong><span>Wins</span></div>
@@ -104,6 +133,6 @@ export function TodayTradingSummary({ apiBaseUrl, currency }: Props) {
       <div><strong>{summary.pending}</strong><span>Pending</span></div>
       {summary.settling > 0 && <div><strong>{summary.settling}</strong><span>Settling</span></div>}
     </div>
-    <small>{stale ? 'Live update paused — last confirmed values shown' : 'Auto-updates every few seconds from broker-backed trade records'}</small>
+    <small>{stale ? 'Broker reconciliation updating — last confirmed values shown' : 'Auto-updates from broker-backed trade records'}</small>
   </section>;
 }
