@@ -44,6 +44,10 @@ from app.provider_entry_reliability_overrides import install_provider_entry_reli
 
 install_provider_entry_reliability_overrides()
 
+from app.add_market_lifecycle_override import install_add_market_lifecycle_override
+
+install_add_market_lifecycle_override()
+
 from app.execution_path_reliability_overrides import install_execution_path_reliability_overrides
 
 install_execution_path_reliability_overrides()
