@@ -1,0 +1,129 @@
+.today-trading-card {
+  display: grid;
+  gap: 14px;
+  padding: 18px 20px;
+  border: 1px solid rgba(89, 232, 205, 0.12);
+  border-radius: 20px;
+  background: linear-gradient(135deg, rgba(8, 16, 27, 0.96), rgba(6, 12, 21, 0.9));
+}
+
+.today-trading-head {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 18px;
+}
+
+.today-trading-head > div {
+  display: grid;
+  gap: 4px;
+}
+
+.today-trading-head span,
+.today-trading-stats span {
+  color: #7d8899;
+  font-size: 0.7rem;
+  font-weight: 750;
+  letter-spacing: 0.04em;
+}
+
+.today-trading-head > div:first-child > span {
+  color: #75e9d7;
+  font-size: 0.71rem;
+  font-weight: 800;
+  letter-spacing: 0.11em;
+  text-transform: uppercase;
+}
+
+.today-trading-head > div:first-child > strong {
+  color: #f7f9fb;
+  font-size: clamp(1.35rem, 4vw, 1.85rem);
+  letter-spacing: -0.03em;
+}
+
+.today-trading-pnl {
+  justify-items: end;
+  text-align: right;
+}
+
+.today-trading-pnl strong {
+  font-size: clamp(1.25rem, 4vw, 1.7rem);
+  letter-spacing: -0.025em;
+}
+
+.today-trading-stats {
+  display: grid;
+  grid-template-columns: repeat(6, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.today-trading-stats > div {
+  display: grid;
+  gap: 3px;
+  min-height: 66px;
+  align-content: center;
+  padding: 10px;
+  border-radius: 13px;
+  text-align: center;
+  background: rgba(255, 255, 255, 0.026);
+}
+
+.today-trading-stats strong {
+  color: #f3f6f9;
+  font-size: 1.2rem;
+}
+
+.today-trading-card > small {
+  color: #687486;
+  font-size: 0.68rem;
+  line-height: 1.4;
+}
+
+.today-trading-card--loading {
+  min-height: 118px;
+  align-content: center;
+}
+
+.today-trading-card--loading > div {
+  display: grid;
+  gap: 5px;
+}
+
+.today-trading-card--loading span {
+  color: #75e9d7;
+  font-size: 0.71rem;
+  font-weight: 800;
+  letter-spacing: 0.11em;
+  text-transform: uppercase;
+}
+
+.today-trading-card--loading strong {
+  color: #aab4c1;
+}
+
+@media (max-width: 720px) {
+  .today-trading-card {
+    padding: 16px;
+    border-radius: 18px;
+  }
+
+  .today-trading-stats {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+
+  .today-trading-stats > div {
+    min-height: 58px;
+    padding: 8px;
+  }
+}
+
+@media (max-width: 390px) {
+  .today-trading-head {
+    align-items: flex-start;
+  }
+
+  .today-trading-head > div:first-child > strong,
+  .today-trading-pnl strong {
+    font-size: 1.2rem;
+  }
+}
