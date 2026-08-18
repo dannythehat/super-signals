@@ -5,9 +5,9 @@ edit. Classification, AI supervision, canonical signal creation and broker dispa
 run on an ordered per-source worker. This prevents slow AI/broker work for one provider
 message from blocking Telethon from receiving the next update.
 
-Recovery/catch-up paths deliberately call the historical explicit persistence methods and
-retain their own freshness controls. This module only changes the live dynamic
-Day28TelegramListenerManager persistence hooks used by the push event handlers.
+Recovery/catch-up paths deliberately call the explicit persistence methods and retain
+their own freshness controls. This module only changes the live dynamic listener
+persistence hooks used by the push event handlers.
 """
 
 from __future__ import annotations
@@ -158,6 +158,8 @@ def install_telegram_fast_ingress() -> None:
             return _fast_persist_message(self, captured, original_message)
 
         persist_message._telegram_fast_ingress_installed = True  # type: ignore[attr-defined]
+        if getattr(original_message, "_telegram_revision_serialized", False):
+            persist_message._telegram_revision_serialized = True  # type: ignore[attr-defined]
         cls._persist_message = persist_message
 
     original_edit = cls._persist_edit
@@ -166,6 +168,8 @@ def install_telegram_fast_ingress() -> None:
             return _fast_persist_edit(self, captured, original_edit)
 
         persist_edit._telegram_fast_ingress_installed = True  # type: ignore[attr-defined]
+        if getattr(original_edit, "_telegram_revision_serialized", False):
+            persist_edit._telegram_revision_serialized = True  # type: ignore[attr-defined]
         cls._persist_edit = persist_edit
 
     original_stop = cls.stop
