@@ -126,6 +126,8 @@ class TodayTradingSummaryResponse(BaseModel):
     pending: int
     settling: int
     realised_pnl: float
+    winning_pips: float
+    net_pips: float
     broker_trade_action_created: bool = False
 
 
@@ -208,6 +210,8 @@ def account_dashboard_today(
         pending=summary.pending,
         settling=summary.settling,
         realised_pnl=float(summary.realised_pnl),
+        winning_pips=float(summary.winning_pips),
+        net_pips=float(summary.net_pips),
     )
 
 
@@ -222,10 +226,6 @@ async def account_dashboard(
     data_user_id = mirror_user_id or identity["id"]
     view = await service.read(data_user_id)
     if mirror_user_id is not None:
-        # The acceptance member borrows Owner broker/performance READS only. Its own
-        # trading controls remain authoritative, so this mirror can never turn into a
-        # second execution path or a second MetaAPI account. Present the connection
-        # with normal member semantics because production invited accounts are live-only.
         view = replace(
             view,
             connection=replace(view.connection, account_environment="live"),
