@@ -61,10 +61,13 @@ def _install_total_telegram_decimal_rendering() -> None:
 
 
 def _install_descriptive_best_entry_parser_fix() -> None:
-    import app.critical_entry_policy as critical_policy
+    """Filter descriptive provider state only at the final executable policy boundary."""
     import app.v1_message_policy as v1_policy
 
-    current = critical_policy.augment_management_actions
+    # Keep the low-level parser's historical contract intact. The final V1 policy is
+    # where semantic text becomes broker actions, so that is the correct place to
+    # remove an invented close without changing parser-only callers/tests.
+    current = v1_policy.augment_management_actions
     if getattr(current, "_best_still_running_is_descriptive", False):
         return
     original = current
@@ -85,8 +88,6 @@ def _install_descriptive_best_entry_parser_fix() -> None:
         )
 
     augment_management_actions._best_still_running_is_descriptive = True  # type: ignore[attr-defined]
-    critical_policy.augment_management_actions = augment_management_actions
-    # v1_message_policy imports the function directly, so replace that bound reference too.
     v1_policy.augment_management_actions = augment_management_actions
 
 
