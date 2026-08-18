@@ -12,6 +12,8 @@ type TodaySummary = {
   pending: number;
   settling: number;
   realised_pnl: number;
+  winning_pips: number;
+  net_pips: number;
   broker_trade_action_created: boolean;
 };
 
@@ -33,6 +35,11 @@ function money(value: number, currency: string): string {
     const sign = value > 0 ? '+' : '';
     return `${sign}${currency || '$'} ${value.toFixed(2)}`;
   }
+}
+
+function pips(value: number): string {
+  const sign = value > 0 ? '+' : '';
+  return `${sign}${new Intl.NumberFormat(undefined, { maximumFractionDigits: 1 }).format(value)}`;
 }
 
 function pnlClass(value: number): string {
@@ -84,8 +91,10 @@ export function TodayTradingSummary({ apiBaseUrl, currency }: Props) {
 
   return <section className="today-trading-card" aria-label="Today's trading summary" aria-live="polite">
     <div className="today-trading-head">
-      <div><span>Today</span><strong>{summary.trades} trade{summary.trades === 1 ? '' : 's'}</strong></div>
-      <div className="today-trading-pnl"><span>Realised P/L</span><strong className={pnlClass(summary.realised_pnl)}>{money(summary.realised_pnl, currency)}</strong></div>
+      <div className="today-trading-primary"><span>Today</span><strong>{summary.trades} trade{summary.trades === 1 ? '' : 's'}</strong></div>
+      <div className="today-trading-headline"><span>Pips won</span><strong className={pnlClass(summary.winning_pips)}>{pips(summary.winning_pips)}</strong></div>
+      <div className="today-trading-headline"><span>Net pips</span><strong className={pnlClass(summary.net_pips)}>{pips(summary.net_pips)}</strong></div>
+      <div className="today-trading-headline"><span>Realised P/L</span><strong className={pnlClass(summary.realised_pnl)}>{money(summary.realised_pnl, currency)}</strong></div>
     </div>
     <div className="today-trading-stats">
       <div><strong>{summary.wins}</strong><span>Wins</span></div>
