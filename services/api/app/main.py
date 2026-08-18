@@ -33,6 +33,7 @@ from app.mt5_recovery import (
     verify_existing_metaapi_token,
 )
 from app.performance_ledger_day33_v2 import Day33PerformanceLedgerServiceV2
+from app.production_listener import build_production_listener_manager
 from app.publisher_config import get_publisher_settings
 from app.push_notifications_day34 import Day34PushNotificationManager
 from app.routes.access import router as access_router
@@ -63,7 +64,6 @@ from app.routes.telegram_sources import (
 from app.routes.user_mt5_accounts import router as user_mt5_accounts_router
 from app.telegram_crypto import TelegramSessionCipher
 from app.telegram_listener import TelegramListenerManager
-from app.telegram_listener_day38 import build_day38_listener_manager
 from app.telegram_publisher_day34_cutover import Day34CutoverTelegramPublisherManager
 
 logger = logging.getLogger(__name__)
@@ -300,7 +300,7 @@ async def _lifespan(application: FastAPI) -> AsyncIterator[None]:
         and settings.telegram_api_id is not None
         and settings.telegram_api_hash is not None
     ):
-        listener = build_day38_listener_manager(
+        listener = build_production_listener_manager(
             api_id=settings.telegram_api_id,
             api_hash=settings.telegram_api_hash,
             cipher=TelegramSessionCipher(settings.telegram_session_keys),
