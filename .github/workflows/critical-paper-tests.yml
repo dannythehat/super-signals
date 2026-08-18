@@ -5,6 +5,7 @@ on:
     branches:
       - feature/critical-pending-layering-20260817
       - feature/execution-catchup-20260817
+      - feature/fresh-paper-stabilization-20260818
 
 permissions:
   contents: read
