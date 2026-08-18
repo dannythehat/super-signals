@@ -37,11 +37,11 @@ _MOVE_TO_ENTRY = re.compile(
     re.IGNORECASE,
 )
 
-# A provider saying a numbered TP "HIT" is current-state management, not harmless
-# performance chatter, when the message is linked to one active signal. If our broker
-# still has that tranche open (different feed/spread, delayed execution, or a previous
-# mutation bug), the safest faithful action is to close that exact TP tranche now.
-# Compound forms such as "TP 1 & 2 are BOTH hit" produce two exact-ID close actions.
+# Numbered TP-hit claims remain result text by themselves. They are promoted to exact
+# tranche closes only when the SAME message also carries an explicit protective broker
+# instruction (for example "TP 1 & 2 are BOTH hit ... Move your SL back to entry").
+# That compound form is authoritative management of the active linked trade and must
+# not leave a claimed-complete TP tranche open while protecting the remainder.
 _TP_HIT = re.compile(
     r"\bTP\s*(\d+)\b"
     r"(?:\s*(?:&|AND|,)\s*(?:TP\s*)?(\d+)\b)?"
@@ -111,6 +111,18 @@ def _decisive_close(text: str) -> bool:
     return _CLOSE_NOW.search(text) is not None and _OR_PROTECTIVE_CHOICE.search(text) is None
 
 
+def _has_literal_protection(text: str) -> bool:
+    return bool(
+        _MOVE_TO_ENTRY.search(text)
+        or _NUMERIC_STOP.search(text)
+        or _RISK_FREE_NUMERIC.search(text)
+    )
+
+
+def _has_compound_tp_hit_management(text: str) -> bool:
+    return _TP_HIT.search(text) is not None and _has_literal_protection(text)
+
+
 def _tp_hit_actions(text: str) -> list[dict[str, str | None]]:
     seen: set[int] = set()
     actions: list[dict[str, str | None]] = []
@@ -155,7 +167,6 @@ def explicit_literal_management(
             "explicit_literal_close_override",
         )
 
-    tp_hit_actions = _tp_hit_actions(text)
     existing = fallback(raw_text)
 
     protective_actions: list[dict[str, str | None]] = []
@@ -171,9 +182,11 @@ def explicit_literal_management(
             {"type": "move_to_break_even", "target": "all", "value": None}
         )
 
-    # Preserve any native exact management and add literal TP-hit/protection actions in
-    # provider order semantics: completed TP tranches are closed first, then protection
-    # is applied only to whatever remains open.
+    # TP-hit result text is upgraded only in a compound management message that also
+    # tells us how to protect the surviving exposure. Standalone "TP1 HIT" remains
+    # result-only and cannot mutate broker state.
+    tp_hit_actions = _tp_hit_actions(text) if protective_actions else []
+
     combined = _dedupe_actions(
         tp_hit_actions + [dict(action) for action in existing.actions] + protective_actions
     )
@@ -191,6 +204,15 @@ def _promote_literal_management(decision: Any, *, raw_text: str, original, **kwa
     """Run normal V1 policy, then make literal management independent of AI class."""
     result = original(decision, raw_text=raw_text, **kwargs)
     if result.decision == "new_trade" and result.action == "execute":
+        return result
+
+    # Native V1 management preserves richer layer/partial targeting. Do not overwrite
+    # it unless this is the narrow compound TP-hit case the native policy loses.
+    if (
+        result.decision == "trade_update"
+        and result.action == "apply_update"
+        and not _has_compound_tp_hit_management(raw_text or "")
+    ):
         return result
 
     assert _original is not None
