@@ -4,10 +4,13 @@ Paper testing needs to exercise provider trades, not discard fresh market signal
 price moved a few ticks while the automation was processing them or because the broker's
 minimum 0.01 lot makes the realised risk exceed the configured percentage.
 
-This policy is deliberately limited to the Owner DEMO executor. It does not alter LIVE
-member execution. Pending orders keep their literal provider prices and broker-side
-semantics. Broker funds/margin, directional validation, cancellation, revision and
-mapping checks remain authoritative.
+For the Owner DEMO path, configured risk is the TOTAL canonical-signal risk budget. It
+is split across TP/runner legs rather than multiplied by them. This is deliberately
+limited to Owner DEMO and does not alter future LIVE-member execution.
+
+Pending orders keep their literal provider prices and broker-side semantics. Broker
+funds/margin, directional validation, cancellation, revision and mapping checks remain
+authoritative.
 """
 
 from __future__ import annotations
@@ -19,7 +22,6 @@ from decimal import Decimal
 from typing import Any
 from uuid import UUID
 
-from app.metaapi_gateway import MetaApiGatewayError
 from app.mt5_execution_day26 import Day26ExecutionError, _SignalInput
 from app.mt5_read_service_day23 import Day23LiveState, Day23Mt5ReadService, Day23ReadError
 from app.paper_critical_execution import PaperCriticalExecutionService, _CriticalSignal
@@ -31,7 +33,7 @@ DEFAULT_PAPER_MAX_SIGNAL_AGE_SECONDS = 90.0
 
 
 class PaperExecutionPriorityService(PaperCriticalExecutionService):
-    """DEMO-only policy: execute fresh market instructions at the live executable price."""
+    """DEMO-only policy: execute fresh signals with one total signal risk budget."""
 
     def __init__(
         self,
@@ -126,6 +128,37 @@ class PaperExecutionPriorityService(PaperCriticalExecutionService):
             if side == "SELL" and not entry.order_type.startswith("sell_"):
                 raise Day26ExecutionError("pending_side_mismatch")
 
+    def _size_signal(
+        self,
+        *,
+        signal: _SignalInput,
+        execution_entry: Decimal,
+        balance: float,
+        price_loss_tick_value: float | None,
+        specification: dict[str, object],
+        risk_percent,
+        double_lot_approved: bool,
+    ) -> Day24RiskSizingResult:
+        """Split the configured risk budget across every TP/runner leg in DEMO.
+
+        Day24's historical contract treats ``risk_percent`` as a per-position budget.
+        Feeding it a pro-rata balance makes its aggregate budget equal the configured
+        percentage of the real balance while preserving all broker volume rounding.
+        """
+        position_count = signal.position_count
+        if position_count <= 0:
+            raise Day26ExecutionError("position_count_invalid")
+        per_leg_balance = Decimal(str(balance)) / Decimal(position_count)
+        return super()._size_signal(
+            signal=signal,
+            execution_entry=execution_entry,
+            balance=float(per_leg_balance),
+            price_loss_tick_value=price_loss_tick_value,
+            specification=specification,
+            risk_percent=risk_percent,
+            double_lot_approved=double_lot_approved,
+        )
+
     @staticmethod
     def _assert_layer_risk_cap(
         *,
@@ -145,16 +178,16 @@ class PaperExecutionPriorityService(PaperCriticalExecutionService):
         if tp_count <= 0:
             raise Day26ExecutionError("position_count_invalid")
         multiplier = Decimal("2") if double_applied else Decimal("1")
-        per_tp_guide = real_balance * risk_percent * multiplier / Decimal("100")
-        actual_per_tp = sum(
+        total_signal_guide = real_balance * risk_percent * multiplier / Decimal("100")
+        actual_one_slot_per_entry = sum(
             (item.actual_risk_per_position for item in sizings), Decimal("0")
         )
-        if actual_per_tp > per_tp_guide:
+        if actual_one_slot_per_entry > total_signal_guide:
             logger.warning(
-                "DEMO minimum-lot risk exceeds sizing guide; continuing "
-                "actual_per_tp=%s guide=%s",
-                actual_per_tp,
-                per_tp_guide,
+                "DEMO minimum-lot risk exceeds total signal sizing guide; continuing "
+                "observed=%s guide=%s",
+                actual_one_slot_per_entry,
+                total_signal_guide,
             )
 
 
