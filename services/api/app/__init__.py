@@ -64,6 +64,10 @@ from app.execution_path_reliability_overrides import install_execution_path_reli
 
 install_execution_path_reliability_overrides()
 
+from app.paper_margin_capacity_override import install_paper_margin_capacity_override
+
+install_paper_margin_capacity_override()
+
 from app.telegram_revision_serialization import install_telegram_revision_serialization
 
 install_telegram_revision_serialization()
