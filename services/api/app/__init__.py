@@ -47,3 +47,7 @@ install_provider_entry_reliability_overrides()
 from app.execution_path_reliability_overrides import install_execution_path_reliability_overrides
 
 install_execution_path_reliability_overrides()
+
+from app.telegram_revision_serialization import install_telegram_revision_serialization
+
+install_telegram_revision_serialization()
