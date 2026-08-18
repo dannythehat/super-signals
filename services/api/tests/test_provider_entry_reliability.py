@@ -55,6 +55,13 @@ def test_tgc_observed_seling_typo_is_never_chatter() -> None:
     assert "tgc_present_tense_numeric_entry" in result.matched_rules
 
 
+def test_tgc_observed_sellimg_typo_is_never_chatter() -> None:
+    result = classify_message("Im sellimg 4392")
+    assert result.classification == "uncertain"
+    assert result.decision_status == "review"
+    assert "tgc_present_tense_numeric_entry" in result.matched_rules
+
+
 def test_tgc_newline_present_tense_entry_is_never_chatter() -> None:
     result = classify_message("Im\nSelling 4404")
     assert result.classification == "uncertain"
