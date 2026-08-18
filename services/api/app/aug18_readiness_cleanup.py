@@ -1,15 +1,18 @@
-"""Non-entry readiness cleanup found during the 18 Aug production audit.
+"""Final readiness fixes found during the complete 18 Aug production audit.
 
-These fixes do not alter broker execution policy. They keep the reporting/performance
-side healthy so paper results remain usable for provider evaluation:
+These corrections preserve broker truth and the shared paper/future-LIVE engine:
 
 * Telegram publication formatting is total. Sparse canonical rows such as a provider's
-  bare "Buy Gold Now" instruction can be executed using inherited provider context but
+  bare "Buy Gold Now" instruction may be executed using inherited provider context but
   must not crash the publisher merely because the sparse signal row itself has NULL
   entry/SL fields. Missing display-only values render as ``N/A``; nothing is invented.
 * ``broker_deals`` is an append-only ledger enforced by a PostgreSQL trigger. Account
-  truth sync therefore inserts unseen broker deal IDs and ignores duplicates. It must
-  never use ``ON CONFLICT ... DO UPDATE`` against immutable history.
+  truth sync therefore inserts unseen broker deal IDs and ignores duplicates. It never
+  updates immutable broker history.
+* A provider-supplied numeric stop remains authoritative even if the provider labels it
+  "risk free" and our actual broker fill means the price is slightly below/above break
+  even. Super Signals may observe that semantic mismatch; it must not veto the literal
+  stop value. This exact veto blocked TDC message 6665 after its layer close succeeded.
 """
 
 from __future__ import annotations
@@ -22,6 +25,7 @@ from uuid import UUID
 from sqlalchemy import text
 
 _installed = False
+_RISK_FREE_PREFIX = "best_entry_risk_free_"
 
 
 def _install_total_telegram_decimal_rendering() -> None:
@@ -43,6 +47,36 @@ def _install_total_telegram_decimal_rendering() -> None:
 
     decimal_text._sparse_safe = True  # type: ignore[attr-defined]
     publisher._decimal_text = decimal_text
+
+
+def _install_literal_provider_risk_free_stop() -> None:
+    """Select the intended surviving layer without second-guessing literal stop value."""
+    from app.paper_critical_management_v2 import PaperCriticalManagementV2
+
+    current = PaperCriticalManagementV2._select_layer_positions
+    if getattr(current, "_literal_provider_stop", False):
+        return
+    original = current.__func__
+
+    def select_layer_positions(cls, positions, target: str, *, side: str):
+        normalized = target.strip().lower()
+        if normalized.startswith(_RISK_FREE_PREFIX):
+            # Validate the provider supplied an actual positive price, then use the
+            # same best-layer targeting as before. The management action itself carries
+            # this exact price into modify_position(); no replacement value is invented.
+            cls._target_price(
+                normalized.removeprefix(_RISK_FREE_PREFIX),
+                "risk_free_stop_invalid",
+            )
+            groups, representative = cls._entry_groups(positions)
+            if not groups:
+                return ()
+            best_index = cls._best_entry_index(representative, side=side)
+            return tuple(groups[best_index])
+        return original(cls, positions, target, side=side)
+
+    select_layer_positions._literal_provider_stop = True  # type: ignore[attr-defined]
+    PaperCriticalManagementV2._select_layer_positions = classmethod(select_layer_positions)
 
 
 def _install_append_only_broker_deal_sync() -> None:
@@ -152,6 +186,7 @@ def install_aug18_readiness_cleanup() -> None:
     if _installed:
         return
     _install_total_telegram_decimal_rendering()
+    _install_literal_provider_risk_free_stop()
     _install_append_only_broker_deal_sync()
     _installed = True
 
