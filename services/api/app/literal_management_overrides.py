@@ -1,15 +1,16 @@
 """Mechanical management grammar corrections for explicit provider instructions.
 
-These are not AI inferences. They cover literal imperative phrases that the Day27
-policy intended to support but missed because of harmless words such as "your",
-"gold" or "back". The wrapper runs the existing policy first and only fills a gap when
-that policy found no action.
+These are not AI inferences. They cover literal imperative/current-state phrases that
+must reach the broker even when an AI classification calls the message chatter or a
+provider result. The wrapper remains fail-closed for optional/future wording.
 """
 
 from __future__ import annotations
 
 import re
+from dataclasses import replace
 from decimal import Decimal, InvalidOperation
+from typing import Any
 
 from app.day27_management_policy import Day27ManagementPolicyResult
 
@@ -32,8 +33,31 @@ _MOVE_TO_ENTRY = re.compile(
     re.IGNORECASE,
 )
 
+# TDC current-state exit dialect. This deliberately does not match the generic
+# provider result "out at BE". It requires the provider to say that THIS setup/trade
+# is out, which is an authoritative close instruction when our mapped exposure remains.
+_OUT_THIS_SETUP = re.compile(
+    r"\b(?:WE\s*(?:['’]RE|ARE)\s+)?OUT\s+(?:OF\s+)?(?:THIS|THE)\s+"
+    r"(?:SET\s*UP|SETUP|TRADE|POSITION)\b",
+    re.IGNORECASE,
+)
+
+# An explicit immediate close must not be erased because a later subordinate clause
+# contains "if you wish to hold". A true OR-choice remains protective/optional and is
+# left to the existing Day27 policy rather than forcing an exit.
+_CLOSE_NOW = re.compile(
+    r"\bCLOSE\b.{0,70}\b(?:TRADE|POSITION|SET\s*UP|SETUP|BUY|SELL)\b.{0,30}\bNOW\b"
+    r"|\bCLOSE\b.{0,30}\bNOW\b",
+    re.IGNORECASE | re.DOTALL,
+)
+_OR_PROTECTIVE_CHOICE = re.compile(
+    r"\bOR\b.{0,100}\b(?:BE|BREAKEVEN|BREAK\s+EVEN|RISK\s*[- ]?FREE)\b",
+    re.IGNORECASE | re.DOTALL,
+)
+
 _installed = False
 _original = None
+_original_v1 = None
 
 
 def _price(value: str) -> str | None:
@@ -46,16 +70,32 @@ def _price(value: str) -> str | None:
     return format(parsed.normalize(), "f")
 
 
+def _decisive_close(text: str) -> bool:
+    if _OUT_THIS_SETUP.search(text):
+        return True
+    return _CLOSE_NOW.search(text) is not None and _OR_PROTECTIVE_CHOICE.search(text) is None
+
+
 def explicit_literal_management(
     raw_text: str,
     *,
     fallback,
 ) -> Day27ManagementPolicyResult:
+    text = raw_text or ""
+
+    # Close is intentionally checked before the fallback. The old optional-language
+    # branch could otherwise turn "CLOSE our trade now and set BE if you wish to hold"
+    # into BE-only management, leaving the trade open against the provider instruction.
+    if _decisive_close(text):
+        return Day27ManagementPolicyResult(
+            ({"type": "close", "target": "all", "value": None},),
+            "explicit_literal_close_override",
+        )
+
     existing = fallback(raw_text)
     if existing.actions:
         return existing
 
-    text = raw_text or ""
     actions: list[dict[str, str | None]] = []
     for match in _NUMERIC_STOP.finditer(text):
         value = _price(match.group(1))
@@ -75,22 +115,65 @@ def explicit_literal_management(
     )
 
 
+def _promote_literal_management(decision: Any, *, raw_text: str, original, **kwargs: Any) -> Any:
+    """Run normal V1 policy, then make literal management independent of AI class."""
+    result = original(decision, raw_text=raw_text, **kwargs)
+    if result.decision == "new_trade" and result.action == "execute":
+        return result
+    if result.decision == "trade_update" and result.action == "apply_update":
+        return result
+
+    assert _original is not None
+    policy = explicit_literal_management(raw_text, fallback=_original)
+    if not policy.actions:
+        return result
+
+    extracted = dict(getattr(result, "extracted", {}) or {})
+    normalized = [dict(action) for action in policy.actions]
+    extracted["management_actions"] = normalized
+    first = normalized[0]
+    extracted["update_type"] = first.get("type")
+    extracted["update_target"] = first.get("target")
+    extracted["update_value"] = first.get("value")
+    return replace(
+        result,
+        decision="trade_update",
+        action="apply_update",
+        reason=policy.reason,
+        extracted=extracted,
+    )
+
+
 def install_literal_management_overrides() -> None:
-    """Install once into both the Day27 module and V1 policy's imported reference."""
-    global _installed, _original
+    """Install once into Day27, V1 policy and the pipeline's imported V1 reference."""
+    global _installed, _original, _original_v1
     if _installed:
         return
 
+    import app.ai_message_pipeline as pipeline
     import app.day27_management_policy as day27
     import app.v1_message_policy as v1
 
     _original = day27.extract_day27_management_actions
+    _original_v1 = v1.apply_v1_message_policy
 
-    def wrapped(raw_text: str) -> Day27ManagementPolicyResult:
+    def wrapped_day27(raw_text: str) -> Day27ManagementPolicyResult:
+        assert _original is not None
         return explicit_literal_management(raw_text, fallback=_original)
 
-    day27.extract_day27_management_actions = wrapped
-    v1.extract_day27_management_actions = wrapped
+    def wrapped_v1(decision: Any, *, raw_text: str, **kwargs: Any) -> Any:
+        assert _original_v1 is not None
+        return _promote_literal_management(
+            decision,
+            raw_text=raw_text,
+            original=_original_v1,
+            **kwargs,
+        )
+
+    day27.extract_day27_management_actions = wrapped_day27
+    v1.extract_day27_management_actions = wrapped_day27
+    v1.apply_v1_message_policy = wrapped_v1
+    pipeline.apply_v1_message_policy = wrapped_v1
     _installed = True
 
 
