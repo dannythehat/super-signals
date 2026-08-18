@@ -2,7 +2,8 @@
 
 DEMO and LIVE must apply the same provider management semantics. This class therefore
 inherits the exact layer-aware PaperCriticalManagementV2 used by the Owner paper account;
-only account eligibility/credential selection differs for an approved LIVE member.
+only approved-account selection differs. Read-only MetaAPI reliability is normalised to
+the same bounded retry gateway used by paper.
 """
 
 from __future__ import annotations
@@ -11,12 +12,20 @@ from uuid import UUID
 
 from sqlalchemy import text
 
+from app.metaapi_read_gateway import MetaApiReadGateway
 from app.mt5_management_day27 import Day27ManagementError, _Account
 from app.paper_critical_management_v2 import PaperCriticalManagementV2
+from app.paper_resilient_read_gateway import ResilientMetaApiReadGateway
 
 
 class Day38LiveUserManagementService(PaperCriticalManagementV2):
     """Run the exact paper-tested management engine against an approved LIVE account."""
+
+    def __init__(self, **kwargs) -> None:
+        read_gateway = kwargs.get("read_gateway")
+        if type(read_gateway) is MetaApiReadGateway:
+            kwargs["read_gateway"] = ResilientMetaApiReadGateway()
+        super().__init__(**kwargs)
 
     def _load_account(self, user_id: UUID) -> _Account | None:
         with self._session_factory() as session:
