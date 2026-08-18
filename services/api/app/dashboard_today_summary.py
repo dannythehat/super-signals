@@ -29,6 +29,7 @@ class TodayTradingSummary:
     pending: int
     settling: int
     realised_pnl: Decimal
+    net_pips: Decimal
 
 
 def local_day_bounds(
@@ -108,7 +109,14 @@ class TodayTradingSummaryService:
                                       AND o.status IN ('won', 'lost', 'breakeven')
                                 ),
                                 0
-                            ) AS known_pnl
+                            ) AS known_pnl,
+                            COALESCE(
+                                SUM(o.net_pips) FILTER (
+                                    WHERE p.broker_position_id IS NOT NULL
+                                      AND o.status IN ('won', 'lost', 'breakeven')
+                                ),
+                                0
+                            ) AS known_pips
                         FROM trade_signals AS ts
                         JOIN positions AS p
                           ON p.signal_id = ts.signal_id
@@ -146,7 +154,8 @@ class TodayTradingSummaryService:
                                   OR unknown_outcomes > 0
                               )
                         )::int AS settling,
-                        COALESCE(SUM(known_pnl), 0) AS realised_pnl
+                        COALESCE(SUM(known_pnl), 0) AS realised_pnl,
+                        COALESCE(SUM(known_pips), 0) AS net_pips
                     FROM per_trade
                     """
                 ),
@@ -188,6 +197,7 @@ class TodayTradingSummaryService:
             pending=pending,
             settling=int(row["settling"] or 0),
             realised_pnl=Decimal(str(row["realised_pnl"] or 0)),
+            net_pips=Decimal(str(row["net_pips"] or 0)),
         )
 
 
