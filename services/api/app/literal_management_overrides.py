@@ -14,22 +14,33 @@ from typing import Any
 
 from app.day27_management_policy import Day27ManagementPolicyResult
 
+# Observed FXTradingVision forms include both singular and plural stoploss wording:
+# "Move gold stoploss to 4375" and "Move all gold stoplosses to 4405".
 _NUMERIC_STOP = re.compile(
     r"\b(?:MOVE|SET|CHANGE|UPDATE)\s+"
+    r"(?:ALL\s+)?"
     r"(?:(?:THE|YOUR|MY|OUR)\s+)?"
     r"(?:(?:GOLD|XAUUSD)\s+)?"
-    r"(?:SL|STOP\s*LOSS)\s+"
+    r"(?:SL(?:S)?|STOP\s*LOSS(?:ES)?)\s+"
     r"(?:BACK\s+)?(?:TO|AT)?\s*(\d+(?:\.\d+)?)\b",
     re.IGNORECASE,
 )
 
 _MOVE_TO_ENTRY = re.compile(
     r"\b(?:MOVE|SET|PUT)\s+"
+    r"(?:ALL\s+)?"
     r"(?:(?:THE|YOUR|MY|OUR)\s+)?"
     r"(?:(?:GOLD|XAUUSD)\s+)?"
-    r"(?:SL|STOP\s*LOSS|STOP|STOPS)\s+"
+    r"(?:SL(?:S)?|STOP\s*LOSS(?:ES)?|STOP|STOPS)\s+"
     r"(?:BACK\s+)?(?:TO|AT)\s+"
     r"(?:ENTRY|BE|BREAKEVEN|BREAK\s+EVEN)\b",
+    re.IGNORECASE,
+)
+
+# TDC occasionally types FREE with extra Es. The explicit price is still unambiguous:
+# "+20 / RISK FREEE 4393" means move the stop to 4393.
+_RISK_FREE_NUMERIC = re.compile(
+    r"\bRISK\s*[- ]?FREE+\s+(?:AT\s+|@\s*)?(\d+(?:\.\d+)?)\b",
     re.IGNORECASE,
 )
 
@@ -97,12 +108,13 @@ def explicit_literal_management(
         return existing
 
     actions: list[dict[str, str | None]] = []
-    for match in _NUMERIC_STOP.finditer(text):
-        value = _price(match.group(1))
-        if value is not None:
-            actions.append(
-                {"type": "edit_stop_loss", "target": "all", "value": value}
-            )
+    for pattern in (_NUMERIC_STOP, _RISK_FREE_NUMERIC):
+        for match in pattern.finditer(text):
+            value = _price(match.group(1))
+            if value is not None:
+                actions.append(
+                    {"type": "edit_stop_loss", "target": "all", "value": value}
+                )
     if not actions and _MOVE_TO_ENTRY.search(text):
         actions.append(
             {"type": "move_to_break_even", "target": "all", "value": None}
