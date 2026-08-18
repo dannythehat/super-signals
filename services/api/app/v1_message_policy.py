@@ -40,24 +40,6 @@ _RESULT_ONLY = re.compile(
     r"|(?:^|\s)[+-]\s*\d+(?:\.\d+)?\s*PIPS?\b",
     re.IGNORECASE,
 )
-# Some providers intentionally post a bare immediate activation and then edit the same
-# Telegram message into the complete structured signal. The edit may create the first
-# canonical Signal only when the previous revision was already an unmistakable trade
-# activation with the same side, instrument and first entry. This prevents arbitrary
-# chatter/preparation from being "resurrected" into a broker order by a later edit.
-_STRUCTURED_EDIT_COMPLETION = re.compile(
-    r"(?is)\bENTRY\s*[:=@-]?\s*\d+(?:\.\d+)?\b"
-    r".*\bSL\s*[:=@-]?\s*\d+(?:\.\d+)?\b"
-    r".*\bTP\s*\d*\s*[:=@-]?\s*\d+(?:\.\d+)?\b"
-)
-_EDIT_FIRST_ENTRY = re.compile(
-    r"(?im)^\s*(?:FIRST\s+)?ENTRY(?:\s*1)?\s*[:=@-]?\s*(\d+(?:\.\d+)?)\b"
-)
-_ACTIVATION_STUB = re.compile(
-    r"(?is)^\s*(?:🔴|🟢|🔥|⚡|✅|🚨|\s)*"
-    r"(BUY|SELL)\s+(?:XAUUSD|GOLD)\b"
-    r"(?:\s+(?:NOW|AT))?\s*(?:@|:|=)?\s*(\d+(?:\.\d+)?)\s*[.!🔥✅\s]*$"
-)
 
 
 def _decimal(value: Any) -> Decimal | None:
@@ -79,25 +61,6 @@ def _literal_numbers(raw_text: str) -> set[Decimal]:
         if parsed is not None:
             values.add(parsed.normalize())
     return values
-
-
-def _matching_activation_stub(
-    previous_text: str | None,
-    current_text: str,
-    *,
-    side: str,
-) -> bool:
-    if not previous_text:
-        return False
-    stub = _ACTIVATION_STUB.fullmatch(previous_text.strip())
-    current_entry_match = _EDIT_FIRST_ENTRY.search(current_text)
-    if stub is None or current_entry_match is None:
-        return False
-    if stub.group(1).upper() != side.strip().upper():
-        return False
-    old_price = _decimal(stub.group(2))
-    new_price = _decimal(current_entry_match.group(1))
-    return old_price is not None and new_price is not None and old_price == new_price
 
 
 def _skip(
@@ -191,7 +154,14 @@ def apply_v1_message_policy(
     current message alone must contain instrument, side, entry structure, SL and at
     least one numeric TP. Pending orders require an explicit LIMIT/STOP family. Entry
     layering requires explicit prices in a mechanically proven provider structure.
+
+    A Telegram edit may create the first canonical signal when the edited message is
+    itself a complete valid instruction. Providers such as TDC deliberately construct
+    a signal in-place by progressively adding range, targets and SL. The edit timestamp
+    becomes signal freshness evidence, while every normal literal/directional gate below
+    still applies. No value may be borrowed from the earlier incomplete revision.
     """
+    del previous_text
     text = raw_text or ""
 
     if decision.decision == "new_trade":
@@ -199,15 +169,7 @@ def apply_v1_message_policy(
             decision, text
         )
         side = str(extracted.get("side") or "").strip().upper()
-
         edit_completed_first_trade = is_edit and not original_has_signal
-        if edit_completed_first_trade:
-            if _STRUCTURED_EDIT_COMPLETION.search(text) is None or not _matching_activation_stub(
-                previous_text,
-                text,
-                side=side,
-            ):
-                return _skip(decision, "edit_cannot_create_first_trade", extracted)
 
         if _INSTRUMENT.search(text) is None:
             return _skip(decision, "missing_instrument", extracted)
@@ -304,7 +266,7 @@ def apply_v1_message_policy(
         else:
             reason = "v1_complete_exact_signal"
         if edit_completed_first_trade:
-            reason = f"{reason}_from_structured_edit"
+            reason = f"{reason}_from_complete_edit"
 
         return replace(
             decision,
