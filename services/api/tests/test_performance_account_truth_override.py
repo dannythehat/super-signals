@@ -2,6 +2,7 @@
 
 from inspect import getsource
 
+from app.account_truth_poll_override import _poll_once_with_account_truth
 from app.dashboard_today_summary import TodayTradingSummaryService
 from app.performance_account_truth_override import _repair_timeline_rows, _sync_user
 
@@ -26,3 +27,10 @@ def test_today_summary_uses_same_pip_fallback() -> None:
     assert "effective_pips" in source
     assert "o.exit_price - o.entry_price" in source
     assert "o.entry_price - o.exit_price" in source
+
+
+def test_flat_account_still_reconciles_broker_history() -> None:
+    source = getsource(_poll_once_with_account_truth)
+    assert "_has_unsettled_mapped_positions" in source
+    assert "sync_user" in source
+    assert "flat_account_truth_sync_complete" in source
