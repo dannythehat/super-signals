@@ -2,26 +2,26 @@
 
 These corrections preserve broker truth and the shared paper/future-LIVE engine:
 
-* Telegram publication formatting is total. Sparse canonical rows such as a provider's
-  bare "Buy Gold Now" instruction may be executed using inherited provider context but
-  must not crash the publisher merely because the sparse signal row itself has NULL
-  entry/SL fields. Missing display-only values render as ``N/A``; nothing is invented.
-* ``broker_deals`` is an append-only ledger enforced by a PostgreSQL trigger. Account
-  truth sync therefore inserts unseen broker deal IDs and ignores duplicates. It never
-  updates immutable broker history.
-* A provider-supplied numeric stop remains authoritative when the provider's intended
-  entry and our actual broker fill differ modestly. A one-dollar XAUUSD fill mismatch
-  must not turn ``RISK FREE 4357`` into a veto merely because our surviving fill was
-  4358. Only a much larger contradiction remains fail-closed as evidence that the
-  lifecycle update may have been linked to the wrong trade.
-* The immutable full-history backfill marker uses explicit PostgreSQL types for reused
-  bind parameters. This prevents psycopg from inferring the same event-type parameter
-  as both ``text`` and ``varchar`` in the INSERT/NOT-EXISTS statement.
+* Telegram publication formatting is total. Sparse canonical rows render missing
+  display-only values as ``N/A``; nothing is invented.
+* ``broker_deals`` remains append-only: account truth inserts unseen deals and ignores
+  duplicates, never updating immutable broker history.
+* A provider numeric risk-free stop remains authoritative across modest broker-fill
+  slippage. Large contradictions still fail closed as likely lifecycle mis-linkage.
+* Full-history backfill audit binds use explicit PostgreSQL types.
+* Recovered management is temporally scoped: an old provider update may only mutate
+  positions/orders that already existed at that lifecycle event's provider timestamp.
+  A pending layer that fills later cannot be closed by replay of an older instruction.
+* Descriptive wording such as ``BEST ENTRY STILL RUNNING`` is not converted into a
+  command to ``close all but best``. Explicit close prices in that same provider edit
+  remain literal close instructions.
 """
 
 from __future__ import annotations
 
 import json
+import re
+from contextvars import ContextVar
 from decimal import Decimal, InvalidOperation
 from typing import Any
 from uuid import UUID
@@ -33,6 +33,11 @@ from app.mt5_management_day27 import Day27ManagementError
 _installed = False
 _RISK_FREE_PREFIX = "best_entry_risk_free_"
 _RISK_FREE_FILL_TOLERANCE = Decimal("1.00")
+_BEST_STILL_RUNNING = re.compile(r"\bBEST\s+ENTRY\s+STILL\s+RUNNING\b", re.IGNORECASE)
+_MANAGEMENT_EVENT_CUTOFF: ContextVar[Any | None] = ContextVar(
+    "super_signals_management_event_cutoff",
+    default=None,
+)
 
 
 def _install_total_telegram_decimal_rendering() -> None:
@@ -49,15 +54,43 @@ def _install_total_telegram_decimal_rendering() -> None:
             decimal_value = value if isinstance(value, Decimal) else Decimal(str(value))
         except (InvalidOperation, TypeError, ValueError):
             return "N/A"
-        normalized = decimal_value.normalize()
-        return format(normalized, "f")
+        return format(decimal_value.normalize(), "f")
 
     decimal_text._sparse_safe = True  # type: ignore[attr-defined]
     publisher._decimal_text = decimal_text
 
 
+def _install_descriptive_best_entry_parser_fix() -> None:
+    import app.critical_entry_policy as critical_policy
+    import app.v1_message_policy as v1_policy
+
+    current = critical_policy.augment_management_actions
+    if getattr(current, "_best_still_running_is_descriptive", False):
+        return
+    original = current
+
+    def augment_management_actions(raw_text: str, actions):
+        result = original(raw_text, actions)
+        if _BEST_STILL_RUNNING.search(raw_text or "") is None:
+            return result
+        # "Best entry still running" reports state; it does not ask us to close a
+        # different layer. Keep explicit entry-price closes and stop edits untouched.
+        return tuple(
+            action
+            for action in result
+            if not (
+                str(action.get("type") or "") == "close"
+                and str(action.get("target") or "").lower() == "all_but_best"
+            )
+        )
+
+    augment_management_actions._best_still_running_is_descriptive = True  # type: ignore[attr-defined]
+    critical_policy.augment_management_actions = augment_management_actions
+    # v1_message_policy imports the function directly, so replace that bound reference too.
+    v1_policy.augment_management_actions = augment_management_actions
+
+
 def _install_literal_provider_risk_free_stop() -> None:
-    """Follow the literal stop unless the lifecycle target is implausibly mismatched."""
     from app.paper_critical_management_v2 import PaperCriticalManagementV2
 
     current = PaperCriticalManagementV2._select_layer_positions
@@ -80,7 +113,6 @@ def _install_literal_provider_risk_free_stop() -> None:
             normalized_side = side.strip().upper()
             if normalized_side not in {"BUY", "SELL"}:
                 raise Day27ManagementError("trade_side_invalid")
-
             protective = wanted >= best_fill if normalized_side == "BUY" else wanted <= best_fill
             if not protective and abs(wanted - best_fill) > _RISK_FREE_FILL_TOLERANCE:
                 raise Day27ManagementError("risk_free_stop_not_protective")
@@ -89,6 +121,80 @@ def _install_literal_provider_risk_free_stop() -> None:
 
     select_layer_positions._literal_provider_stop = True  # type: ignore[attr-defined]
     PaperCriticalManagementV2._select_layer_positions = classmethod(select_layer_positions)
+
+
+def _install_temporal_management_scope() -> None:
+    from app.paper_critical_management import PaperCriticalManagementService, _LayerPosition
+
+    current_execute = PaperCriticalManagementService.execute_owner_demo_event
+    if getattr(current_execute, "_event_time_scoped", False):
+        return
+    original_execute = current_execute
+    original_load_positions = PaperCriticalManagementService._load_layer_positions
+
+    async def execute_owner_demo_event(self, *, owner_user_id: UUID, lifecycle_event_id: UUID):
+        with self._session_factory() as session:
+            cutoff = session.execute(
+                text(
+                    """
+                    SELECT occurred_at
+                    FROM signal_lifecycle_events
+                    WHERE id=:event_id
+                    LIMIT 1
+                    """
+                ),
+                {"event_id": lifecycle_event_id},
+            ).scalar_one_or_none()
+        token = _MANAGEMENT_EVENT_CUTOFF.set(cutoff)
+        try:
+            return await original_execute(
+                self,
+                owner_user_id=owner_user_id,
+                lifecycle_event_id=lifecycle_event_id,
+            )
+        finally:
+            _MANAGEMENT_EVENT_CUTOFF.reset(token)
+
+    def load_layer_positions(self, signal_id: UUID, user_id: UUID):
+        cutoff = _MANAGEMENT_EVENT_CUTOFF.get()
+        if cutoff is None:
+            return original_load_positions(self, signal_id, user_id)
+        with self._session_factory() as session:
+            rows = session.execute(
+                text(
+                    """
+                    SELECT id, entry_index, tp_index, broker_position_id,
+                           broker_order_id, status, stop_loss, take_profit,
+                           entry_price, volume
+                    FROM positions
+                    WHERE signal_id=:signal_id
+                      AND user_id=:user_id
+                      AND COALESCE(opened_at, created_at) <= :cutoff
+                    ORDER BY entry_index, tp_index
+                    """
+                ),
+                {"signal_id": signal_id, "user_id": user_id, "cutoff": cutoff},
+            ).mappings().all()
+        return tuple(
+            _LayerPosition(
+                id=UUID(str(row["id"])),
+                entry_index=int(row["entry_index"]),
+                tp_index=int(row["tp_index"]),
+                broker_position_id=(str(row["broker_position_id"]) if row["broker_position_id"] else None),
+                broker_order_id=(str(row["broker_order_id"]) if row["broker_order_id"] else None),
+                status=str(row["status"]),
+                stop_loss=self._positive_decimal(row["stop_loss"]),
+                take_profit=self._positive_decimal(row["take_profit"]),
+                entry_price=self._positive_decimal(row["entry_price"]),
+                volume=self._positive_decimal(row["volume"]),
+            )
+            for row in rows
+        )
+
+    execute_owner_demo_event._event_time_scoped = True  # type: ignore[attr-defined]
+    load_layer_positions._event_time_scoped = True  # type: ignore[attr-defined]
+    PaperCriticalManagementService.execute_owner_demo_event = execute_owner_demo_event
+    PaperCriticalManagementService._load_layer_positions = load_layer_positions
 
 
 def _install_typed_full_backfill_marker() -> None:
@@ -225,16 +331,8 @@ def _install_append_only_broker_deal_sync() -> None:
                             or ""
                         ).strip()
                         or None,
-                        "volume": (
-                            account_truth._d(payload.get("volume"))
-                            if payload.get("volume") is not None
-                            else None
-                        ),
-                        "price": (
-                            account_truth._d(payload.get("price"))
-                            if payload.get("price") is not None
-                            else None
-                        ),
+                        "volume": account_truth._d(payload.get("volume")) if payload.get("volume") is not None else None,
+                        "price": account_truth._d(payload.get("price")) if payload.get("price") is not None else None,
                         "profit": account_truth._d(payload.get("profit")),
                         "commission": account_truth._d(payload.get("commission")),
                         "swap": account_truth._d(payload.get("swap")),
@@ -257,7 +355,9 @@ def install_aug18_readiness_cleanup() -> None:
     if _installed:
         return
     _install_total_telegram_decimal_rendering()
+    _install_descriptive_best_entry_parser_fix()
     _install_literal_provider_risk_free_stop()
+    _install_temporal_management_scope()
     _install_typed_full_backfill_marker()
     _install_append_only_broker_deal_sync()
     _installed = True
