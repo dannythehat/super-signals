@@ -40,6 +40,10 @@ from app.paper_live_entry_guard import install_paper_live_entry_guard
 
 install_paper_live_entry_guard()
 
+from app.paper_market_execution_policy import install_paper_market_execution_policy
+
+install_paper_market_execution_policy()
+
 from app.provider_entry_reliability_overrides import install_provider_entry_reliability_overrides
 
 install_provider_entry_reliability_overrides()
@@ -55,3 +59,7 @@ install_execution_path_reliability_overrides()
 from app.telegram_revision_serialization import install_telegram_revision_serialization
 
 install_telegram_revision_serialization()
+
+from app.telegram_fast_ingress import install_telegram_fast_ingress
+
+install_telegram_fast_ingress()
