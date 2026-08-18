@@ -10,6 +10,7 @@ from . import invitations as _invitations  # noqa: F401
 from . import manual_reconciliation_day36 as _manual_reconciliation_day36
 from . import mt5_approvals_day30 as _mt5_approvals_day30
 from . import mt5_onboarding_day35 as _mt5_onboarding_day35
+from . import owner_manual_close as _owner_manual_close
 from . import registration as _registration  # noqa: F401
 from . import trading_controls_day31 as _trading_controls_day31
 from . import user_mt5_accounts as _user_mt5_accounts
@@ -17,4 +18,5 @@ from . import user_mt5_accounts as _user_mt5_accounts
 _user_mt5_accounts.router.include_router(_trading_controls_day31.router)
 _user_mt5_accounts.router.include_router(_mt5_onboarding_day35.user_router)
 _user_mt5_accounts.router.include_router(_manual_reconciliation_day36.router)
+_user_mt5_accounts.router.include_router(_owner_manual_close.router)
 _mt5_approvals_day30.router.include_router(_mt5_onboarding_day35.owner_router)
