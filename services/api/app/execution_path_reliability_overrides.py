@@ -1,81 +1,57 @@
-"""Paper-execution reliability corrections discovered during live provider testing.
+"""Broker-facing execution reliability corrections from provider paper testing.
 
-Two provider-dependent failures were observed in production paper testing:
+A fresh MARKET instruction must reach MT5. Provider entry prices/zones remain evidence
+for the signal, sizing and audit trail, but Super Signals must not turn a few ticks of
+movement during its own processing into a second trading decision that suppresses the
+trade. The broker remains authoritative: if the provider's unchanged SL/TP geometry is
+no longer valid, MT5 can reject the actual order and that broker truth is recorded.
 
-* Critical/layered execution could successfully submit a broker order and then crash
-  while persisting the order because PostgreSQL inferred two incompatible types for
-  the same ``:status`` bind parameter inside an UPDATE/CASE expression.
-* A market-zone signal was admitted at a fresh executable price, but the Day 28
-  gateway re-sampled price before every TP tranche. A tiny move during the few
-  hundred milliseconds needed to submit sibling TP positions could therefore abort
-  the remainder and roll back an otherwise valid signal.
+Literal LIMIT/STOP/PENDING instructions are unchanged and remain broker-held at the
+provider's exact prices. Broker mutation failures still trigger the existing atomic
+compensation logic and trade mutations are never blindly retried.
 
-The policy here is intentionally narrow:
-* broker order placement is still atomic/fail-closed;
-* a zone is freshly checked immediately before the FIRST broker submission;
-* once that batch is admitted, sibling TP tranches of that same signal are submitted
-  without re-deciding the provider entry zone between legs;
-* a broker/order failure still triggers the existing compensating rollback;
-* exact-entry and pending-order behaviour is unchanged.
+This module also retains the PostgreSQL-safe critical-order persistence correction.
 """
 
 from __future__ import annotations
 
-from contextvars import ContextVar, Token
 from typing import Any
 
 from sqlalchemy import text
 
-_batch_zone_admitted: ContextVar[bool] = ContextVar(
-    "super_signals_batch_zone_admitted", default=False
-)
 _installed = False
 
 
-def _install_zone_batch_admission() -> None:
+def _install_fresh_market_submission_policy() -> None:
+    """Remove Super Signals' own market-zone submission veto.
+
+    Day 28 historically re-read XAUUSD immediately before a market order and rejected
+    the order locally when price had moved outside the provider's textual range. That
+    defeated the later fresh-market policy and caused otherwise valid provider signals
+    to be rolled back before MT5 had a chance to decide them.
+
+    A zone is set only for market-order guarding. Pending orders use the separate
+    PaperPendingOrderGateway and therefore keep their literal broker-side semantics.
+    Exact market entries never set a zone and continue through the original wrapper.
+    """
     from app.day28_zone_guard import Day28ZoneGuardTradeGateway
 
-    original_set_zone = Day28ZoneGuardTradeGateway.set_zone
-    original_reset_zone = Day28ZoneGuardTradeGateway.reset_zone
     original_place = Day28ZoneGuardTradeGateway.place_market_order
-
-    if getattr(original_place, "_single_batch_zone_admission", False):
+    if getattr(original_place, "_fresh_market_reaches_broker", False):
         return
 
-    def set_zone(self: Any, low: Any, high: Any):
-        zone_token = original_set_zone(self, low, high)
-        admitted_token = _batch_zone_admitted.set(False)
-        return zone_token, admitted_token
-
-    def reset_zone(self: Any, token: Any) -> None:
-        if isinstance(token, tuple) and len(token) == 2:
-            zone_token, admitted_token = token
-            try:
-                original_reset_zone(self, zone_token)
-            finally:
-                _batch_zone_admitted.reset(admitted_token)
-            return
-        original_reset_zone(self, token)
-
     async def place_market_order(self: Any, **kwargs: Any):
-        # Exact-entry execution never sets a zone and therefore continues through the
-        # original gateway unchanged. For a zone batch, the original gateway performs
-        # the fresh broker-price admission check on the first leg only.
         zone = self._zone.get()
-        if zone is None or not _batch_zone_admitted.get():
-            result = await original_place(self, **kwargs)
-            if zone is not None:
-                _batch_zone_admitted.set(True)
-            return result
+        if zone is None:
+            return await original_place(self, **kwargs)
 
-        # The signal has already been admitted immediately before its first broker
-        # submission. Sibling TP tranches are one atomic execution batch, not new
-        # trading decisions, so do not re-evaluate the provider zone between them.
+        # This is a fresh MARKET batch already admitted by the shared execution
+        # engine's time/revision/cancellation/trading checks. Do not re-decide the
+        # provider's market instruction from another quote read. Send the unchanged
+        # side, volume, SL and TP to MT5 and let the broker be authoritative.
         return await self._base.place_market_order(**kwargs)
 
-    place_market_order._single_batch_zone_admission = True  # type: ignore[attr-defined]
-    Day28ZoneGuardTradeGateway.set_zone = set_zone
-    Day28ZoneGuardTradeGateway.reset_zone = reset_zone
+    place_market_order._fresh_market_reaches_broker = True  # type: ignore[attr-defined]
     Day28ZoneGuardTradeGateway.place_market_order = place_market_order
 
 
@@ -132,7 +108,7 @@ def install_execution_path_reliability_overrides() -> None:
     global _installed
     if _installed:
         return
-    _install_zone_batch_admission()
+    _install_fresh_market_submission_policy()
     _install_critical_order_persistence_fix()
     _installed = True
 
