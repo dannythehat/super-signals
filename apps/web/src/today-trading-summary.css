@@ -8,10 +8,10 @@
 }
 
 .today-trading-head {
-  display: flex;
-  align-items: flex-end;
-  justify-content: space-between;
-  gap: 18px;
+  display: grid;
+  grid-template-columns: minmax(150px, 1.25fr) repeat(3, minmax(110px, 0.8fr));
+  align-items: end;
+  gap: 14px;
 }
 
 .today-trading-head > div {
@@ -27,7 +27,7 @@
   letter-spacing: 0.04em;
 }
 
-.today-trading-head > div:first-child > span {
+.today-trading-primary > span {
   color: #75e9d7;
   font-size: 0.71rem;
   font-weight: 800;
@@ -35,19 +35,19 @@
   text-transform: uppercase;
 }
 
-.today-trading-head > div:first-child > strong {
+.today-trading-primary > strong {
   color: #f7f9fb;
   font-size: clamp(1.35rem, 4vw, 1.85rem);
   letter-spacing: -0.03em;
 }
 
-.today-trading-pnl {
+.today-trading-headline {
   justify-items: end;
   text-align: right;
 }
 
-.today-trading-pnl strong {
-  font-size: clamp(1.25rem, 4vw, 1.7rem);
+.today-trading-headline strong {
+  font-size: clamp(1.12rem, 3.4vw, 1.55rem);
   letter-spacing: -0.025em;
 }
 
@@ -107,6 +107,19 @@
     border-radius: 18px;
   }
 
+  .today-trading-head {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .today-trading-primary {
+    grid-column: 1 / -1;
+  }
+
+  .today-trading-headline {
+    justify-items: start;
+    text-align: left;
+  }
+
   .today-trading-stats {
     grid-template-columns: repeat(3, minmax(0, 1fr));
   }
@@ -118,12 +131,8 @@
 }
 
 @media (max-width: 390px) {
-  .today-trading-head {
-    align-items: flex-start;
-  }
-
-  .today-trading-head > div:first-child > strong,
-  .today-trading-pnl strong {
+  .today-trading-headline strong,
+  .today-trading-primary > strong {
     font-size: 1.2rem;
   }
 }
