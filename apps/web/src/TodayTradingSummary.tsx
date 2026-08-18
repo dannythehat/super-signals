@@ -15,9 +15,6 @@ type TodaySummary = {
   realised_pnl: number;
   winning_pips: number;
   net_pips: number;
-  balance_adjustment: number | null;
-  reconciliation_ready: boolean;
-  reconciled: boolean;
   broker_trade_action_created: boolean;
 };
 
@@ -120,10 +117,6 @@ export function TodayTradingSummary({ apiBaseUrl, currency }: Props) {
     </section>;
   }
 
-  const hasAdjustment = summary.reconciliation_ready
-    && summary.balance_adjustment !== null
-    && Math.abs(summary.balance_adjustment) >= 0.005;
-
   return <section className="today-trading-card" aria-label="Today's trading summary" aria-live="polite">
     <div className="today-trading-head">
       <div className="today-trading-primary"><span>Today</span><strong>{summary.trades} trade{summary.trades === 1 ? '' : 's'}</strong></div>
@@ -142,9 +135,7 @@ export function TodayTradingSummary({ apiBaseUrl, currency }: Props) {
     <small>
       {stale
         ? 'Broker reconciliation updating — last confirmed values shown'
-        : hasAdjustment
-          ? `Broker balance adjustment ${money(summary.balance_adjustment ?? 0, currency)} — excluded from Trading P/L`
-          : 'Auto-updates from broker-backed trade records'}
+        : 'Auto-updates from broker-backed trade records'}
     </small>
   </section>;
 }
