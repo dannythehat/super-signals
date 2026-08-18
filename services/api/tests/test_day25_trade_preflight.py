@@ -111,7 +111,7 @@ def run_preflight(*, live_state: Day23LiveState, side: str, gateway: FakeMarginG
     )
 
 
-def test_buy_exact_stated_entry_proceeds_once_and_checks_whole_signal_margin_once() -> None:
+def test_buy_exact_stated_entry_proceeds_without_margin_precheck() -> None:
     gateway = FakeMarginGateway(margin=250)
     result = run_preflight(live_state=state(ask=4000.0), side="BUY", gateway=gateway)
 
@@ -119,19 +119,18 @@ def test_buy_exact_stated_entry_proceeds_once_and_checks_whole_signal_margin_onc
     assert result.entry_available is True
     assert result.executable_price == Decimal("4000.0")
     assert result.price_check_count == 1
-    assert result.margin_check_count == 1
+    assert result.margin_check_count == 0
+    assert result.required_margin is None
     assert result.position_count == 3
     assert result.position_volume == Decimal("0.01")
     assert result.total_volume == Decimal("0.03")
     assert result.positions_allowed == 3
     assert result.all_or_nothing is True
     assert result.trade_action_created is False
-    assert len(gateway.calls) == 1
-    assert gateway.calls[0]["volume"] == 0.03
-    assert gateway.calls[0]["open_price"] == 4000.0
+    assert gateway.calls == []
 
 
-def test_sell_exact_stated_entry_uses_bid_and_proceeds() -> None:
+def test_sell_exact_stated_entry_uses_bid_and_proceeds_without_margin_precheck() -> None:
     gateway = FakeMarginGateway(margin=100)
     result = run_preflight(
         live_state=state(bid=4000.0, ask=4000.3), side="SELL", gateway=gateway
@@ -139,8 +138,8 @@ def test_sell_exact_stated_entry_uses_bid_and_proceeds() -> None:
 
     assert result.proceed is True
     assert result.executable_price == Decimal("4000.0")
-    assert len(gateway.calls) == 1
-    assert gateway.calls[0]["open_price"] == 4000.0
+    assert result.margin_check_count == 0
+    assert gateway.calls == []
 
 
 def test_buy_different_higher_price_is_unavailable_and_never_substituted() -> None:
@@ -177,7 +176,7 @@ def test_sell_different_price_is_unavailable_and_never_substituted() -> None:
     assert gateway.calls == []
 
 
-def test_stale_price_blocks_before_margin_check() -> None:
+def test_stale_price_blocks_before_any_broker_mutation() -> None:
     gateway = FakeMarginGateway(margin=100)
     result = run_preflight(
         live_state=state(execution_ready=False, block_reason="price_stale"),
@@ -192,35 +191,36 @@ def test_stale_price_blocks_before_margin_check() -> None:
     assert gateway.calls == []
 
 
-def test_insufficient_funds_blocks_entire_tp_set_when_margin_calculation_succeeds() -> None:
-    gateway = FakeMarginGateway(margin=250.01)
+def test_free_margin_never_vetoes_an_otherwise_valid_signal() -> None:
+    gateway = FakeMarginGateway(margin=999999)
     result = run_preflight(
-        live_state=state(ask=4000.0, free_margin=250.0), side="BUY", gateway=gateway
+        live_state=state(ask=4000.0, free_margin=0.01), side="BUY", gateway=gateway
     )
 
-    assert result.proceed is False
-    assert result.block_reason == "insufficient_funds"
-    assert result.required_margin == Decimal("250.01")
-    assert result.free_margin == Decimal("250.0")
+    assert result.proceed is True
+    assert result.block_reason is None
+    assert result.free_margin == Decimal("0.01")
+    assert result.required_margin is None
     assert result.position_count == 3
-    assert result.positions_allowed == 0
-    assert result.all_or_nothing is True
-    assert result.trade_action_created is False
-    assert len(gateway.calls) == 1
+    assert result.positions_allowed == 3
+    assert result.margin_check_count == 0
+    assert gateway.calls == []
 
 
-def test_exactly_enough_free_margin_allows_complete_signal() -> None:
+def test_free_margin_value_is_diagnostic_only() -> None:
     gateway = FakeMarginGateway(margin=250.0)
     result = run_preflight(
-        live_state=state(ask=4000.0, free_margin=250.0), side="BUY", gateway=gateway
+        live_state=state(ask=4000.0, free_margin=0.0), side="BUY", gateway=gateway
     )
 
     assert result.proceed is True
     assert result.positions_allowed == 3
-    assert result.required_margin == result.free_margin == Decimal("250.0")
+    assert result.free_margin == Decimal("0.0")
+    assert result.required_margin is None
+    assert gateway.calls == []
 
 
-def test_terminal_trading_disabled_blocks_before_margin_call() -> None:
+def test_terminal_trading_disabled_still_blocks() -> None:
     gateway = FakeMarginGateway(margin=100)
     result = run_preflight(
         live_state=state(ask=4000.0, trade_allowed=False), side="BUY", gateway=gateway
@@ -232,20 +232,19 @@ def test_terminal_trading_disabled_blocks_before_margin_call() -> None:
     assert gateway.calls == []
 
 
-def test_persistent_margin_failure_is_advisory_and_proceeds_to_broker() -> None:
+def test_margin_gateway_outage_is_irrelevant_to_entry_path() -> None:
     gateway = FakeMarginGateway(error=True)
     result = run_preflight(live_state=state(ask=4000.0), side="BUY", gateway=gateway)
 
     assert result.proceed is True
     assert result.block_reason is None
     assert result.required_margin is None
-    assert result.margin_check_count == 1
+    assert result.margin_check_count == 0
     assert result.positions_allowed == 3
-    assert result.trade_action_created is False
-    assert len(gateway.calls) == 1
+    assert gateway.calls == []
 
 
-def test_non_retryable_margin_endpoint_failure_is_also_advisory() -> None:
+def test_non_retryable_margin_endpoint_failure_is_irrelevant_to_entry_path() -> None:
     gateway = FakeMarginGateway(
         error=True, error_code="metaapi_permission_denied", retryable=False
     )
@@ -254,21 +253,21 @@ def test_non_retryable_margin_endpoint_failure_is_also_advisory() -> None:
     assert result.proceed is True
     assert result.block_reason is None
     assert result.required_margin is None
-    assert result.margin_check_count == 1
+    assert result.margin_check_count == 0
     assert result.positions_allowed == 3
-    assert len(gateway.calls) == 1
+    assert gateway.calls == []
 
 
-def test_margin_preflight_never_retries_a_stale_signal() -> None:
+def test_entry_path_does_not_call_or_retry_margin_calculator() -> None:
     gateway = FakeMarginGateway(margin=250.0, error=True, fail_times=1)
     result = run_preflight(
-        live_state=state(ask=4000.0, free_margin=1000.0), side="BUY", gateway=gateway
+        live_state=state(ask=4000.0, free_margin=0.0), side="BUY", gateway=gateway
     )
 
     assert result.proceed is True
     assert result.required_margin is None
-    assert result.margin_check_count == 1
-    assert len(gateway.calls) == 1
+    assert result.margin_check_count == 0
+    assert gateway.calls == []
 
 
 class CaptureMarginGateway(MetaApiMarginGateway):
@@ -293,7 +292,7 @@ class CaptureMarginGateway(MetaApiMarginGateway):
         return httpx.Response(200, json={"margin": 321.5})
 
 
-def test_margin_gateway_sends_one_non_trading_aggregate_margin_request() -> None:
+def test_margin_gateway_still_available_for_non_veto_diagnostics() -> None:
     gateway = CaptureMarginGateway()
     margin = asyncio.run(
         gateway.calculate_margin(
