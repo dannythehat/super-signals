@@ -4,6 +4,7 @@ import './today-trading-summary.css';
 
 type TodaySummary = {
   timezone: string;
+  session_started_at: string;
   trades: number;
   wins: number;
   losses: number;
@@ -14,6 +15,9 @@ type TodaySummary = {
   realised_pnl: number;
   winning_pips: number;
   net_pips: number;
+  balance_adjustment: number | null;
+  reconciliation_ready: boolean;
+  reconciled: boolean;
   broker_trade_action_created: boolean;
 };
 
@@ -84,8 +88,6 @@ export function TodayTradingSummary({ apiBaseUrl, currency }: Props) {
       window.dispatchEvent(new Event('super-signals-ledger-synced'));
       await refresh();
     } catch {
-      // Keep showing the last broker-confirmed summary. The five-second read loop
-      // will recover automatically as soon as reconciliation is available again.
       setStale(true);
     } finally {
       brokerSyncRunning.current = false;
@@ -118,6 +120,10 @@ export function TodayTradingSummary({ apiBaseUrl, currency }: Props) {
     </section>;
   }
 
+  const hasAdjustment = summary.reconciliation_ready
+    && summary.balance_adjustment !== null
+    && Math.abs(summary.balance_adjustment) >= 0.005;
+
   return <section className="today-trading-card" aria-label="Today's trading summary" aria-live="polite">
     <div className="today-trading-head">
       <div className="today-trading-primary"><span>Today</span><strong>{summary.trades} trade{summary.trades === 1 ? '' : 's'}</strong></div>
@@ -133,6 +139,12 @@ export function TodayTradingSummary({ apiBaseUrl, currency }: Props) {
       <div><strong>{summary.pending}</strong><span>Pending</span></div>
       {summary.settling > 0 && <div><strong>{summary.settling}</strong><span>Settling</span></div>}
     </div>
-    <small>{stale ? 'Broker reconciliation updating — last confirmed values shown' : 'Auto-updates from broker-backed trade records'}</small>
+    <small>
+      {stale
+        ? 'Broker reconciliation updating — last confirmed values shown'
+        : hasAdjustment
+          ? `Broker balance adjustment ${money(summary.balance_adjustment ?? 0, currency)} — excluded from Trading P/L`
+          : 'Auto-updates from broker-backed trade records'}
+    </small>
   </section>;
 }
