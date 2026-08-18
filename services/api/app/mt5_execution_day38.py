@@ -1,10 +1,13 @@
-"""Day 38 live-account execution boundary for ordinary invited users.
+"""Day 38 LIVE-account adapter over the single Super Signals trading engine.
 
-The Owner keeps the accepted demo-only path. Ordinary members use the same atomic
-execution + per-leg provider-zone guard, but their account gate is LIVE-only. Stored
-Day 31 risk/double-lot choices are loaded server-side and cannot be supplied by the
-caller. Atomic compensation is LIVE-aware so a later-leg failure can close any earlier
-member legs from the same Signal.
+Trading-policy parity is a product invariant: DEMO and LIVE accounts must interpret and
+execute the same canonical provider signal identically. This class therefore inherits
+the exact PaperFreshStartExecutionService used by the Owner paper account. The only
+LIVE-specific behaviour here is account/user eligibility and credential selection.
+
+When LIVE execution is enabled by the outer distribution switch, pending/layered trades,
+per-provider-section risk, fresh market execution, atomic compensation and all later
+execution-path reliability fixes therefore come from the same implementation as paper.
 """
 
 from __future__ import annotations
@@ -14,7 +17,7 @@ from uuid import UUID
 
 from sqlalchemy import text
 
-from app.day28_zone_guard import Day28GuardedExecutionService
+from app.metaapi_read_gateway import MetaApiReadGateway
 from app.mt5_crypto import BrokerCredentialDecryptionError
 from app.mt5_execution_day26 import (
     Day26ExecutionError,
@@ -22,10 +25,21 @@ from app.mt5_execution_day26 import (
     _AccountInput,
     _SignalInput,
 )
+from app.paper_fresh_start_execution import PaperFreshStartExecutionService
+from app.paper_resilient_read_gateway import ResilientMetaApiReadGateway
 
 
-class Day38LiveUserExecutionService(Day28GuardedExecutionService):
-    """Run the same no-chase execution engine against one approved member LIVE account."""
+class Day38LiveUserExecutionService(PaperFreshStartExecutionService):
+    """Run the exact paper-tested trading engine against one approved LIVE account."""
+
+    def __init__(self, **kwargs) -> None:
+        # Production wiring historically supplied a plain MetaApiReadGateway to LIVE
+        # members while paper used bounded idempotent GET retries. Normalise only the
+        # concrete production gateway; unit-test/fake gateways remain injectable.
+        read_gateway = kwargs.get("read_gateway")
+        if type(read_gateway) is MetaApiReadGateway:
+            kwargs["read_gateway"] = ResilientMetaApiReadGateway()
+        super().__init__(**kwargs)
 
     async def execute_live_user_signal(
         self,
@@ -64,7 +78,7 @@ class Day38LiveUserExecutionService(Day28GuardedExecutionService):
         return str(row["risk_percent"]), bool(row["allow_double_lot"])
 
     def _load_inputs(self, user_id: UUID, signal_id: UUID) -> tuple[_SignalInput, _AccountInput]:
-        """Load the canonical signal contract plus the member's approved LIVE account."""
+        """Load an ordinary canonical market signal plus the approved LIVE account."""
         with self._session_factory() as session:
             signal_row = session.execute(
                 text(
@@ -119,36 +133,7 @@ class Day38LiveUserExecutionService(Day28GuardedExecutionService):
             if cancelled:
                 raise Day26ExecutionError("signal_cancelled")
 
-            eligibility = session.execute(
-                text(
-                    """
-                    SELECT
-                        m.id AS mt5_account_id,
-                        m.metaapi_account_id,
-                        m.metaapi_token_ciphertext,
-                        m.account_environment,
-                        m.login,
-                        m.server,
-                        a.login AS approved_login,
-                        a.server AS approved_server
-                    FROM users AS u
-                    JOIN user_roles AS ur ON ur.user_id=u.id
-                    JOIN roles AS r ON r.id=ur.role_id AND r.name='user'
-                    JOIN user_trading_controls AS utc ON utc.user_id=u.id
-                    JOIN mt5_accounts AS m ON m.owner_user_id=u.id
-                    JOIN mt5_account_approvals AS a
-                      ON a.user_id=u.id
-                     AND a.status='active'
-                    WHERE u.id=:user_id
-                      AND u.status='active'
-                      AND utc.trading_status='active'
-                      AND m.status!='revoked'
-                    ORDER BY m.created_at DESC
-                    LIMIT 1
-                    """
-                ),
-                {"user_id": user_id},
-            ).mappings().first()
+            eligibility = self._live_account_row(session, user_id)
             if eligibility is None:
                 raise Day26ExecutionError("day38_user_not_execution_ready")
             self._validate_live_account_row(eligibility)
@@ -203,36 +188,81 @@ class Day38LiveUserExecutionService(Day28GuardedExecutionService):
         )
         return signal, account
 
+    def _load_demo_account(self, user_id: UUID, signal_id: UUID) -> _AccountInput:
+        """Critical-engine account adapter: use the same engine with a LIVE account."""
+        with self._session_factory() as session:
+            existing = int(
+                session.execute(
+                    text(
+                        "SELECT COUNT(*) FROM positions WHERE signal_id=:signal_id AND user_id=:user_id"
+                    ),
+                    {"signal_id": signal_id, "user_id": user_id},
+                ).scalar_one()
+            )
+            if existing:
+                raise Day26ExecutionError("signal_execution_already_started")
+            cancelled = bool(
+                session.execute(
+                    text(
+                        """
+                        SELECT EXISTS(
+                            SELECT 1 FROM signal_lifecycle_events
+                            WHERE signal_id=:signal_id AND event_type='cancel'
+                        )
+                        """
+                    ),
+                    {"signal_id": signal_id},
+                ).scalar_one()
+            )
+            if cancelled:
+                raise Day26ExecutionError("signal_cancelled")
+            row = self._live_account_row(session, user_id)
+        if row is None:
+            raise Day26ExecutionError("day38_user_not_execution_ready")
+        self._validate_live_account_row(row)
+        return _AccountInput(
+            local_account_id=UUID(str(row["mt5_account_id"])),
+            metaapi_account_id=str(row["metaapi_account_id"]),
+            token_ciphertext=bytes(row["metaapi_token_ciphertext"]),
+        )
+
+    @staticmethod
+    def _live_account_row(session, user_id: UUID):  # noqa: ANN001
+        return session.execute(
+            text(
+                """
+                SELECT
+                    m.id AS mt5_account_id,
+                    m.metaapi_account_id,
+                    m.metaapi_token_ciphertext,
+                    m.account_environment,
+                    m.login,
+                    m.server,
+                    a.login AS approved_login,
+                    a.server AS approved_server
+                FROM users AS u
+                JOIN user_roles AS ur ON ur.user_id=u.id
+                JOIN roles AS r ON r.id=ur.role_id AND r.name='user'
+                JOIN user_trading_controls AS utc ON utc.user_id=u.id
+                JOIN mt5_accounts AS m ON m.owner_user_id=u.id
+                JOIN mt5_account_approvals AS a
+                  ON a.user_id=u.id
+                 AND a.status='active'
+                WHERE u.id=:user_id
+                  AND u.status='active'
+                  AND utc.trading_status='active'
+                  AND m.status!='revoked'
+                ORDER BY m.created_at DESC
+                LIMIT 1
+                """
+            ),
+            {"user_id": user_id},
+        ).mappings().first()
+
     def _rollback_account(self, user_id: UUID) -> tuple[str, str]:
         """Atomic rollback against the same approved member LIVE account."""
         with self._session_factory() as session:
-            row = session.execute(
-                text(
-                    """
-                    SELECT
-                        m.metaapi_account_id,
-                        m.metaapi_token_ciphertext,
-                        m.account_environment,
-                        m.login,
-                        m.server,
-                        a.login AS approved_login,
-                        a.server AS approved_server
-                    FROM users AS u
-                    JOIN user_roles AS ur ON ur.user_id=u.id
-                    JOIN roles AS r ON r.id=ur.role_id AND r.name='user'
-                    JOIN mt5_accounts AS m ON m.owner_user_id=u.id
-                    JOIN mt5_account_approvals AS a
-                      ON a.user_id=u.id
-                     AND a.status='active'
-                    WHERE u.id=:user_id
-                      AND u.status='active'
-                      AND m.status!='revoked'
-                    ORDER BY m.created_at DESC
-                    LIMIT 1
-                    """
-                ),
-                {"user_id": user_id},
-            ).mappings().first()
+            row = self._live_account_row(session, user_id)
         if row is None:
             raise Day26ExecutionError("day38_user_not_execution_ready")
         self._validate_live_account_row(row)

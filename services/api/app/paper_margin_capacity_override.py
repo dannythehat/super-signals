@@ -1,18 +1,14 @@
-"""Owner-DEMO no-balance-veto policy for provider signal evaluation.
+"""Shared no-balance-veto policy for provider signal evaluation.
 
 The selected risk percentage belongs to each provider section/leg. It is not an
 account-wide aggregate exposure budget and it must not be converted into an advisory
-free-margin veto that prevents otherwise valid provider signals from reaching Vantage
-DEMO / MT5.
+free-margin veto that prevents otherwise valid provider signals from reaching MT5.
 
-For Owner DEMO paper testing this override removes only the local aggregate margin
-preflight. Every provider leg keeps its independently selected risk, exact provider
-entry semantics, side, SL and TP. The real broker remains authoritative for each actual
-order submission. If Vantage/MT5 itself rejects an individual order, that broker result
-is handled by the execution path; Super Signals does not pre-emptively reject the whole
-signal based on its own balance or aggregate-margin calculation.
-
-LIVE member execution is unchanged.
+This override removes the local aggregate margin preflight from the shared
+PaperFreshStartExecutionService. Owner DEMO uses that engine now; approved LIVE members
+use the same engine when the separate global LIVE switch is eventually enabled. Every
+provider leg keeps its independently selected risk, exact provider entry semantics,
+side, SL and TP. The real broker remains authoritative for each actual order submission.
 """
 
 from __future__ import annotations
@@ -37,7 +33,7 @@ async def _paper_no_balance_veto(
     entries: tuple[Any, ...],
     sizings: dict[int, Any],
 ) -> None:
-    """Never block Owner DEMO because of a local aggregate balance calculation."""
+    """Never block a provider setup because of a local aggregate balance calculation."""
     del self, token, account_id, region, symbol, side, free_margin, entries
     if not sizings:
         raise Day26ExecutionError("position_count_invalid")

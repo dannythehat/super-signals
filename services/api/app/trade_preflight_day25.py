@@ -1,24 +1,24 @@
-"""Day 25 one-time price and funds preflight.
+"""Day 25 one-time broker-read preflight before a provider market order.
 
-Super Signals is a signal follower. Day 25 does not reinterpret a provider's entry,
-stop loss, take profit or trade thesis. It consumes one already-fresh Day 23 live-state
-snapshot, checks the stated entry once, and uses MetaAPI's margin calculator when it is
-available. The actual broker order remains authoritative if that auxiliary calculator
-is unavailable.
+Super Signals is a signal follower. This stage may verify that the terminal can trade and
+that the executable quote being used is still the authorised market price. It must NOT
+turn account balance, equity, free margin or an advisory margin calculation into a local
+trade veto.
+
+Risk is sized independently per provider section/leg by Day 24. The actual Vantage/MT5
+order request is the sole authority on whether the broker can accept that order. This
+keeps paper and future LIVE execution identical and removes an unnecessary network call
+from the time-critical entry path.
 """
 
 from __future__ import annotations
 
-import logging
 from dataclasses import dataclass
 from decimal import Decimal
 
-from app.metaapi_gateway import MetaApiGatewayError
 from app.metaapi_margin_gateway import MetaApiMarginGateway
 from app.mt5_read_service_day23 import Day23LiveState, Day23Mt5ReadService, Day23ReadError
 from app.risk_sizing_day24 import Day24RiskSizingResult
-
-logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True, slots=True)
@@ -43,9 +43,12 @@ class Day25PreflightResult:
 
 
 class Day25TradePreflightService:
-    """Apply the locked one-time entry gate plus best-effort broker margin preflight."""
+    """Verify quote/trading availability only; never impose a local funds veto."""
 
     def __init__(self, *, margin_gateway: MetaApiMarginGateway) -> None:
+        # Retained in the constructor for API compatibility with the execution service.
+        # It is deliberately not called from evaluate(): advisory margin must neither
+        # block nor delay a provider trade before the real broker order is attempted.
         self._margin_gateway = margin_gateway
 
     async def evaluate(
@@ -56,6 +59,7 @@ class Day25TradePreflightService:
         sizing: Day24RiskSizingResult,
         token: str,
     ) -> Day25PreflightResult:
+        del token
         normalized_side = side.strip().upper()
         if normalized_side not in {"BUY", "SELL"}:
             raise ValueError("trade_side_invalid")
@@ -64,7 +68,6 @@ class Day25TradePreflightService:
         signal_entry = sizing.signal_entry_price
         free_margin = self._decimal(live_state.account.free_margin)
         total_volume = sizing.volume * Decimal(sizing.position_count)
-
         if total_volume <= 0:
             raise ValueError("total_volume_invalid")
 
@@ -81,16 +84,14 @@ class Day25TradePreflightService:
                 executable_price=None,
                 entry_available=False,
                 free_margin=free_margin,
-                required_margin=None,
                 sizing=sizing,
                 total_volume=total_volume,
                 price_check_count=1,
-                margin_check_count=0,
             )
 
-        # The caller may substitute an already-authorised live in-zone/tolerance price
-        # into sizing.signal_entry_price.  Day 25 therefore only verifies that the one
-        # executable quote it was handed still matches that authorised price.
+        # The caller may substitute an already-authorised fresh market price into
+        # sizing.signal_entry_price. Day 25 only ensures the same quote is still being
+        # used; it does not reinterpret the provider's trade.
         entry_available = executable_price == signal_entry
         if not entry_available:
             return self._blocked(
@@ -101,11 +102,9 @@ class Day25TradePreflightService:
                 executable_price=executable_price,
                 entry_available=False,
                 free_margin=free_margin,
-                required_margin=None,
                 sizing=sizing,
                 total_volume=total_volume,
                 price_check_count=1,
-                margin_check_count=0,
             )
 
         if not live_state.account.trade_allowed:
@@ -117,53 +116,9 @@ class Day25TradePreflightService:
                 executable_price=executable_price,
                 entry_available=True,
                 free_margin=free_margin,
-                required_margin=None,
                 sizing=sizing,
                 total_volume=total_volume,
                 price_check_count=1,
-                margin_check_count=0,
-            )
-
-        # MetaAPI's calculate-margin endpoint is useful but it is not the broker order
-        # itself.  A timeout/outage here used to discard a valid signal before the
-        # actual broker ever got a chance to accept or reject it.  Make this one-shot
-        # and advisory: a successful calculation can still prevent a known
-        # insufficient-margin order; an unavailable calculation proceeds to the real
-        # broker request, which remains the authority on whether funds are sufficient.
-        required_margin: Decimal | None = None
-        margin_check_count = 1
-        try:
-            required_margin = self._decimal(
-                await self._margin_gateway.calculate_margin(
-                    token=token,
-                    account_id=live_state.metaapi_account_id,
-                    region=live_state.region,
-                    symbol=symbol,
-                    side=normalized_side,
-                    volume=float(total_volume),
-                    open_price=float(executable_price),
-                )
-            )
-        except MetaApiGatewayError as exc:
-            logger.warning(
-                "Margin preflight unavailable code=%s; proceeding to broker authority",
-                exc.code,
-            )
-
-        if required_margin is not None and required_margin > free_margin:
-            return self._blocked(
-                reason="insufficient_funds",
-                side=normalized_side,
-                symbol=symbol,
-                signal_entry=signal_entry,
-                executable_price=executable_price,
-                entry_available=True,
-                free_margin=free_margin,
-                required_margin=required_margin,
-                sizing=sizing,
-                total_volume=total_volume,
-                price_check_count=1,
-                margin_check_count=margin_check_count,
             )
 
         return Day25PreflightResult(
@@ -175,13 +130,13 @@ class Day25TradePreflightService:
             executable_price=executable_price,
             entry_available=True,
             free_margin=free_margin,
-            required_margin=required_margin,
+            required_margin=None,
             position_count=sizing.position_count,
             position_volume=sizing.volume,
             total_volume=total_volume,
             positions_allowed=sizing.position_count,
             price_check_count=1,
-            margin_check_count=margin_check_count,
+            margin_check_count=0,
             all_or_nothing=True,
             trade_action_created=False,
         )
@@ -197,11 +152,9 @@ class Day25TradePreflightService:
         executable_price: Decimal | None,
         entry_available: bool,
         free_margin: Decimal,
-        required_margin: Decimal | None,
         sizing: Day24RiskSizingResult,
         total_volume: Decimal,
         price_check_count: int,
-        margin_check_count: int,
     ) -> Day25PreflightResult:
         return Day25PreflightResult(
             proceed=False,
@@ -212,13 +165,13 @@ class Day25TradePreflightService:
             executable_price=executable_price,
             entry_available=entry_available,
             free_margin=free_margin,
-            required_margin=required_margin,
+            required_margin=None,
             position_count=sizing.position_count,
             position_volume=sizing.volume,
             total_volume=total_volume,
             positions_allowed=0,
             price_check_count=price_check_count,
-            margin_check_count=margin_check_count,
+            margin_check_count=0,
             all_or_nothing=True,
             trade_action_created=False,
         )

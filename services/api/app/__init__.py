@@ -68,6 +68,12 @@ from app.paper_margin_capacity_override import install_paper_margin_capacity_ove
 
 install_paper_margin_capacity_override()
 
+from app.pending_reconciliation_parity_override import (
+    install_pending_reconciliation_parity_override,
+)
+
+install_pending_reconciliation_parity_override()
+
 from app.telegram_revision_serialization import install_telegram_revision_serialization
 
 install_telegram_revision_serialization()

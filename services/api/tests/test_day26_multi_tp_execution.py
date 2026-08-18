@@ -110,12 +110,12 @@ def _patch_states(monkeypatch: pytest.MonkeyPatch, *states: Day23LiveState) -> N
     _FakeDay23.states, _FakeDay23.reads = list(states), 0
 
 
-def test_exact_three_tps_submit_three_orders_and_one_margin(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_exact_three_tps_submit_three_orders_without_margin_veto(monkeypatch: pytest.MonkeyPatch) -> None:
     _patch_states(monkeypatch, _live_state(bid=3999.8, ask=4000.0)); service=_Harness()
     result=asyncio.run(service.execute_owner_demo_signal(owner_user_id=OWNER, signal_id=SIGNAL, risk_percent="1", double_lot_approved=False))
     assert result.signal_entry_price==Decimal("4000") and len(service.trade.calls)==3
     assert [c["take_profit"] for c in service.trade.calls]==[4010.0,4020.0,4030.0]
-    assert len(service.margin.calls)==1 and service.margin.calls[0]["volume"]==0.03
+    assert service.margin.calls==[]
 
 
 def test_exact_mismatch_beyond_tolerance_preserves_day25(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -142,7 +142,7 @@ def test_exact_entry_within_tolerance_fills_and_sizes_off_actual_price(
     # A BUY fills at the ask, and that actual price becomes the sizing basis rather
     # than the provider's 4000, so the stop distance used for sizing is the real one.
     assert result.signal_entry_price==Decimal("3999.8")
-    assert len(service.trade.calls)==3 and len(service.margin.calls)==1
+    assert len(service.trade.calls)==3 and service.margin.calls==[]
 
 
 def test_zero_tolerance_restores_strict_equality(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -180,11 +180,11 @@ def test_zone_expiry_skips(monkeypatch: pytest.MonkeyPatch) -> None:
     assert service.trade.calls==[] and service.margin.calls==[]
 
 
-def test_runner_adds_fourth_position_and_margin(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_runner_adds_fourth_position_without_margin_veto(monkeypatch: pytest.MonkeyPatch) -> None:
     _patch_states(monkeypatch, _live_state(bid=3999.8,ask=4000)); service=_Harness(runner=True)
     result=asyncio.run(service.execute_owner_demo_signal(owner_user_id=OWNER, signal_id=SIGNAL, risk_percent="1", double_lot_approved=False))
     assert len(result.positions)==4 and service.trade.calls[-1]["take_profit"] is None
-    assert service.margin.calls[0]["volume"]==0.04
+    assert service.margin.calls==[]
 
 
 class _CaptureTradeGateway(MetaApiTradeGateway):
