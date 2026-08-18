@@ -69,9 +69,13 @@ def _no_store(response: Response) -> None:
 
 
 def _http_error(exc: OwnerManualCloseError) -> HTTPException:
-    if exc.code in {"owner_manual_position_not_open", "owner_manual_trade_not_open"}:
+    if exc.code in {
+        "owner_manual_position_not_open",
+        "owner_manual_trade_not_open",
+        "owner_manual_all_not_open",
+    }:
         code = status.HTTP_409_CONFLICT
-        message = "That Super Signals position is no longer open. Refresh the account view."
+        message = "Those Super Signals positions are no longer open. Refresh the account view."
     elif exc.code == "owner_manual_close_demo_only":
         code = status.HTTP_403_FORBIDDEN
         message = "Manual close from Super Signals is enabled for the Owner demo account only."
@@ -128,6 +132,21 @@ async def owner_close_trade(
     _owner(identity)
     try:
         result = await _service(request).close_trade(identity["id"], signal_id)
+    except OwnerManualCloseError as exc:
+        raise _http_error(exc) from exc
+    _no_store(response)
+    return _response(result)
+
+
+@router.post("/owner-close-all", response_model=OwnerManualCloseResponse)
+async def owner_close_all(
+    request: Request,
+    response: Response,
+    identity: Identity,
+) -> OwnerManualCloseResponse:
+    _owner(identity)
+    try:
+        result = await _service(request).close_all(identity["id"])
     except OwnerManualCloseError as exc:
         raise _http_error(exc) from exc
     _no_store(response)
