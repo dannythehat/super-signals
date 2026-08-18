@@ -1,8 +1,10 @@
 """Immediate AI-authoritative Telegram decision pipeline.
 
-Every Testing/Live message and edit receives one automatic decision. There is no
-human review wait. OpenAI provides semantic interpretation; the V1 mechanical policy
-is the final authority for what may become executable.
+Every Testing/Live message and meaningful text edit receives one automatic decision.
+Exact duplicate-text edits and textless/media-only posts are recorded deterministically
+instead of paying OpenAI to interpret identical or absent text. There is no human review
+wait. OpenAI provides semantic interpretation; the V1 mechanical policy is the final
+authority for what may become executable.
 """
 
 from __future__ import annotations
@@ -146,17 +148,60 @@ class AiMessagePipeline:
                     ).scalar_one()
                 )
 
+        raw_text = str(row["raw_text"] or "")
+
+        # Telegram frequently emits edit events whose text is byte-for-byte identical
+        # to the previous revision (metadata/media-side changes). Historically every
+        # one of those revisions triggered a full OpenAI request and then could flow
+        # toward broker dispatch. Persist a deterministic no-op decision instead.
+        if revision_index > 0 and previous_text is not None and raw_text == previous_text:
+            decision = self._non_actionable_without_ai(
+                raw_text,
+                reason="identical_text_revision",
+            )
+            self._store_decision(row["message_id"], revision_index, decision)
+            return AiPipelineResult(
+                True,
+                decision.decision,
+                decision.action,
+                existing_signal_id,
+                None,
+                decision.source,
+                decision.reason,
+            )
+
+        # The current OpenAI supervisor receives text only; it is not given Telegram
+        # media bytes. Paying it to interpret an empty string cannot recover a signal
+        # hidden in a photo/document. Record the limitation explicitly so media-only
+        # posts are visible as a critical ingestion gap rather than hidden API spend.
+        if not raw_text.strip():
+            payload = row["raw_payload"] if isinstance(row["raw_payload"], dict) else {}
+            reason = (
+                "media_only_requires_media_ingestion"
+                if bool(payload.get("has_media"))
+                else "empty_message"
+            )
+            decision = self._non_actionable_without_ai(raw_text, reason=reason)
+            self._store_decision(row["message_id"], revision_index, decision)
+            return AiPipelineResult(
+                True,
+                decision.decision,
+                decision.action,
+                existing_signal_id,
+                None,
+                decision.source,
+                decision.reason,
+            )
+
         decision = self._decide(
             source_id=source_id,
             telegram_message_id=telegram_message_id,
             revision_index=revision_index,
-            raw_text=str(row["raw_text"] or ""),
+            raw_text=raw_text,
             source_status=str(row["source_status"]),
             reply_context=reply_context,
             previous_text=previous_text,
         )
-
-        raw_text = str(row["raw_text"] or "")
 
         if revision_index > 0 and existing_signal_id is not None:
             if execution_started:
@@ -237,6 +282,21 @@ class AiMessagePipeline:
             lifecycle_event_id,
             decision.source,
             dispatch_reason,
+        )
+
+    @staticmethod
+    def _non_actionable_without_ai(raw_text: str, *, reason: str) -> AiMessageDecision:
+        return AiMessageDecision(
+            decision="non_actionable",
+            action="skip",
+            confidence=1.0,
+            reason=reason,
+            extracted={},
+            model="deterministic-no-ai-v1",
+            response_id=None,
+            latency_ms=0,
+            source="deterministic_no_ai",
+            raw_text_sha256=sha256(raw_text.encode("utf-8")).hexdigest(),
         )
 
     @staticmethod
