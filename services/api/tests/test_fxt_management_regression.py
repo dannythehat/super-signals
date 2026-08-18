@@ -1,8 +1,5 @@
 from app.ai_message_supervisor import AiMessageDecision
-from app.literal_management_overrides import install_literal_management_overrides
 from app.v1_message_policy import apply_v1_message_policy
-
-install_literal_management_overrides()
 
 import app.day27_management_policy as day27
 
@@ -12,7 +9,7 @@ def _decision() -> AiMessageDecision:
         decision="trade_update",
         action="ignore",
         confidence=1.0,
-        reason="",
+        reason="provider_result_only",
         extracted={
             "symbol": "XAUUSD",
             "side": "BUY",
@@ -40,6 +37,12 @@ def test_fxt_move_gold_stoploss_is_explicit_numeric_management() -> None:
     assert {"type": "edit_stop_loss", "target": "all", "value": "4375"} in result.actions
 
 
+def test_fxt_plural_gold_stoplosses_are_explicit_numeric_management() -> None:
+    raw = "Move all gold stoplosses to 4405 to be safe from wicks."
+    result = day27.extract_day27_management_actions(raw)
+    assert {"type": "edit_stop_loss", "target": "all", "value": "4405"} in result.actions
+
+
 def test_fxt_result_text_does_not_hide_move_sl_back_to_entry() -> None:
     raw = (
         "TP 1 & 2 are BOTH hit ✅\n\n"
@@ -50,14 +53,26 @@ def test_fxt_result_text_does_not_hide_move_sl_back_to_entry() -> None:
     assert {"type": "move_to_break_even", "target": "all", "value": None} in result.actions
 
 
-def test_v1_fxt_result_plus_management_remains_actionable() -> None:
+def test_v1_fxt_result_plus_management_overrides_ai_ignore() -> None:
     raw = (
         "TP 1 & 2 are BOTH hit ✅\n\n"
         "+ 90 pips profit secured as we used double lotsize 🔥🔥🔥\n\n"
         "Move your SL back to entry."
     )
     allowed = apply_v1_message_policy(_decision(), raw_text=raw)
+    assert allowed.decision == "trade_update"
     assert allowed.action == "apply_update"
     assert allowed.extracted["management_actions"] == [
         {"type": "move_to_break_even", "target": "all", "value": None}
     ]
+
+
+def test_gtmo_set_breakeven_nowww_remains_actionable() -> None:
+    raw = "TP1 check set breakeven nowww!!!"
+    allowed = apply_v1_message_policy(_decision(), raw_text=raw)
+    assert allowed.action == "apply_update"
+    assert {
+        "type": "move_to_break_even",
+        "target": "all",
+        "value": None,
+    } in allowed.extracted["management_actions"]
