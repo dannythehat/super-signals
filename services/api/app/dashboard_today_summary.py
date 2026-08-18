@@ -29,6 +29,7 @@ class TodayTradingSummary:
     pending: int
     settling: int
     realised_pnl: Decimal
+    winning_pips: Decimal
     net_pips: Decimal
 
 
@@ -116,7 +117,15 @@ class TodayTradingSummaryService:
                                       AND o.status IN ('won', 'lost', 'breakeven')
                                 ),
                                 0
-                            ) AS known_pips
+                            ) AS known_pips,
+                            COALESCE(
+                                SUM(o.net_pips) FILTER (
+                                    WHERE p.broker_position_id IS NOT NULL
+                                      AND o.status = 'won'
+                                      AND o.net_pips > 0
+                                ),
+                                0
+                            ) AS winning_pips
                         FROM trade_signals AS ts
                         JOIN positions AS p
                           ON p.signal_id = ts.signal_id
@@ -155,6 +164,7 @@ class TodayTradingSummaryService:
                               )
                         )::int AS settling,
                         COALESCE(SUM(known_pnl), 0) AS realised_pnl,
+                        COALESCE(SUM(winning_pips), 0) AS winning_pips,
                         COALESCE(SUM(known_pips), 0) AS net_pips
                     FROM per_trade
                     """
@@ -197,6 +207,7 @@ class TodayTradingSummaryService:
             pending=pending,
             settling=int(row["settling"] or 0),
             realised_pnl=Decimal(str(row["realised_pnl"] or 0)),
+            winning_pips=Decimal(str(row["winning_pips"] or 0)),
             net_pips=Decimal(str(row["net_pips"] or 0)),
         )
 
