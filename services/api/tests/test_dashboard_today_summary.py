@@ -35,12 +35,16 @@ def test_today_summary_contract_counts_signals_not_tp_positions() -> None:
         pending=2,
         settling=0,
         realised_pnl=5.63,
+        winning_pips=349.3,
+        net_pips=56.3,
     )
     payload = response.model_dump(mode="json")
     assert payload["trades"] == 7
     assert payload["wins"] + payload["losses"] + payload["breakeven"] + payload["open"] + payload["settling"] == 7
     assert payload["pending"] == 2
     assert payload["realised_pnl"] == 5.63
+    assert payload["winning_pips"] == 349.3
+    assert payload["net_pips"] == 56.3
     assert payload["broker_trade_action_created"] is False
     assert "provider" not in payload
     assert "source_id" not in payload
