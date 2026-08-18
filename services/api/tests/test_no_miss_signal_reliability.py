@@ -73,6 +73,30 @@ def test_true_close_or_be_choice_remains_protective_not_forced_exit() -> None:
     assert CLOSE_ALL not in result.actions
 
 
+def test_fxtradingvision_plural_gold_stoplosses_are_actionable() -> None:
+    result = explicit_literal_management(
+        "Move all gold stoplosses to 4405 to be safe from wicks.",
+        fallback=extract_day27_management_actions,
+    )
+    assert {"type": "edit_stop_loss", "target": "all", "value": "4405"} in result.actions
+
+
+def test_fxtradingvision_plural_stoplosses_without_all_are_actionable() -> None:
+    result = explicit_literal_management(
+        "Move gold stoplosses to 4395.",
+        fallback=extract_day27_management_actions,
+    )
+    assert {"type": "edit_stop_loss", "target": "all", "value": "4395"} in result.actions
+
+
+def test_tdc_risk_free_typo_with_explicit_price_is_actionable() -> None:
+    result = explicit_literal_management(
+        "+20\n\nRISK FREEE 4393",
+        fallback=extract_day27_management_actions,
+    )
+    assert {"type": "edit_stop_loss", "target": "all", "value": "4393"} in result.actions
+
+
 def test_literal_management_is_promoted_even_when_ai_called_it_chatter(monkeypatch) -> None:
     def no_management(_raw_text: str) -> Day27ManagementPolicyResult:
         return Day27ManagementPolicyResult((), "unsupported_management")
