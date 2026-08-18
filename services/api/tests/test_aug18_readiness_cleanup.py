@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from decimal import Decimal
 from types import SimpleNamespace
 from uuid import uuid4
 
 import app.performance_account_truth_override as account_truth
 import app.telegram_publisher as publisher
+from app.paper_critical_management_v2 import PaperCriticalManagementV2
 
 
 def test_sparse_signal_publication_never_crashes_decimal_rendering() -> None:
@@ -22,6 +24,17 @@ def test_sparse_signal_publication_never_crashes_decimal_rendering() -> None:
     rendered = publisher.render_signal_post(row)
     assert "Entry: N/A" in rendered
     assert "Stop Loss: N/A" in rendered
+
+
+def test_provider_numeric_risk_free_stop_is_not_semantically_vetoed() -> None:
+    """Regression for TDC 6665: literal 4357 must target the surviving best layer."""
+    surviving = SimpleNamespace(entry_index=2, entry_price=Decimal("4358"))
+    selected = PaperCriticalManagementV2._select_layer_positions(
+        (surviving,),
+        "best_entry_risk_free_4357",
+        side="BUY",
+    )
+    assert selected == (surviving,)
 
 
 class _Result:
