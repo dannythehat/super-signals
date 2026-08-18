@@ -15,3 +15,7 @@ install_plain_range_order_type_override()
 from app.deterministic_first_ai import install_deterministic_first_ai
 
 install_deterministic_first_ai()
+
+from app.market_at_best_price_override import install_market_at_best_price_override
+
+install_market_at_best_price_override()
