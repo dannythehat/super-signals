@@ -24,7 +24,9 @@ Identity = Annotated[dict[str, Any], Depends(get_current_identity)]
 
 
 class ManualActionResponse(BaseModel):
-    audit_id: UUID
+    # audit_events.id is a PostgreSQL bigint. It was previously typed as UUID here,
+    # which made an otherwise successful reconciliation response fail validation.
+    audit_id: int
     position_id: UUID
     action_type: str
     label: str
