@@ -9,6 +9,7 @@ import pytest
 
 from app.day28_zone_guard import Day28ZoneGuardTradeGateway
 from app.mt5_execution_day26 import Day26Mt5ExecutionService
+from app.paper_critical_execution import PaperCriticalExecutionService
 from app.telegram_listener_day21 import Day21TelegramListenerManager
 from app.telegram_listener_day38 import PaperPendingAwareListenerManager
 
@@ -158,3 +159,79 @@ def test_recovered_unresolved_management_is_not_repeatedly_dispatched() -> None:
         )
     )
     assert harness._day28_router.resolve_calls == 1
+
+
+class _HiddenMutationRead:
+    def __init__(self, client_id: str) -> None:
+        self.client_id = client_id
+
+    async def read_positions(self, **kwargs):
+        return [{"id": "hidden-position-1", "clientId": self.client_id}]
+
+    async def read_orders(self, **kwargs):
+        return []
+
+
+class _HiddenMutationTrade:
+    def __init__(self) -> None:
+        self.closed: list[str] = []
+
+    async def close_position(self, *, position_id: str, **kwargs):
+        self.closed.append(position_id)
+
+    async def cancel_order(self, **kwargs):
+        raise AssertionError("hidden position should be closed, not cancelled")
+
+
+class _WriteSession:
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        return False
+
+    def execute(self, *args, **kwargs):
+        return None
+
+    def commit(self):
+        return None
+
+
+class _TimeoutRollbackHarness:
+    def __init__(self, client_id: str) -> None:
+        self._read_gateway = _HiddenMutationRead(client_id)
+        self._trade_gateway = _HiddenMutationTrade()
+        self._session_factory = lambda: _WriteSession()
+        self.audits: list[dict[str, object]] = []
+
+    def _audit(self, **kwargs):
+        self.audits.append(kwargs)
+
+
+def test_timeout_reconciliation_cleans_hidden_unreturned_broker_position() -> None:
+    """A timed-out POST is reconciled by clientId; the trade is never retried."""
+    local_id = uuid4()
+    client_id = "SS_abcdef123456_E1T1"
+    planned = (
+        SimpleNamespace(local_id=local_id, client_id=client_id),
+    )
+    harness = _TimeoutRollbackHarness(client_id)
+
+    complete = asyncio.run(
+        PaperCriticalExecutionService._rollback_critical(
+            harness,
+            owner_user_id=uuid4(),
+            signal=SimpleNamespace(signal_id=uuid4()),
+            account=SimpleNamespace(metaapi_account_id="account"),
+            token="token",
+            region="london",
+            planned=planned,
+            submitted={},
+            reason="metaapi_timeout",
+        )
+    )
+
+    assert complete is True
+    assert harness._trade_gateway.closed == ["hidden-position-1"]
+    assert harness.audits[-1]["payload"]["hidden_mutations_detected"] == 1
+    assert harness.audits[-1]["payload"]["automatic_retry"] is False
