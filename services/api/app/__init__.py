@@ -75,3 +75,7 @@ install_telegram_fast_ingress()
 from app.performance_account_truth_override import install_performance_account_truth_override
 
 install_performance_account_truth_override()
+
+from app.account_truth_poll_override import install_account_truth_poll_override
+
+install_account_truth_poll_override()
