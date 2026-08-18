@@ -103,3 +103,7 @@ install_aug18_trade_capture_overrides()
 from app.aug18_readiness_cleanup import install_aug18_readiness_cleanup
 
 install_aug18_readiness_cleanup()
+
+from app.post_execution_edit_fidelity import install_post_execution_edit_fidelity
+
+install_post_execution_edit_fidelity()
