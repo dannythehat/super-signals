@@ -19,3 +19,7 @@ install_deterministic_first_ai()
 from app.market_at_best_price_override import install_market_at_best_price_override
 
 install_market_at_best_price_override()
+
+from app.paper_live_entry_guard import install_paper_live_entry_guard
+
+install_paper_live_entry_guard()
