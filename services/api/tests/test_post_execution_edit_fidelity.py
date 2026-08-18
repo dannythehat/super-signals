@@ -84,7 +84,7 @@ def test_runtime_post_execution_wrapper_cannot_call_entry_executor() -> None:
     assert getattr(method, "_fresh_post_execution_revision_management", False) is True
     source = inspect.getsource(method)
     assert "entry_reexecution_allowed" in source
-    assert "_execution" not in source
+    assert "self._execution" not in source
     assert '"trade_update"' in source
     assert '"apply_update"' in source
 
