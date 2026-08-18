@@ -17,6 +17,7 @@ from uuid import UUID
 
 from sqlalchemy import text
 
+from app.metaapi_read_gateway import MetaApiReadGateway
 from app.mt5_crypto import BrokerCredentialDecryptionError
 from app.mt5_execution_day26 import (
     Day26ExecutionError,
@@ -25,10 +26,20 @@ from app.mt5_execution_day26 import (
     _SignalInput,
 )
 from app.paper_fresh_start_execution import PaperFreshStartExecutionService
+from app.paper_resilient_read_gateway import ResilientMetaApiReadGateway
 
 
 class Day38LiveUserExecutionService(PaperFreshStartExecutionService):
     """Run the exact paper-tested trading engine against one approved LIVE account."""
+
+    def __init__(self, **kwargs) -> None:
+        # Production wiring historically supplied a plain MetaApiReadGateway to LIVE
+        # members while paper used bounded idempotent GET retries. Normalise only the
+        # concrete production gateway; unit-test/fake gateways remain injectable.
+        read_gateway = kwargs.get("read_gateway")
+        if type(read_gateway) is MetaApiReadGateway:
+            kwargs["read_gateway"] = ResilientMetaApiReadGateway()
+        super().__init__(**kwargs)
 
     async def execute_live_user_signal(
         self,
