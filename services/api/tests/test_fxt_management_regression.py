@@ -43,14 +43,18 @@ def test_fxt_plural_gold_stoplosses_are_explicit_numeric_management() -> None:
     assert {"type": "edit_stop_loss", "target": "all", "value": "4405"} in result.actions
 
 
-def test_fxt_result_text_does_not_hide_move_sl_back_to_entry() -> None:
+def test_fxt_result_text_closes_hit_tps_before_move_to_entry() -> None:
     raw = (
         "TP 1 & 2 are BOTH hit ✅\n\n"
         "+ 90 pips profit secured as we used double lotsize 🔥🔥🔥\n\n"
         "Move your SL back to entry."
     )
     result = day27.extract_day27_management_actions(raw)
-    assert {"type": "move_to_break_even", "target": "all", "value": None} in result.actions
+    assert result.actions == (
+        {"type": "close", "target": "tp1", "value": None},
+        {"type": "close", "target": "tp2", "value": None},
+        {"type": "move_to_break_even", "target": "all", "value": None},
+    )
 
 
 def test_v1_fxt_result_plus_management_overrides_ai_ignore() -> None:
@@ -63,7 +67,19 @@ def test_v1_fxt_result_plus_management_overrides_ai_ignore() -> None:
     assert allowed.decision == "trade_update"
     assert allowed.action == "apply_update"
     assert allowed.extracted["management_actions"] == [
-        {"type": "move_to_break_even", "target": "all", "value": None}
+        {"type": "close", "target": "tp1", "value": None},
+        {"type": "close", "target": "tp2", "value": None},
+        {"type": "move_to_break_even", "target": "all", "value": None},
+    ]
+
+
+def test_standalone_tp_hit_closes_exact_tranche_if_still_open() -> None:
+    raw = "TP2 HIT ✅"
+    allowed = apply_v1_message_policy(_decision(), raw_text=raw)
+    assert allowed.decision == "trade_update"
+    assert allowed.action == "apply_update"
+    assert allowed.extracted["management_actions"] == [
+        {"type": "close", "target": "tp2", "value": None}
     ]
 
 
