@@ -71,3 +71,7 @@ install_telegram_revision_serialization()
 from app.telegram_fast_ingress import install_telegram_fast_ingress
 
 install_telegram_fast_ingress()
+
+from app.performance_account_truth_override import install_performance_account_truth_override
+
+install_performance_account_truth_override()
