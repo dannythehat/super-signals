@@ -1,9 +1,8 @@
-"""Fast read-only summary for the dashboard's live Today strip.
+"""Fast broker-backed summary for the dashboard's live Today strip.
 
-A trade is one signal that actually produced at least one broker position. TP tranches do
-not inflate the trade count. Pending-only broker orders are reported separately until
-filled. Completed signal outcomes are derived only from broker-backed position outcomes;
-unknown reconciliation state is labelled settling rather than guessed as breakeven.
+One provider signal is one trade even when it has several TP legs. Cash P/L and pips are
+derived from the same broker-backed outcomes. Account balance movements are reconciled
+separately so a credit/reset/correction can never masquerade as trading profit.
 """
 
 from __future__ import annotations
@@ -31,6 +30,11 @@ class TodayTradingSummary:
     realised_pnl: Decimal
     winning_pips: Decimal
     net_pips: Decimal
+    balance_change: Decimal | None
+    account_adjustment: Decimal | None
+    reconciliation_gap: Decimal | None
+    reconciliation_ready: bool
+    reconciled: bool
 
 
 def local_day_bounds(
@@ -86,6 +90,28 @@ class TodayTradingSummaryService:
                         HAVING MIN(COALESCE(p.opened_at, p.created_at)) >= :start_utc
                            AND MIN(COALESCE(p.opened_at, p.created_at)) < :end_utc
                     ),
+                    outcome_values AS (
+                        SELECT
+                            o.*,
+                            COALESCE(
+                                o.net_pips,
+                                CASE
+                                    WHEN UPPER(o.symbol) = 'XAUUSD'
+                                     AND o.entry_price IS NOT NULL
+                                     AND o.exit_price IS NOT NULL
+                                    THEN CASE
+                                        WHEN UPPER(o.side) = 'BUY'
+                                            THEN (o.exit_price - o.entry_price) / 0.1
+                                        WHEN UPPER(o.side) = 'SELL'
+                                            THEN (o.entry_price - o.exit_price) / 0.1
+                                        ELSE NULL
+                                    END
+                                    ELSE NULL
+                                END
+                            ) AS effective_pips
+                        FROM performance_trade_outcomes AS o
+                        WHERE o.user_id = :user_id
+                    ),
                     per_trade AS (
                         SELECT
                             ts.signal_id,
@@ -112,17 +138,17 @@ class TodayTradingSummaryService:
                                 0
                             ) AS known_pnl,
                             COALESCE(
-                                SUM(o.net_pips) FILTER (
+                                SUM(o.effective_pips) FILTER (
                                     WHERE p.broker_position_id IS NOT NULL
                                       AND o.status IN ('won', 'lost', 'breakeven')
                                 ),
                                 0
                             ) AS known_pips,
                             COALESCE(
-                                SUM(o.net_pips) FILTER (
+                                SUM(o.effective_pips) FILTER (
                                     WHERE p.broker_position_id IS NOT NULL
                                       AND o.status = 'won'
-                                      AND o.net_pips > 0
+                                      AND o.effective_pips > 0
                                 ),
                                 0
                             ) AS winning_pips
@@ -130,9 +156,8 @@ class TodayTradingSummaryService:
                         JOIN positions AS p
                           ON p.signal_id = ts.signal_id
                          AND p.user_id = :user_id
-                        LEFT JOIN performance_trade_outcomes AS o
+                        LEFT JOIN outcome_values AS o
                           ON o.position_id = p.id
-                         AND o.user_id = p.user_id
                         GROUP BY ts.signal_id
                     )
                     SELECT
@@ -196,6 +221,86 @@ class TodayTradingSummaryService:
                 ).scalar_one()
                 or 0
             )
+            reconciliation_ready = bool(
+                session.execute(
+                    text(
+                        """
+                        SELECT 1
+                        FROM audit_events
+                        WHERE actor_user_id=:user_id
+                          AND event_type='mt5.performance_full_history_backfilled'
+                        LIMIT 1
+                        """
+                    ),
+                    {"user_id": user_id},
+                ).scalar_one_or_none()
+            )
+            account_row = session.execute(
+                text(
+                    """
+                    WITH first_snapshot AS (
+                        SELECT balance,captured_at
+                        FROM performance_account_snapshots
+                        WHERE user_id=:user_id
+                          AND captured_at>=:start_utc
+                          AND captured_at<:end_utc
+                        ORDER BY captured_at ASC
+                        LIMIT 1
+                    ),
+                    last_snapshot AS (
+                        SELECT balance,captured_at
+                        FROM performance_account_snapshots
+                        WHERE user_id=:user_id
+                          AND captured_at>=:start_utc
+                          AND captured_at<:end_utc
+                        ORDER BY captured_at DESC
+                        LIMIT 1
+                    )
+                    SELECT
+                        f.balance AS opening_balance,
+                        l.balance AS closing_balance,
+                        f.captured_at AS first_at,
+                        l.captured_at AS last_at,
+                        COALESCE((
+                            SELECT SUM(d.profit+d.commission+d.swap)
+                            FROM broker_deals d
+                            WHERE d.user_id=:user_id
+                              AND d.occurred_at>f.captured_at
+                              AND d.occurred_at<=l.captured_at
+                              AND d.broker_position_id IS NULL
+                              AND d.symbol IS NULL
+                              AND UPPER(COALESCE(d.entry_type,'')) NOT LIKE 'DEAL_ENTRY_%'
+                        ),0) AS account_adjustment,
+                        COALESCE((
+                            SELECT SUM(d.profit+d.commission+d.swap)
+                            FROM broker_deals d
+                            WHERE d.user_id=:user_id
+                              AND d.occurred_at>f.captured_at
+                              AND d.occurred_at<=l.captured_at
+                        ),0) AS all_deal_cash
+                    FROM first_snapshot f CROSS JOIN last_snapshot l
+                    """
+                ),
+                {"user_id": user_id, "start_utc": start_utc, "end_utc": end_utc},
+            ).mappings().first()
+
+        balance_change: Decimal | None = None
+        account_adjustment: Decimal | None = None
+        reconciliation_gap: Decimal | None = None
+        reconciled = False
+        if (
+            account_row is not None
+            and account_row["first_at"] != account_row["last_at"]
+            and reconciliation_ready
+        ):
+            balance_change = Decimal(str(account_row["closing_balance"])) - Decimal(
+                str(account_row["opening_balance"])
+            )
+            account_adjustment = Decimal(str(account_row["account_adjustment"] or 0))
+            reconciliation_gap = balance_change - Decimal(
+                str(account_row["all_deal_cash"] or 0)
+            )
+            reconciled = abs(reconciliation_gap) <= Decimal("0.01")
 
         return TodayTradingSummary(
             timezone=resolved_timezone,
@@ -209,6 +314,11 @@ class TodayTradingSummaryService:
             realised_pnl=Decimal(str(row["realised_pnl"] or 0)),
             winning_pips=Decimal(str(row["winning_pips"] or 0)),
             net_pips=Decimal(str(row["net_pips"] or 0)),
+            balance_change=balance_change,
+            account_adjustment=account_adjustment,
+            reconciliation_gap=reconciliation_gap,
+            reconciliation_ready=reconciliation_ready,
+            reconciled=reconciled,
         )
 
 
