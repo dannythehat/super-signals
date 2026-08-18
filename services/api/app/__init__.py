@@ -90,6 +90,12 @@ from app.account_truth_poll_override import install_account_truth_poll_override
 
 install_account_truth_poll_override()
 
+from app.ambiguous_trade_reconciliation_override import (
+    install_ambiguous_trade_reconciliation_override,
+)
+
+install_ambiguous_trade_reconciliation_override()
+
 from app.aug18_trade_capture_overrides import install_aug18_trade_capture_overrides
 
 install_aug18_trade_capture_overrides()
