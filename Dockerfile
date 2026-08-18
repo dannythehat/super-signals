@@ -31,6 +31,7 @@ COPY services/api/requirements.txt ./services/api/requirements.txt
 RUN python -m pip install --no-cache-dir -r requirements-dev.txt
 COPY pytest.ini ./
 COPY services/api ./services/api
+COPY scripts/render-start.sh ./scripts/render-start.sh
 RUN python -m compileall -q services/api/app services/api/migrations \
     && python -m pytest services/api/tests \
     && touch /quality/.day40-api-quality-passed
