@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 
 import { ManualMt5ActivityDay36 } from './ManualMt5ActivityDay36';
+import { OwnerCloseAllButton, OwnerPositionCloseButton } from './OwnerInlineCloseControls';
 import { TradeTimeline } from './TradeTimeline';
 
 type DashboardConnection = {
@@ -226,6 +227,7 @@ export function MobileDashboard({ apiBaseUrl, displayName, roleLabel, onOpenSett
   const doubleLotText = data.trading.allow_double_lot === null ? null : data.trading.allow_double_lot ? `Double-lot ON · ${data.trading.effective_double_lot_risk_percent}% effective` : 'Double-lot OFF';
   const memberKicker = roleLabel.toLowerCase().includes('user') ? 'Your account' : roleLabel;
   const hasCompletedResults = data.win_loss.known_results > 0;
+  const isOwnerDemo = roleLabel.toLowerCase().includes('owner') && data.connection.account_environment === 'demo';
 
   return <section className="day32-dashboard" aria-labelledby="day32-home-title">
     <div className="day32-dashboard-head">
@@ -263,11 +265,14 @@ export function MobileDashboard({ apiBaseUrl, displayName, roleLabel, onOpenSett
 
     <section className="day32-section" aria-labelledby="open-positions-title">
       <div className="day32-section-head"><div><span>Live account</span><h2 id="open-positions-title">Open positions</h2></div><strong className={`day32-open-profit ${pnlClass(data.open_profit)}`}>{money(data.open_profit, currency)}</strong></div>
-      {data.open_positions.length === 0 ? <div className="day32-empty"><strong>No active Super Signals positions</strong><span>Trades placed by Super Signals will appear here when they are open.</span></div> : <div className="day32-position-list">{data.open_positions.map((position) => <article className="day32-position-card" key={position.position_id}>
-        <div className="day32-position-title"><div><span className={`day32-side day32-side--${position.side.toLowerCase()}`}>{position.side}</span><strong>{position.symbol}</strong><small>TP{position.tp_index} · {position.volume} lots</small></div><strong className={pnlClass(position.profit)}>{money(position.profit, currency)}</strong></div>
-        <dl><div><dt>Entry</dt><dd>{price(position.entry_price)}</dd></div><div><dt>Now</dt><dd>{price(position.current_price)}</dd></div><div><dt>SL</dt><dd>{price(position.stop_loss)}</dd></div><div><dt>TP</dt><dd>{price(position.take_profit)}</dd></div></dl>
-        <small className="day32-position-risk">Risk {position.planned_risk_percent}% · Opened {shortTime(position.opened_at)}</small>
-      </article>)}</div>}
+      {data.open_positions.length === 0 ? <div className="day32-empty"><strong>No active Super Signals positions</strong><span>Trades placed by Super Signals will appear here when they are open.</span></div> : <>
+        <div className="day32-position-list">{data.open_positions.map((position) => <article className="day32-position-card" key={position.position_id}>
+          <div className="day32-position-title"><div><span className={`day32-side day32-side--${position.side.toLowerCase()}`}>{position.side}</span><strong>{position.symbol}</strong><small>TP{position.tp_index} · {position.volume} lots</small></div><strong className={pnlClass(position.profit)}>{money(position.profit, currency)}</strong></div>
+          <dl><div><dt>Entry</dt><dd>{price(position.entry_price)}</dd></div><div><dt>Now</dt><dd>{price(position.current_price)}</dd></div><div><dt>SL</dt><dd>{price(position.stop_loss)}</dd></div><div><dt>TP</dt><dd>{price(position.take_profit)}</dd></div></dl>
+          <div className="owner-position-card-footer"><small className="day32-position-risk">Risk {position.planned_risk_percent}% · Opened {shortTime(position.opened_at)}</small>{isOwnerDemo && <OwnerPositionCloseButton apiBaseUrl={apiBaseUrl} positionId={position.position_id} symbol={position.symbol} tpIndex={position.tp_index} />}</div>
+        </article>)}</div>
+        {isOwnerDemo && <OwnerCloseAllButton apiBaseUrl={apiBaseUrl} openCount={data.open_positions.length} />}
+      </>}
     </section>
 
     <div className="day32-two-column">
