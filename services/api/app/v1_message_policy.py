@@ -219,16 +219,21 @@ def apply_v1_message_policy(
         )
         side = str(extracted.get("side") or "").strip().upper()
 
+        # Preserve the historical public contract: if the caller cannot prove signal
+        # state, or the edit is not a genuine text progression, it cannot create a trade.
         if is_edit and original_has_signal is None:
-            return _skip(decision, "edit_signal_state_unknown", extracted)
-        edit_completed_first_trade = is_edit and original_has_signal is False
-        if edit_completed_first_trade and not _same_trade_progressive_edit(
-            previous_text,
-            side=side,
-            entry_low=entry_low,
-            entry_high=entry_high,
-        ):
             return _skip(decision, "edit_cannot_create_first_trade", extracted)
+        edit_completed_first_trade = is_edit and original_has_signal is False
+        if edit_completed_first_trade:
+            if previous_text is None or previous_text.strip() == text.strip():
+                return _skip(decision, "edit_cannot_create_first_trade", extracted)
+            if not _same_trade_progressive_edit(
+                previous_text,
+                side=side,
+                entry_low=entry_low,
+                entry_high=entry_high,
+            ):
+                return _skip(decision, "edit_cannot_create_first_trade", extracted)
 
         if _INSTRUMENT.search(text) is None:
             return _skip(decision, "missing_instrument", extracted)
