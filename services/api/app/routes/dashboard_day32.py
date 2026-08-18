@@ -118,6 +118,7 @@ class ActivityResponse(BaseModel):
 
 class TodayTradingSummaryResponse(BaseModel):
     timezone: str
+    session_started_at: datetime
     trades: int
     wins: int
     losses: int
@@ -128,6 +129,9 @@ class TodayTradingSummaryResponse(BaseModel):
     realised_pnl: float
     winning_pips: float
     net_pips: float
+    balance_adjustment: float | None
+    reconciliation_ready: bool
+    reconciled: bool
     broker_trade_action_created: bool = False
 
 
@@ -202,6 +206,7 @@ def account_dashboard_today(
     _no_store(response)
     return TodayTradingSummaryResponse(
         timezone=summary.timezone,
+        session_started_at=summary.session_started_at,
         trades=summary.trades,
         wins=summary.wins,
         losses=summary.losses,
@@ -212,6 +217,13 @@ def account_dashboard_today(
         realised_pnl=float(summary.realised_pnl),
         winning_pips=float(summary.winning_pips),
         net_pips=float(summary.net_pips),
+        balance_adjustment=(
+            float(summary.balance_adjustment)
+            if summary.balance_adjustment is not None
+            else None
+        ),
+        reconciliation_ready=summary.reconciliation_ready,
+        reconciled=summary.reconciled,
     )
 
 
