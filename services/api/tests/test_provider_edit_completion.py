@@ -35,6 +35,11 @@ def _trade_decision(**extracted) -> AiMessageDecision:
 
 
 def test_tdc_complete_trade_edit_can_create_first_signal() -> None:
+    previous_text = """Buy Gold Now
+
+4396.5 - 4391.5
+
+TP 4399"""
     raw_text = """Buy Gold Now
 
 4396.5 - 4391.5
@@ -56,13 +61,16 @@ SL 4388"""
         raw_text=raw_text,
         is_edit=True,
         original_has_signal=False,
-        previous_text="Buy Gold Now",
+        previous_text=previous_text,
     )
     assert result.action == "execute"
-    assert result.reason == "v1_complete_zone_signal_from_complete_edit"
+    assert result.reason == "v1_complete_zone_signal_from_structured_edit"
 
 
 def test_incomplete_trade_edit_still_fails_closed() -> None:
+    previous_text = """Buy Gold Now
+
+4396.5 - 4391.5"""
     raw_text = """Buy Gold Now
 
 4396.5 - 4391.5
@@ -78,7 +86,7 @@ TP 4399"""
         raw_text=raw_text,
         is_edit=True,
         original_has_signal=False,
-        previous_text="Buy Gold Now",
+        previous_text=previous_text,
     )
     assert result.action == "skip"
     assert result.reason == "missing_sl"
