@@ -103,7 +103,14 @@ class PaperFreshStartExecutionService(PaperExecutionPriorityService):
     ) -> Day24RiskSizingResult:
         """Undo the legacy layer balance split before deterministic Day24 sizing."""
         section_count = max(1, _full_risk_section_count.get())
-        full_balance = float(Decimal(str(balance)) * Decimal(section_count))
+        reconstructed = Decimal(str(balance)) * Decimal(section_count)
+        # Vantage's USD account balance is currency-denominated. The inherited layer
+        # split crosses a float boundary, so 2000 / 6 can return as 1999.9999999999998
+        # after reconstruction. Remove only that binary-float dust at currency precision;
+        # do not alter the broker's fresh balance for ordinary single-section signals.
+        if section_count > 1:
+            reconstructed = reconstructed.quantize(Decimal("0.01"))
+        full_balance = float(reconstructed)
         return super()._size_signal(
             signal=signal,
             execution_entry=execution_entry,
