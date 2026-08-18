@@ -1,10 +1,10 @@
 """Keep observed TGC present-tense numeric entries out of deterministic chatter.
 
 TGC frequently writes informal entry instructions such as ``Im selling 4390`` and
-occasionally misspells them (``Im seling 4390``) or splits the verb onto a new line.
-These forms are trade-like and must reach semantic interpretation. This override does
-not invent SL/TP and therefore does not make incomplete TGC entries executable by
-itself.
+occasionally misspells them (``Im seling 4390``, ``Im sellimg 4392``) or splits the
+verb onto a new line. These forms are trade-like and must reach semantic interpretation.
+This override does not invent SL/TP and therefore does not make incomplete TGC entries
+executable by itself.
 """
 
 from __future__ import annotations
@@ -13,7 +13,7 @@ import re
 
 _TGC_NUMERIC_ENTRY = re.compile(
     r"\b(?:I\s*['’]?\s*M|I\s+AM)\s+"
-    r"(BUYING|SELLING|SELING)\s+"
+    r"(BUYING|SELLING|SELING|SELLIMG)\s+"
     r"(?:(?:NOW|IF\s+WE\s+TAP(?:\s+IT)?)\s+)?"
     r"(?:(?:GOLD|XAUUSD)\s+)?"
     r"(\d+(?:\.\d+)?)\b",
