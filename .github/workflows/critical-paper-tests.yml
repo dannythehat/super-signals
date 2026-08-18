@@ -1,0 +1,48 @@
+name: Critical paper branch verification
+
+on:
+  push:
+    branches:
+      - feature/day-10-shared-telegram-sources
+  pull_request:
+    branches:
+      - main
+      - feature/day-10-shared-telegram-sources
+
+permissions:
+  contents: read
+
+jobs:
+  api:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:18
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: super_signals_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d super_signals_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
+    env:
+      DATABASE_URL: postgresql+psycopg://postgres:postgres@localhost:5432/super_signals_test
+      OWNER_EMAIL: owner@example.com
+      OWNER_DISPLAY_NAME: Owner
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - name: Install API and test dependencies
+        run: |
+          python -m pip install -r services/api/requirements.txt
+          python -m pip install pytest pytest-asyncio
+      - name: Compile API
+        run: PYTHONPATH=services/api python -m compileall -q services/api/app services/api/migrations services/api/tests
+      - name: Run API tests
+        run: PYTHONPATH=services/api python -m pytest -q services/api/tests
