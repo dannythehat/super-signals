@@ -28,6 +28,10 @@ from app.preserve_broker_protection_override import install_preserve_broker_prot
 
 install_preserve_broker_protection_override()
 
+from app.breakeven_tp_repair import install_breakeven_tp_repair
+
+install_breakeven_tp_repair()
+
 from app.paper_live_entry_guard import install_paper_live_entry_guard
 
 install_paper_live_entry_guard()
