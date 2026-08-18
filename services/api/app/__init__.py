@@ -24,6 +24,10 @@ from app.bare_gold_now_override import install_bare_gold_now_override
 
 install_bare_gold_now_override()
 
+from app.preserve_broker_protection_override import install_preserve_broker_protection_override
+
+install_preserve_broker_protection_override()
+
 from app.paper_live_entry_guard import install_paper_live_entry_guard
 
 install_paper_live_entry_guard()
