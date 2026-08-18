@@ -12,6 +12,8 @@ import os
 from datetime import UTC, datetime, timedelta
 from uuid import UUID
 
+from app.telegram_entity_recovery import install_telegram_entity_recovery
+
 _installed = False
 
 
@@ -47,8 +49,15 @@ def _after(value: datetime | None, cutoff: datetime) -> bool:
 
 
 def install_paper_fresh_run_reset() -> bool:
-    """Install read-only Owner reset filters once when a valid cutoff is configured."""
+    """Install Telegram recovery and Owner reset filters once when configured."""
     global _installed
+
+    # This listener-reliability correction is independent of the display reset. The
+    # Day38 builder always calls this startup hook, including while broker execution is
+    # paused, so cold Telethon sessions can rebuild channel access hashes before gap
+    # recovery is needed.
+    install_telegram_entity_recovery()
+
     if _installed:
         return True
 

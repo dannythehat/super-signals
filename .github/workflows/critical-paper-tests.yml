@@ -7,6 +7,7 @@ on:
       - feature/execution-catchup-20260817
       - feature/fresh-paper-stabilization-20260818
       - feature/paper-fresh-run-reset-20260818
+      - feature/telegram-entity-recovery-20260818
   pull_request:
     branches:
       - feature/day-10-shared-telegram-sources
