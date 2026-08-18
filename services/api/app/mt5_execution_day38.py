@@ -225,7 +225,6 @@ class Day38LiveUserExecutionService(PaperFreshStartExecutionService):
                     m.metaapi_account_id,
                     m.metaapi_token_ciphertext,
                     m.account_environment,
-                    m.status,
                     m.login,
                     m.server,
                     a.login AS approved_login,
@@ -268,8 +267,6 @@ class Day38LiveUserExecutionService(PaperFreshStartExecutionService):
     def _validate_live_account_row(row) -> None:  # noqa: ANN001
         if str(row["account_environment"] or "").lower() != "live":
             raise Day26ExecutionError("day38_live_account_required")
-        if str(row["status"] or "") != "connected":
-            raise Day26ExecutionError("mt5_account_not_connected")
         if str(row["login"] or "") != str(row["approved_login"] or ""):
             raise Day26ExecutionError("mt5_account_not_approved")
         if str(row["server"] or "").strip().lower() != str(
