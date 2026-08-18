@@ -14,10 +14,10 @@ from typing import Any
 
 from app.day27_management_policy import Day27ManagementPolicyResult
 
-# Observed FXTradingVision forms include both singular and plural stoploss wording:
-# "Move gold stoploss to 4375" and "Move all gold stoplosses to 4405".
+# Observed provider forms include MOVE/SET/CHANGE/UPDATE as well as GTMO's literal
+# "place the SL at 4385". PLACE is an imperative broker instruction, not commentary.
 _NUMERIC_STOP = re.compile(
-    r"\b(?:MOVE|SET|CHANGE|UPDATE)\s+"
+    r"\b(?:MOVE|SET|CHANGE|UPDATE|PLACE)\s+"
     r"(?:ALL\s+)?"
     r"(?:(?:THE|YOUR|MY|OUR)\s+)?"
     r"(?:(?:GOLD|XAUUSD)\s+)?"
