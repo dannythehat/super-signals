@@ -85,8 +85,8 @@ def test_six_section_signal_sizes_each_section_from_full_balance() -> None:
         double_lot_approved=False,
     )
 
-    assert actual.risk_budget == expected.risk_budget
-    assert actual.actual_risk == expected.actual_risk
+    assert actual.risk_budget_per_position == expected.risk_budget_per_position
+    assert actual.actual_risk_per_position == expected.actual_risk_per_position
     assert actual.volume == expected.volume
     assert actual.effective_risk_percent == Decimal("1")
-    assert actual.risk_budget == Decimal("20")
+    assert actual.risk_budget_per_position == Decimal("20")
