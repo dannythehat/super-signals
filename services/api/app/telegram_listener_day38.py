@@ -17,6 +17,7 @@ from app.mt5_crypto import MetaApiTokenCipher
 from app.mt5_execution_day38 import Day38LiveUserExecutionService
 from app.mt5_management_day38 import Day38LiveUserManagementService
 from app.paper_critical_management_v2 import PaperCriticalManagementV2
+from app.paper_fresh_run_reset import install_paper_fresh_run_reset
 from app.paper_fresh_start_execution import PaperFreshStartExecutionService
 from app.paper_pending_reconciler import PaperPendingReconciler
 from app.paper_resilient_read_gateway import PaperResilientMetaApiReadGateway
@@ -50,6 +51,10 @@ def build_day38_execution_router_from_env(
     session_factory: sessionmaker[Session],
 ) -> DatabaseSourceDay38FullExecutionRouter | None:
     """Build automatic execution using durable DB source status as source eligibility."""
+    # A paper reset is a read-only display boundary and must remain active even when
+    # automatic execution is temporarily disabled while a fresh demo account is linked.
+    install_paper_fresh_run_reset()
+
     if not _enabled(os.getenv("SUPER_SIGNALS_DAY28_AUTO_EXECUTION_ENABLED")):
         return None
     try:
