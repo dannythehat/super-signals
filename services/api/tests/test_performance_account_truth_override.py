@@ -29,6 +29,13 @@ def test_today_summary_uses_same_pip_fallback() -> None:
     assert "o.entry_price - o.exit_price" in source
 
 
+def test_today_summary_starts_after_material_same_day_paper_reset() -> None:
+    source = getsource(TodayTradingSummaryService._session_start)
+    assert "ABS(balance-previous_balance)>=100" in source
+    assert "ABS(balance-previous_balance)>=ABS(previous_balance)*0.20" in source
+    assert "return reset_at or day_start" in source
+
+
 def test_flat_account_still_reconciles_broker_history() -> None:
     source = getsource(_poll_once_with_account_truth)
     assert "_has_unsettled_mapped_positions" in source
