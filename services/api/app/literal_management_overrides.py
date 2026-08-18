@@ -37,6 +37,19 @@ _MOVE_TO_ENTRY = re.compile(
     re.IGNORECASE,
 )
 
+# A provider saying a numbered TP "HIT" is current-state management, not harmless
+# performance chatter, when the message is linked to one active signal. If our broker
+# still has that tranche open (different feed/spread, delayed execution, or a previous
+# mutation bug), the safest faithful action is to close that exact TP tranche now.
+# Compound forms such as "TP 1 & 2 are BOTH hit" produce two exact-ID close actions.
+_TP_HIT = re.compile(
+    r"\bTP\s*(\d+)\b"
+    r"(?:\s*(?:&|AND|,)\s*(?:TP\s*)?(\d+)\b)?"
+    r"(?:\s*(?:&|AND|,)\s*(?:TP\s*)?(\d+)\b)?"
+    r"\s*(?:ARE\s+)?(?:BOTH\s+|ALL\s+)?HIT\b",
+    re.IGNORECASE,
+)
+
 # TDC occasionally types FREE with extra Es. The explicit price is still unambiguous:
 # "+20 / RISK FREEE 4393" means move the stop to 4393.
 _RISK_FREE_NUMERIC = re.compile(
@@ -98,6 +111,33 @@ def _decisive_close(text: str) -> bool:
     return _CLOSE_NOW.search(text) is not None and _OR_PROTECTIVE_CHOICE.search(text) is None
 
 
+def _tp_hit_actions(text: str) -> list[dict[str, str | None]]:
+    seen: set[int] = set()
+    actions: list[dict[str, str | None]] = []
+    for match in _TP_HIT.finditer(text):
+        for raw_index in match.groups():
+            if raw_index is None:
+                continue
+            index = int(raw_index)
+            if index <= 0 or index in seen:
+                continue
+            seen.add(index)
+            actions.append({"type": "close", "target": f"tp{index}", "value": None})
+    return actions
+
+
+def _dedupe_actions(actions: list[dict[str, str | None]]) -> tuple[dict[str, str | None], ...]:
+    unique: list[dict[str, str | None]] = []
+    seen: set[tuple[str | None, str | None, str | None]] = set()
+    for action in actions:
+        key = (action.get("type"), action.get("target"), action.get("value"))
+        if key in seen:
+            continue
+        seen.add(key)
+        unique.append(action)
+    return tuple(unique)
+
+
 def explicit_literal_management(
     raw_text: str,
     *,
@@ -115,26 +155,34 @@ def explicit_literal_management(
             "explicit_literal_close_override",
         )
 
+    tp_hit_actions = _tp_hit_actions(text)
     existing = fallback(raw_text)
-    if existing.actions:
-        return existing
 
-    actions: list[dict[str, str | None]] = []
+    protective_actions: list[dict[str, str | None]] = []
     for pattern in (_NUMERIC_STOP, _RISK_FREE_NUMERIC):
         for match in pattern.finditer(text):
             value = _price(match.group(1))
             if value is not None:
-                actions.append(
+                protective_actions.append(
                     {"type": "edit_stop_loss", "target": "all", "value": value}
                 )
-    if not actions and _MOVE_TO_ENTRY.search(text):
-        actions.append(
+    if not protective_actions and _MOVE_TO_ENTRY.search(text):
+        protective_actions.append(
             {"type": "move_to_break_even", "target": "all", "value": None}
         )
-    if not actions:
+
+    # Preserve any native exact management and add literal TP-hit/protection actions in
+    # provider order semantics: completed TP tranches are closed first, then protection
+    # is applied only to whatever remains open.
+    combined = _dedupe_actions(
+        tp_hit_actions + [dict(action) for action in existing.actions] + protective_actions
+    )
+    if not combined:
+        return existing
+    if not tp_hit_actions and not protective_actions:
         return existing
     return Day27ManagementPolicyResult(
-        tuple(actions),
+        combined,
         "explicit_literal_management_override",
     )
 
@@ -143,8 +191,6 @@ def _promote_literal_management(decision: Any, *, raw_text: str, original, **kwa
     """Run normal V1 policy, then make literal management independent of AI class."""
     result = original(decision, raw_text=raw_text, **kwargs)
     if result.decision == "new_trade" and result.action == "execute":
-        return result
-    if result.decision == "trade_update" and result.action == "apply_update":
         return result
 
     assert _original is not None
