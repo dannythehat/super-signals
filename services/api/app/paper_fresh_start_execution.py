@@ -6,10 +6,6 @@ on a small paper account. This service uses the minimum deterministic set of ato
 positions that covers every declared entry layer and every declared target at least
 once.
 
-The configured Owner DEMO risk percentage is a TOTAL signal budget. It is divided
-across those atomic positions so adding layers or TPs cannot multiply account risk or
-create an artificial margin burden.
-
 Examples:
 * TIG: 2 entries x 4 targets -> 4 broker positions, not 8.
 * TDC: 6 entries x 4 targets -> 6 broker positions, not 24.
@@ -21,7 +17,6 @@ layer-management semantics intact while avoiding artificial margin exhaustion.
 from __future__ import annotations
 
 from collections import Counter
-from contextvars import ContextVar
 from dataclasses import dataclass
 from decimal import Decimal
 from uuid import UUID, uuid4
@@ -41,11 +36,6 @@ class AtomicLayerAllocation:
     entry: CriticalEntry
     tp_index: int
     take_profit: Decimal | None
-
-
-_ATOMIC_ENTRY_COUNT: ContextVar[int | None] = ContextVar(
-    "paper_atomic_entry_count", default=None
-)
 
 
 class PaperFreshStartExecutionService(PaperExecutionPriorityService):
@@ -113,65 +103,6 @@ class PaperFreshStartExecutionService(PaperExecutionPriorityService):
 
         return tuple(allocations)
 
-    async def _execute_critical_demo(self, *, entries, **kwargs):
-        # Parent critical sizing knows the number of entry layers but historically
-        # combines it with Day24's per-TP budget. Expose that count only for this
-        # coroutine so _size_signal can convert it into one total atomic risk budget.
-        token = _ATOMIC_ENTRY_COUNT.set(len(entries))
-        try:
-            return await super()._execute_critical_demo(entries=entries, **kwargs)
-        finally:
-            _ATOMIC_ENTRY_COUNT.reset(token)
-
-    def _size_signal(
-        self,
-        *,
-        signal: _SignalInput,
-        execution_entry: Decimal,
-        balance: float,
-        price_loss_tick_value: float | None,
-        specification: dict[str, object],
-        risk_percent,
-        double_lot_approved: bool,
-    ) -> Day24RiskSizingResult:
-        entry_count = _ATOMIC_ENTRY_COUNT.get()
-        if not entry_count:
-            return super()._size_signal(
-                signal=signal,
-                execution_entry=execution_entry,
-                balance=balance,
-                price_loss_tick_value=price_loss_tick_value,
-                specification=specification,
-                risk_percent=risk_percent,
-                double_lot_approved=double_lot_approved,
-            )
-
-        target_count = signal.position_count
-        if target_count <= 0:
-            raise Day26ExecutionError("position_count_invalid")
-        slot_count = max(entry_count, target_count)
-
-        # Parent critical execution passed real_balance / entry_count. Priority sizing
-        # then divides by target_count. Scale the intermediate balance so the final
-        # per-position budget becomes real_balance / slot_count, i.e. the sum of all
-        # atomic positions is exactly one configured signal-risk budget before broker
-        # minimum-volume rounding.
-        adjusted_balance = (
-            Decimal(str(balance))
-            * Decimal(entry_count)
-            * Decimal(target_count)
-            / Decimal(slot_count)
-        )
-        return super()._size_signal(
-            signal=signal,
-            execution_entry=execution_entry,
-            balance=float(adjusted_balance),
-            price_loss_tick_value=price_loss_tick_value,
-            specification=specification,
-            risk_percent=risk_percent,
-            double_lot_approved=double_lot_approved,
-        )
-
     async def _margin_preflight(
         self,
         *,
@@ -184,6 +115,8 @@ class PaperFreshStartExecutionService(PaperExecutionPriorityService):
         entries: tuple[CriticalEntry, ...],
         sizings: dict[int, Day24RiskSizingResult],
     ) -> None:
+        # Day24 position_count is the number of TP/runner targets. The atomic plan uses
+        # max(entry_count, target_count), not entry_count * target_count.
         if not sizings:
             raise Day26ExecutionError("position_count_invalid")
         target_count = next(iter(sizings.values())).position_count
@@ -230,7 +163,7 @@ class PaperFreshStartExecutionService(PaperExecutionPriorityService):
         if signal.has_open_runner:
             targets.append(None)
         allocations = self._allocation_pairs(entries, tuple(targets))
-        slot_count = Decimal(len(allocations))
+        per_entry_count = Counter(item.entry.entry_index for item in allocations)
 
         planned: list[_Planned] = []
         with self._session_factory() as session:
@@ -242,7 +175,10 @@ class PaperFreshStartExecutionService(PaperExecutionPriorityService):
                     f"SS_{local_id.hex[:12]}_E{entry.entry_index}T{allocation.tp_index}"
                 )
                 local_entry = market_entry if entry.order_type == "market" else entry.price
-                planned_risk_percent = sizing.effective_risk_percent / slot_count
+                planned_risk_percent = (
+                    sizing.effective_risk_percent
+                    / Decimal(per_entry_count[entry.entry_index])
+                )
                 session.execute(
                     text(
                         """
