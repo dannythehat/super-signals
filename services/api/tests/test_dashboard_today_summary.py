@@ -46,5 +46,8 @@ def test_today_summary_contract_counts_signals_not_tp_positions() -> None:
     assert payload["winning_pips"] == 349.3
     assert payload["net_pips"] == 56.3
     assert payload["broker_trade_action_created"] is False
+    assert "balance_adjustment" not in payload
+    assert "reconciliation_ready" not in payload
+    assert "reconciled" not in payload
     assert "provider" not in payload
     assert "source_id" not in payload
