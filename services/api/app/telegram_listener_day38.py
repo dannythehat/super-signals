@@ -9,6 +9,7 @@ from uuid import UUID
 from sqlalchemy.orm import Session, sessionmaker
 
 from app.day38_database_source_router import DatabaseSourceDay38FullExecutionRouter
+from app.literal_management_overrides import install_literal_management_overrides
 from app.metaapi_margin_gateway import MetaApiMarginGateway
 from app.metaapi_read_gateway import MetaApiReadGateway
 from app.metaapi_trade_gateway import MetaApiTradeGateway
@@ -69,6 +70,11 @@ def build_day38_execution_router_from_env(
     )
 
     try:
+        # Install mechanical corrections before any Telegram decision is routed. This
+        # makes literal instructions such as "Move your SL back to entry" actionable
+        # even when the same message also reports that TPs were hit.
+        install_literal_management_overrides()
+
         cipher = MetaApiTokenCipher(broker_keys)
         owner_read_gateway = PaperResilientMetaApiReadGateway()
         member_read_gateway = MetaApiReadGateway()
