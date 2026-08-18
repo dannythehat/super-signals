@@ -1,13 +1,13 @@
 """Broker-account truth hardening for performance and reconciliation.
 
-The original Day 33 ledger fetched history only by broker position. That is sufficient
-for most trade outcomes but it cannot explain account-level balance operations and it
-can miss broker deals which failed to map to a local position. This override keeps the
-existing immutable broker_deals ledger and changes synchronisation to ingest the full
-MetaAPI deal stream for the period Super Signals has account evidence for.
+The Day 33 ledger originally fetched history only by known broker position. That is
+insufficient for account reconciliation because balance/credit/correction operations and
+broker deals which failed to map to a local position can then be invisible. This module
+keeps the immutable broker_deals ledger but synchronises the complete MT5 deal stream.
 
-It also repairs timeline pip aggregation from broker entry/exit prices whenever an
-XAUUSD outcome has valid prices but a stale/null derived net_pips value.
+The first successful account-wide sync backfills the Super Signals account-evidence
+period. Later syncs use a five-minute overlap after the newest stored broker deal so the
+Home dashboard can stay current without repeatedly downloading the whole account history.
 """
 
 from __future__ import annotations
@@ -22,16 +22,67 @@ from sqlalchemy import text
 
 from app.metaapi_gateway import MetaApiGatewayError
 from app.mt5_crypto import BrokerCredentialDecryptionError
-from app.performance_ledger_day33 import Day33LedgerError, Day33SyncResult, _d, _parse_time, trader_stream_for
+from app.performance_ledger_day33 import (
+    Day33LedgerError,
+    Day33SyncResult,
+    _d,
+    _parse_time,
+    trader_stream_for,
+)
 from app.performance_ledger_day33_v2 import Day33PerformanceLedgerServiceV2
 
 
 _INSTALLED = False
+_CHECKPOINT_EVENT = "mt5.performance_full_history_backfilled"
+_OVERLAP = timedelta(minutes=5)
 
 
-def _history_start(self: Day33PerformanceLedgerServiceV2, user_id: UUID, mt5_account_id: UUID) -> datetime:
-    """Start at the first trustworthy Super Signals account snapshot/position."""
+def _as_utc(value: datetime) -> datetime:
+    if value.tzinfo is None:
+        return value.replace(tzinfo=UTC)
+    return value.astimezone(UTC)
+
+
+def _history_start(
+    self: Day33PerformanceLedgerServiceV2,
+    user_id: UUID,
+    mt5_account_id: UUID,
+) -> tuple[datetime, bool]:
+    """Return broker-history start and whether this is the one-time full backfill."""
     with self._session_factory() as session:
+        checkpoint = session.execute(
+            text(
+                """
+                SELECT created_at
+                FROM audit_events
+                WHERE actor_user_id=:user_id
+                  AND entity_type='mt5_account'
+                  AND entity_id=:account_id
+                  AND event_type=:event_type
+                ORDER BY created_at DESC
+                LIMIT 1
+                """
+            ),
+            {
+                "user_id": user_id,
+                "account_id": mt5_account_id,
+                "event_type": _CHECKPOINT_EVENT,
+            },
+        ).scalar_one_or_none()
+        if checkpoint is not None:
+            latest_deal = session.execute(
+                text(
+                    """
+                    SELECT MAX(occurred_at)
+                    FROM broker_deals
+                    WHERE user_id=:user_id AND mt5_account_id=:account_id
+                    """
+                ),
+                {"user_id": user_id, "account_id": mt5_account_id},
+            ).scalar_one_or_none()
+            anchor = latest_deal or checkpoint
+            return _as_utc(anchor) - _OVERLAP, False
+
         first_snapshot = session.execute(
             text(
                 """
@@ -52,13 +103,59 @@ def _history_start(self: Day33PerformanceLedgerServiceV2, user_id: UUID, mt5_acc
             ),
             {"user_id": user_id},
         ).scalar_one_or_none()
+
     candidates = [value for value in (first_snapshot, first_position) if value is not None]
     if not candidates:
-        return datetime.now(UTC) - timedelta(days=7)
-    start = min(candidates)
-    if start.tzinfo is None:
-        start = start.replace(tzinfo=UTC)
-    return start.astimezone(UTC) - timedelta(seconds=2)
+        return datetime.now(UTC) - timedelta(days=7), True
+    return min(_as_utc(value) for value in candidates) - timedelta(seconds=2), True
+
+
+def _mark_full_backfill(
+    self: Day33PerformanceLedgerServiceV2,
+    *,
+    user_id: UUID,
+    mt5_account_id: UUID,
+    start_time: datetime,
+    end_time: datetime,
+    deal_count: int,
+) -> None:
+    """Write exactly one immutable marker after a successful account-wide backfill."""
+    with self._session_factory() as session:
+        session.execute(
+            text(
+                """
+                INSERT INTO audit_events (
+                    actor_user_id,event_type,entity_type,entity_id,payload
+                )
+                SELECT
+                    :user_id,:event_type,'mt5_account',:account_id,
+                    CAST(:payload AS jsonb)
+                WHERE NOT EXISTS (
+                    SELECT 1
+                    FROM audit_events
+                    WHERE actor_user_id=:user_id
+                      AND event_type=:event_type
+                      AND entity_type='mt5_account'
+                      AND entity_id=:account_id
+                )
+                """
+            ),
+            {
+                "user_id": user_id,
+                "event_type": _CHECKPOINT_EVENT,
+                "account_id": mt5_account_id,
+                "payload": json.dumps(
+                    {
+                        "start_time": start_time.isoformat(),
+                        "end_time": end_time.isoformat(),
+                        "broker_deals_seen": deal_count,
+                        "trade_action_created": False,
+                    },
+                    separators=(",", ":"),
+                ),
+            },
+        )
+        session.commit()
 
 
 def _store_account_deals(
@@ -85,7 +182,10 @@ def _store_account_deals(
             broker_position_id = str(payload.get("positionId") or "").strip() or None
             row = by_broker_position.get(str(broker_position_id)) if broker_position_id else None
             trader = (
-                trader_stream_for(str(row["source_alias"] or ""), str(row["original_text"] or ""))
+                trader_stream_for(
+                    str(row["source_alias"] or ""),
+                    str(row["original_text"] or ""),
+                )
                 if row is not None
                 else None
             )
@@ -128,9 +228,22 @@ def _store_account_deals(
                     "broker_client_id": str(payload.get("clientId") or "").strip() or None,
                     "deal_type": deal_type,
                     "entry_type": str(payload.get("entryType") or "").strip() or None,
-                    "symbol": str(payload.get("symbol") or (row["symbol"] if row is not None else "") or "").strip() or None,
-                    "volume": (_d(payload.get("volume")) if payload.get("volume") is not None else None),
-                    "price": (_d(payload.get("price")) if payload.get("price") is not None else None),
+                    "symbol": str(
+                        payload.get("symbol")
+                        or (row["symbol"] if row is not None else "")
+                        or ""
+                    ).strip()
+                    or None,
+                    "volume": (
+                        _d(payload.get("volume"))
+                        if payload.get("volume") is not None
+                        else None
+                    ),
+                    "price": (
+                        _d(payload.get("price"))
+                        if payload.get("price") is not None
+                        else None
+                    ),
                     "profit": _d(payload.get("profit")),
                     "commission": _d(payload.get("commission")),
                     "swap": _d(payload.get("swap")),
@@ -145,7 +258,10 @@ def _store_account_deals(
     return added
 
 
-async def _sync_user(self: Day33PerformanceLedgerServiceV2, user_id: UUID) -> Day33SyncResult:
+async def _sync_user(
+    self: Day33PerformanceLedgerServiceV2,
+    user_id: UUID,
+) -> Day33SyncResult:
     account = self._account(user_id)
     if account is None:
         raise Day33LedgerError("mt5_account_not_configured")
@@ -167,7 +283,10 @@ async def _sync_user(self: Day33PerformanceLedgerServiceV2, user_id: UUID) -> Da
     except MetaApiGatewayError as exc:
         raise Day33LedgerError(exc.code, retryable=exc.retryable) from exc
 
-    self._backfill_account_snapshots_from_audit(user_id=user_id, mt5_account_id=account["id"])
+    self._backfill_account_snapshots_from_audit(
+        user_id=user_id,
+        mt5_account_id=account["id"],
+    )
     captured_at = datetime.now(UTC)
     self._store_snapshot(
         user_id=user_id,
@@ -176,7 +295,7 @@ async def _sync_user(self: Day33PerformanceLedgerServiceV2, user_id: UUID) -> Da
         captured_at=captured_at,
     )
 
-    start_time = _history_start(self, user_id, account["id"])
+    start_time, full_backfill = _history_start(self, user_id, account["id"])
     payloads: list[dict[str, object]] = []
     offset = 0
     page_size = 1000
@@ -207,6 +326,16 @@ async def _sync_user(self: Day33PerformanceLedgerServiceV2, user_id: UUID) -> Da
         mt5_account_id=account["id"],
         payloads=payloads,
     )
+    if full_backfill:
+        _mark_full_backfill(
+            self,
+            user_id=user_id,
+            mt5_account_id=account["id"],
+            start_time=start_time,
+            end_time=captured_at,
+            deal_count=len(payloads),
+        )
+
     mapped_positions = self._mapped_positions(user_id)
     outcomes = self.rebuild_outcomes(user_id)
     summaries = self.rebuild_summaries(user_id)
@@ -220,7 +349,11 @@ async def _sync_user(self: Day33PerformanceLedgerServiceV2, user_id: UUID) -> Da
     )
 
 
-def _repair_timeline_rows(self: Day33PerformanceLedgerServiceV2, user_id: UUID) -> list[Any]:
+def _repair_timeline_rows(
+    self: Day33PerformanceLedgerServiceV2,
+    user_id: UUID,
+) -> list[Any]:
+    """Never show blank XAUUSD pips when broker entry/exit prices are known."""
     rows = list(_ORIGINAL_TIMELINE_ROWS(self, user_id))
     with self._session_factory() as session:
         repairs = {
@@ -231,7 +364,8 @@ def _repair_timeline_rows(self: Day33PerformanceLedgerServiceV2, user_id: UUID) 
                     SELECT
                         signal_id,
                         SUM(cash_pnl) FILTER (
-                            WHERE status IN ('won','lost','breakeven') AND cash_pnl IS NOT NULL
+                            WHERE status IN ('won','lost','breakeven')
+                              AND cash_pnl IS NOT NULL
                         ) AS realised_pnl,
                         COUNT(*) FILTER (
                             WHERE status IN ('won','lost','breakeven')
@@ -285,7 +419,10 @@ def _repair_timeline_rows(self: Day33PerformanceLedgerServiceV2, user_id: UUID) 
             if repair is not None:
                 if repair["realised_pnl"] is not None:
                     item["cash_pnl"] = repair["realised_pnl"]
-                if int(repair["known_legs"] or 0) > 0 and int(repair["missing_pip_legs"] or 0) == 0:
+                if (
+                    int(repair["known_legs"] or 0) > 0
+                    and int(repair["missing_pip_legs"] or 0) == 0
+                ):
                     item["net_pips"] = repair["repaired_pips"]
         result.append(item)
     return result
@@ -342,8 +479,16 @@ def account_reconciliation(
             text(
                 """
                 SELECT
-                    COALESCE(SUM(profit+commission+swap) FILTER (WHERE position_id IS NOT NULL),0) AS trading_cash,
-                    COALESCE(SUM(profit+commission+swap) FILTER (WHERE position_id IS NULL),0) AS non_trade_cash,
+                    COALESCE(SUM(profit+commission+swap) FILTER (
+                        WHERE broker_position_id IS NOT NULL
+                           OR symbol IS NOT NULL
+                           OR UPPER(COALESCE(entry_type,'')) LIKE 'DEAL_ENTRY_%'
+                    ),0) AS trading_cash,
+                    COALESCE(SUM(profit+commission+swap) FILTER (
+                        WHERE broker_position_id IS NULL
+                          AND symbol IS NULL
+                          AND UPPER(COALESCE(entry_type,'')) NOT LIKE 'DEAL_ENTRY_%'
+                    ),0) AS non_trade_cash,
                     COALESCE(SUM(profit+commission+swap),0) AS all_cash
                 FROM broker_deals
                 WHERE user_id=:user_id
@@ -351,7 +496,11 @@ def account_reconciliation(
                   AND occurred_at<=:last_at
                 """
             ),
-            {"user_id": user_id, "first_at": first["captured_at"], "last_at": last["captured_at"]},
+            {
+                "user_id": user_id,
+                "first_at": first["captured_at"],
+                "last_at": last["captured_at"],
+            },
         ).mappings().one()
     opening = _d(first["balance"])
     closing = _d(last["balance"])
