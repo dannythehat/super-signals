@@ -14,6 +14,9 @@ These corrections preserve broker truth and the shared paper/future-LIVE engine:
   must not turn ``RISK FREE 4357`` into a veto merely because our surviving fill was
   4358. Only a much larger contradiction remains fail-closed as evidence that the
   lifecycle update may have been linked to the wrong trade.
+* The immutable full-history backfill marker uses explicit PostgreSQL types for reused
+  bind parameters. This prevents psycopg from inferring the same event-type parameter
+  as both ``text`` and ``varchar`` in the INSERT/NOT-EXISTS statement.
 """
 
 from __future__ import annotations
@@ -78,15 +81,7 @@ def _install_literal_provider_risk_free_stop() -> None:
             if normalized_side not in {"BUY", "SELL"}:
                 raise Day27ManagementError("trade_side_invalid")
 
-            protective = (
-                wanted >= best_fill
-                if normalized_side == "BUY"
-                else wanted <= best_fill
-            )
-            # A small discrepancy is normal broker-fill slippage versus the provider's
-            # intended entry and must not block the literal instruction. A much larger
-            # contradiction is more likely a wrong lifecycle link than normal slippage,
-            # so retain the existing fail-closed safety for that distinct condition.
+            protective = wanted >= best_fill if normalized_side == "BUY" else wanted <= best_fill
             if not protective and abs(wanted - best_fill) > _RISK_FREE_FILL_TOLERANCE:
                 raise Day27ManagementError("risk_free_stop_not_protective")
             return tuple(groups[best_index])
@@ -94,6 +89,65 @@ def _install_literal_provider_risk_free_stop() -> None:
 
     select_layer_positions._literal_provider_stop = True  # type: ignore[attr-defined]
     PaperCriticalManagementV2._select_layer_positions = classmethod(select_layer_positions)
+
+
+def _install_typed_full_backfill_marker() -> None:
+    import app.performance_account_truth_override as account_truth
+
+    original = account_truth._mark_full_backfill
+    if getattr(original, "_explicit_postgres_types", False):
+        return
+
+    def mark_full_backfill(
+        self: Any,
+        *,
+        user_id: UUID,
+        mt5_account_id: UUID,
+        start_time,
+        end_time,
+        deal_count: int,
+    ) -> None:
+        payload = json.dumps(
+            {
+                "start_time": start_time.isoformat(),
+                "end_time": end_time.isoformat(),
+                "broker_deals_seen": deal_count,
+                "trade_action_created": False,
+            },
+            separators=(",", ":"),
+        )
+        with self._session_factory() as session:
+            session.execute(
+                text(
+                    """
+                    INSERT INTO audit_events (
+                        actor_user_id,event_type,entity_type,entity_id,payload
+                    )
+                    SELECT
+                        CAST(:user_id AS uuid),CAST(:event_type AS varchar),
+                        CAST('mt5_account' AS varchar),CAST(:account_id AS uuid),
+                        CAST(:payload AS jsonb)
+                    WHERE NOT EXISTS (
+                        SELECT 1
+                        FROM audit_events
+                        WHERE actor_user_id=CAST(:user_id AS uuid)
+                          AND event_type=CAST(:event_type AS varchar)
+                          AND entity_type=CAST('mt5_account' AS varchar)
+                          AND entity_id=CAST(:account_id AS uuid)
+                    )
+                    """
+                ),
+                {
+                    "user_id": user_id,
+                    "event_type": account_truth._CHECKPOINT_EVENT,
+                    "account_id": mt5_account_id,
+                    "payload": payload,
+                },
+            )
+            session.commit()
+
+    mark_full_backfill._explicit_postgres_types = True  # type: ignore[attr-defined]
+    account_truth._mark_full_backfill = mark_full_backfill
 
 
 def _install_append_only_broker_deal_sync() -> None:
@@ -204,6 +258,7 @@ def install_aug18_readiness_cleanup() -> None:
         return
     _install_total_telegram_decimal_rendering()
     _install_literal_provider_risk_free_stop()
+    _install_typed_full_backfill_marker()
     _install_append_only_broker_deal_sync()
     _installed = True
 
