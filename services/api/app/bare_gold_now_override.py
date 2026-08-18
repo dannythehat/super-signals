@@ -217,6 +217,23 @@ def _install_execution_profile() -> None:
         return
 
     async def resolve_entry(self: Any, *, owner_user_id, signal, day23, initial_state):
+        # Ordinary provider-defined market signals never enter the special path. This
+        # short-circuit also keeps their execution independent of the canonical text
+        # lookup below.
+        if not (
+            signal.entry_low == 0
+            and signal.entry_high == 0
+            and signal.stop_loss == 0
+            and not signal.take_profits
+        ):
+            return await original_resolve(
+                self,
+                owner_user_id=owner_user_id,
+                signal=signal,
+                day23=day23,
+                initial_state=initial_state,
+            )
+
         with self._session_factory() as session:
             from sqlalchemy import text
 
@@ -226,13 +243,7 @@ def _install_execution_profile() -> None:
             ).scalar_one_or_none()
         side = bare_now_side(str(raw_text or ""))
         if side is None:
-            return await original_resolve(
-                self,
-                owner_user_id=owner_user_id,
-                signal=signal,
-                day23=day23,
-                initial_state=initial_state,
-            )
+            raise Day26ExecutionError("bare_gold_now_profile_invalid")
         if side != signal.side:
             raise Day26ExecutionError("bare_gold_now_side_mismatch")
 
