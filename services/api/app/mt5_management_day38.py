@@ -1,4 +1,9 @@
-"""Day 38 provider-management boundary for ordinary member LIVE accounts."""
+"""Day 38 LIVE-account adapter over the single Super Signals management engine.
+
+DEMO and LIVE must apply the same provider management semantics. This class therefore
+inherits the exact layer-aware PaperCriticalManagementV2 used by the Owner paper account;
+only account eligibility/credential selection differs for an approved LIVE member.
+"""
 
 from __future__ import annotations
 
@@ -6,11 +11,12 @@ from uuid import UUID
 
 from sqlalchemy import text
 
-from app.mt5_management_day27 import Day27ManagementError, Day27Mt5ManagementService, _Account
+from app.mt5_management_day27 import Day27ManagementError, _Account
+from app.paper_critical_management_v2 import PaperCriticalManagementV2
 
 
-class Day38LiveUserManagementService(Day27Mt5ManagementService):
-    """Reuse Day 27 mapped-only management with a LIVE approved-account gate."""
+class Day38LiveUserManagementService(PaperCriticalManagementV2):
+    """Run the exact paper-tested management engine against an approved LIVE account."""
 
     def _load_account(self, user_id: UUID) -> _Account | None:
         with self._session_factory() as session:
