@@ -82,7 +82,7 @@ def _broker_time(value: object | None, fallback: datetime) -> datetime:
 
 
 class OwnerManualCloseService:
-    """Close one position or all open positions in one signal on the Owner demo account."""
+    """Close one, one signal, or all mapped positions on the Owner demo account."""
 
     def __init__(
         self,
@@ -108,6 +108,12 @@ class OwnerManualCloseService:
         if not positions:
             raise OwnerManualCloseError("owner_manual_trade_not_open")
         return await self._close(user_id=user_id, positions=positions, scope="trade")
+
+    async def close_all(self, user_id: UUID) -> OwnerManualCloseResult:
+        positions = self._all_positions(user_id=user_id)
+        if not positions:
+            raise OwnerManualCloseError("owner_manual_all_not_open")
+        return await self._close(user_id=user_id, positions=positions, scope="all")
 
     def _account(self, user_id: UUID) -> _Account:
         with self._session_factory() as session:
@@ -160,6 +166,30 @@ class OwnerManualCloseService:
                     """
                 ),
                 {"user_id": user_id, "target_id": target_id},
+            ).mappings().all()
+        return tuple(
+            _Position(
+                id=row["id"],
+                signal_id=row["signal_id"],
+                broker_position_id=str(row["broker_position_id"]),
+            )
+            for row in rows
+        )
+
+    def _all_positions(self, *, user_id: UUID) -> tuple[_Position, ...]:
+        with self._session_factory() as session:
+            rows = session.execute(
+                text(
+                    """
+                    SELECT p.id, p.signal_id, p.broker_position_id
+                    FROM positions AS p
+                    WHERE p.user_id=:user_id
+                      AND p.status='open'
+                      AND p.broker_position_id IS NOT NULL
+                    ORDER BY p.created_at, p.signal_id, p.tp_index, p.id
+                    """
+                ),
+                {"user_id": user_id},
             ).mappings().all()
         return tuple(
             _Position(
