@@ -30,6 +30,7 @@ from app.multi_user_distribution_day38 import (
 )
 from app.multi_user_management_day38 import Day38MultiUserManagementService
 from app.mt5_read_service_day23 import Day23AccountState, Day23LiveState, Day23PriceState
+from app.paper_critical_execution import _CriticalSignal
 
 U1 = UUID("11111111-1111-4111-8111-111111111111")
 U2 = UUID("22222222-2222-4222-8222-222222222222")
@@ -118,6 +119,12 @@ class _ExecutionHarness(Day38LiveUserExecutionService):
         return {U1: ("0.5", False), U2: ("2", True), U3: ("1", False)}[user_id]
     def _load_inputs(self, user_id: UUID, signal_id: UUID):
         return self.signal, _AccountInput(uuid4(), f"acct-{user_id.hex[:4]}", b"cipher")
+    def _load_critical_signal(self, signal_id: UUID):
+        return _CriticalSignal(
+            base=self.signal,
+            original_text="XAUUSD BUY 4000\nSL 3999\nTP 4010\nTP 4020\nTP 4030",
+            broad_order_type="market",
+        )
     def _decrypt_token(self, account): return "test-token-with-terminal-access"
     def _assert_signal_still_current(self, owner_user_id, signal): return None
     def _create_planned_positions(self, *, owner_user_id, signal, sizing, execution_entry):
@@ -155,7 +162,7 @@ class _DistributionHarness(Day38MultiUserDistributionService):
     def _audit_summary(self, result): return None
 
 
-def test_one_signal_sizes_each_user_independently_and_underfunded_user_skips(monkeypatch) -> None:
+def test_one_signal_sizes_each_user_independently_without_local_funds_veto(monkeypatch) -> None:
     monkeypatch.setattr(day26_module, "Day23Mt5ReadService", _FakeDay23)
     execution = _ExecutionHarness()
     distribution = _DistributionHarness(execution)
@@ -164,15 +171,19 @@ def test_one_signal_sizes_each_user_independently_and_underfunded_user_skips(mon
 
     by_user = {item.user_id: item for item in result.outcomes}
     assert result.target_count == 3
-    assert result.executed_count == 2
-    assert result.skipped_count == 1
+    assert result.executed_count == 3
+    assert result.skipped_count == 0
     assert by_user[U1].volume_per_position == (Decimal("0.05"),) * 3
     # U2 chose 2% and allows the provider's explicit double-lot instruction -> 4% effective.
     assert by_user[U2].volume_per_position == (Decimal("0.8"),) * 3
-    assert by_user[U3].position_count == 0
-    assert by_user[U3].error_code == "insufficient_funds"
-    assert len(execution.trade.calls) == 6
-    assert {call["account_id"] for call in execution.trade.calls} == {"acct-1111", "acct-2222"}
+    # U3 has deliberately tiny reported free margin. That is not a local execution veto;
+    # the real broker order is the authority.
+    assert by_user[U3].volume_per_position == (Decimal("0.1"),) * 3
+    assert by_user[U3].error_code is None
+    assert len(execution.trade.calls) == 9
+    assert {call["account_id"] for call in execution.trade.calls} == {
+        "acct-1111", "acct-2222", "acct-3333"
+    }
 
 
 class _OwnerExecution:
@@ -186,7 +197,7 @@ class _MemberDistribution:
             signal_id=signal_id, target_count=2, executed_count=1, skipped_count=1,
             outcomes=(
                 Day38UserDistributionOutcome(U1, "executed", Decimal("0.5"), False, 3, (Decimal("0.05"),)*3),
-                Day38UserDistributionOutcome(U3, "skipped", Decimal("1"), False, 0, (), "insufficient_funds"),
+                Day38UserDistributionOutcome(U3, "skipped", Decimal("1"), False, 0, (), "broker_rejected"),
             ),
         )
 
