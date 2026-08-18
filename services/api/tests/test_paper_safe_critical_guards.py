@@ -1,29 +1,31 @@
-from app.paper_safe_member_routing import _CRITICAL_TARGET, _TDC_LAYER_ZONE
+import inspect
+
+from app.mt5_execution_day38 import Day38LiveUserExecutionService
+from app.mt5_management_day38 import Day38LiveUserManagementService
+from app.paper_critical_management_v2 import PaperCriticalManagementV2
+from app.paper_fresh_start_execution import PaperFreshStartExecutionService
+from app.paper_safe_member_routing import (
+    PaperSafeMemberDistribution,
+    PaperSafeMemberManagement,
+)
 
 
-def test_tdc_high_risk_layer_zone_is_paper_only_structure() -> None:
-    raw = (
-        "BUY GOLD @ 4398/4393\n\n"
-        "TP 4400\nTP 4403\nTP 4407\nTP OPEN\nSL 4392\n\nHIGH RISK TRADE"
-    )
-    assert _TDC_LAYER_ZONE.search(raw) is not None
+def test_tdc_layered_execution_is_not_a_paper_only_structure() -> None:
+    assert issubclass(Day38LiveUserExecutionService, PaperFreshStartExecutionService)
+    source = inspect.getsource(PaperSafeMemberDistribution)
+    assert "critical_structure_paper_only" not in source
+    assert "_critical_signal" not in source
 
 
-def test_tdc_pending_layer_zone_is_paper_only_structure() -> None:
-    raw = (
-        "BUY LIMITS GOLD @ 4386/4381 AREA\n\n"
-        "TP 4389\nTP 4393\nTP 4398\nTP OPEN\nSL 4380\n\nHIGH RISK TRADE"
-    )
-    assert _TDC_LAYER_ZONE.search(raw) is not None
+def test_layer_management_is_not_blocked_from_future_live_engine() -> None:
+    assert issubclass(Day38LiveUserManagementService, PaperCriticalManagementV2)
+    source = inspect.getsource(PaperSafeMemberManagement)
+    assert "critical_management_paper_only" not in source
+    assert "_critical_event" not in source
 
 
-def test_new_layer_management_targets_are_blocked_from_live_member_engine() -> None:
-    for target in (
-        "best_entry",
-        "all_but_best",
-        "entry_price_4394",
-        "pending_layers",
-        "entry_2_partial_tp1",
-        "worst_3_layers",
-    ):
-        assert _CRITICAL_TARGET.search(target) is not None, target
+def test_live_boundary_is_one_global_switch_not_signal_shape() -> None:
+    distribution_source = inspect.getsource(PaperSafeMemberDistribution)
+    management_source = inspect.getsource(PaperSafeMemberManagement)
+    assert "live_execution_enabled" in distribution_source
+    assert "live_execution_enabled" in management_source
