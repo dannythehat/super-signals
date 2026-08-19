@@ -2,7 +2,8 @@
 
 Provider market signals may legitimately omit an entry price. In that case the canonical
 Signal keeps entry_low/entry_high NULL; execution later resolves the fresh broker ask
-for BUY or bid for SELL. Pending signals still require literal provider prices.
+for BUY or bid for SELL. The exact standalone bare-Gold-NOW profile also keeps provider
+SL/TP NULL because its protection is execution-derived, not provider-supplied.
 """
 
 from __future__ import annotations
@@ -18,6 +19,7 @@ from app.ai_canonical_signal import (
     _timestamp_token,
     _token,
 )
+from app.bare_gold_now_policy import PROFILE
 
 
 def _positive(value: Any) -> Decimal | None:
@@ -45,6 +47,26 @@ def _ordered_targets(side: str, targets: tuple[Decimal, ...]) -> bool:
 class CanonicalSignalLedger(AiCanonicalSignalService):
     @staticmethod
     def _parse_extracted(extracted: dict[str, Any]) -> _ParsedTrade:
+        profile = str(extracted.get("execution_profile") or "")
+        if profile == PROFILE:
+            symbol = str(extracted.get("symbol") or "").strip().upper()
+            if symbol == "GOLD":
+                symbol = "XAUUSD"
+            side = str(extracted.get("side") or "").strip().upper()
+            if symbol != "XAUUSD" or side not in {"BUY", "SELL"}:
+                raise ValueError("provider_instruction_unsupported")
+            return _ParsedTrade(
+                symbol="XAUUSD",
+                side=side,
+                order_type="market",
+                entry_low=None,  # type: ignore[arg-type]
+                entry_high=None,  # type: ignore[arg-type]
+                stop_loss=None,  # type: ignore[arg-type]
+                take_profits=(),
+                size_multiplier=Decimal("1"),
+                has_open_runner=False,
+            )
+
         low = _positive(extracted.get("entry_low"))
         high = _positive(extracted.get("entry_high"))
         if low is not None or high is not None:
@@ -93,10 +115,13 @@ class CanonicalSignalLedger(AiCanonicalSignalService):
             "entry_low": None,
             "entry_high": None,
             "entry_source": "live_executable_price",
-            "stop_loss": _token(trade.stop_loss),
+            "stop_loss": _token(trade.stop_loss) if trade.stop_loss is not None else None,
             "take_profits": [_token(value) for value in trade.take_profits],
             "has_open_runner": trade.has_open_runner,
             "size_multiplier": _token(trade.size_multiplier),
+            "execution_profile": (
+                PROFILE if trade.stop_loss is None and not trade.take_profits else None
+            ),
         }
         return sha256(
             json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=True).encode(
