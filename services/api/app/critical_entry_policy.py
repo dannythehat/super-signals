@@ -1,15 +1,8 @@
-"""Deterministic pending/layer interpretation for critical trade infrastructure.
+"""Canonical deterministic pending/layer interpretation.
 
-The AI supervisor may understand provider dialect, but broker structure is derived here
-from literal current-message evidence only. No price, SL or TP is borrowed from ambient
-history. Explicit multi-entry setups are represented before execution so risk can be
-shared across the declared layers instead of being silently multiplied.
-
-TDC's repeated HIGH RISK TRADE template is a proven layered-zone dialect. In that
-specific template, one XAUUSD price unit is one declared layer step (10 provider pips).
-Plural LIMITS/STOPS create broker-held pending layers. A plain BUY/SELL zone creates an
-immediate first layer plus retracement pending layers. Other ambiguous zones still fail
-closed; this module never invents a grid for an unknown provider format.
+Broker structure is derived from literal current-message evidence only. No price, SL or
+TP is borrowed from provider history. Explicit multi-entry setups are represented before
+execution; unknown grids still fail closed.
 """
 
 from __future__ import annotations
@@ -35,13 +28,23 @@ _TDC_LAYER_TEMPLATE = re.compile(
 )
 _HIGH_RISK = re.compile(r"\bHIGH\s+RISK\s+TRADE\b", re.IGNORECASE)
 _TP_OPEN = re.compile(r"\bTP\s*(?:\d+\s*)?OPEN\b", re.IGNORECASE)
+_TDC_TWO_POINT_PENDING = re.compile(
+    r"(?im)^\s*(BUY|SELL)\s+(LIMITS?|STOPS?)\s+(?:XAUUSD|GOLD)\s*"
+    r"@\s*(\d+(?:\.\d+)?)\s*/\s*(\d+(?:\.\d+)?)(?:\s+AREA)?\s*$"
+)
+_EXPLICIT_PENDING_ZONE = re.compile(
+    r"(?is)\b(BUY|SELL)\s+(LIMIT|STOP)(?:\s+ORDER)?\b"
+    r"(?:\s+(?:XAUUSD|GOLD))?\s*(?:@|AT|:|=)?\s*"
+    r"(\d+(?:\.\d+)?)\s*(?:/|-|TO)\s*(\d+(?:\.\d+)?)"
+)
 _AMBIGUOUS_PENDING_ZONE = re.compile(
     r"\b(?:BUY|SELL)\s+(?:LIMITS|STOPS)\b[^\n]{0,60}"
     r"\d+(?:\.\d+)?\s*(?:/|-|TO)\s*\d+(?:\.\d+)?",
     re.IGNORECASE,
 )
 _EXPLICIT_PENDING = re.compile(
-    r"\b(BUY|SELL)\s+(LIMIT|STOP)S?\b(?:\s+(?:XAUUSD|GOLD))?\s*(?:@|AT|:|=)?\s*(\d+(?:\.\d+)?)\b",
+    r"\b(BUY|SELL)\s+(LIMIT|STOP)(?:\s+ORDER)?S?\b"
+    r"(?:\s+(?:XAUUSD|GOLD))?\s*(?:@|AT|:|=)?\s*(\d+(?:\.\d+)?)\b",
     re.IGNORECASE,
 )
 _FIRST_ENTRY = re.compile(
@@ -54,9 +57,10 @@ _NTH_ENTRY = re.compile(
     r"(?im)^\s*(?:(THIRD\s+ENTRY|3RD\s+ENTRY|ENTRY\s*3)|(FOURTH\s+ENTRY|4TH\s+ENTRY|ENTRY\s*4)|(FIFTH\s+ENTRY|5TH\s+ENTRY|ENTRY\s*5))\s*[:=@-]?\s*(\d+(?:\.\d+)?)\b"
 )
 _CLOSE_LAYERS = re.compile(r"\bCLOSE\s+(\d+)\s+LAYERS?\b", re.IGNORECASE)
+# Only imperative language creates an all-but-best close. Descriptive provider state
+# such as "BEST ENTRY STILL RUNNING" must never manufacture a broker action.
 _LEAVE_BEST = re.compile(
-    r"\b(?:LEAVE|KEEP)\s+(?:THE\s+)?BEST(?:\s+(?:ENTRY|LAYER|ONE))?\s+(?:RUNNING|OPEN)\b"
-    r"|\bBEST\s+ENTRY\s+STILL\s+RUNNING\b",
+    r"\b(?:LEAVE|KEEP)\s+(?:THE\s+)?BEST(?:\s+(?:ENTRY|LAYER|ONE))?\s+(?:RUNNING|OPEN)\b",
     re.IGNORECASE,
 )
 _KEEP_BEST_SIDE = re.compile(
@@ -145,6 +149,28 @@ def _tdc_layer_grid(text: str, normalized_side: str) -> tuple[CriticalEntry, ...
     return tuple(entries)
 
 
+def _tdc_two_point_pending(text: str, normalized_side: str) -> tuple[CriticalEntry, ...] | None:
+    """Exact observed TDC plural two-price pending form; never invent an inner grid."""
+    match = _TDC_TWO_POINT_PENDING.search(text)
+    if match is None or _TP_OPEN.search(text) is None:
+        return None
+    if re.search(r"\bSL\b", text, re.IGNORECASE) is None:
+        return None
+    provider_side = match.group(1).upper()
+    if provider_side != normalized_side:
+        raise ValueError("pending_side_mismatch")
+    first = _price(match.group(3))
+    second = _price(match.group(4))
+    if first is None or second is None or first == second:
+        raise ValueError("pending_entry_invalid")
+    suffix = "limit" if match.group(2).upper().startswith("LIMIT") else "stop"
+    order_type = f"{normalized_side.lower()}_{suffix}"
+    return (
+        CriticalEntry(1, order_type, first),
+        CriticalEntry(2, order_type, second),
+    )
+
+
 def parse_critical_entries(
     raw_text: str,
     *,
@@ -156,11 +182,38 @@ def parse_critical_entries(
     normalized_side = side.strip().upper()
     if normalized_side not in {"BUY", "SELL"}:
         raise ValueError("trade_side_invalid")
+
     proven_grid = _tdc_layer_grid(text, normalized_side)
     if proven_grid is not None:
         return proven_grid
+
+    two_point = _tdc_two_point_pending(text, normalized_side)
+    if two_point is not None:
+        return two_point
+
+    # A singular LIMIT/STOP with a literal zone is one provider order, not permission
+    # to invent a grid. Place the broker pending at the first declared boundary while
+    # the canonical signal retains the full literal range.
+    pending_zone = _EXPLICIT_PENDING_ZONE.search(text)
+    if pending_zone is not None:
+        pending_side = pending_zone.group(1).upper()
+        if pending_side != normalized_side:
+            raise ValueError("pending_side_mismatch")
+        first = _price(pending_zone.group(3))
+        second = _price(pending_zone.group(4))
+        if first is None or second is None or first == second:
+            raise ValueError("pending_entry_invalid")
+        return (
+            CriticalEntry(
+                entry_index=1,
+                order_type=_pending_type(pending_side, pending_zone.group(2)),
+                price=first,
+            ),
+        )
+
     if _AMBIGUOUS_PENDING_ZONE.search(text) is not None:
         raise ValueError("pending_layer_grid_unspecified")
+
     pending = _EXPLICIT_PENDING.search(text)
     if pending is not None:
         pending_side = pending.group(1).upper()
@@ -176,6 +229,7 @@ def parse_critical_entries(
                 price=price,
             ),
         )
+
     second_match = _SECOND_ENTRY.search(text)
     if second_match is not None:
         first_match = _FIRST_ENTRY.search(text)
@@ -206,6 +260,7 @@ def parse_critical_entries(
                 )
             )
         return tuple(sorted(entries, key=lambda item: item.entry_index))
+
     low = _price(entry_low)
     high = _price(entry_high)
     if low is None or high is None:
@@ -226,7 +281,7 @@ def augment_management_actions(
     raw_text: str,
     actions: Iterable[dict[str, str | None]],
 ) -> tuple[dict[str, str | None], ...]:
-    """Preserve explicit partial, layer and TDC risk-free scope for paper management."""
+    """Preserve explicit partial and layer scope without inventing actions from state text."""
     text = raw_text or ""
     result = [dict(action) for action in actions]
     close_prices: list[Decimal] = []
