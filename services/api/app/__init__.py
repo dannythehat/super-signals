@@ -5,10 +5,6 @@ canonical runtime. The canonical cleanup removes these imports block by block; n
 runtime override may be added here.
 """
 
-from app.literal_management_overrides import install_literal_management_overrides
-
-install_literal_management_overrides()
-
 from app.market_at_best_price_override import install_market_at_best_price_override
 
 install_market_at_best_price_override()
