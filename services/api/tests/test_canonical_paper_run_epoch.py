@@ -73,10 +73,25 @@ class _PerformanceHarness(CanonicalPerformanceRuntimeService):
 
     def _signal_window(self, user_id, key, label, since, now):  # noqa: ANN001, ANN201
         self.calls.append((key, since, now))
-        return _zero_window(key, label)
+        return Day33PerformanceWindow(
+            key=key,
+            label=label,
+            cash_pnl=Decimal("31"),
+            return_percent=Decimal("3.10"),
+            model_500_pnl=ZERO,
+            model_500_return_percent=ZERO,
+            closed_trades=1,
+            wins=1,
+            losses=0,
+            breakeven=0,
+            open_trades=0,
+            win_rate_percent=Decimal("100"),
+            net_pips=None,
+            mixed_instrument_pips=False,
+        )
 
 
-def test_clean_start_day_keeps_today_live_and_historical_windows_zero(
+def test_origin_day_all_windows_accumulate_from_same_permanent_start(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setenv("SUPER_SIGNALS_DAY28_OWNER_ID", str(OWNER))
@@ -86,10 +101,16 @@ def test_clean_start_day_keeps_today_live_and_historical_windows_zero(
     windows = service.read_windows(OWNER, now=now)
 
     assert [item.key for item in windows] == ["today", "7d", "30d", "month", "all"]
-    assert service.calls == [("today", PAPER_RUN_STARTED_AT, now)]
-    assert all(item.cash_pnl == ZERO for item in windows[1:])
-    assert all(item.closed_trades == 0 for item in windows[1:])
-    assert all(item.wins == item.losses == item.breakeven == 0 for item in windows[1:])
+    assert service.calls == [
+        ("today", PAPER_RUN_STARTED_AT, now),
+        ("7d", PAPER_RUN_STARTED_AT, now),
+        ("30d", PAPER_RUN_STARTED_AT, now),
+        ("month", PAPER_RUN_STARTED_AT, now),
+        ("all", PAPER_RUN_STARTED_AT, now),
+    ]
+    assert all(item.cash_pnl == Decimal("31") for item in windows)
+    assert all(item.closed_trades == 1 for item in windows)
+    assert all(item.wins == 1 and item.losses == 0 and item.breakeven == 0 for item in windows)
 
 
 def test_future_windows_can_never_reach_before_paper_origin(monkeypatch: pytest.MonkeyPatch) -> None:
