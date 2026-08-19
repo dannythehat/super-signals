@@ -23,7 +23,8 @@ from sqlalchemy import text
 
 from app.critical_entry_policy import CriticalEntry, parse_critical_entries
 from app.mt5_execution_day26 import Day26ExecutionError, _SignalInput
-from app.paper_critical_execution import _Planned
+from app.mt5_execution_day26_atomic import AtomicDay26Mt5ExecutionService
+from app.paper_critical_execution import PaperCriticalExecutionService, _Planned
 from app.paper_execution_priority import PaperExecutionPriorityService
 from app.risk_sizing_day24 import Day24RiskSizingResult
 
@@ -52,22 +53,35 @@ class PaperFreshStartExecutionService(PaperExecutionPriorityService):
         risk_percent,
         double_lot_approved: bool,
     ):
-        section_count = 1
+        """Route one canonical signal by its literal broker structure."""
+        critical = self._load_critical_signal(signal_id)
         try:
-            critical = self._load_critical_signal(signal_id)
             entries = parse_critical_entries(
                 critical.original_text,
                 side=critical.base.side,
                 entry_low=critical.base.entry_low,
                 entry_high=critical.base.entry_high,
             )
-            section_count = max(1, len(entries))
-        except (Day26ExecutionError, ValueError):
-            section_count = 1
+        except ValueError as exc:
+            raise Day26ExecutionError(str(exc)) from exc
 
+        section_count = max(1, len(entries))
         context_token = _full_risk_section_count.set(section_count)
         try:
-            return await super().execute_owner_demo_signal(
+            # Explicit broker pending orders and true multi-entry structures retain
+            # their literal provider prices. Ordinary market exact/zone/no-entry
+            # signals use the atomic path and the fresh executable broker quote.
+            is_critical = critical.broad_order_type == "pending" or len(entries) > 1
+            if is_critical:
+                return await PaperCriticalExecutionService.execute_owner_demo_signal(
+                    self,
+                    owner_user_id=owner_user_id,
+                    signal_id=signal_id,
+                    risk_percent=risk_percent,
+                    double_lot_approved=double_lot_approved,
+                )
+            return await AtomicDay26Mt5ExecutionService.execute_owner_demo_signal(
+                self,
                 owner_user_id=owner_user_id,
                 signal_id=signal_id,
                 risk_percent=risk_percent,
