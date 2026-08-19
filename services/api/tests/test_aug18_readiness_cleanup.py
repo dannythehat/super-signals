@@ -6,19 +6,14 @@ from hashlib import sha256
 from types import SimpleNamespace
 from uuid import uuid4
 
-import app.performance_account_truth_override as account_truth
-import app.telegram_publisher as publisher
 from app.ai_message_supervisor import AiMessageDecision
-from app.aug18_readiness_cleanup import (
+from app.paper_critical_management_v2 import (
+    PaperCriticalManagementV2,
     _PROFITABLE_BROKER_IDS,
-    install_aug18_readiness_cleanup,
 )
-from app.paper_critical_management_v2 import PaperCriticalManagementV2
+from app.performance_ledger_canonical import CanonicalPerformanceLedgerService
+from app.telegram_publisher_canonical import _decimal_text, _render_root
 from app.v1_message_policy import apply_v1_message_policy
-
-
-# Exercise the same runtime corrections production installs during application startup.
-install_aug18_readiness_cleanup()
 
 
 def _trade_update_decision(raw: str) -> AiMessageDecision:
@@ -53,23 +48,27 @@ def _trade_update_decision(raw: str) -> AiMessageDecision:
 
 
 def test_sparse_signal_publication_never_crashes_decimal_rendering() -> None:
-    assert publisher._decimal_text(None) == "N/A"
-    row = {
-        "symbol": "XAUUSD",
-        "side": "BUY",
-        "entry_price": None,
-        "stop_loss": None,
-        "take_profits": [],
-        "has_open_runner": False,
-        "risk_multiplier": 1,
-    }
-    rendered = publisher.render_signal_post(row)
-    assert "Entry: N/A" in rendered
+    assert _decimal_text(None) == "N/A"
+    rendered = _render_root(
+        {
+            "symbol": "XAUUSD",
+            "side": "BUY",
+            "entry_low": None,
+            "entry_high": None,
+            "broker_entry": None,
+            "stop_loss": None,
+            "broker_stop_loss": None,
+            "take_profits": [],
+            "broker_take_profits": [],
+            "has_open_runner": False,
+            "risk_multiplier": 1,
+        }
+    )
+    assert "Entry: Market" in rendered
     assert "Stop Loss: N/A" in rendered
 
 
 def test_provider_numeric_risk_free_stop_is_not_semantically_vetoed() -> None:
-    """Regression for TDC 6665: literal 4357 must target the surviving best layer."""
     surviving = SimpleNamespace(entry_index=2, entry_price=Decimal("4358"))
     selected = PaperCriticalManagementV2._select_layer_positions(
         (surviving,),
@@ -80,10 +79,8 @@ def test_provider_numeric_risk_free_stop_is_not_semantically_vetoed() -> None:
 
 
 def test_tdc_close_profit_when_seen_is_broker_profit_qualified() -> None:
-    """Regression for TDC 6607, which historically closed a losing mapped trade."""
     raw = "+70 pips\n\nClose profit when you see it\n\nThis set up is now more risky"
     result = apply_v1_message_policy(_trade_update_decision(raw), raw_text=raw)
-
     assert result.decision == "trade_update"
     assert result.action == "apply_update"
     assert result.extracted.get("management_actions") == [
@@ -109,7 +106,6 @@ def test_profit_qualified_close_never_selects_a_losing_broker_position() -> None
 
 
 def test_best_entry_still_running_is_state_not_an_extra_close_command() -> None:
-    """Regression for TDC 6665 revision 3: preserve explicit closes, invent none."""
     raw = (
         "+30 PIPS HIT 🔥\n\n"
         "RISK FREE 4357\n\n"
@@ -120,7 +116,6 @@ def test_best_entry_still_running_is_state_not_an_extra_close_command() -> None:
     )
     result = apply_v1_message_policy(_trade_update_decision(raw), raw_text=raw)
     actions = result.extracted.get("management_actions") or []
-
     assert {"type": "close", "target": "entry_price_4358", "value": None} in actions
     assert {"type": "close", "target": "entry_price_4359", "value": None} in actions
     assert {
@@ -140,7 +135,6 @@ class _Result:
 class _Session:
     def __init__(self, statements: list[str]) -> None:
         self.statements = statements
-        self.committed = False
 
     def __enter__(self):
         return self
@@ -153,7 +147,7 @@ class _Session:
         return _Result()
 
     def commit(self):
-        self.committed = True
+        return None
 
 
 class _LedgerHarness:
@@ -168,7 +162,7 @@ class _LedgerHarness:
 
 def test_account_truth_sync_obeys_append_only_broker_deal_ledger() -> None:
     harness = _LedgerHarness()
-    added = account_truth._store_account_deals(
+    added = CanonicalPerformanceLedgerService._store_account_deals(
         harness,
         user_id=uuid4(),
         mt5_account_id=uuid4(),
@@ -194,10 +188,9 @@ def test_account_truth_sync_obeys_append_only_broker_deal_ledger() -> None:
 
 
 def test_full_backfill_marker_explicitly_types_reused_postgres_binds() -> None:
-    """Regression for the production text/varchar AmbiguousParameter failure."""
     harness = _LedgerHarness()
     now = datetime.now(UTC)
-    account_truth._mark_full_backfill(
+    CanonicalPerformanceLedgerService._mark_full_backfill(
         harness,
         user_id=uuid4(),
         mt5_account_id=uuid4(),
