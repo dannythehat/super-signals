@@ -78,30 +78,35 @@ class _StartDayWindowHarness(CanonicalPerformanceRuntimeService):
         return Day33PerformanceWindow(
             key=key,
             label=label,
-            cash_pnl=Decimal("31") if key == "today" else Decimal("0"),
-            return_percent=None,
+            cash_pnl=Decimal("31"),
+            return_percent=Decimal("3.10"),
             model_500_pnl=Decimal("0"),
             model_500_return_percent=Decimal("0"),
-            closed_trades=1 if key == "today" else 0,
-            wins=1 if key == "today" else 0,
+            closed_trades=1,
+            wins=1,
             losses=0,
             breakeven=0,
             open_trades=0,
-            win_rate_percent=Decimal("100") if key == "today" else None,
+            win_rate_percent=Decimal("100"),
             net_pips=None,
             mixed_instrument_pips=False,
         )
 
 
-def test_clean_start_day_only_today_is_live() -> None:
+def test_origin_day_every_window_accumulates_from_same_permanent_start() -> None:
     owner = UUID("11111111-1111-4111-8111-111111111111")
     point = datetime(2026, 8, 19, 18, 0, tzinfo=UTC)
     service = _StartDayWindowHarness()
     windows = service.read_windows(owner, now=point)
 
     assert [item.key for item in windows] == ["today", "7d", "30d", "month", "all"]
-    assert service.calls == [("today", PAPER_RUN_STARTED_AT, point)]
-    assert windows[0].cash_pnl == Decimal("31")
-    assert all(item.cash_pnl == Decimal("0") for item in windows[1:])
-    assert all(item.closed_trades == 0 for item in windows[1:])
-    assert all(item.wins == item.losses == item.breakeven == 0 for item in windows[1:])
+    assert service.calls == [
+        ("today", PAPER_RUN_STARTED_AT, point),
+        ("7d", PAPER_RUN_STARTED_AT, point),
+        ("30d", PAPER_RUN_STARTED_AT, point),
+        ("month", PAPER_RUN_STARTED_AT, point),
+        ("all", PAPER_RUN_STARTED_AT, point),
+    ]
+    assert all(item.cash_pnl == Decimal("31") for item in windows)
+    assert all(item.closed_trades == 1 for item in windows)
+    assert all(item.wins == 1 and item.losses == 0 and item.breakeven == 0 for item in windows)
