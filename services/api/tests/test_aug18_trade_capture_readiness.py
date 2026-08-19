@@ -2,62 +2,31 @@ from __future__ import annotations
 
 import asyncio
 from datetime import UTC, datetime
+from decimal import Decimal
 from types import SimpleNamespace
 from uuid import uuid4
 
 import pytest
 
-from app.day28_zone_guard import Day28ZoneGuardTradeGateway
+from app.critical_entry_policy import parse_critical_entries
 from app.mt5_execution_day26 import Day26Mt5ExecutionService
-from app.paper_critical_execution import PaperCriticalExecutionService
+from app.paper_fresh_start_execution import PaperFreshStartExecutionService
 from app.telegram_listener_day21 import Day21TelegramListenerManager
-from app.telegram_listener_day38 import PaperPendingAwareListenerManager
+from app.telegram_listener_canonical import CanonicalProductionTelegramListenerManager
 
 
-class _BaseTrade:
-    def __init__(self) -> None:
-        self.calls: list[dict[str, object]] = []
-
-    async def place_market_order(self, **kwargs):
-        self.calls.append(kwargs)
-        return SimpleNamespace(order_id="order-1", position_id="position-1")
-
-
-class _NoZoneRead:
-    async def read_symbol_price(self, **kwargs):
-        raise AssertionError("fresh MARKET execution must not be locally re-vetoed by a zone read")
-
-
-def test_fresh_market_zone_reaches_broker_without_local_price_veto() -> None:
-    """Regression for United Kings 28739 / the Aug-18 first-leg zone blocker."""
-    base = _BaseTrade()
-    gateway = Day28ZoneGuardTradeGateway(base=base, read_gateway=_NoZoneRead())
-    token = gateway.set_zone(4385, 4395)
-    try:
-        result = asyncio.run(
-            gateway.place_market_order(
-                token="token",
-                account_id="account",
-                region="london",
-                side="BUY",
-                symbol="XAUUSD",
-                volume=0.01,
-                stop_loss=4380,
-                take_profit=4399,
-                client_id="SS_123456789012_1",
-            )
-        )
-    finally:
-        gateway.reset_zone(token)
-
-    assert result.order_id == "order-1"
-    assert len(base.calls) == 1
-    assert base.calls[0]["stop_loss"] == 4380
-    assert base.calls[0]["take_profit"] == 4399
+def test_ordinary_market_range_is_not_converted_into_fake_pending_layers() -> None:
+    entries = parse_critical_entries(
+        "Buy Gold @4395-4385\n\nSL: 4380\n\n"
+        "TP1: 4399\nTP2: 4405\n\nEnter Slowly - Layer with proper money management",
+        side="BUY",
+        entry_low=Decimal("4385"),
+        entry_high=Decimal("4395"),
+    )
+    assert entries == ()
 
 
 def test_four_numeric_take_profits_are_valid_execution_input() -> None:
-    """Regression for TDC 6560, which historically died at four provider TPs."""
     values = Day26Mt5ExecutionService._take_profits(["4396.5", "4399", "4402", "4413"])
     assert len(values) == 4
     assert str(values[-1]) == "4413"
@@ -91,7 +60,6 @@ class _RecoveryHarness:
 
 
 def test_live_recovery_repairs_already_persisted_unrouted_original(monkeypatch: pytest.MonkeyPatch) -> None:
-    """A persisted row is a durable hand-off, not proof broker dispatch occurred."""
     persisted_calls: list[int] = []
 
     def already_persisted(self, captured):
@@ -114,7 +82,7 @@ def test_live_recovery_repairs_already_persisted_unrouted_original(monkeypatch: 
     harness = _RecoveryHarness()
 
     asyncio.run(
-        PaperPendingAwareListenerManager._recover_live_gaps(
+        CanonicalProductionTelegramListenerManager._recover_live_gaps(
             harness,
             _RecoveryClient(message),
             plan,
@@ -147,10 +115,9 @@ class _DispatchHarness:
 
 
 def test_recovered_unresolved_management_is_not_repeatedly_dispatched() -> None:
-    """Regression for 1,231 Aug-18 lifecycle-resolution route failures."""
     harness = _DispatchHarness()
     asyncio.run(
-        PaperPendingAwareListenerManager._dispatch_recovered_if_required(
+        CanonicalProductionTelegramListenerManager._dispatch_recovered_if_required(
             harness,
             source_id=uuid4(),
             telegram_message_id=6520,
@@ -209,16 +176,13 @@ class _TimeoutRollbackHarness:
 
 
 def test_timeout_reconciliation_cleans_hidden_unreturned_broker_position() -> None:
-    """A timed-out POST is reconciled by clientId; the trade is never retried."""
     local_id = uuid4()
     client_id = "SS_abcdef123456_E1T1"
-    planned = (
-        SimpleNamespace(local_id=local_id, client_id=client_id),
-    )
+    planned = (SimpleNamespace(local_id=local_id, client_id=client_id),)
     harness = _TimeoutRollbackHarness(client_id)
 
     complete = asyncio.run(
-        PaperCriticalExecutionService._rollback_critical(
+        PaperFreshStartExecutionService._rollback_critical(
             harness,
             owner_user_id=uuid4(),
             signal=SimpleNamespace(signal_id=uuid4()),
