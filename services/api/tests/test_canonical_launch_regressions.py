@@ -188,7 +188,11 @@ async def test_fresh_missing_post_is_routed_but_stale_post_is_evidence_only(
         persisted.append(captured.telegram_message_id)
         return True
 
-    monkeypatch.setattr(Day21TelegramListenerManager, "_persist_message", fake_persist)
+    monkeypatch.setattr(
+        CanonicalProductionTelegramListenerManager,
+        "_persist_recovered_original",
+        fake_persist,
+    )
 
     manager = _bare_listener()
     manager._canonical_router = _StoredNewTradeRouter()
@@ -235,10 +239,15 @@ async def test_one_unreadable_source_does_not_stop_the_others(
 
     persisted: list[int] = []
     dispatched: list[int] = []
+
+    def fake_persist(_self, captured):
+        persisted.append(captured.telegram_message_id)
+        return True
+
     monkeypatch.setattr(
-        Day21TelegramListenerManager,
-        "_persist_message",
-        lambda _self, captured: (persisted.append(captured.telegram_message_id) or True),
+        CanonicalProductionTelegramListenerManager,
+        "_persist_recovered_original",
+        fake_persist,
     )
 
     manager = _bare_listener()
