@@ -41,10 +41,6 @@ from app.add_market_lifecycle_override import install_add_market_lifecycle_overr
 
 install_add_market_lifecycle_override()
 
-from app.execution_path_reliability_overrides import install_execution_path_reliability_overrides
-
-install_execution_path_reliability_overrides()
-
 from app.pending_reconciliation_parity_override import (
     install_pending_reconciliation_parity_override,
 )
