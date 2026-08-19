@@ -20,11 +20,13 @@ from app.metaapi_margin_gateway import MetaApiMarginGateway
 from app.metaapi_read_gateway import MetaApiReadGateway
 from app.metaapi_trade_gateway import MetaApiTradeGateway
 from app.mt5_crypto import MetaApiTokenCipher
-from app.mt5_execution_day38 import Day38LiveUserExecutionService
 from app.mt5_management_day38 import Day38LiveUserManagementService
 from app.paper_critical_management_v2 import PaperCriticalManagementV2
-from app.paper_fresh_start_execution import PaperFreshStartExecutionService
 from app.paper_resilient_read_gateway import PaperResilientMetaApiReadGateway
+from app.trading_execution_canonical import (
+    CanonicalTradingExecutionService,
+    MemberTradingExecutionService,
+)
 from app.unified_pending_reconciler import UnifiedPendingReconciler
 
 logger = logging.getLogger(__name__)
@@ -73,12 +75,12 @@ def build_canonical_execution_router(
         owner_read = PaperResilientMetaApiReadGateway()
         member_read = MetaApiReadGateway()
         trade = MetaApiTradeGateway()
-        # The legacy constructor still accepts a margin gateway, but canonical trading
-        # policy does not use local margin availability as an approval/veto budget.
-        # Vantage/MT5 remains authoritative for actual funds/margin rejection.
+        # This dependency remains constructor-compatible with the lower execution
+        # transport, but canonical policy never uses local margin availability as an
+        # approval/veto budget. Vantage/MT5 is authoritative for actual rejection.
         margin = MetaApiMarginGateway()
 
-        owner_execution = PaperFreshStartExecutionService(
+        owner_execution = CanonicalTradingExecutionService(
             session_factory=session_factory,
             cipher=cipher,
             read_gateway=owner_read,
@@ -91,7 +93,7 @@ def build_canonical_execution_router(
             read_gateway=owner_read,
             trade_gateway=trade,
         )
-        member_execution = Day38LiveUserExecutionService(
+        member_execution = MemberTradingExecutionService(
             session_factory=session_factory,
             cipher=cipher,
             read_gateway=member_read,
