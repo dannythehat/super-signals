@@ -1,14 +1,17 @@
-"""Canonical fresh market-entry policy shared by paper and future LIVE execution.
+"""Shared fresh market-entry policy used by paper and future LIVE execution.
 
 Fresh market instructions execute at the broker's current executable quote; provider
 entry text remains evidence/context and is not a second submission veto. Explicit
 pending orders keep their literal broker-side prices. Final SL/TP geometry is validated
 against the fresh executable quote before any market mutation.
+
+Despite the legacy module/class name, this is current shared policy, not a paper-only
+fork. The name will disappear only when the large canonical executor can be moved as one
+verified source-preserving refactor; no compatibility alias is installed here.
 """
 
 from __future__ import annotations
 
-import logging
 import os
 from datetime import UTC, datetime
 from decimal import Decimal
@@ -18,9 +21,7 @@ from uuid import UUID
 from app.mt5_execution_day26 import Day26ExecutionError, _SignalInput
 from app.mt5_read_service_day23 import Day23LiveState, Day23Mt5ReadService, Day23ReadError
 from app.paper_critical_execution import PaperCriticalExecutionService, _CriticalSignal
-from app.risk_sizing_day24 import Day24RiskSizingResult
 
-logger = logging.getLogger(__name__)
 DEFAULT_PAPER_MAX_SIGNAL_AGE_SECONDS = 90.0
 
 
@@ -148,31 +149,6 @@ class PaperExecutionPriorityService(PaperCriticalExecutionService):
                 raise Day26ExecutionError("pending_side_mismatch")
             if side == "SELL" and not entry.order_type.startswith("sell_"):
                 raise Day26ExecutionError("pending_side_mismatch")
-
-    @staticmethod
-    def _assert_layer_risk_cap(
-        *,
-        real_balance: Decimal,
-        risk_percent: Decimal,
-        double_applied: bool,
-        sizings: tuple[Day24RiskSizingResult, ...],
-        tp_count: int,
-    ) -> None:
-        """Record broker-minimum sizing overrun; do not invent an account budget veto."""
-        if tp_count <= 0:
-            raise Day26ExecutionError("position_count_invalid")
-        multiplier = Decimal("2") if double_applied else Decimal("1")
-        per_tp_guide = real_balance * risk_percent * multiplier / Decimal("100")
-        actual_per_tp = sum(
-            (item.actual_risk_per_position for item in sizings), Decimal("0")
-        )
-        if actual_per_tp > per_tp_guide:
-            logger.warning(
-                "Broker minimum-lot risk exceeds sizing guide; continuing "
-                "actual_per_tp=%s guide=%s",
-                actual_per_tp,
-                per_tp_guide,
-            )
 
 
 __all__ = ["PaperExecutionPriorityService", "_live_directionally_valid"]
