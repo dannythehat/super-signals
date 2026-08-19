@@ -19,7 +19,6 @@ from app.manual_reconciliation_day36 import (
     _MappedPosition,
 )
 from app.mt5_connection_manager import Mt5ConnectionManager
-from app.telegram_listener_day21 import Day21TelegramListenerManager
 from app.telegram_listener_canonical import CanonicalProductionTelegramListenerManager
 
 
@@ -52,8 +51,8 @@ def test_restart_recovery_persists_stale_entry_as_evidence_but_never_executes(mo
         return True
 
     monkeypatch.setattr(
-        Day21TelegramListenerManager,
-        "_persist_message",
+        CanonicalProductionTelegramListenerManager,
+        "_persist_recovered_original",
         persist_evidence,
     )
     manager = object.__new__(CanonicalProductionTelegramListenerManager)
