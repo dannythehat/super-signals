@@ -1,4 +1,9 @@
-"""Owner-only V1 exact/zone multi-position demo execution route."""
+"""Owner-only canonical paper execution route.
+
+This diagnostic/manual route uses the exact same shared execution service as automatic
+Telegram routing and future LIVE accounts. It cannot reintroduce a separate zone,
+margin-capacity or market-entry policy.
+"""
 
 from __future__ import annotations
 
@@ -10,14 +15,14 @@ from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from pydantic import BaseModel, Field
 
 from app.access_control import require_permission
-from app.day28_zone_guard import Day28GuardedExecutionService
 from app.metaapi_margin_gateway import MetaApiMarginGateway
 from app.metaapi_read_gateway import MetaApiReadGateway
 from app.metaapi_trade_gateway import MetaApiTradeGateway
 from app.mt5_execution_day26 import Day26ExecutionError
 from app.mt5_runtime import require_mt5_service
+from app.paper_fresh_start_execution import PaperFreshStartExecutionService
 
-router = APIRouter(prefix="/owner/mt5/day26", tags=["mt5", "day26"])
+router = APIRouter(prefix="/owner/mt5/day26", tags=["mt5", "execution"])
 OwnerIdentity = Annotated[dict[str, Any], Depends(require_permission("mt5_accounts.approve"))]
 
 
@@ -34,8 +39,8 @@ class Day26PositionResponse(BaseModel):
     volume: Decimal
     client_id: str
     broker_order_id: str
-    broker_position_id: str
-    broker_open_price: Decimal
+    broker_position_id: str | None
+    broker_open_price: Decimal | None
 
 
 class Day26ExecutionResponse(BaseModel):
@@ -51,40 +56,38 @@ class Day26ExecutionResponse(BaseModel):
     positions: list[Day26PositionResponse]
 
 
-def _service(request: Request) -> Day28GuardedExecutionService:
-    cached = getattr(request.app.state, "day26_mt5_execution_service", None)
-    if cached is not None:
+def _service(request: Request) -> PaperFreshStartExecutionService:
+    cached = getattr(request.app.state, "canonical_mt5_execution_service", None)
+    if isinstance(cached, PaperFreshStartExecutionService):
         return cached
     mt5_service = require_mt5_service(request)
-    service = Day28GuardedExecutionService(
+    service = PaperFreshStartExecutionService(
         session_factory=mt5_service._session_factory,
         cipher=mt5_service._cipher,
         read_gateway=MetaApiReadGateway(),
         margin_gateway=MetaApiMarginGateway(),
         trade_gateway=MetaApiTradeGateway(),
     )
-    request.app.state.day26_mt5_execution_service = service
+    request.app.state.canonical_mt5_execution_service = service
     return service
 
 
 def _safe_message(code: str) -> str:
     messages = {
-        "day26_market_signal_required": "V1 supports market signals only; pending orders are skipped.",
         "day26_demo_account_required": "This route can execute only on the connected Vantage demo account.",
-        "entry_price_unavailable": "The current XAUUSD price is outside the approved provider-entry tolerance, so no order was sent.",
-        "zone_not_reached": "The current XAUUSD price is outside the provider's entry zone, so no delayed order was created.",
+        "paper_pending_demo_account_required": "This route can execute only on the connected Vantage demo account.",
         "signal_changed_before_execution": "The provider edited the signal before execution; this attempt was stopped so the latest version can be used.",
         "signal_no_longer_accepted": "The provider's latest signal version is no longer execution-eligible.",
         "signal_cancelled": "The provider cancelled the setup before execution.",
-        "insufficient_funds": "The broker-reported free margin is insufficient for the complete position set.",
-        "day26_partial_execution_rollback_failed": "A partial submission could not be fully compensated. Trading is blocked until the broker state is reconciled.",
+        "day26_partial_execution_rollback_failed": "A partial submission could not be fully compensated. Trading is blocked until broker state is reconciled.",
+        "critical_partial_execution_rollback_failed": "A partial submission could not be fully compensated. Trading is blocked until broker state is reconciled.",
         "mt5_account_not_configured": "The Vantage demo account is not configured.",
     }
-    return messages.get(code, "Demo execution was stopped safely.")
+    return messages.get(code, "Broker execution was stopped safely.")
 
 
 def _status_for(code: str) -> int:
-    if code == "day26_partial_execution_rollback_failed":
+    if "rollback_failed" in code:
         return status.HTTP_503_SERVICE_UNAVAILABLE
     if code.startswith("metaapi_") or code.startswith("broker_"):
         return status.HTTP_503_SERVICE_UNAVAILABLE
@@ -98,7 +101,7 @@ async def execute_day26_demo_signal(
     response: Response,
     identity: OwnerIdentity,
 ) -> Day26ExecutionResponse:
-    """Execute one existing canonical V1 signal on the owner demo account."""
+    """Execute one existing canonical signal through the shared paper/LIVE policy."""
     try:
         result = await _service(request).execute_owner_demo_signal(
             owner_user_id=identity["id"],
@@ -132,8 +135,12 @@ async def execute_day26_demo_signal(
                 volume=item.volume,
                 client_id=item.client_id,
                 broker_order_id=item.broker_order_id,
-                broker_position_id=item.broker_position_id,
-                broker_open_price=item.broker_open_price,
+                broker_position_id=getattr(item, "broker_position_id", None),
+                broker_open_price=getattr(
+                    item,
+                    "broker_open_price",
+                    getattr(item, "entry_price", None),
+                ),
             )
             for item in result.positions
         ],
