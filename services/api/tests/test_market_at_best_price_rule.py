@@ -7,9 +7,8 @@ from types import SimpleNamespace
 from uuid import uuid4
 
 from app.ai_canonical_signal import AiCanonicalSignalService
-from app.ai_message_pipeline import AiMessagePipeline
+from app.ai_message_pipeline_canonical import CanonicalAiMessagePipeline, explicit_management_without_ai
 from app.ai_message_supervisor import AiMessageDecision
-from app.deterministic_first_ai import explicit_management_without_ai
 from app.mt5_execution_day26 import Day26ExecutionError, Day26Mt5ExecutionService, _SignalInput
 from app.paper_execution_priority import PaperExecutionPriorityService
 import app.v1_message_policy as v1
@@ -268,8 +267,8 @@ def test_plain_gtmo_zone_is_not_rejected_when_ai_guesses_pending() -> None:
     assert result.extracted["order_type"] == "market"
 
 
-def test_explicit_management_decision_does_not_need_supervisor_or_database() -> None:
-    pipeline = object.__new__(AiMessagePipeline)
+def test_explicit_management_decision_is_owned_by_canonical_pipeline() -> None:
+    pipeline = object.__new__(CanonicalAiMessagePipeline)
     result = pipeline._decide(
         source_id=uuid4(),
         telegram_message_id=1,
