@@ -29,10 +29,6 @@ from app.provider_entry_reliability_overrides import install_provider_entry_reli
 
 install_provider_entry_reliability_overrides()
 
-from app.tgc_source_profile_override import install_tgc_source_profile_override
-
-install_tgc_source_profile_override()
-
 from app.add_market_lifecycle_override import install_add_market_lifecycle_override
 
 install_add_market_lifecycle_override()
