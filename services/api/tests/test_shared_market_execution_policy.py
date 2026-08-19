@@ -2,7 +2,7 @@ from decimal import Decimal
 from inspect import getsource
 
 from app.critical_entry_policy import parse_critical_entries
-from app.paper_fresh_start_execution import PaperFreshStartExecutionService
+from app.trading_execution_canonical import CanonicalTradingExecutionService
 
 
 def test_fresh_market_zone_is_not_converted_to_critical_pending_structure() -> None:
@@ -36,7 +36,7 @@ def test_explicit_multi_entry_structure_remains_critical_broker_structure() -> N
 
 
 def test_shared_executor_routes_only_literal_multi_entry_or_pending_to_critical_path() -> None:
-    source = getsource(PaperFreshStartExecutionService.execute_owner_demo_signal)
+    source = getsource(CanonicalTradingExecutionService.execute_owner_demo_signal)
     assert 'critical.broad_order_type == "pending" or len(entries) > 1' in source
     assert "PaperCriticalExecutionService.execute_owner_demo_signal" in source
     assert "AtomicDay26Mt5ExecutionService.execute_owner_demo_signal" in source
