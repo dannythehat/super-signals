@@ -1,17 +1,20 @@
 from datetime import UTC, datetime, timedelta
+from decimal import Decimal
 from uuid import uuid4
 
 from app.paper_fresh_run_reset import (
     _clamp_today_session_start,
     _same_reset_day,
+    _virtual_balance,
     _zero_window,
+    paper_baseline_balance,
     paper_reset_at,
 )
 
 
 def test_paper_reset_at_accepts_utc_z(monkeypatch) -> None:
-    monkeypatch.setenv("SUPER_SIGNALS_PAPER_RESET_AT", "2026-08-19T06:00:00Z")
-    assert paper_reset_at() == datetime(2026, 8, 19, 6, 0, tzinfo=UTC)
+    monkeypatch.setenv("SUPER_SIGNALS_PAPER_RESET_AT", "2026-08-19T07:55:00Z")
+    assert paper_reset_at() == datetime(2026, 8, 19, 7, 55, tzinfo=UTC)
 
 
 def test_paper_reset_at_requires_valid_timestamp(monkeypatch) -> None:
@@ -20,8 +23,35 @@ def test_paper_reset_at_requires_valid_timestamp(monkeypatch) -> None:
 
 
 def test_paper_reset_at_normalizes_naive_timestamp_to_utc(monkeypatch) -> None:
-    monkeypatch.setenv("SUPER_SIGNALS_PAPER_RESET_AT", "2026-08-19T06:00:00")
-    assert paper_reset_at() == datetime(2026, 8, 19, 6, 0, tzinfo=UTC)
+    monkeypatch.setenv("SUPER_SIGNALS_PAPER_RESET_AT", "2026-08-19T07:55:00")
+    assert paper_reset_at() == datetime(2026, 8, 19, 7, 55, tzinfo=UTC)
+
+
+def test_paper_baseline_defaults_to_1000(monkeypatch) -> None:
+    monkeypatch.delenv("SUPER_SIGNALS_PAPER_BASELINE_BALANCE", raising=False)
+    assert paper_baseline_balance() == Decimal("1000")
+
+
+def test_paper_baseline_accepts_explicit_positive_value(monkeypatch) -> None:
+    monkeypatch.setenv("SUPER_SIGNALS_PAPER_BASELINE_BALANCE", "1000")
+    assert paper_baseline_balance() == Decimal("1000")
+
+
+def test_paper_baseline_rejects_invalid_or_non_positive_values(monkeypatch) -> None:
+    monkeypatch.setenv("SUPER_SIGNALS_PAPER_BASELINE_BALANCE", "bad")
+    assert paper_baseline_balance() == Decimal("1000")
+    monkeypatch.setenv("SUPER_SIGNALS_PAPER_BASELINE_BALANCE", "0")
+    assert paper_baseline_balance() == Decimal("1000")
+
+
+def test_virtual_paper_balance_starts_at_1000_and_updates_from_new_run_only() -> None:
+    balance, equity = _virtual_balance(Decimal("1000"), Decimal("0"), Decimal("0"))
+    assert balance == Decimal("1000")
+    assert equity == Decimal("1000")
+
+    balance, equity = _virtual_balance(Decimal("1000"), Decimal("31"), Decimal("-2.5"))
+    assert balance == Decimal("1031")
+    assert equity == Decimal("1028.5")
 
 
 def test_reset_day_historical_window_is_explicit_zero() -> None:
@@ -35,7 +65,7 @@ def test_reset_day_historical_window_is_explicit_zero() -> None:
 
 
 def test_reset_day_detection_uses_utc_boundary() -> None:
-    cutoff = datetime(2026, 8, 19, 6, 0, tzinfo=UTC)
+    cutoff = datetime(2026, 8, 19, 7, 55, tzinfo=UTC)
     assert _same_reset_day(datetime(2026, 8, 19, 23, 59, tzinfo=UTC), cutoff)
     assert not _same_reset_day(datetime(2026, 8, 20, 0, 0, tzinfo=UTC), cutoff)
 
@@ -45,7 +75,7 @@ def test_today_session_is_clamped_to_owner_reset_epoch_only() -> None:
     other = uuid4()
     day_start = datetime(2026, 8, 18, 21, 0, tzinfo=UTC)  # midnight Europe/Sofia
     day_end = day_start + timedelta(days=1)
-    cutoff = datetime(2026, 8, 19, 6, 0, tzinfo=UTC)  # 09:00 Europe/Sofia
+    cutoff = datetime(2026, 8, 19, 7, 55, tzinfo=UTC)  # 10:55 Europe/Sofia
 
     assert _clamp_today_session_start(
         day_start,
@@ -67,7 +97,7 @@ def test_today_session_is_clamped_to_owner_reset_epoch_only() -> None:
 
 def test_today_session_does_not_reapply_old_reset_on_future_days() -> None:
     owner = uuid4()
-    cutoff = datetime(2026, 8, 19, 6, 0, tzinfo=UTC)
+    cutoff = datetime(2026, 8, 19, 7, 55, tzinfo=UTC)
     next_day_start = datetime(2026, 8, 19, 21, 0, tzinfo=UTC)
     assert _clamp_today_session_start(
         next_day_start,
