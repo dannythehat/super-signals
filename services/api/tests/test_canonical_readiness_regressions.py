@@ -7,12 +7,12 @@ from types import SimpleNamespace
 from uuid import uuid4
 
 from app.ai_message_supervisor import AiMessageDecision
-from app.paper_critical_management_v2 import (
-    PaperCriticalManagementV2,
-    _PROFITABLE_BROKER_IDS,
-)
 from app.performance_ledger_canonical import CanonicalPerformanceLedgerService
 from app.telegram_publisher_canonical import _decimal_text, _render_root
+from app.trading_management_canonical import (
+    CanonicalTradingManagementService,
+    _PROFITABLE_BROKER_IDS,
+)
 from app.v1_message_policy import apply_v1_message_policy
 
 
@@ -70,7 +70,7 @@ def test_sparse_signal_publication_never_crashes_decimal_rendering() -> None:
 
 def test_provider_numeric_risk_free_stop_is_not_semantically_vetoed() -> None:
     surviving = SimpleNamespace(entry_index=2, entry_price=Decimal("4358"))
-    selected = PaperCriticalManagementV2._select_layer_positions(
+    selected = CanonicalTradingManagementService._select_layer_positions(
         (surviving,),
         "best_entry_risk_free_4357",
         side="BUY",
@@ -95,7 +95,7 @@ def test_profit_qualified_close_never_selects_a_losing_broker_position() -> None
     loser = SimpleNamespace(broker_position_id="broker-loss")
     token = _PROFITABLE_BROKER_IDS.set(frozenset({"broker-win"}))
     try:
-        selected = PaperCriticalManagementV2._select_layer_positions(
+        selected = CanonicalTradingManagementService._select_layer_positions(
             (winner, loser),
             "profitable_only",
             side="BUY",
