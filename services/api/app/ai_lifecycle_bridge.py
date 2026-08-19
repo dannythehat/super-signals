@@ -1,4 +1,4 @@
-"""Bridge AI-understood provider updates into the canonical lifecycle ledger."""
+"""Bridge provider updates into the canonical lifecycle ledger."""
 
 from __future__ import annotations
 
@@ -15,7 +15,7 @@ from app.provider_pips_day34 import normalize_provider_pips
 from app.standalone_lifecycle_linker import extract_update_symbol
 from app.standalone_lifecycle_linker_v2 import StandaloneLifecycleLinkerV2
 
-AI_LIFECYCLE_VERSION = "ai-supervisor-lifecycle-v1"
+AI_LIFECYCLE_VERSION = "canonical-lifecycle-v1"
 
 
 @dataclass(frozen=True, slots=True)
@@ -118,7 +118,7 @@ class AiLifecycleBridge:
             ).scalar_one_or_none()
             if event_id is None:
                 existing = session.execute(
-                    text("SELECT id FROM signal_lifecycle_events WHERE event_key = :event_key"),
+                    text("SELECT id FROM signal_lifecycle_events WHERE event_key=:event_key"),
                     {"event_key": event_key},
                 ).scalar_one_or_none()
                 return AiLifecycleResult(False, True, signal["id"], existing, "existing_event")
@@ -160,18 +160,18 @@ class AiLifecycleBridge:
                     m.id AS message_id,
                     m.source_id,
                     m.telegram_message_id,
-                    CASE WHEN :revision_index = 0 THEN m.raw_text ELSE mr.raw_text END AS raw_text,
-                    CASE WHEN :revision_index = 0 THEN m.raw_payload ELSE mr.raw_payload END AS raw_payload,
-                    CASE WHEN :revision_index = 0 THEN m.posted_at ELSE mr.edited_at END AS occurred_at
+                    CASE WHEN :revision_index=0 THEN m.raw_text ELSE mr.raw_text END AS raw_text,
+                    CASE WHEN :revision_index=0 THEN m.raw_payload ELSE mr.raw_payload END AS raw_payload,
+                    CASE WHEN :revision_index=0 THEN m.posted_at ELSE mr.edited_at END AS occurred_at
                 FROM messages AS m
-                JOIN sources AS s ON s.id = m.source_id
+                JOIN sources AS s ON s.id=m.source_id
                 LEFT JOIN message_revisions AS mr
-                  ON mr.message_id = m.id
-                 AND mr.revision_index = :revision_index
-                WHERE m.id = :message_id
+                  ON mr.message_id=m.id
+                 AND mr.revision_index=:revision_index
+                WHERE m.id=:message_id
                   AND m.deleted_at IS NULL
-                  AND s.status IN ('testing', 'live')
-                  AND (:revision_index = 0 OR mr.revision_index IS NOT NULL)
+                  AND s.status IN ('testing','live')
+                  AND (:revision_index=0 OR mr.revision_index IS NOT NULL)
                 """
             ),
             {"message_id": message_id, "revision_index": revision_index},
@@ -184,15 +184,12 @@ class AiLifecycleBridge:
         *,
         revision_index: int,
     ) -> tuple[Any | None, str]:
-        # An edit to the original provider signal is always the same logical Signal.
         if revision_index > 0:
             original_signal = session.execute(
                 text(
                     """
-                    SELECT id, symbol, provider_message_id, source_posted_at
-                    FROM signals
-                    WHERE source_message_id = :message_id
-                    LIMIT 1
+                    SELECT id,symbol,provider_message_id,source_posted_at
+                    FROM signals WHERE source_message_id=:message_id LIMIT 1
                     """
                 ),
                 {"message_id": row["message_id"]},
@@ -200,9 +197,6 @@ class AiLifecycleBridge:
             if original_signal is not None:
                 return original_signal, "original_signal_edit"
 
-        # Explicit Telegram reply linkage remains the strongest association evidence,
-        # even when the referenced trade is already closed and the provider is merely
-        # reporting the result afterwards.
         payload = row["raw_payload"] if isinstance(row["raw_payload"], dict) else {}
         reply_value = payload.get("reply_to_message_id")
         if reply_value is not None:
@@ -214,10 +208,10 @@ class AiLifecycleBridge:
                 signal = session.execute(
                     text(
                         """
-                        SELECT id, symbol, provider_message_id, source_posted_at
+                        SELECT id,symbol,provider_message_id,source_posted_at
                         FROM signals
-                        WHERE source_id = :source_id
-                          AND provider_message_id = :provider_message_id
+                        WHERE source_id=:source_id
+                          AND provider_message_id=:provider_message_id
                         LIMIT 1
                         """
                     ),
@@ -226,40 +220,23 @@ class AiLifecycleBridge:
                 if signal is not None:
                     return signal, "explicit_telegram_reply"
 
-        # Day 34 Active Trade Watch: for a standalone management message, broker-backed
-        # active state takes priority over the older chat-recency heuristic. This keeps
-        # historical Signals in the audit ledger without letting them make a clear
-        # `BE now` / `close gold` instruction ambiguous when only one real trade remains
-        # open. The query is source-scoped and contains no user balance/P&L data.
         symbol_hint = extract_update_symbol(str(row["raw_text"] or ""))
         active = session.execute(
             text(
                 """
-                SELECT DISTINCT
-                    s.id,
-                    s.symbol,
-                    s.provider_message_id,
-                    s.source_posted_at
+                SELECT DISTINCT s.id,s.symbol,s.provider_message_id,s.source_posted_at
                 FROM signals AS s
-                JOIN positions AS p ON p.signal_id = s.id
-                LEFT JOIN performance_trade_outcomes AS o ON o.position_id = p.id
-                WHERE s.source_id = :source_id
-                  AND s.source_posted_at <= :occurred_at
+                JOIN positions AS p ON p.signal_id=s.id
+                LEFT JOIN performance_trade_outcomes AS o ON o.position_id=p.id
+                WHERE s.source_id=:source_id
+                  AND s.source_posted_at<=:occurred_at
+                  AND (CAST(:symbol_hint AS text) IS NULL OR UPPER(s.symbol)=CAST(:symbol_hint AS text))
                   AND (
-                      CAST(:symbol_hint AS text) IS NULL
-                      OR UPPER(s.symbol) = CAST(:symbol_hint AS text)
+                      (p.status='open' AND p.broker_position_id IS NOT NULL
+                       AND COALESCE(o.status,'open') NOT IN ('won','lost','breakeven','closed_unknown'))
+                      OR o.status='pending'
                   )
-                  AND (
-                      (
-                          p.status = 'open'
-                          AND p.broker_position_id IS NOT NULL
-                          AND COALESCE(o.status, 'open') NOT IN (
-                              'won', 'lost', 'breakeven', 'closed_unknown'
-                          )
-                      )
-                      OR o.status = 'pending'
-                  )
-                ORDER BY s.source_posted_at DESC, s.provider_message_id DESC
+                ORDER BY s.source_posted_at DESC,s.provider_message_id DESC
                 """
             ),
             {
@@ -268,14 +245,11 @@ class AiLifecycleBridge:
                 "symbol_hint": symbol_hint,
             },
         ).mappings().all()
-
         if len(active) == 1:
             return active[0], "active_broker_unique"
         if len(active) > 1:
             return None, "active_trade_target_ambiguous"
 
-        # No broker-backed active candidate exists. Preserve the passed Day 20 fallback
-        # for pre-execution lifecycle messages and historical provider result context.
         candidate, method, reason = StandaloneLifecycleLinkerV2._resolve_candidate(session, row)
         if candidate is not None:
             return candidate, method or "standalone_legacy_unique"
@@ -303,6 +277,10 @@ class AiLifecycleBridge:
             return "take_profit_change", f"TRADE UPDATE\nTake-profit change instructed{suffix}."
         if update_type == "cancel_pending":
             return "cancel", "TRADE UPDATE\nPending order cancellation instructed."
+        if update_type == "add_market":
+            side = str(extracted.get("update_value") or "").strip().upper()
+            suffix = f" {side}" if side in {"BUY", "SELL"} else ""
+            return "add_market", f"TRADE UPDATE\nAdditional{suffix} market entry instructed."
         if update_type == "result_report":
             pips = extracted.get("provider_claimed_pips")
             suffix = f" ({pips} stated by provider)" if pips is not None else ""
