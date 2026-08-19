@@ -26,10 +26,10 @@ from app.mt5_execution_day26 import (
     _SignalInput,
 )
 from app.mt5_execution_day26_atomic import Day26RollbackResult
-from app.mt5_execution_day38 import Day38LiveUserExecutionService
 from app.mt5_management_day27 import Day27ManagementError
 from app.mt5_read_service_day23 import Day23AccountState, Day23LiveState, Day23PriceState
 from app.paper_critical_execution import _CriticalSignal
+from app.trading_execution_canonical import MemberTradingExecutionService
 
 U1 = UUID("11111111-1111-4111-8111-111111111111")
 U2 = UUID("22222222-2222-4222-8222-222222222222")
@@ -154,7 +154,7 @@ class _ShapeSession:
         return _ShapeResult()
 
 
-class _ExecutionHarness(Day38LiveUserExecutionService):
+class _ExecutionHarness(MemberTradingExecutionService):
     def __init__(self) -> None:
         self.read, self.margin, self.trade = _Read(), _Margin(), _Trade()
         super().__init__(
@@ -288,8 +288,6 @@ def test_one_signal_sizes_each_user_independently_without_local_funds_veto(
     assert result.skipped_count == 0
     assert by_user[U1].volume_per_position == (Decimal("0.05"),) * 3
     assert by_user[U2].volume_per_position == (Decimal("0.8"),) * 3
-    # U3 deliberately reports tiny free margin. That is not a local veto; broker is
-    # authoritative for the submitted valid trade.
     assert by_user[U3].volume_per_position == (Decimal("0.1"),) * 3
     assert by_user[U3].error_code is None
     assert len(execution.trade.calls) == 9
