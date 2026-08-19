@@ -13,6 +13,7 @@ from app.paper_run_epoch import (
     active_paper_epoch,
 )
 from app.performance_ledger_canonical import CanonicalPerformanceLedgerService
+from app.performance_ledger_day33 import Day33PerformanceWindow
 from app.performance_runtime import CanonicalPerformanceRuntimeService
 
 
@@ -66,22 +67,41 @@ def test_owner_paper_origin_is_immutable_and_not_environment_resettable(monkeypa
     assert epoch.baseline_balance == Decimal("1000")
 
 
-class _CumulativeWindowHarness(CanonicalPerformanceRuntimeService):
+class _StartDayWindowHarness(CanonicalPerformanceRuntimeService):
     def __init__(self) -> None:
-        pass
+        self.calls: list[tuple[str, datetime | None, datetime]] = []
 
     def _run_start(self, user_id):  # noqa: ANN001, ANN201
         return PAPER_RUN_STARTED_AT
 
     def _signal_window(self, user_id, key, label, since, now):  # noqa: ANN001, ANN201
-        return key, since, now
+        self.calls.append((key, since, now))
+        return Day33PerformanceWindow(
+            key=key,
+            label=label,
+            cash_pnl=Decimal("31") if key == "today" else Decimal("0"),
+            return_percent=None,
+            model_500_pnl=Decimal("0"),
+            model_500_return_percent=Decimal("0"),
+            closed_trades=1 if key == "today" else 0,
+            wins=1 if key == "today" else 0,
+            losses=0,
+            breakeven=0,
+            open_trades=0,
+            win_rate_percent=Decimal("100") if key == "today" else None,
+            net_pips=None,
+            mixed_instrument_pips=False,
+        )
 
 
-def test_every_performance_window_accumulates_from_same_origin_on_start_day() -> None:
+def test_clean_start_day_only_today_is_live() -> None:
     owner = UUID("11111111-1111-4111-8111-111111111111")
     point = datetime(2026, 8, 19, 18, 0, tzinfo=UTC)
-    windows = _CumulativeWindowHarness().read_windows(owner, now=point)
+    service = _StartDayWindowHarness()
+    windows = service.read_windows(owner, now=point)
 
-    assert [item[0] for item in windows] == ["today", "7d", "30d", "month", "all"]
-    assert all(item[1] == PAPER_RUN_STARTED_AT for item in windows)
-    assert all(item[2] == point for item in windows)
+    assert [item.key for item in windows] == ["today", "7d", "30d", "month", "all"]
+    assert service.calls == [("today", PAPER_RUN_STARTED_AT, point)]
+    assert windows[0].cash_pnl == Decimal("31")
+    assert all(item.cash_pnl == Decimal("0") for item in windows[1:])
+    assert all(item.closed_trades == 0 for item in windows[1:])
