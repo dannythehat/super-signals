@@ -37,6 +37,7 @@ from app.unified_pending_reconciler import UnifiedPendingReconciler
 logger = logging.getLogger(__name__)
 _STRIPE_COUNT = 128
 _RECOVERY_HISTORY_LIMIT = 50
+_RECOVERY_CONCURRENCY = 4
 _DEFAULT_RECOVERY_AGE_SECONDS = 90.0
 _RECOVERY_CLOCK_SKEW_SECONDS = 5.0
 
@@ -151,7 +152,14 @@ class CanonicalProductionTelegramListenerManager(Day21TelegramListenerManager):
         return inserted
 
     def _process_saved_original(self, captured: Any) -> Any:
-        result = Day21TelegramListenerManager._persist_message(self, captured)
+        """Supervise the raw row exactly once, then hand its durable decision to routing."""
+        pipeline = getattr(self, "_ai_pipeline", None)
+        result = None
+        if pipeline is not None:
+            result = pipeline.process_original(
+                captured.source_id,
+                int(captured.telegram_message_id),
+            )
         self._dispatch_sync(
             source_id=captured.source_id,
             telegram_message_id=int(captured.telegram_message_id),
@@ -366,84 +374,122 @@ class CanonicalProductionTelegramListenerManager(Day21TelegramListenerManager):
             revision_index=revision_index,
         )
 
-    async def _recover_live_gaps(self, client: Any, plan: ReaderListeningPlan) -> None:
-        """Repair missed push delivery and persisted-but-unrouted decisions."""
-        for source in plan.sources:
-            try:
-                messages = await read_messages_with_entity_recovery(
-                    client,
-                    source.chat_id,
-                    limit=_RECOVERY_HISTORY_LIMIT,
+    def _persist_recovered_original(self, captured: CapturedTelegramMessage) -> bool:
+        """Persist one history-row and supervise only when recovery truly discovered it."""
+        with self._revision_lock(captured.source_id, captured.telegram_message_id):
+            inserted = TelegramListenerManager._persist_message(self, captured)
+        if inserted:
+            pipeline = getattr(self, "_ai_pipeline", None)
+            if pipeline is not None:
+                pipeline.process_original(
+                    captured.source_id,
+                    int(captured.telegram_message_id),
                 )
-            except Exception:
-                logger.exception(
-                    "Telegram recovery skipped one unreadable source",
-                    extra={"source_id": str(source.source_id), "chat_id": source.chat_id},
+        return inserted
+
+    def _persist_recovered_edit(self, captured: CapturedTelegramEdit) -> tuple[bool, int]:
+        """Persist one history edit and supervise only a newly inserted revision."""
+        with self._revision_lock(captured.source_id, captured.telegram_message_id):
+            inserted = Day13TelegramListenerManager._persist_edit(self, captured)
+            revision_index = self._latest_revision_index(
+                captured.source_id,
+                int(captured.telegram_message_id),
+            )
+        if inserted and revision_index > 0:
+            pipeline = getattr(self, "_ai_pipeline", None)
+            exact_processor = (
+                getattr(pipeline, "_process_revision", None) if pipeline is not None else None
+            )
+            if callable(exact_processor):
+                exact_processor(
+                    captured.source_id,
+                    int(captured.telegram_message_id),
+                    revision_index=revision_index,
                 )
+        return inserted, revision_index
+
+    async def _recover_source_gap(self, client: Any, source: Any) -> None:
+        """Recover one provider independently so a busy source cannot age out another."""
+        try:
+            messages = await read_messages_with_entity_recovery(
+                client,
+                source.chat_id,
+                limit=_RECOVERY_HISTORY_LIMIT,
+            )
+        except Exception:
+            logger.exception(
+                "Telegram recovery skipped one unreadable source",
+                extra={"source_id": str(source.source_id), "chat_id": source.chat_id},
+            )
+            return
+
+        for message in reversed(list(messages)):
+            message_id = getattr(message, "id", None)
+            if message_id is None:
                 continue
+            reply_to = getattr(message, "reply_to", None)
+            reply_to_message_id = getattr(reply_to, "reply_to_msg_id", None)
+            media = getattr(message, "media", None)
+            raw_text = str(getattr(message, "raw_text", "") or "")
+            posted_at = self._utc_datetime(getattr(message, "date", None))
+            captured = CapturedTelegramMessage(
+                source_id=source.source_id,
+                chat_id=source.chat_id,
+                telegram_message_id=int(message_id),
+                raw_text=raw_text,
+                posted_at=posted_at,
+                reply_to_message_id=(
+                    int(reply_to_message_id) if reply_to_message_id is not None else None
+                ),
+                has_media=media is not None,
+                media_type=type(media).__name__ if media is not None else None,
+            )
 
-            for message in reversed(list(messages)):
-                message_id = getattr(message, "id", None)
-                if message_id is None:
-                    continue
-                reply_to = getattr(message, "reply_to", None)
-                reply_to_message_id = getattr(reply_to, "reply_to_msg_id", None)
-                media = getattr(message, "media", None)
-                raw_text = str(getattr(message, "raw_text", "") or "")
-                posted_at = self._utc_datetime(getattr(message, "date", None))
-                captured = CapturedTelegramMessage(
-                    source_id=source.source_id,
-                    chat_id=source.chat_id,
-                    telegram_message_id=int(message_id),
-                    raw_text=raw_text,
-                    posted_at=posted_at,
-                    reply_to_message_id=(int(reply_to_message_id) if reply_to_message_id is not None else None),
-                    has_media=media is not None,
-                    media_type=type(media).__name__ if media is not None else None,
-                )
+            await asyncio.to_thread(self._persist_recovered_original, captured)
+            await self._dispatch_recovered_if_required(
+                source_id=source.source_id,
+                telegram_message_id=int(message_id),
+                revision_index=0,
+                occurred_at=posted_at,
+            )
 
-                await asyncio.to_thread(Day21TelegramListenerManager._persist_message, self, captured)
+            edit_date = getattr(message, "edit_date", None)
+            if edit_date is None:
+                continue
+            edited_at = self._utc_datetime(edit_date)
+            captured_edit = CapturedTelegramEdit(
+                source_id=source.source_id,
+                chat_id=source.chat_id,
+                telegram_message_id=int(message_id),
+                raw_text=raw_text,
+                edited_at=edited_at,
+                reply_to_message_id=(
+                    int(reply_to_message_id) if reply_to_message_id is not None else None
+                ),
+                has_media=media is not None,
+                media_type=type(media).__name__ if media is not None else None,
+            )
+            _, revision_index = await asyncio.to_thread(
+                self._persist_recovered_edit,
+                captured_edit,
+            )
+            if revision_index > 0:
                 await self._dispatch_recovered_if_required(
                     source_id=source.source_id,
                     telegram_message_id=int(message_id),
-                    revision_index=0,
-                    occurred_at=posted_at,
+                    revision_index=revision_index,
+                    occurred_at=edited_at,
                 )
 
-                edit_date = getattr(message, "edit_date", None)
-                if edit_date is None:
-                    continue
-                edited_at = self._utc_datetime(edit_date)
-                captured_edit = CapturedTelegramEdit(
-                    source_id=source.source_id,
-                    chat_id=source.chat_id,
-                    telegram_message_id=int(message_id),
-                    raw_text=raw_text,
-                    edited_at=edited_at,
-                    reply_to_message_id=(int(reply_to_message_id) if reply_to_message_id is not None else None),
-                    has_media=media is not None,
-                    media_type=type(media).__name__ if media is not None else None,
-                )
-                await asyncio.to_thread(Day13TelegramListenerManager._persist_edit, self, captured_edit)
-                revision_index = await asyncio.to_thread(
-                    self._latest_revision_index,
-                    source.source_id,
-                    int(message_id),
-                )
-                pipeline = getattr(self, "_ai_pipeline", None)
-                if revision_index > 0 and pipeline is not None:
-                    await asyncio.to_thread(
-                        pipeline._process_revision,
-                        source.source_id,
-                        int(message_id),
-                        revision_index=revision_index,
-                    )
-                    await self._dispatch_recovered_if_required(
-                        source_id=source.source_id,
-                        telegram_message_id=int(message_id),
-                        revision_index=revision_index,
-                        occurred_at=edited_at,
-                    )
+    async def _recover_live_gaps(self, client: Any, plan: ReaderListeningPlan) -> None:
+        """Repair missed push delivery and persisted-but-unrouted decisions quickly."""
+        semaphore = asyncio.Semaphore(_RECOVERY_CONCURRENCY)
+
+        async def bounded(source: Any) -> None:
+            async with semaphore:
+                await self._recover_source_gap(client, source)
+
+        await asyncio.gather(*(bounded(source) for source in plan.sources))
 
     async def _catch_up_recent_messages(self, client: Any, plan: ReaderListeningPlan) -> None:
         await self._recover_live_gaps(client, plan)
