@@ -14,9 +14,9 @@ from app.metaapi_trade_gateway import MetaApiTradeGateway
 from app.mt5_management_day27 import Day27ManagementError
 from app.paper_critical_execution import PaperCriticalExecutionService
 from app.paper_critical_management import PaperCriticalManagementService, _LayerPosition
-from app.paper_critical_management_v2 import PaperCriticalManagementV2
 from app.paper_partial_close_gateway import PaperPartialCloseGateway
 from app.paper_pending_reconciler import PaperPendingReconciler
+from app.trading_management_canonical import CanonicalTradingManagementService
 
 
 def _position(entry: int, tp: int, price: str) -> _LayerPosition:
@@ -170,7 +170,7 @@ def test_leave_best_buy_closes_highest_price_layers_only() -> None:
         _position(3, 1, "4342"),
         _position(4, 1, "4338"),
     )
-    selected = PaperCriticalManagementV2._select_layer_positions(
+    selected = CanonicalTradingManagementService._select_layer_positions(
         positions,
         "worst_3_layers",
         side="BUY",
@@ -188,13 +188,13 @@ def test_best_entry_buy_is_lowest_actual_fill() -> None:
         _position(5, 1, "4394"),
         _position(6, 1, "4393"),
     )
-    selected = PaperCriticalManagementV2._select_layer_positions(
+    selected = CanonicalTradingManagementService._select_layer_positions(
         positions,
         "best_entry",
         side="BUY",
     )
     assert {item.entry_index for item in selected} == {6}
-    worse = PaperCriticalManagementV2._select_layer_positions(
+    worse = CanonicalTradingManagementService._select_layer_positions(
         positions,
         "all_but_best",
         side="BUY",
@@ -211,7 +211,7 @@ def test_buy_risk_free_stop_is_allowed_when_best_layer_really_filled_at_that_pri
         _position(5, 1, "4394"),
         _position(6, 1, "4393"),
     )
-    selected = PaperCriticalManagementV2._select_layer_positions(
+    selected = CanonicalTradingManagementService._select_layer_positions(
         positions,
         "best_entry_risk_free_4393",
         side="BUY",
@@ -222,7 +222,7 @@ def test_buy_risk_free_stop_is_allowed_when_best_layer_really_filled_at_that_pri
 def test_buy_risk_free_stop_fails_if_only_worse_layer_has_filled() -> None:
     positions = (_position(1, 1, "4397.51"),)
     with pytest.raises(Day27ManagementError, match="risk_free_stop_not_protective"):
-        PaperCriticalManagementV2._select_layer_positions(
+        CanonicalTradingManagementService._select_layer_positions(
             positions,
             "best_entry_risk_free_4393",
             side="BUY",
@@ -235,14 +235,14 @@ def test_sell_risk_free_stop_uses_inverse_protection_rule() -> None:
         _position(2, 1, "4394"),
         _position(3, 1, "4395"),
     )
-    selected = PaperCriticalManagementV2._select_layer_positions(
+    selected = CanonicalTradingManagementService._select_layer_positions(
         positions,
         "best_entry_risk_free_4395",
         side="SELL",
     )
     assert {item.entry_index for item in selected} == {3}
     with pytest.raises(Day27ManagementError, match="risk_free_stop_not_protective"):
-        PaperCriticalManagementV2._select_layer_positions(
+        CanonicalTradingManagementService._select_layer_positions(
             (_position(1, 1, "4393"),),
             "best_entry_risk_free_4395",
             side="SELL",
@@ -258,7 +258,7 @@ def test_provider_close_price_maps_to_unique_nearest_actual_layer() -> None:
         _position(5, 1, "4394.00"),
         _position(6, 1, "4393.00"),
     )
-    selected = PaperCriticalManagementV2._select_layer_positions(
+    selected = CanonicalTradingManagementService._select_layer_positions(
         positions,
         "entry_price_4394",
         side="BUY",
@@ -269,7 +269,7 @@ def test_provider_close_price_maps_to_unique_nearest_actual_layer() -> None:
 def test_provider_close_price_fails_closed_when_no_layer_is_close_enough() -> None:
     positions = (_position(1, 1, "4397.5"), _position(2, 1, "4396.5"))
     with pytest.raises(Day27ManagementError, match="layer_provider_price_unresolved"):
-        PaperCriticalManagementV2._select_layer_positions(
+        CanonicalTradingManagementService._select_layer_positions(
             positions,
             "entry_price_4394",
             side="BUY",
@@ -283,7 +283,7 @@ def test_leave_best_sell_closes_lowest_price_layers_only() -> None:
         _position(3, 1, "4358"),
         _position(4, 1, "4362"),
     )
-    selected = PaperCriticalManagementV2._select_layer_positions(
+    selected = CanonicalTradingManagementService._select_layer_positions(
         positions,
         "worst_3_layers",
         side="SELL",
