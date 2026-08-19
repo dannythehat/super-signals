@@ -14,6 +14,14 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
 from app.broker_settlement_day34 import Day34BrokerSettlementManager
+from app.claudy_fed_rss import (
+    ClaudyFedRssRecorderManager,
+    build_claudy_fed_rss_recorder_manager,
+)
+from app.claudy_market_recorder import (
+    ClaudyMarketRecorderManager,
+    build_claudy_market_recorder_manager,
+)
 from app.config import get_settings
 from app.day26_code_acceptance import run_day26_code_acceptance_probe
 from app.day27_code_acceptance import run_day27_code_acceptance_probe
@@ -157,6 +165,16 @@ async def _lifespan(application: FastAPI) -> AsyncIterator[None]:
         or ""
     )
     broker_keys = tuple(value.strip() for value in broker_key_value.split(",") if value.strip())
+    claudy_capture_requested = (
+        os.getenv("SUPER_SIGNALS_CLAUDY_CAPTURE_ENABLED", "").strip().lower()
+        in {"1", "true", "yes", "on"}
+    )
+    claudy_fed_rss_manager: ClaudyFedRssRecorderManager | None = (
+        build_claudy_fed_rss_recorder_manager(session_factory=session_factory)
+    )
+    if claudy_fed_rss_manager is not None:
+        application.state.claudy_fed_rss_manager = claudy_fed_rss_manager
+    claudy_market_recorder_manager: ClaudyMarketRecorderManager | None = None
     mt5_connection_manager: Mt5ConnectionManager | None = None
     mt5_bootstrap_task: asyncio.Task[None] | None = None
     day34_settlement_manager: Day34BrokerSettlementManager | None = None
@@ -177,6 +195,13 @@ async def _lifespan(application: FastAPI) -> AsyncIterator[None]:
             gateway=MetaApiReadGateway(),
         )
         application.state.day33_performance_service = day33_performance_service
+
+        claudy_market_recorder_manager = build_claudy_market_recorder_manager(
+            session_factory=session_factory,
+            cipher=broker_cipher,
+        )
+        if claudy_market_recorder_manager is not None:
+            application.state.claudy_market_recorder_manager = claudy_market_recorder_manager
 
         if os.getenv("SUPER_SIGNALS_DAY34_SETTLEMENT_WATCH_ENABLED", "").strip() == "1":
             if day34_reference_user_id is None:
@@ -260,6 +285,11 @@ async def _lifespan(application: FastAPI) -> AsyncIterator[None]:
             session_factory=session_factory,
             cipher=broker_cipher,
         )
+    elif claudy_capture_requested:
+        logger.error(
+            "Claudy Phase 0-lite market recorder disabled: broker credential encryption keys "
+            "are unavailable"
+        )
 
     push_manager: Day34PushNotificationManager | None = None
     vapid_private_key = os.getenv("SUPER_SIGNALS_WEB_PUSH_VAPID_PRIVATE_KEY", "").strip()
@@ -315,6 +345,10 @@ async def _lifespan(application: FastAPI) -> AsyncIterator[None]:
         application.state.telegram_listener = listener
         await listener.start()
 
+    if claudy_fed_rss_manager is not None:
+        await claudy_fed_rss_manager.start()
+    if claudy_market_recorder_manager is not None:
+        await claudy_market_recorder_manager.start()
     if day34_settlement_manager is not None:
         await day34_settlement_manager.start()
     if push_manager is not None:
@@ -339,6 +373,10 @@ async def _lifespan(application: FastAPI) -> AsyncIterator[None]:
                 await day34_live_acceptance_task
             except asyncio.CancelledError:
                 pass
+        if claudy_market_recorder_manager is not None:
+            await claudy_market_recorder_manager.stop()
+        if claudy_fed_rss_manager is not None:
+            await claudy_fed_rss_manager.stop()
         await publisher.stop()
         if push_manager is not None:
             await push_manager.stop()

@@ -1,7 +1,7 @@
 """Read-only MetaAPI terminal data gateway for Day 23+ trading gates.
 
-This module exposes account-state, position, open-order, quote, symbol-specification
-and broker-history reads only. There is no trade/order mutation method here.
+This module exposes account-state, position, open-order, quote, symbol-specification,
+candle and broker-history reads only. There is no trade/order mutation method here.
 """
 
 from __future__ import annotations
@@ -21,6 +21,29 @@ from app.metaapi_region_cache import (
 DEFAULT_METAAPI_PROVISIONING_URL = (
     "https://mt-provisioning-api-v1.agiliumtrade.agiliumtrade.ai"
 )
+_ALLOWED_CANDLE_TIMEFRAMES = {
+    "1m",
+    "2m",
+    "3m",
+    "4m",
+    "5m",
+    "6m",
+    "10m",
+    "12m",
+    "15m",
+    "20m",
+    "30m",
+    "1h",
+    "2h",
+    "3h",
+    "4h",
+    "6h",
+    "8h",
+    "12h",
+    "1d",
+    "1w",
+    "1mn",
+}
 
 
 class MetaApiReadGateway:
@@ -137,6 +160,53 @@ class MetaApiReadGateway:
                 f"?offset={offset}&limit={limit}"
             ),
         )
+        if not isinstance(payload, list) or any(not isinstance(item, dict) for item in payload):
+            raise MetaApiGatewayError("metaapi_invalid_response")
+        return payload
+
+    async def read_historical_candles(
+        self,
+        *,
+        token: str,
+        account_id: str,
+        region: str,
+        symbol: str,
+        timeframe: str,
+        start_time: datetime | None = None,
+        limit: int = 3,
+    ) -> list[dict[str, object]]:
+        """Read bounded OHLCV history from MetaAPI's read-only market-data host."""
+        if timeframe not in _ALLOWED_CANDLE_TIMEFRAMES:
+            raise ValueError("Unsupported MetaAPI candle timeframe.")
+        if not 1 <= limit <= 1000:
+            raise ValueError("MetaAPI candle limit must be between 1 and 1000.")
+
+        encoded_symbol = quote(symbol, safe="")
+        encoded_timeframe = quote(timeframe, safe="")
+        query_parts: list[str] = []
+        if start_time is not None:
+            encoded_start = quote(
+                start_time.isoformat().replace("+00:00", "Z"),
+                safe=":-T.Z+",
+            )
+            query_parts.append(f"startTime={encoded_start}")
+        query_parts.append(f"limit={limit}")
+        query = "&".join(query_parts)
+
+        normalized_region = normalize_metaapi_region(region)
+        if normalized_region is None:
+            raise MetaApiGatewayError("metaapi_region_unavailable")
+        response = await self._request(
+            "GET",
+            (
+                f"https://mt-market-data-client-api-v1.{normalized_region}."
+                "agiliumtrade.ai"
+                f"/users/current/accounts/{account_id}/historical-market-data/"
+                f"symbols/{encoded_symbol}/timeframes/{encoded_timeframe}/candles?{query}"
+            ),
+            token=token,
+        )
+        payload = self._json(response)
         if not isinstance(payload, list) or any(not isinstance(item, dict) for item in payload):
             raise MetaApiGatewayError("metaapi_invalid_response")
         return payload
