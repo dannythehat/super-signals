@@ -9,31 +9,35 @@ from app.member_routing_canonical import (
     MemberDistributionTarget,
     MemberManagementService,
 )
-from app.mt5_execution_day38 import Day38LiveUserExecutionService
-from app.mt5_management_day38 import Day38LiveUserManagementService
-from app.paper_critical_management_v2 import PaperCriticalManagementV2
-from app.paper_fresh_start_execution import PaperFreshStartExecutionService
 from app.paper_pending_reconciler import PaperPendingReconciler
+from app.trading_execution_canonical import (
+    CanonicalTradingExecutionService,
+    MemberTradingExecutionService,
+)
+from app.trading_management_canonical import (
+    CanonicalTradingManagementService,
+    MemberTradingManagementService,
+)
 from app.unified_pending_reconciler import LiveMemberPendingReconciler
 
 
-def test_live_execution_inherits_exact_paper_tested_engine() -> None:
-    assert issubclass(Day38LiveUserExecutionService, PaperFreshStartExecutionService)
-    # Trading policy must remain inherited, not reimplemented for LIVE.
-    assert "_size_signal" not in Day38LiveUserExecutionService.__dict__
-    assert "_margin_preflight" not in Day38LiveUserExecutionService.__dict__
-    assert "_create_layered_plans" not in Day38LiveUserExecutionService.__dict__
-    assert "_validate_entry_timing" not in Day38LiveUserExecutionService.__dict__
+def test_member_live_execution_inherits_exact_shared_engine() -> None:
+    assert issubclass(MemberTradingExecutionService, CanonicalTradingExecutionService)
+    # Trading policy must remain inherited, not reimplemented for member LIVE.
+    assert "_size_signal" not in MemberTradingExecutionService.__dict__
+    assert "_margin_preflight" not in MemberTradingExecutionService.__dict__
+    assert "_create_layered_plans" not in MemberTradingExecutionService.__dict__
+    assert "_validate_entry_timing" not in MemberTradingExecutionService.__dict__
 
 
-def test_live_management_inherits_exact_paper_tested_engine() -> None:
-    assert issubclass(Day38LiveUserManagementService, PaperCriticalManagementV2)
+def test_member_live_management_inherits_exact_shared_engine() -> None:
+    assert issubclass(MemberTradingManagementService, CanonicalTradingManagementService)
     # Layer/partial/best-entry/provider-price behaviour must remain shared.
-    assert "_select_layer_positions" not in Day38LiveUserManagementService.__dict__
-    assert "_needs_critical_management" not in Day38LiveUserManagementService.__dict__
+    assert "_select_layer_positions" not in MemberTradingManagementService.__dict__
+    assert "_needs_critical_management" not in MemberTradingManagementService.__dict__
 
 
-def test_live_pending_fill_reconciliation_reuses_paper_algorithm() -> None:
+def test_live_pending_fill_reconciliation_reuses_proven_fill_algorithm() -> None:
     assert issubclass(LiveMemberPendingReconciler, PaperPendingReconciler)
     assert "_validate_fill" not in LiveMemberPendingReconciler.__dict__
     assert "_persist_fill" not in LiveMemberPendingReconciler.__dict__
