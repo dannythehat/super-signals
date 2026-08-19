@@ -1,10 +1,10 @@
-"""Fail-closed Super Signals message policy.
+"""Canonical fail-closed Super Signals message policy.
 
-The OpenAI supervisor may understand provider grammar using bounded same-source context,
-but this module is the final mechanical contract for what may progress to execution.
-Only values literally present in the current Telegram message are allowed to satisfy a
-new-trade execution gate. Explicit broker pending orders and explicitly declared entry
-layers are supported; ambiguous or implicit layering still fails closed.
+OpenAI may understand provider grammar using bounded same-source context, but this
+module is the final mechanical contract for execution. Trade numbers must come from
+the current Telegram message. A tightly-scoped source profile may supply only a known
+instrument identity for a dedicated Gold/XAUUSD provider; it can never donate entry,
+SL, TP, order type or size.
 """
 
 from __future__ import annotations
@@ -15,11 +15,7 @@ from decimal import Decimal, InvalidOperation
 from typing import Any
 
 from app.ai_message_supervisor import AiMessageDecision
-from app.critical_entry_policy import (
-    augment_management_actions,
-    envelope,
-    parse_critical_entries,
-)
+from app.critical_entry_policy import augment_management_actions, envelope, parse_critical_entries
 from app.day27_management_policy import extract_day27_management_actions
 
 _NUMBER_TOKEN = re.compile(r"(?<![A-Za-z0-9_.])\d+(?:\.\d+)?(?![A-Za-z0-9_.])")
@@ -41,10 +37,10 @@ _RESULT_ONLY = re.compile(
     re.IGNORECASE,
 )
 
-# Some providers construct one trade in-place. TIG may post a terse activation and then
-# expand it into the structured setup. TDC repeatedly posts "Buy Gold Now" plus a range,
-# then adds TP/SL lines over several edits. An edit may create the first canonical signal
-# only when the immediately previous revision already proves the same trade intent.
+# These profiles are intentionally narrow. Source identity may establish that an
+# otherwise complete provider post is about XAUUSD, but no numeric field is borrowed.
+_XAUUSD_SOURCE_PROFILES = {"tgc_xauusd", "tdc_xauusd"}
+
 _ACTIVATION_STUB = re.compile(
     r"(?is)^\s*(?:🔴|🟢|🔥|⚡|✅|🚨|\s)*"
     r"(BUY|SELL)\s+(?:XAUUSD|GOLD)\b"
@@ -73,19 +69,23 @@ def _literal_numbers(raw_text: str) -> set[Decimal]:
     return values
 
 
+def _profile_supplies_xauusd(source_profile: str | None) -> bool:
+    return str(source_profile or "").strip().lower() in _XAUUSD_SOURCE_PROFILES
+
+
 def _same_trade_progressive_edit(
     previous_text: str | None,
     *,
     side: str,
     entry_low: Decimal | None,
     entry_high: Decimal | None,
+    source_profile: str | None,
 ) -> bool:
-    """Prove that an edited setup is continuation of the immediately prior trade post."""
+    """Prove that an edited setup continues the immediately prior trade post."""
     if not previous_text or side not in {"BUY", "SELL"}:
         return False
     previous = previous_text.strip()
 
-    # Preserve the already-approved TIG terse-activation completion path.
     stub = _ACTIVATION_STUB.fullmatch(previous)
     if stub is not None:
         if stub.group(1).upper() != side:
@@ -94,11 +94,9 @@ def _same_trade_progressive_edit(
         current_entries = {value for value in (entry_low, entry_high) if value is not None}
         return stub_price is not None and stub_price in current_entries
 
-    # TDC and similar progressive builders: the previous revision must already contain
-    # the same unambiguous side + Gold/XAUUSD intent and at least one of the current
-    # entry-zone endpoints. This prevents unrelated chatter/preparation from becoming a
-    # trade merely because a later edit happens to be complete.
-    if _INSTRUMENT.search(previous) is None:
+    # Dedicated Gold-source identity may satisfy instrument identity only. Side and
+    # entry continuity still have to be literal in the previous and current revisions.
+    if _INSTRUMENT.search(previous) is None and not _profile_supplies_xauusd(source_profile):
         return False
     previous_has_buy = _BUY.search(previous) is not None
     previous_has_sell = _SELL.search(previous) is not None
@@ -158,6 +156,8 @@ def _normalise_trade_values(
     extracted = dict(decision.extracted)
     entry_low = _decimal(extracted.get("entry_low"))
     entry_high = _decimal(extracted.get("entry_high"))
+    if entry_low is not None and entry_high is not None and entry_low > entry_high:
+        entry_low, entry_high = entry_high, entry_low
     stop_loss = _decimal(extracted.get("stop_loss"))
     take_profits = tuple(
         parsed
@@ -201,15 +201,9 @@ def apply_v1_message_policy(
 ) -> AiMessageDecision:
     """Return the mechanically allowed decision.
 
-    Context can help the AI classify semantics, but cannot donate trade numbers. The
-    current message alone must contain instrument, side, entry structure, SL and at
-    least one numeric TP. Pending orders require an explicit LIMIT/STOP family. Entry
-    layering requires explicit prices in a mechanically proven provider structure.
-
-    A first trade completed by edit is allowed only when the caller explicitly proves
-    that no canonical signal exists yet and the immediately previous revision already
-    proves the same trade intent. The current edited message must still pass every
-    normal literal and directional gate below.
+    Context may classify semantics, but it cannot donate trade numbers. A dedicated
+    source profile may establish XAUUSD instrument identity only. Explicit pending and
+    layered order types still require literal current-message evidence.
     """
     text = raw_text or ""
 
@@ -218,9 +212,8 @@ def apply_v1_message_policy(
             decision, text
         )
         side = str(extracted.get("side") or "").strip().upper()
+        source_profile = str(extracted.get("source_profile") or "").strip().lower() or None
 
-        # Preserve the historical public contract: if the caller cannot prove signal
-        # state, or the edit is not a genuine text progression, it cannot create a trade.
         if is_edit and original_has_signal is None:
             return _skip(decision, "edit_cannot_create_first_trade", extracted)
         edit_completed_first_trade = is_edit and original_has_signal is False
@@ -232,10 +225,11 @@ def apply_v1_message_policy(
                 side=side,
                 entry_low=entry_low,
                 entry_high=entry_high,
+                source_profile=source_profile,
             ):
                 return _skip(decision, "edit_cannot_create_first_trade", extracted)
 
-        if _INSTRUMENT.search(text) is None:
+        if _INSTRUMENT.search(text) is None and not _profile_supplies_xauusd(source_profile):
             return _skip(decision, "missing_instrument", extracted)
 
         has_buy = _BUY.search(text) is not None
@@ -259,8 +253,11 @@ def apply_v1_message_policy(
 
         if critical_entries:
             plan_low, plan_high = envelope(critical_entries)
-            entry_low = plan_low
-            entry_high = plan_high
+            # Preserve the provider's literal range when the broker plan is a single
+            # explicit pending order at one boundary of that range. Execution uses
+            # entry_plan; canonical provider truth keeps the full stated zone.
+            if entry_low is None or entry_high is None:
+                entry_low, entry_high = plan_low, plan_high
             extracted["entry_plan"] = [
                 {
                     "entry_index": item.entry_index,
@@ -271,8 +268,13 @@ def apply_v1_message_policy(
             ]
             all_pending = all(item.order_type != "market" for item in critical_entries)
             extracted["order_type"] = "pending" if all_pending else "market"
-        elif _PENDING.search(text) or str(extracted.get("order_type") or "").lower() == "pending":
+        elif _PENDING.search(text):
             return _skip(decision, "pending_order_type_ambiguous", extracted)
+        elif str(extracted.get("order_type") or "").strip().lower() == "pending":
+            # AI may call a plain provider entry zone "pending" because it is a range.
+            # Without literal LIMIT/STOP/PENDING wording that semantic guess cannot
+            # change broker order type; the literal message is a market entry zone.
+            extracted["order_type"] = "market"
 
         if entry_low is None or entry_high is None:
             return _skip(decision, "missing_entry", extracted)
@@ -288,9 +290,6 @@ def apply_v1_message_policy(
             stop_loss.normalize(),
             *(value.normalize() for value in take_profits),
         }
-        # Intermediate TDC grid prices are mechanically derived from the two literal
-        # zone endpoints. They are allowed only because parse_critical_entries proved
-        # the exact HIGH RISK template; they are not required to appear as extra text.
         plan = extracted.get("entry_plan") or []
         literal_plan_prices = [
             _decimal(item.get("price"))
