@@ -79,15 +79,12 @@ class CanonicalProductionTelegramListenerManager(Day21TelegramListenerManager):
     def __init__(
         self,
         *,
-        day28_router,
+        canonical_router,
         pending_reconciler: UnifiedPendingReconciler | None,
         **kwargs: Any,
     ) -> None:
         super().__init__(**kwargs)
-        self._canonical_router = day28_router
-        # Keep this alias temporarily for router-level compatibility/tests while all
-        # day-numbered names are removed. It points to the same single canonical object.
-        self._day28_router = day28_router
+        self._canonical_router = canonical_router
         self._canonical_pending_reconciler = pending_reconciler
         self._telegram_processing_pool = _ProviderProcessingPool()
         self._telegram_revision_locks = tuple(RLock() for _ in range(_STRIPE_COUNT))
@@ -153,8 +150,6 @@ class CanonicalProductionTelegramListenerManager(Day21TelegramListenerManager):
         return inserted
 
     def _process_saved_original(self, captured: Any) -> Any:
-        # Re-enter classification/parse/AI after the raw row is durable. Parent stores
-        # are idempotent; the duplicate raw insert cannot create a second message.
         result = Day21TelegramListenerManager._persist_message(self, captured)
         self._dispatch_sync(
             source_id=captured.source_id,
@@ -402,8 +397,6 @@ class CanonicalProductionTelegramListenerManager(Day21TelegramListenerManager):
                     media_type=type(media).__name__ if media is not None else None,
                 )
 
-                # Process the durable original idempotently whether it was newly inserted
-                # or survived a crash between decision persistence and broker dispatch.
                 await asyncio.to_thread(Day21TelegramListenerManager._persist_message, self, captured)
                 await self._dispatch_recovered_if_required(
                     source_id=source.source_id,
@@ -468,7 +461,7 @@ def build_canonical_production_listener_manager(
         session_factory=session_factory,
         refresh_seconds=refresh_seconds,
         excluded_chat_id=excluded_chat_id,
-        day28_router=router,
+        canonical_router=router,
         pending_reconciler=build_canonical_pending_reconciler(
             session_factory=session_factory,
             router=router,
