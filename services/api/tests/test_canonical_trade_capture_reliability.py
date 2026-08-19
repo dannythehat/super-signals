@@ -11,7 +11,6 @@ import pytest
 
 from app.critical_entry_policy import parse_critical_entries
 from app.mt5_execution_day26 import Day26Mt5ExecutionService
-from app.telegram_listener_day21 import Day21TelegramListenerManager
 from app.telegram_listener_canonical import CanonicalProductionTelegramListenerManager
 from app.trading_execution_canonical import CanonicalTradingExecutionService
 
@@ -56,7 +55,11 @@ def test_live_recovery_repairs_already_persisted_unrouted_original(monkeypatch: 
         persisted_calls.append(captured.telegram_message_id)
         return False
 
-    monkeypatch.setattr(Day21TelegramListenerManager, "_persist_message", already_persisted)
+    monkeypatch.setattr(
+        CanonicalProductionTelegramListenerManager,
+        "_persist_recovered_original",
+        already_persisted,
+    )
 
     now = datetime.now(UTC)
     message = SimpleNamespace(
