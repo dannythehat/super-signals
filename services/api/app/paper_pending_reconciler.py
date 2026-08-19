@@ -1,9 +1,10 @@
-"""Broker-authoritative pending-order fill reconciliation for paper testing.
+"""Broker-authoritative pending-order fill and terminal-state reconciliation.
 
-Pending orders live at Vantage/MT5, not in a local price watcher. This manager only
-observes the Owner's DEMO account. When a mapped clientId appears as a real broker
-position, the existing local tranche transitions ``pending -> open`` and records the
-broker fill price/position ID. It never creates, retries, chases or reopens a trade.
+Pending orders live at Vantage/MT5, not in a local price watcher. This manager observes
+broker truth only. A mapped clientId appearing as a real broker position transitions the
+existing local tranche ``pending -> open``. If an order is no longer active, the exact
+MT order ticket is checked in immutable history before local state changes. Absence
+alone never means cancelled or filled.
 """
 
 from __future__ import annotations
@@ -23,6 +24,12 @@ from app.metaapi_read_gateway import MetaApiReadGateway
 from app.mt5_crypto import BrokerCredentialDecryptionError, MetaApiTokenCipher
 
 logger = logging.getLogger(__name__)
+_TERMINAL_NO_FILL_STATES = {
+    "ORDER_STATE_CANCELED",
+    "ORDER_STATE_REJECTED",
+    "ORDER_STATE_EXPIRED",
+}
+_FILLED_STATES = {"ORDER_STATE_FILLED", "ORDER_STATE_PARTIAL"}
 
 
 @dataclass(frozen=True, slots=True)
@@ -31,6 +38,7 @@ class PaperPendingReconcileResult:
     fills_mapped: int
     still_pending: int
     unresolved: int
+    terminalized: int = 0
 
 
 class PaperPendingReconciler:
@@ -79,15 +87,16 @@ class PaperPendingReconciler:
         while not self._stop.is_set():
             try:
                 result = await self.reconcile_once()
-                if result.fills_mapped:
+                if result.fills_mapped or result.terminalized:
                     logger.info(
-                        "Paper pending reconciliation mapped fills=%d still_pending=%d",
+                        "Pending reconciliation fills=%d terminalized=%d still_pending=%d",
                         result.fills_mapped,
+                        result.terminalized,
                         result.still_pending,
                     )
                 if result.unresolved:
                     logger.warning(
-                        "Paper pending reconciliation unresolved=%d; no broker mutation attempted",
+                        "Pending reconciliation unresolved=%d; no broker mutation attempted",
                         result.unresolved,
                     )
             except asyncio.CancelledError:
@@ -102,20 +111,20 @@ class PaperPendingReconciler:
     async def reconcile_once(self) -> PaperPendingReconcileResult:
         rows = self._pending_rows()
         if not rows:
-            return PaperPendingReconcileResult(0, 0, 0, 0)
+            return PaperPendingReconcileResult(0, 0, 0, 0, 0)
 
         account = self._demo_account()
         if account is None:
             logger.error("Paper pending reconciliation blocked: connected DEMO account unavailable")
-            return PaperPendingReconcileResult(len(rows), 0, 0, len(rows))
+            return PaperPendingReconcileResult(len(rows), 0, 0, len(rows), 0)
         account_id, ciphertext = account
         try:
             token = self._cipher.decrypt(ciphertext).strip()
         except BrokerCredentialDecryptionError:
             logger.error("Paper pending reconciliation blocked: broker credential decryption failed")
-            return PaperPendingReconcileResult(len(rows), 0, 0, len(rows))
+            return PaperPendingReconcileResult(len(rows), 0, 0, len(rows), 0)
         if len(token) < 20:
-            return PaperPendingReconcileResult(len(rows), 0, 0, len(rows))
+            return PaperPendingReconcileResult(len(rows), 0, 0, len(rows), 0)
 
         try:
             region = await self._gateway.resolve_account_region(
@@ -134,7 +143,7 @@ class PaperPendingReconciler:
             )
         except MetaApiGatewayError as exc:
             logger.warning("Paper pending reconciliation read blocked code=%s", exc.code)
-            return PaperPendingReconcileResult(len(rows), 0, 0, len(rows))
+            return PaperPendingReconcileResult(len(rows), 0, 0, len(rows), 0)
 
         by_client = {
             str(item.get("clientId") or "").strip(): item
@@ -150,8 +159,9 @@ class PaperPendingReconciler:
         mapped = 0
         still_pending = 0
         unresolved = 0
+        terminalized = 0
         for row in rows:
-            broker = by_client.get(row["broker_client_id"])
+            broker = by_client.get(str(row["broker_client_id"] or ""))
             if broker is not None:
                 try:
                     position_id, open_price = self._validate_fill(row, broker)
@@ -163,21 +173,64 @@ class PaperPendingReconciler:
                 mapped += 1
                 continue
 
-            if row["broker_order_id"] in active_order_ids:
+            order_id = str(row["broker_order_id"] or "").strip()
+            if order_id in active_order_ids:
                 still_pending += 1
                 continue
 
-            # An order may disappear from /orders a fraction before its resulting
-            # position becomes visible. Leave it unresolved and re-read next poll;
-            # never infer a cancellation or a fill from absence alone.
+            # Do not infer a cancellation from absence in the active-order snapshot.
+            # Query the exact immutable completed-order ticket and change local state
+            # only when the broker proves a terminal outcome.
+            try:
+                history = await self._gateway.read_history_orders_by_ticket(
+                    token=token,
+                    account_id=account_id,
+                    region=region,
+                    order_id=order_id,
+                )
+            except MetaApiGatewayError as exc:
+                unresolved += 1
+                self._audit_unresolved(row, f"pending_history_read_failed:{exc.code}")
+                continue
+
+            try:
+                terminal = self._matching_history_order(row, history)
+            except ValueError as exc:
+                unresolved += 1
+                self._audit_unresolved(row, str(exc))
+                continue
+
+            if terminal is None:
+                unresolved += 1
+                self._audit_unresolved(row, "pending_order_not_visible_at_broker")
+                continue
+
+            state = str(terminal.get("state") or "").strip().upper()
+            if state in _TERMINAL_NO_FILL_STATES:
+                self._persist_terminal_no_fill(row, terminal, state)
+                terminalized += 1
+                continue
+
+            if state in _FILLED_STATES:
+                # A history order proves this ticket is no longer pending, but if its
+                # resulting position is absent from the current position snapshot we
+                # must not fabricate whether it is still open or already closed. Move
+                # it out of the pending bucket into an explicit reconciliation error;
+                # account/deal truth can settle it subsequently using positionId.
+                self._persist_filled_not_visible(row, terminal, state)
+                terminalized += 1
+                unresolved += 1
+                continue
+
             unresolved += 1
-            self._audit_unresolved(row, "pending_order_not_visible_at_broker")
+            self._audit_unresolved(row, f"pending_history_state_unresolved:{state or 'missing'}")
 
         return PaperPendingReconcileResult(
             pending_seen=len(rows),
             fills_mapped=mapped,
             still_pending=still_pending,
             unresolved=unresolved,
+            terminalized=terminalized,
         )
 
     def _pending_rows(self) -> list[dict[str, object]]:
@@ -220,6 +273,35 @@ class PaperPendingReconciler:
         if row is None:
             return None
         return str(row["metaapi_account_id"]), bytes(row["metaapi_token_ciphertext"])
+
+    @classmethod
+    def _matching_history_order(
+        cls,
+        local: dict[str, object],
+        history: list[dict[str, object]],
+    ) -> dict[str, object] | None:
+        expected_order_id = str(local.get("broker_order_id") or "").strip()
+        matches = [
+            item
+            for item in history
+            if str(item.get("id") or "").strip() == expected_order_id
+        ]
+        if not matches:
+            return None
+        if len(matches) != 1:
+            raise ValueError("pending_history_ticket_ambiguous")
+        item = matches[0]
+        expected_client = str(local.get("broker_client_id") or "").strip()
+        broker_client = str(item.get("clientId") or "").strip()
+        if broker_client and expected_client and broker_client != expected_client:
+            raise ValueError("pending_history_client_id_mismatch")
+        if str(item.get("symbol") or "").strip().upper() != str(local["symbol"]).upper():
+            raise ValueError("pending_history_symbol_mismatch")
+        raw_type = str(item.get("type") or "").strip().upper()
+        broker_side = "BUY" if "BUY" in raw_type else "SELL" if "SELL" in raw_type else ""
+        if broker_side and broker_side != str(local["side"]).upper():
+            raise ValueError("pending_history_side_mismatch")
+        return item
 
     @classmethod
     def _validate_fill(
@@ -292,6 +374,7 @@ class PaperPendingReconciler:
                         entry_price=:open_price,
                         status='open',
                         opened_at=COALESCE(opened_at,:now),
+                        close_reason=NULL,
                         updated_at=:now
                     WHERE id=:id AND status='pending'
                     """
@@ -322,6 +405,82 @@ class PaperPendingReconciler:
                         '"trade_action_created":false}'
                     ),
                 },
+            )
+            session.commit()
+
+    def _persist_terminal_no_fill(
+        self,
+        row: dict[str, object],
+        history: dict[str, object],
+        state: str,
+    ) -> None:
+        now = datetime.now(UTC)
+        reason = f"broker_order_{state.lower().removeprefix('order_state_')}"[:80]
+        with self._session_factory() as session:
+            session.execute(
+                text(
+                    """
+                    UPDATE positions
+                    SET status='skipped', close_reason=:reason,
+                        closed_at=COALESCE(closed_at,:now), updated_at=:now
+                    WHERE id=:id AND status='pending'
+                    """
+                ),
+                {"id": row["id"], "reason": reason, "now": now},
+            )
+            session.add(
+                __import__("app.models", fromlist=["AuditEvent"]).AuditEvent(
+                    actor_user_id=self._owner_user_id,
+                    event_type="mt5.pending_broker_terminal_no_fill",
+                    entity_type="position",
+                    entity_id=row["id"],
+                    payload={
+                        "broker_authoritative": True,
+                        "broker_order_id": str(row["broker_order_id"]),
+                        "broker_state": state,
+                        "done_time": history.get("doneTime"),
+                        "trade_action_created": False,
+                    },
+                )
+            )
+            session.commit()
+
+    def _persist_filled_not_visible(
+        self,
+        row: dict[str, object],
+        history: dict[str, object],
+        state: str,
+    ) -> None:
+        now = datetime.now(UTC)
+        position_id = str(history.get("positionId") or "").strip() or None
+        with self._session_factory() as session:
+            session.execute(
+                text(
+                    """
+                    UPDATE positions
+                    SET broker_position_id=COALESCE(:position_id,broker_position_id),
+                        status='error',
+                        close_reason='broker_filled_position_not_visible',
+                        updated_at=:now
+                    WHERE id=:id AND status='pending'
+                    """
+                ),
+                {"id": row["id"], "position_id": position_id, "now": now},
+            )
+            session.add(
+                __import__("app.models", fromlist=["AuditEvent"]).AuditEvent(
+                    actor_user_id=self._owner_user_id,
+                    event_type="mt5.pending_broker_fill_requires_settlement",
+                    entity_type="position",
+                    entity_id=row["id"],
+                    payload={
+                        "broker_authoritative": True,
+                        "broker_order_id": str(row["broker_order_id"]),
+                        "broker_position_id": position_id,
+                        "broker_state": state,
+                        "trade_action_created": False,
+                    },
+                )
             )
             session.commit()
 
