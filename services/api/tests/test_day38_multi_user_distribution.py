@@ -99,6 +99,18 @@ class _Trade:
     async def close_position(self, **_: object) -> None: return None
 
 
+class _ShapeResult:
+    def mappings(self): return self
+    def first(self):
+        return {"order_type": "market", "entry_low": Decimal("4000"), "entry_high": Decimal("4000")}
+
+
+class _ShapeSession:
+    def __enter__(self): return self
+    def __exit__(self, exc_type, exc, tb): return False
+    def execute(self, *args, **kwargs): return _ShapeResult()
+
+
 class _ExecutionHarness(Day38LiveUserExecutionService):
     def __init__(self) -> None:
         self.read, self.margin, self.trade = _Read(), _Margin(), _Trade()
@@ -106,6 +118,7 @@ class _ExecutionHarness(Day38LiveUserExecutionService):
             session_factory=None, cipher=None, read_gateway=self.read,
             margin_gateway=self.margin, trade_gateway=self.trade,
         )  # type: ignore[arg-type]
+        self._session_factory = lambda: _ShapeSession()
         self.signal = _SignalInput(
             signal_id=SIGNAL, symbol="XAUUSD", side="BUY",
             entry_low=Decimal("4000"), entry_high=Decimal("4000"),
