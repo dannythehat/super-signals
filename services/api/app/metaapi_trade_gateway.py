@@ -1,9 +1,11 @@
-"""Narrow MetaAPI trade gateway for Super Signals demo execution and management.
+"""Narrow MetaAPI trade gateway for Super Signals execution and management.
 
-Day 26 submits market positions and uses close-by-position-id for failure compensation.
-Day 27 adds only the broker mutations required by explicit provider follow-ups:
-position close, position SL/TP modify and pending-order cancel. All mutations address a
-known broker position/order ID; there is no symbol-wide close or discretionary action.
+Every mutation targets a known broker position/order ID. Position modification is
+protection-preserving: MetaAPI treats POSITION_MODIFY as replacement-like, so an
+SL-only change must re-send the broker's current TP and a TP-only change must re-send
+the broker's current SL. Broker state is read immediately before the mutation; if the
+position cannot be resolved the mutation fails closed. A genuine runner may remain
+without a TP, but an existing protected trade may never silently lose its SL.
 """
 
 from __future__ import annotations
@@ -15,15 +17,15 @@ from dataclasses import dataclass
 import httpx
 
 from app.metaapi_gateway import MetaApiGatewayError
+from app.metaapi_read_gateway import MetaApiReadGateway
 
 _REGION = re.compile(r"^[a-z0-9-]{2,64}$")
 _CLIENT_ID = re.compile(r"^[A-Za-z0-9]+_[A-Za-z0-9]+_[A-Za-z0-9]+$")
 _MAX_CLIENT_ID_LENGTH = 26
 
-# MetaAPI documents these as the successful MetaTrader trade return codes.  Treating
-# only TRADE_RETCODE_DONE / 10009 as success can falsely reject a broker-accepted
-# command such as PLACED or DONE_PARTIAL.  The broker response remains authoritative;
-# this only fixes our interpretation of its documented success result.
+# MetaAPI documents these as successful MetaTrader trade return codes. The broker
+# response remains authoritative; this only prevents a broker-accepted command such as
+# PLACED or DONE_PARTIAL from being misreported locally as a rejection.
 _SUCCESS_NUMERIC_CODES = {0, 10008, 10009, 10010, 10025}
 _SUCCESS_STRING_CODES = {
     "ERR_NO_ERROR",
@@ -47,6 +49,7 @@ class MetaApiTradeGateway:
 
     def __init__(self, *, timeout_seconds: float = 30.0) -> None:
         self._timeout = httpx.Timeout(timeout_seconds)
+        self._read = MetaApiReadGateway(timeout_seconds=timeout_seconds)
 
     async def place_market_order(
         self,
@@ -149,7 +152,7 @@ class MetaApiTradeGateway:
         stop_loss: float | None = None,
         take_profit: float | None = None,
     ) -> None:
-        """Modify SL and/or TP on one known broker position."""
+        """Modify SL/TP while preserving the untouched broker protection leg."""
         normalized_region = self._normalize_region(region)
         normalized_position_id = position_id.strip()
         if not normalized_position_id:
@@ -160,6 +163,26 @@ class MetaApiTradeGateway:
             raise MetaApiGatewayError("trade_request_invalid")
         if take_profit is not None and not self._positive_finite(take_profit):
             raise MetaApiGatewayError("trade_request_invalid")
+
+        requested_stop_change = stop_loss is not None
+        requested_tp_change = take_profit is not None
+        if not (requested_stop_change and requested_tp_change):
+            current_stop, current_tp = await self._current_protection(
+                token=token,
+                account_id=account_id,
+                region=normalized_region,
+                position_id=normalized_position_id,
+            )
+            if stop_loss is None:
+                stop_loss = current_stop
+            if take_profit is None:
+                take_profit = current_tp
+
+            # Every provider trade is required to be protected by SL. A TP-only edit
+            # must therefore fail rather than mutate a broker position whose current SL
+            # cannot be proven. A missing TP is allowed only for a genuine runner.
+            if requested_tp_change and stop_loss is None:
+                raise MetaApiGatewayError("broker_stop_loss_missing")
 
         body: dict[str, object] = {
             "actionType": "POSITION_MODIFY",
@@ -177,6 +200,34 @@ class MetaApiTradeGateway:
             account_id=account_id,
             region=normalized_region,
             json_body=body,
+        )
+
+    async def _current_protection(
+        self,
+        *,
+        token: str,
+        account_id: str,
+        region: str,
+        position_id: str,
+    ) -> tuple[float | None, float | None]:
+        positions = await self._read.read_positions(
+            token=token,
+            account_id=account_id,
+            region=region,
+        )
+        broker = next(
+            (
+                item
+                for item in positions
+                if str(item.get("id") or "").strip() == position_id
+            ),
+            None,
+        )
+        if broker is None:
+            raise MetaApiGatewayError("broker_position_mapping_missing")
+        return (
+            self._positive_or_none(broker.get("stopLoss")),
+            self._positive_or_none(broker.get("takeProfit")),
         )
 
     async def cancel_order(
@@ -291,14 +342,18 @@ class MetaApiTradeGateway:
         raise MetaApiGatewayError("metaapi_trade_rejected")
 
     @staticmethod
-    def _positive_finite(value: object) -> bool:
-        if isinstance(value, bool):
-            return False
+    def _positive_or_none(value: object) -> float | None:
+        if isinstance(value, bool) or value is None:
+            return None
         try:
             parsed = float(value)  # type: ignore[arg-type]
         except (TypeError, ValueError):
-            return False
-        return math.isfinite(parsed) and parsed > 0
+            return None
+        return parsed if math.isfinite(parsed) and parsed > 0 else None
+
+    @classmethod
+    def _positive_finite(cls, value: object) -> bool:
+        return cls._positive_or_none(value) is not None
 
     @staticmethod
     def _json(response: httpx.Response) -> object:
