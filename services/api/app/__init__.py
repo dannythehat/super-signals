@@ -13,10 +13,6 @@ from app.bare_gold_now_loader_fix import install_bare_gold_now_loader_fix
 
 install_bare_gold_now_loader_fix()
 
-from app.preserve_broker_protection_override import install_preserve_broker_protection_override
-
-install_preserve_broker_protection_override()
-
 from app.breakeven_tp_repair import install_breakeven_tp_repair
 
 install_breakeven_tp_repair()
