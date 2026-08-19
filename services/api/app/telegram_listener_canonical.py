@@ -388,13 +388,10 @@ class CanonicalProductionTelegramListenerManager(Day21TelegramListenerManager):
         return inserted
 
     def _persist_recovered_edit(self, captured: CapturedTelegramEdit) -> tuple[bool, int]:
-        """Persist one history edit and supervise only a newly inserted revision."""
+        """Persist one history edit and resolve exactly that revision, even on replay."""
         with self._revision_lock(captured.source_id, captured.telegram_message_id):
             inserted = Day13TelegramListenerManager._persist_edit(self, captured)
-            revision_index = self._latest_revision_index(
-                captured.source_id,
-                int(captured.telegram_message_id),
-            )
+            revision_index = self._exact_saved_revision_index(captured) or 0
         if inserted and revision_index > 0:
             pipeline = getattr(self, "_ai_pipeline", None)
             exact_processor = (
