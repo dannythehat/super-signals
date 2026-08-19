@@ -87,10 +87,6 @@ from app.ambiguous_trade_reconciliation_override import (
 
 install_ambiguous_trade_reconciliation_override()
 
-from app.aug18_trade_capture_overrides import install_aug18_trade_capture_overrides
-
-install_aug18_trade_capture_overrides()
-
 from app.aug18_readiness_cleanup import install_aug18_readiness_cleanup
 
 install_aug18_readiness_cleanup()
