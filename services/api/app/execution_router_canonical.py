@@ -1,9 +1,9 @@
 """Canonical production execution-router wiring.
 
 This is the only production builder for provider decisions -> paper/future-LIVE broker
-routing. It installs no runtime patches. Paper and future LIVE use the same execution,
-management and pending-fill reconciliation policy; only account eligibility/credentials
-and the explicit member-distribution switch differ.
+routing. It installs no runtime patches and no day-numbered router generation. Paper and
+future LIVE use the same execution, management and pending-fill reconciliation policy;
+only account eligibility/credentials and the explicit member-distribution switch differ.
 """
 
 from __future__ import annotations
@@ -14,7 +14,8 @@ from uuid import UUID
 
 from sqlalchemy.orm import Session, sessionmaker
 
-from app.day38_database_source_router import DatabaseSourceDay38FullExecutionRouter
+from app.execution_dispatch_canonical import CanonicalExecutionDispatcher
+from app.member_routing_canonical import MemberDistributionService, MemberManagementService
 from app.metaapi_margin_gateway import MetaApiMarginGateway
 from app.metaapi_read_gateway import MetaApiReadGateway
 from app.metaapi_trade_gateway import MetaApiTradeGateway
@@ -24,7 +25,6 @@ from app.mt5_management_day38 import Day38LiveUserManagementService
 from app.paper_critical_management_v2 import PaperCriticalManagementV2
 from app.paper_fresh_start_execution import PaperFreshStartExecutionService
 from app.paper_resilient_read_gateway import PaperResilientMetaApiReadGateway
-from app.paper_safe_member_routing import PaperSafeMemberDistribution, PaperSafeMemberManagement
 from app.unified_pending_reconciler import UnifiedPendingReconciler
 
 logger = logging.getLogger(__name__)
@@ -48,7 +48,7 @@ def _broker_keys() -> tuple[str, ...]:
 def build_canonical_execution_router(
     *,
     session_factory: sessionmaker[Session],
-) -> DatabaseSourceDay38FullExecutionRouter | None:
+) -> CanonicalExecutionDispatcher | None:
     if not _enabled(os.getenv("SUPER_SIGNALS_DAY28_AUTO_EXECUTION_ENABLED")):
         return None
     try:
@@ -73,8 +73,9 @@ def build_canonical_execution_router(
         owner_read = PaperResilientMetaApiReadGateway()
         member_read = MetaApiReadGateway()
         trade = MetaApiTradeGateway()
-        # Constructor compatibility only. Canonical execution never uses local margin
-        # availability as an approval/veto budget; Vantage/MT5 is authoritative.
+        # The legacy constructor still accepts a margin gateway, but canonical trading
+        # policy does not use local margin availability as an approval/veto budget.
+        # Vantage/MT5 remains authoritative for actual funds/margin rejection.
         margin = MetaApiMarginGateway()
 
         owner_execution = PaperFreshStartExecutionService(
@@ -103,16 +104,16 @@ def build_canonical_execution_router(
             read_gateway=member_read,
             trade_gateway=trade,
         )
-        return DatabaseSourceDay38FullExecutionRouter(
+        return CanonicalExecutionDispatcher(
             session_factory=session_factory,
             owner_user_id=owner_user_id,
             execution_service=owner_execution,
             management_service=owner_management,
-            member_distribution=PaperSafeMemberDistribution(
+            member_distribution=MemberDistributionService(
                 session_factory=session_factory,
                 execution_service=member_execution,
             ),
-            member_management=PaperSafeMemberManagement(
+            member_management=MemberManagementService(
                 session_factory=session_factory,
                 management_service=member_management,
             ),
@@ -127,7 +128,7 @@ def build_canonical_execution_router(
 def build_canonical_pending_reconciler(
     *,
     session_factory: sessionmaker[Session],
-    router: DatabaseSourceDay38FullExecutionRouter | None,
+    router: CanonicalExecutionDispatcher | None,
 ) -> UnifiedPendingReconciler | None:
     if router is None:
         return None
