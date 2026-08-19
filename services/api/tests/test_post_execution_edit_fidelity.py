@@ -3,10 +3,9 @@ from __future__ import annotations
 import inspect
 from datetime import timedelta
 
-from app.ai_message_pipeline import AiMessagePipeline
+from app.ai_message_pipeline_canonical import CanonicalAiMessagePipeline
 from app.ai_message_supervisor import AiMessageDecision
-from app.post_execution_edit_fidelity import _age_text
-from app.telegram_publisher_day34_cutover import Day34CutoverTelegramPublisherManager
+from app.telegram_publisher_canonical import _age_text
 from app.v1_message_policy import apply_v1_message_policy
 
 
@@ -41,7 +40,6 @@ def _trade_decision(**extracted) -> AiMessageDecision:
 
 
 def test_tdc_6605_complete_post_execution_edit_is_still_structurally_valid() -> None:
-    """The completed edit must not be discarded merely because rev0 already traded."""
     previous = """Buy Gold Now
 
 4401 - 4395
@@ -71,25 +69,21 @@ SL 4391"""
         original_has_signal=True,
         previous_text=previous,
     )
-
     assert result.decision == "new_trade"
     assert result.action == "execute"
     assert result.extracted["stop_loss"] == "4391"
     assert result.extracted["take_profits"] == ["4404", "4407", "4410"]
 
 
-def test_runtime_post_execution_wrapper_cannot_call_entry_executor() -> None:
-    """Fresh same-message revisions become management, never a second entry call."""
-    method = AiMessagePipeline._process_revision
-    assert getattr(method, "_fresh_post_execution_revision_management", False) is True
-    source = inspect.getsource(method)
-    assert "entry_reexecution_allowed" in source
-    assert "self._execution" not in source
+def test_canonical_post_execution_revision_cannot_reenter_trade() -> None:
+    source = inspect.getsource(CanonicalAiMessagePipeline._post_execution_revision)
+    assert "management_actions" in source
     assert '"trade_update"' in source
     assert '"apply_update"' in source
+    assert "entry_reexecution_allowed" in source
+    assert "execute_owner_demo_signal" not in source
+    assert "place_market_order" not in source
 
 
-def test_delayed_publication_marker_is_installed_and_reports_original_age() -> None:
-    method = Day34CutoverTelegramPublisherManager._claim_next
-    assert getattr(method, "_delayed_publication_marker", False) is True
+def test_delayed_publication_reports_original_age_without_runtime_patch() -> None:
     assert _age_text(timedelta(hours=4, minutes=10)) == "4h 10m"
