@@ -26,7 +26,9 @@ from app.day27_management_policy import extract_day27_management_actions
 _NUMBER_TOKEN = re.compile(r"(?<![A-Za-z0-9_.])\d+(?:\.\d+)?(?![A-Za-z0-9_.])")
 _INSTRUMENT = re.compile(r"\b(?:XAUUSD|GOLD)\b", re.IGNORECASE)
 _BUY = re.compile(r"\bBUY(?:S|ING)?\b", re.IGNORECASE)
-_SELL = re.compile(r"\bSELL(?:S|ING)?\b", re.IGNORECASE)
+# Observed TGC spellings are mechanical side evidence only. They do not donate an
+# instrument or any price, SL, TP, size or order type.
+_SELL = re.compile(r"\b(?:SELL(?:S|ING)?|SELING|SELLIMG)\b", re.IGNORECASE)
 _PENDING = re.compile(r"\b(?:BUY|SELL)\s+(?:LIMITS?|STOPS?)\b|\bPENDING\b", re.IGNORECASE)
 _OPEN_TARGET = re.compile(
     r"\b(?:TP\s*\d*\s*[:=@-]?\s*OPEN|TP\s+OPEN|RUNNER|LEAVE\s+(?:IT\s+)?OPEN)\b",
