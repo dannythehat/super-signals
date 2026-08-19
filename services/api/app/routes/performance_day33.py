@@ -16,9 +16,9 @@ from app.admin_portfolio_day35 import Day35AdminPortfolioService, PeriodKey, Sor
 from app.metaapi_read_gateway import MetaApiReadGateway
 from app.mt5_connection_service_day30 import Day30Mt5ConnectionService
 from app.mt5_runtime import require_mt5_service
-from app.performance_ledger_canonical import CanonicalPerformanceLedgerService
 from app.performance_ledger_day33 import Day33LedgerError
 from app.performance_ledger_day33_v2 import Day33PerformanceLedgerServiceV2
+from app.performance_runtime import CanonicalPerformanceRuntimeService
 
 router = APIRouter(prefix="/performance", tags=["performance-day33"])
 Identity = Annotated[dict[str, Any], Depends(get_current_identity)]
@@ -141,7 +141,7 @@ class AdminPortfolioResponse(BaseModel):
 
 def _service(request: Request) -> Day33PerformanceLedgerServiceV2:
     existing = getattr(request.app.state, "day33_performance_service", None)
-    if isinstance(existing, CanonicalPerformanceLedgerService):
+    if isinstance(existing, CanonicalPerformanceRuntimeService):
         return existing
     base = require_mt5_service(request)
     if not isinstance(base, Day30Mt5ConnectionService):
@@ -152,7 +152,7 @@ def _service(request: Request) -> Day33PerformanceLedgerServiceV2:
                 "message": "Performance data is temporarily unavailable.",
             },
         )
-    service = CanonicalPerformanceLedgerService(
+    service = CanonicalPerformanceRuntimeService(
         session_factory=base._session_factory,
         cipher=base._cipher,
         gateway=MetaApiReadGateway(),
