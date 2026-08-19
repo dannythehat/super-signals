@@ -4,7 +4,7 @@ from types import SimpleNamespace
 import pytest
 
 from app.mt5_execution_day26 import Day26ExecutionError
-from app.paper_fresh_start_execution import PaperFreshStartExecutionService
+from app.trading_execution_canonical import CanonicalTradingExecutionService
 
 
 class _ExplodingMarginGateway:
@@ -14,7 +14,7 @@ class _ExplodingMarginGateway:
 
 @pytest.mark.asyncio
 async def test_shared_engine_does_not_preblock_large_layer_grid_on_free_margin() -> None:
-    service = object.__new__(PaperFreshStartExecutionService)
+    service = object.__new__(CanonicalTradingExecutionService)
     service._margin_gateway = _ExplodingMarginGateway()
     entries = tuple(
         SimpleNamespace(entry_index=index, order_type="buy_limit", price=Decimal(4347 - index))
@@ -39,7 +39,7 @@ async def test_shared_engine_does_not_preblock_large_layer_grid_on_free_margin()
 
 @pytest.mark.asyncio
 async def test_each_leg_keeps_original_sizing_and_no_capacity_truncation_is_introduced() -> None:
-    service = object.__new__(PaperFreshStartExecutionService)
+    service = object.__new__(CanonicalTradingExecutionService)
     service._margin_gateway = _ExplodingMarginGateway()
     entries = tuple(
         SimpleNamespace(entry_index=index, order_type="buy_limit", price=Decimal(4400 - index))
@@ -68,7 +68,7 @@ async def test_each_leg_keeps_original_sizing_and_no_capacity_truncation_is_intr
 
 @pytest.mark.asyncio
 async def test_invalid_zero_target_signal_still_fails_for_structure_not_balance() -> None:
-    service = object.__new__(PaperFreshStartExecutionService)
+    service = object.__new__(CanonicalTradingExecutionService)
     service._margin_gateway = _ExplodingMarginGateway()
     with pytest.raises(Day26ExecutionError, match="position_count_invalid"):
         await service._margin_preflight(
