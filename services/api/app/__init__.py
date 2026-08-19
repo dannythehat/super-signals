@@ -29,10 +29,6 @@ from app.breakeven_tp_repair import install_breakeven_tp_repair
 
 install_breakeven_tp_repair()
 
-from app.paper_live_entry_guard import install_paper_live_entry_guard
-
-install_paper_live_entry_guard()
-
 from app.provider_entry_reliability_overrides import install_provider_entry_reliability_overrides
 
 install_provider_entry_reliability_overrides()
