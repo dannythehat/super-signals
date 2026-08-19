@@ -10,9 +10,9 @@ import pytest
 
 from app.critical_entry_policy import parse_critical_entries
 from app.mt5_execution_day26 import Day26Mt5ExecutionService
-from app.paper_fresh_start_execution import PaperFreshStartExecutionService
 from app.telegram_listener_day21 import Day21TelegramListenerManager
 from app.telegram_listener_canonical import CanonicalProductionTelegramListenerManager
+from app.trading_execution_canonical import CanonicalTradingExecutionService
 
 
 def test_ordinary_market_range_is_not_converted_into_fake_pending_layers() -> None:
@@ -182,7 +182,7 @@ def test_timeout_reconciliation_cleans_hidden_unreturned_broker_position() -> No
     harness = _TimeoutRollbackHarness(client_id)
 
     complete = asyncio.run(
-        PaperFreshStartExecutionService._rollback_critical(
+        CanonicalTradingExecutionService._rollback_critical(
             harness,
             owner_user_id=uuid4(),
             signal=SimpleNamespace(signal_id=uuid4()),
