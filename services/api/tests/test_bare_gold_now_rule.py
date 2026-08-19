@@ -15,7 +15,7 @@ from app.bare_gold_now_policy import (
     bare_now_side,
 )
 from app.mt5_execution_day26 import _SignalInput
-from app.paper_fresh_start_execution import PaperFreshStartExecutionService
+from app.trading_execution_canonical import CanonicalTradingExecutionService
 
 
 def _decision(*, side: str = "BUY") -> AiMessageDecision:
@@ -141,7 +141,7 @@ def _signal(side: str) -> _SignalInput:
 
 
 def test_bare_buy_derives_50_tp_and_100_sl_from_live_ask() -> None:
-    service = object.__new__(PaperFreshStartExecutionService)
+    service = object.__new__(CanonicalTradingExecutionService)
     service._session_factory = _SessionFactory("BUY GOLD NOW")
     service._paper_max_signal_age_seconds = 90.0
     signal = _signal("BUY")
@@ -164,7 +164,7 @@ def test_bare_buy_derives_50_tp_and_100_sl_from_live_ask() -> None:
 
 
 def test_bare_sell_derives_50_tp_and_100_sl_from_live_bid() -> None:
-    service = object.__new__(PaperFreshStartExecutionService)
+    service = object.__new__(CanonicalTradingExecutionService)
     service._session_factory = _SessionFactory("SELL GOLD NOW")
     service._paper_max_signal_age_seconds = 90.0
     signal = _signal("SELL")
