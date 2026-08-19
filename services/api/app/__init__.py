@@ -107,3 +107,7 @@ install_aug18_readiness_cleanup()
 from app.post_execution_edit_fidelity import install_post_execution_edit_fidelity
 
 install_post_execution_edit_fidelity()
+
+from app.paper_critical_publication_override import install_paper_critical_publication_override
+
+install_paper_critical_publication_override()
