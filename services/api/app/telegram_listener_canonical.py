@@ -3,6 +3,10 @@
 One production path owns provider ingress, exact edit ordering, AI/canonical processing,
 recovery and broker dispatch. Raw Telegram evidence is committed first. Slow downstream
 work is FIFO per provider while different providers remain concurrent.
+
+This class deliberately inherits only the reliable semantic/Telethon Day21 base. It does
+not import the old Day28 execution listener or zone guard. Broker dispatch, freshness
+recovery and pending reconciliation are owned here and wired to the canonical router.
 """
 
 from __future__ import annotations
@@ -23,12 +27,11 @@ from app.execution_router_canonical import (
     build_canonical_execution_router,
     build_canonical_pending_reconciler,
 )
-from app.paper_pending_reconciler import PaperPendingReconciler
 from app.telegram_crypto import TelegramSessionCipher
 from app.telegram_listener import CapturedTelegramMessage, ReaderListeningPlan, TelegramListenerManager
 from app.telegram_listener_day13 import CapturedTelegramEdit, Day13TelegramListenerManager
 from app.telegram_listener_day21 import Day21TelegramListenerManager
-from app.telegram_listener_day28 import Day28TelegramListenerManager
+from app.unified_pending_reconciler import UnifiedPendingReconciler
 
 logger = logging.getLogger(__name__)
 _STRIPE_COUNT = 128
@@ -70,36 +73,42 @@ class _ProviderProcessingPool:
             executor.shutdown(wait=False, cancel_futures=False)
 
 
-class CanonicalProductionTelegramListenerManager(Day28TelegramListenerManager):
-    """Single live ingress/recovery implementation used by production."""
+class CanonicalProductionTelegramListenerManager(Day21TelegramListenerManager):
+    """Single live ingress/recovery/broker-dispatch implementation used by production."""
 
     def __init__(
         self,
         *,
-        pending_reconciler: PaperPendingReconciler | None,
+        day28_router,
+        pending_reconciler: UnifiedPendingReconciler | None,
         **kwargs: Any,
     ) -> None:
         super().__init__(**kwargs)
-        self._paper_pending_reconciler = pending_reconciler
+        self._canonical_router = day28_router
+        # Keep this alias temporarily for router-level compatibility/tests while all
+        # day-numbered names are removed. It points to the same single canonical object.
+        self._day28_router = day28_router
+        self._canonical_pending_reconciler = pending_reconciler
         self._telegram_processing_pool = _ProviderProcessingPool()
         self._telegram_revision_locks = tuple(RLock() for _ in range(_STRIPE_COUNT))
+        self._dispatch_lock = Lock()
 
     async def start(self) -> None:
-        if self._paper_pending_reconciler is not None:
-            await self._paper_pending_reconciler.start()
+        if self._canonical_pending_reconciler is not None:
+            await self._canonical_pending_reconciler.start()
         try:
             await super().start()
         except Exception:
-            if self._paper_pending_reconciler is not None:
-                await self._paper_pending_reconciler.stop()
+            if self._canonical_pending_reconciler is not None:
+                await self._canonical_pending_reconciler.stop()
             raise
 
     async def stop(self) -> None:
         try:
             await super().stop()
         finally:
-            if self._paper_pending_reconciler is not None:
-                await self._paper_pending_reconciler.stop()
+            if self._canonical_pending_reconciler is not None:
+                await self._canonical_pending_reconciler.stop()
             self._telegram_processing_pool.shutdown()
 
     def _revision_lock(self, source_id: object, telegram_message_id: int) -> RLock:
@@ -144,12 +153,18 @@ class CanonicalProductionTelegramListenerManager(Day28TelegramListenerManager):
         return inserted
 
     def _process_saved_original(self, captured: Any) -> Any:
-        # Re-enter the accepted classification/parse/AI chain after raw evidence exists.
-        # Its duplicate raw insert is harmless and all downstream stores are idempotent.
-        return Day28TelegramListenerManager._persist_message(self, captured)
+        # Re-enter classification/parse/AI after the raw row is durable. Parent stores
+        # are idempotent; the duplicate raw insert cannot create a second message.
+        result = Day21TelegramListenerManager._persist_message(self, captured)
+        self._dispatch_sync(
+            source_id=captured.source_id,
+            telegram_message_id=int(captured.telegram_message_id),
+            revision_index=0,
+        )
+        return result
 
     def _persist_edit(self, captured: Any) -> bool:
-        """Commit one append-only revision and process exactly that revision."""
+        """Commit one append-only revision and process exactly that saved revision."""
         with self._revision_lock(captured.source_id, captured.telegram_message_id):
             inserted = Day13TelegramListenerManager._persist_edit(self, captured)
             if not inserted:
@@ -173,7 +188,7 @@ class CanonicalProductionTelegramListenerManager(Day28TelegramListenerManager):
 
     def _exact_saved_revision_index(self, captured: Any) -> int | None:
         content_hash = sha256(str(captured.raw_text or "").encode("utf-8")).hexdigest()
-        with self._session_factory_day28() as session:
+        with self._session_factory() as session:
             value = session.execute(
                 text(
                     """
@@ -215,6 +230,60 @@ class CanonicalProductionTelegramListenerManager(Day28TelegramListenerManager):
         )
         return result
 
+    def _dispatch_sync(
+        self,
+        *,
+        source_id,
+        telegram_message_id: int,
+        revision_index: int,
+    ) -> None:
+        router = self._canonical_router
+        if router is None:
+            return
+        with self._dispatch_lock:
+            try:
+                result = asyncio.run(
+                    router.dispatch_stored_decision(
+                        source_id=source_id,
+                        telegram_message_id=telegram_message_id,
+                        revision_index=revision_index,
+                    )
+                )
+            except Exception:
+                logger.exception(
+                    "Canonical broker dispatch failed unexpectedly",
+                    extra={
+                        "source_id": str(source_id),
+                        "telegram_message_id": telegram_message_id,
+                        "revision_index": revision_index,
+                    },
+                )
+                return
+
+        if result.outcome == "blocked":
+            logger.warning(
+                "Canonical broker route blocked code=%s",
+                result.error_code or result.reason,
+                extra={
+                    "source_id": str(source_id),
+                    "telegram_message_id": telegram_message_id,
+                    "revision_index": revision_index,
+                },
+            )
+        elif result.outcome in {"executed", "managed"}:
+            logger.info(
+                "Canonical broker route completed outcome=%s positions=%d broker_actions=%d",
+                result.outcome,
+                result.position_count,
+                result.broker_actions_sent,
+                extra={
+                    "source_id": str(source_id),
+                    "telegram_message_id": telegram_message_id,
+                    "revision_index": revision_index,
+                    "signal_id": str(result.signal_id) if result.signal_id else None,
+                },
+            )
+
     @staticmethod
     def _fresh_recovered_entry(value: datetime, *, now: datetime | None = None) -> bool:
         reference = now or datetime.now(UTC)
@@ -244,7 +313,7 @@ class CanonicalProductionTelegramListenerManager(Day28TelegramListenerManager):
         occurred_at: datetime,
     ) -> None:
         """Route durable actionable recovery; stale entries remain evidence only."""
-        router = self._day28_router
+        router = self._canonical_router
         if router is None:
             return
         stored = await asyncio.to_thread(
