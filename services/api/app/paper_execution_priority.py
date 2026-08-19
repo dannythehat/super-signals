@@ -1,13 +1,9 @@
-"""Owner DEMO execution-priority policy for paper testing.
+"""Canonical fresh market-entry policy shared by paper and future LIVE execution.
 
-Paper testing needs to exercise provider trades, not discard fresh market signals because
-price moved a few ticks while the automation was processing them or because the broker's
-minimum 0.01 lot makes the realised risk exceed the configured percentage.
-
-This policy is deliberately limited to the Owner DEMO executor. It does not alter LIVE
-member execution. Pending orders keep their literal provider prices and broker-side
-semantics. Broker funds/margin, directional validation, cancellation, revision and
-mapping checks remain authoritative.
+Fresh market instructions execute at the broker's current executable quote; provider
+entry text remains evidence/context and is not a second submission veto. Explicit
+pending orders keep their literal broker-side prices. Final SL/TP geometry is validated
+against the fresh executable quote before any market mutation.
 """
 
 from __future__ import annotations
@@ -19,19 +15,49 @@ from decimal import Decimal
 from typing import Any
 from uuid import UUID
 
-from app.metaapi_gateway import MetaApiGatewayError
 from app.mt5_execution_day26 import Day26ExecutionError, _SignalInput
 from app.mt5_read_service_day23 import Day23LiveState, Day23Mt5ReadService, Day23ReadError
 from app.paper_critical_execution import PaperCriticalExecutionService, _CriticalSignal
 from app.risk_sizing_day24 import Day24RiskSizingResult
 
 logger = logging.getLogger(__name__)
-
 DEFAULT_PAPER_MAX_SIGNAL_AGE_SECONDS = 90.0
 
 
+def _ordered_targets(side: str, targets: tuple[Decimal, ...]) -> bool:
+    if not targets:
+        return False
+    if side == "BUY":
+        return all(right > left for left, right in zip(targets, targets[1:]))
+    if side == "SELL":
+        return all(right < left for left, right in zip(targets, targets[1:]))
+    return False
+
+
+def _live_directionally_valid(
+    *,
+    side: str,
+    entry: Decimal,
+    stop_loss: Decimal,
+    take_profits: tuple[Decimal, ...],
+) -> bool:
+    if side == "BUY":
+        return (
+            stop_loss < entry
+            and all(tp > entry for tp in take_profits)
+            and _ordered_targets(side, take_profits)
+        )
+    if side == "SELL":
+        return (
+            stop_loss > entry
+            and all(tp < entry for tp in take_profits)
+            and _ordered_targets(side, take_profits)
+        )
+    return False
+
+
 class PaperExecutionPriorityService(PaperCriticalExecutionService):
-    """DEMO-only policy: execute fresh market instructions at the live executable price."""
+    """Execute fresh market instructions at current broker truth."""
 
     def __init__(
         self,
@@ -82,13 +108,6 @@ class PaperExecutionPriorityService(PaperCriticalExecutionService):
         day23: Day23Mt5ReadService,
         initial_state: Day23LiveState,
     ) -> tuple[Decimal, Day23LiveState]:
-        """Use the broker's executable quote for a fresh market signal.
-
-        The provider price remains evidence/context, but it is not used as a synthetic
-        order price. A market order has no requested open price in MetaAPI; the broker
-        fills it at the available market price. Time freshness is the anti-backlog
-        safety net instead of an exact-price equality check.
-        """
         del owner_user_id, day23
         self._assert_signal_recent(signal)
         try:
@@ -97,6 +116,14 @@ class PaperExecutionPriorityService(PaperCriticalExecutionService):
             )
         except Day23ReadError as exc:
             raise Day26ExecutionError(exc.code) from exc
+
+        if not _live_directionally_valid(
+            side=signal.side,
+            entry=executable,
+            stop_loss=signal.stop_loss,
+            take_profits=signal.take_profits,
+        ):
+            raise Day26ExecutionError("strict_directional_validation_failed")
         return executable, initial_state
 
     def _validate_entry_timing(
@@ -105,11 +132,7 @@ class PaperExecutionPriorityService(PaperCriticalExecutionService):
         side: str,
         current: Decimal,
     ) -> None:
-        """Do not reject a fresh market layer merely because its quote moved.
-
-        Literal pending orders are different: a BUY LIMIT must still be below market,
-        a SELL LIMIT above market, etc. Those broker semantics remain unchanged.
-        """
+        """Only literal pending orders are price-position constrained locally."""
         for entry in entries:
             if entry.order_type == "market":
                 continue
@@ -135,13 +158,7 @@ class PaperExecutionPriorityService(PaperCriticalExecutionService):
         sizings: tuple[Day24RiskSizingResult, ...],
         tp_count: int,
     ) -> None:
-        """Treat configured risk as sizing guidance, not a DEMO placement veto.
-
-        The broker minimum-volume rule is real and MetaAPI exposes it in the symbol
-        specification. If 0.01 lots make realised paper risk exceed the selected risk
-        percentage, record the overrun and continue. Broker margin/funds checks still
-        decide whether the account can actually place the requested positions.
-        """
+        """Record broker-minimum sizing overrun; do not invent an account budget veto."""
         if tp_count <= 0:
             raise Day26ExecutionError("position_count_invalid")
         multiplier = Decimal("2") if double_applied else Decimal("1")
@@ -151,11 +168,11 @@ class PaperExecutionPriorityService(PaperCriticalExecutionService):
         )
         if actual_per_tp > per_tp_guide:
             logger.warning(
-                "DEMO minimum-lot risk exceeds sizing guide; continuing "
+                "Broker minimum-lot risk exceeds sizing guide; continuing "
                 "actual_per_tp=%s guide=%s",
                 actual_per_tp,
                 per_tp_guide,
             )
 
 
-__all__ = ["PaperExecutionPriorityService"]
+__all__ = ["PaperExecutionPriorityService", "_live_directionally_valid"]
