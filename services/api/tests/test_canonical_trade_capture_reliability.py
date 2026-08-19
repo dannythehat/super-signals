@@ -3,7 +3,8 @@ from __future__ import annotations
 import asyncio
 from datetime import UTC, datetime
 from decimal import Decimal
-from types import SimpleNamespace
+from threading import RLock
+from types import MethodType, SimpleNamespace
 from uuid import uuid4
 
 import pytest
@@ -41,22 +42,11 @@ class _RecoveryClient:
         return [self.message]
 
 
-class _RecoveryHarness:
-    def __init__(self) -> None:
-        self.dispatched: list[tuple[int, int]] = []
-
-    @staticmethod
-    def _utc_datetime(value):
-        return value
-
-    async def _dispatch_recovered_if_required(
-        self, *, source_id, telegram_message_id, revision_index, occurred_at
-    ) -> None:
-        self.dispatched.append((telegram_message_id, revision_index))
-
-    @staticmethod
-    def _latest_revision_index(source_id, telegram_message_id):
-        return 0
+def _bare_listener() -> CanonicalProductionTelegramListenerManager:
+    manager = object.__new__(CanonicalProductionTelegramListenerManager)
+    manager._telegram_revision_locks = tuple(RLock() for _ in range(128))
+    manager._ai_pipeline = None
+    return manager
 
 
 def test_live_recovery_repairs_already_persisted_unrouted_original(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -79,18 +69,18 @@ def test_live_recovery_repairs_already_persisted_unrouted_original(monkeypatch: 
     )
     source = SimpleNamespace(source_id=uuid4(), chat_id=12345)
     plan = SimpleNamespace(sources=(source,))
-    harness = _RecoveryHarness()
+    manager = _bare_listener()
+    dispatched: list[tuple[int, int]] = []
 
-    asyncio.run(
-        CanonicalProductionTelegramListenerManager._recover_live_gaps(
-            harness,
-            _RecoveryClient(message),
-            plan,
-        )
-    )
+    async def record_dispatch(self, **kwargs):
+        dispatched.append((kwargs["telegram_message_id"], kwargs["revision_index"]))
+
+    manager._dispatch_recovered_if_required = MethodType(record_dispatch, manager)
+
+    asyncio.run(manager._recover_live_gaps(_RecoveryClient(message), plan))
 
     assert persisted_calls == [6503]
-    assert harness.dispatched == [(6503, 0)]
+    assert dispatched == [(6503, 0)]
 
 
 class _UnresolvedRouter:
