@@ -5,14 +5,6 @@ canonical runtime. The canonical cleanup removes these imports block by block; n
 runtime override may be added here.
 """
 
-from app.bare_gold_now_override import install_bare_gold_now_override
-
-install_bare_gold_now_override()
-
-from app.bare_gold_now_loader_fix import install_bare_gold_now_loader_fix
-
-install_bare_gold_now_loader_fix()
-
 from app.performance_account_truth_override import install_performance_account_truth_override
 
 install_performance_account_truth_override()
