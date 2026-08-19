@@ -4,7 +4,8 @@ from decimal import Decimal
 from uuid import UUID
 
 from app.critical_entry_policy import CriticalEntry
-from app.paper_critical_execution import PaperCriticalExecutionService, _Planned
+from app.paper_critical_execution import _Planned
+from app.paper_fresh_start_execution import PaperFreshStartExecutionService
 
 
 class _Session:
@@ -30,7 +31,7 @@ class _Session:
 def test_critical_order_persistence_uses_boolean_open_bind_not_status_twice() -> None:
     """Regress the live PostgreSQL text-vs-varchar AmbiguousParameter failure."""
     session = _Session()
-    service = object.__new__(PaperCriticalExecutionService)
+    service = object.__new__(PaperFreshStartExecutionService)
     service._session_factory = lambda: session
     item = _Planned(
         local_id=UUID("10000000-0000-4000-8000-000000000001"),
