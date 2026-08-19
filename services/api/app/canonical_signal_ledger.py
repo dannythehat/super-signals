@@ -4,6 +4,9 @@ Provider market signals may legitimately omit an entry price. In that case the c
 Signal keeps entry_low/entry_high NULL; execution later resolves the fresh broker ask
 for BUY or bid for SELL. The exact standalone bare-Gold-NOW profile also keeps provider
 SL/TP NULL because its protection is execution-derived, not provider-supplied.
+
+Recovery/idempotency helpers are explicit methods of this canonical ledger. Production
+therefore never depends on removed override modules for signal lookup or observations.
 """
 
 from __future__ import annotations
@@ -12,6 +15,9 @@ import json
 from decimal import Decimal, InvalidOperation
 from hashlib import sha256
 from typing import Any
+from uuid import UUID
+
+from sqlalchemy import text
 
 from app.ai_canonical_signal import (
     AiCanonicalSignalService,
@@ -48,6 +54,41 @@ def _ordered_targets(side: str, targets: tuple[Decimal, ...]) -> bool:
 class CanonicalSignalLedger(AiCanonicalSignalService):
     """Single production signal ledger, including pre-execution provider revisions."""
 
+    def signal_id_for_message(self, message_id: UUID) -> UUID | None:
+        with self._session_factory() as session:
+            value = session.execute(
+                text(
+                    """
+                    SELECT id FROM signals
+                    WHERE source_message_id=:message_id
+                    ORDER BY created_at ASC
+                    LIMIT 1
+                    """
+                ),
+                {"message_id": message_id},
+            ).scalar_one_or_none()
+        return UUID(str(value)) if value is not None else None
+
+    def record_observation(
+        self,
+        *,
+        signal_id: UUID,
+        message_id: UUID,
+        revision_index: int,
+        disposition: str,
+        fingerprint: str | None,
+    ) -> None:
+        with self._session_factory() as session:
+            self._observe(
+                session,
+                signal_id=signal_id,
+                message_id=message_id,
+                revision_index=revision_index,
+                fingerprint=fingerprint,  # type: ignore[arg-type]
+                disposition=disposition,
+            )
+            session.commit()
+
     def revise(
         self,
         *,
@@ -57,12 +98,7 @@ class CanonicalSignalLedger(AiCanonicalSignalService):
         allow_revision: bool,
         reason: str,
     ) -> AiSignalResult:
-        """Apply one provider edit to the existing canonical signal.
-
-        This deliberately exposes the base ledger's revision operation under the name
-        used by the canonical semantic pipeline. Keeping it here avoids any import-time
-        compatibility alias or monkey patch.
-        """
+        """Apply one provider edit to the existing canonical signal."""
         return self.apply_pre_execution_revision(
             message_id=message_id,
             extracted=extracted,
