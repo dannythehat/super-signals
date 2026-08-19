@@ -33,10 +33,6 @@ from app.paper_live_entry_guard import install_paper_live_entry_guard
 
 install_paper_live_entry_guard()
 
-from app.paper_market_execution_policy import install_paper_market_execution_policy
-
-install_paper_market_execution_policy()
-
 from app.provider_entry_reliability_overrides import install_provider_entry_reliability_overrides
 
 install_provider_entry_reliability_overrides()
