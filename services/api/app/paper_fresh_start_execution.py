@@ -68,9 +68,6 @@ class PaperFreshStartExecutionService(PaperExecutionPriorityService):
         section_count = max(1, len(entries))
         context_token = _full_risk_section_count.set(section_count)
         try:
-            # Explicit broker pending orders and true multi-entry structures retain
-            # their literal provider prices. Ordinary market exact/zone/no-entry
-            # signals use the atomic path and the fresh executable broker quote.
             is_critical = critical.broad_order_type == "pending" or len(entries) > 1
             if is_critical:
                 return await PaperCriticalExecutionService.execute_owner_demo_signal(
@@ -101,7 +98,6 @@ class PaperFreshStartExecutionService(PaperExecutionPriorityService):
         risk_percent,
         double_lot_approved: bool,
     ) -> Day24RiskSizingResult:
-        """Undo the legacy layer balance split before deterministic Day24 sizing."""
         section_count = max(1, _full_risk_section_count.get())
         reconstructed = Decimal(str(balance)) * Decimal(section_count)
         if section_count > 1:
@@ -125,7 +121,6 @@ class PaperFreshStartExecutionService(PaperExecutionPriorityService):
             raise Day26ExecutionError("critical_entry_plan_missing")
         if not targets:
             raise Day26ExecutionError("position_count_invalid")
-
         slot_count = max(len(entries), len(targets))
         has_runner = targets[-1] is None
         target_indexes = list(range(1, len(targets) + 1))
@@ -135,7 +130,6 @@ class PaperFreshStartExecutionService(PaperExecutionPriorityService):
                 raise Day26ExecutionError("position_count_invalid")
             for offset in range(slot_count - len(targets)):
                 target_indexes.append(repeatable[offset % len(repeatable)])
-
         allocations = [
             AtomicLayerAllocation(
                 entry=entries[index % len(entries)],
@@ -144,7 +138,6 @@ class PaperFreshStartExecutionService(PaperExecutionPriorityService):
             )
             for index, target_index in enumerate(target_indexes)
         ]
-
         if has_runner:
             runner_slot = next(
                 index for index, item in enumerate(allocations) if item.take_profit is None
@@ -169,7 +162,6 @@ class PaperFreshStartExecutionService(PaperExecutionPriorityService):
                     tp_index=best_item.tp_index,
                     take_profit=best_item.take_profit,
                 )
-
         return tuple(allocations)
 
     async def _margin_preflight(
@@ -184,14 +176,52 @@ class PaperFreshStartExecutionService(PaperExecutionPriorityService):
         entries: tuple[CriticalEntry, ...],
         sizings: dict[int, Day24RiskSizingResult],
     ) -> None:
-        """Validate the local plan only; broker funds/margin authority is MT5 itself."""
+        """Validate local shape only; broker funds/margin authority is MT5 itself."""
         del token, account_id, region, symbol, side, free_margin, entries
         if not sizings:
             raise Day26ExecutionError("position_count_invalid")
         target_count = int(next(iter(sizings.values())).position_count)
         if target_count <= 0:
             raise Day26ExecutionError("position_count_invalid")
-        return None
+
+    def _record_critical_order(
+        self,
+        item: _Planned,
+        order_id: str,
+        position_id: str | None,
+    ) -> None:
+        """Persist broker truth using PostgreSQL-safe bound values."""
+        status = (
+            "open"
+            if position_id
+            else "pending"
+            if item.entry.order_type != "market"
+            else "planned"
+        )
+        with self._session_factory() as session:
+            session.execute(
+                text(
+                    """
+                    UPDATE positions
+                    SET broker_order_id=:order_id,
+                        broker_position_id=COALESCE(:position_id, broker_position_id),
+                        status=:status,
+                        opened_at=CASE WHEN :is_open
+                                       THEN COALESCE(opened_at, now())
+                                       ELSE opened_at END,
+                        updated_at=now()
+                    WHERE id=:id
+                    """
+                ),
+                {
+                    "id": item.local_id,
+                    "order_id": order_id,
+                    "position_id": position_id,
+                    "status": status,
+                    "is_open": status == "open",
+                },
+            )
+            session.commit()
 
     def _create_layered_plans(
         self,
@@ -206,18 +236,14 @@ class PaperFreshStartExecutionService(PaperExecutionPriorityService):
         if signal.has_open_runner:
             targets.append(None)
         allocations = self._allocation_pairs(entries, tuple(targets))
-
         planned: list[_Planned] = []
         with self._session_factory() as session:
             for allocation in allocations:
                 entry = allocation.entry
                 sizing = sizings[entry.entry_index]
                 local_id = uuid4()
-                client_id = (
-                    f"SS_{local_id.hex[:12]}_E{entry.entry_index}T{allocation.tp_index}"
-                )
+                client_id = f"SS_{local_id.hex[:12]}_E{entry.entry_index}T{allocation.tp_index}"
                 local_entry = market_entry if entry.order_type == "market" else entry.price
-                planned_risk_percent = sizing.effective_risk_percent
                 session.execute(
                     text(
                         """
@@ -240,7 +266,7 @@ class PaperFreshStartExecutionService(PaperExecutionPriorityService):
                         "entry_order_type": entry.order_type,
                         "tp_index": allocation.tp_index,
                         "take_profit": allocation.take_profit,
-                        "risk_percent": planned_risk_percent,
+                        "risk_percent": sizing.effective_risk_percent,
                         "volume": sizing.volume,
                         "stop_loss": signal.stop_loss,
                         "client_id": client_id,
