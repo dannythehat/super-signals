@@ -1,26 +1,26 @@
-"""Non-destructive fresh-run visibility boundary for Owner DEMO paper testing.
+"""Fresh paper-run visibility boundary for the Owner demo account.
 
-Raw broker deals, audit events and historical outcomes remain intact as immutable evidence.
-When ``SUPER_SIGNALS_PAPER_RESET_AT`` is configured, Owner-facing reads expose only the
-new paper-test run from that UTC instant onward. Current broker balance/equity and genuine
-open broker exposure are never rewritten or hidden by this module.
+The broker account, broker deals, audit events and historical outcomes remain intact as
+forensic truth. The active Owner paper-test view is a separate run beginning at
+``SUPER_SIGNALS_PAPER_RESET_AT``.
 
-Reset-day display semantics are deliberate:
-- Today remains the live Today figure the user was already watching.
-- 7 days / 30 days / Month / All time are explicit zeroes on the reset day.
-- From the following day those historical windows accumulate only signals whose provider
-  event started at or after the reset boundary.
-- Trade/history lists exclude pre-reset signals even if an old position happened to close
-  after the reset boundary.
-- The live Today strip uses the reset instant as its session start, so old pending/trade
-  counts cannot leak into the new run.
+The reset contract is strict:
+- no pre-reset signal may appear in Today, historical windows, timeline, recent trades,
+  latest trade, activity, or visible open positions;
+- the reset paper balance starts from ``SUPER_SIGNALS_PAPER_BASELINE_BALANCE`` (default
+  1000) and changes only from broker-backed outcomes belonging to post-reset signals;
+- pre-reset broker positions may continue to exist for audit/reconciliation purposes, but
+  they are outside the active paper run and cannot contaminate its visible balance/P&L;
+- 7d / 30d / Month / All time are explicit zeroes on the reset day and then accumulate
+  only the new run on later days.
 """
 
 from __future__ import annotations
 
 import os
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 from uuid import UUID
 
 from sqlalchemy import text
@@ -29,6 +29,7 @@ from app.telegram_entity_recovery import install_telegram_entity_recovery
 
 _installed = False
 _ZERO = Decimal("0")
+_DEFAULT_BASELINE = Decimal("1000")
 
 
 def paper_reset_at() -> datetime | None:
@@ -52,6 +53,15 @@ def paper_owner_id() -> UUID | None:
         return UUID(raw)
     except (ValueError, TypeError):
         return None
+
+
+def paper_baseline_balance() -> Decimal:
+    raw = os.getenv("SUPER_SIGNALS_PAPER_BASELINE_BALANCE", "1000").strip() or "1000"
+    try:
+        value = Decimal(raw)
+    except (InvalidOperation, ValueError):
+        return _DEFAULT_BASELINE
+    return value if value > 0 else _DEFAULT_BASELINE
 
 
 def _utc(value: datetime) -> datetime:
@@ -86,6 +96,16 @@ def _clamp_today_session_start(
     return start
 
 
+def _virtual_balance(
+    baseline: Decimal,
+    realised_pnl: Decimal,
+    open_profit: Decimal = _ZERO,
+) -> tuple[Decimal, Decimal]:
+    balance = baseline + realised_pnl
+    equity = balance + open_profit
+    return balance, equity
+
+
 def _zero_window(key: str, label: str):
     from app.performance_ledger_day33 import Day33PerformanceWindow
 
@@ -108,11 +128,9 @@ def _zero_window(key: str, label: str):
 
 
 def install_paper_fresh_run_reset() -> bool:
-    """Install the Owner paper-run visibility boundary once when configured."""
+    """Install the Owner paper-run boundary once when configured."""
     global _installed
 
-    # Listener reliability is independent of the display reset. The production builder
-    # always calls this hook, so cold Telethon sessions can recover channel entities.
     install_telegram_entity_recovery()
 
     if _installed:
@@ -129,16 +147,60 @@ def install_paper_fresh_run_reset() -> bool:
     from app.performance_ledger_day33 import MODEL_BALANCE, _d, _money, _pct
     from app.performance_ledger_day33_v2 import Day33PerformanceLedgerServiceV2
 
+    original_dashboard_read = Day32DashboardService.read
     original_windows = Day33PerformanceLedgerServiceV2.read_windows
     original_timeline_rows = Day33PerformanceLedgerServiceV2._timeline_rows
+    original_mapped_open_positions = Day32DashboardService._mapped_open_positions
     original_latest_signal = Day32DashboardService._latest_signal
     original_recent_completed = Day32DashboardService._recent_completed
     original_activity = Day32DashboardService._activity
     original_period_start = Day35AdminPortfolioService._period_start
     original_today_session_start = TodayTradingSummaryService._session_start
 
-    def fresh_window(self, user_id: UUID, key: str, label: str, since: datetime, point: datetime):
-        """Read one post-reset window by provider signal start, not merely close time."""
+    def eligible_signal_ids(self, user_id: UUID) -> set[UUID]:
+        with self._session_factory() as session:
+            return set(
+                session.scalars(
+                    text(
+                        """
+                        SELECT DISTINCT s.id
+                        FROM signals s
+                        LEFT JOIN positions p ON p.signal_id=s.id
+                        WHERE COALESCE(s.source_posted_at,s.created_at)>=:cutoff
+                          AND (p.user_id=:user_id OR p.user_id IS NULL)
+                        """
+                    ),
+                    {"user_id": user_id, "cutoff": cutoff},
+                ).all()
+            )
+
+    def post_reset_realised_cash(self, user_id: UUID) -> Decimal:
+        with self._session_factory() as session:
+            value = session.execute(
+                text(
+                    """
+                    SELECT COALESCE(SUM(o.cash_pnl),0)
+                    FROM performance_trade_outcomes o
+                    JOIN signals s ON s.id=o.signal_id
+                    WHERE o.user_id=:user_id
+                      AND COALESCE(s.source_posted_at,s.created_at)>=:cutoff
+                      AND o.status IN ('won','lost','breakeven')
+                      AND o.cash_pnl IS NOT NULL
+                    """
+                ),
+                {"user_id": user_id, "cutoff": cutoff},
+            ).scalar_one()
+        return _money(_d(value))
+
+    def fresh_window(
+        self,
+        user_id: UUID,
+        key: str,
+        label: str,
+        since: datetime,
+        point: datetime,
+    ):
+        """Read one window using provider-signal start as the run boundary."""
         effective_since = max(_utc(since), cutoff)
         with self._session_factory() as session:
             rows = session.execute(
@@ -203,7 +265,6 @@ def install_paper_fresh_run_reset() -> bool:
         net_pips = None
         if known and not mixed and all(row["net_pips"] is not None for row in known):
             net_pips = _money(sum((_d(row["net_pips"]) for row in known), _ZERO))
-        return_percent = self._period_return_percent(user_id, cutoff, cash)
 
         from app.performance_ledger_day33 import Day33PerformanceWindow
 
@@ -211,7 +272,11 @@ def install_paper_fresh_run_reset() -> bool:
             key=key,
             label=label,
             cash_pnl=cash,
-            return_percent=return_percent,
+            return_percent=(
+                _pct(cash / paper_baseline_balance() * Decimal("100"))
+                if paper_baseline_balance() > 0
+                else None
+            ),
             model_500_pnl=model,
             model_500_return_percent=_pct(model / MODEL_BALANCE * Decimal("100")),
             closed_trades=len(known),
@@ -228,13 +293,8 @@ def install_paper_fresh_run_reset() -> bool:
         if user_id != owner_id:
             return original_windows(self, user_id, now=now)
         point = _utc(now or datetime.now(UTC))
-
-        # Preserve the live Today figure exactly as the existing dashboard calculates it.
-        # This was explicitly the user's trusted current-day number at reset time.
-        current = original_windows(self, user_id, now=point)
-        today_window = next((item for item in current if item.key == "today"), None)
-        if today_window is None:
-            today_window = _zero_window("today", "Today")
+        today_start = max(point.replace(hour=0, minute=0, second=0, microsecond=0), cutoff)
+        today_window = fresh_window(self, user_id, "today", "Today", today_start, point)
 
         if _same_reset_day(point, cutoff):
             return (
@@ -245,8 +305,7 @@ def install_paper_fresh_run_reset() -> bool:
                 _zero_window("all", "All time"),
             )
 
-        today = point.replace(hour=0, minute=0, second=0, microsecond=0)
-        month = today.replace(day=1)
+        month = point.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
         requested = (
             ("7d", "7 days", point - timedelta(days=7)),
             ("30d", "30 days", point - timedelta(days=30)),
@@ -262,53 +321,68 @@ def install_paper_fresh_run_reset() -> bool:
         rows = original_timeline_rows(self, user_id)
         if user_id != owner_id or not rows:
             return rows
-        with self._session_factory() as session:
-            eligible = set(
-                session.scalars(
-                    text(
-                        """
-                        SELECT id
-                        FROM signals
-                        WHERE COALESCE(source_posted_at,created_at)>=:cutoff
-                        """
-                    ),
-                    {"cutoff": cutoff},
-                ).all()
-            )
+        eligible = eligible_signal_ids(self, user_id)
         return [row for row in rows if row.get("signal_id") in eligible]
+
+    def reset_mapped_open_positions(self, user_id: UUID, broker_positions):
+        values = original_mapped_open_positions(self, user_id, broker_positions)
+        if user_id != owner_id or not values:
+            return values
+        eligible = eligible_signal_ids(self, user_id)
+        return tuple(item for item in values if item.signal_id in eligible)
 
     def reset_latest_signal(self, user_id: UUID):
         value = original_latest_signal(self, user_id)
         if user_id != owner_id or value is None:
             return value
-        return value if _after(value.created_at, cutoff) else None
+        eligible = eligible_signal_ids(self, user_id)
+        return value if value.signal_id in eligible else None
 
     def reset_recent_completed(self, user_id: UUID):
         values = original_recent_completed(self, user_id)
         if user_id != owner_id or not values:
             return values
-        with self._session_factory() as session:
-            eligible = set(
-                session.scalars(
-                    text(
-                        """
-                        SELECT p.id
-                        FROM positions p
-                        JOIN signals s ON s.id=p.signal_id
-                        WHERE p.user_id=:user_id
-                          AND COALESCE(s.source_posted_at,s.created_at)>=:cutoff
-                        """
-                    ),
-                    {"user_id": user_id, "cutoff": cutoff},
-                ).all()
-            )
-        return tuple(item for item in values if item.position_id in eligible)
+        eligible = eligible_signal_ids(self, user_id)
+        return tuple(item for item in values if item.signal_id in eligible)
 
     def reset_activity(self, user_id: UUID):
         values = original_activity(self, user_id)
         if user_id != owner_id:
             return values
         return tuple(item for item in values if _after(item.created_at, cutoff))
+
+    async def reset_dashboard_read(self, user_id: UUID):
+        view = await original_dashboard_read(self, user_id)
+        if user_id != owner_id or view.account is None:
+            return view
+
+        realised = post_reset_realised_cash(self, user_id)
+        open_profit = _money(
+            sum(
+                (
+                    Decimal(str(item.profit))
+                    for item in view.open_positions
+                    if item.profit is not None
+                ),
+                _ZERO,
+            )
+        )
+        balance, equity = _virtual_balance(
+            paper_baseline_balance(),
+            realised,
+            open_profit,
+        )
+        return replace(
+            view,
+            account=replace(
+                view.account,
+                balance=float(balance),
+                equity=float(equity),
+                margin=0.0,
+                free_margin=float(equity),
+            ),
+            open_profit=float(open_profit),
+        )
 
     def reset_period_start(period, now):
         start, label = original_period_start(period, now)
@@ -333,9 +407,11 @@ def install_paper_fresh_run_reset() -> bool:
 
     Day33PerformanceLedgerServiceV2.read_windows = reset_windows
     Day33PerformanceLedgerServiceV2._timeline_rows = reset_timeline_rows
+    Day32DashboardService._mapped_open_positions = reset_mapped_open_positions
     Day32DashboardService._latest_signal = reset_latest_signal
     Day32DashboardService._recent_completed = reset_recent_completed
     Day32DashboardService._activity = reset_activity
+    Day32DashboardService.read = reset_dashboard_read
     Day35AdminPortfolioService._period_start = staticmethod(reset_period_start)
     TodayTradingSummaryService._session_start = reset_today_session_start
 
@@ -345,6 +421,7 @@ def install_paper_fresh_run_reset() -> bool:
 
 __all__ = [
     "install_paper_fresh_run_reset",
+    "paper_baseline_balance",
     "paper_reset_at",
     "paper_owner_id",
 ]
