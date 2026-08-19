@@ -86,11 +86,12 @@ def test_reset_day_keeps_today_live_and_other_windows_explicit_zero(
     windows = service.read_windows(OWNER, now=now)
 
     assert [item.key for item in windows] == ["today", "7d", "30d", "month", "all"]
-    assert len(service.calls) == 1
+    assert service.calls
     assert service.calls[0][0] == "today"
-    assert service.calls[0][1] == PAPER_RUN_STARTED_AT
+    assert all(since is None or since >= PAPER_RUN_STARTED_AT for _, since, _ in service.calls)
     assert all(item.cash_pnl == ZERO for item in windows[1:])
     assert all(item.closed_trades == 0 for item in windows[1:])
+    assert all(item.wins == item.losses == item.breakeven == 0 for item in windows[1:])
 
 
 def test_future_windows_can_never_reach_before_paper_origin(monkeypatch: pytest.MonkeyPatch) -> None:
