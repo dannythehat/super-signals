@@ -1,8 +1,8 @@
 """Owner-only canonical paper execution route.
 
-This diagnostic/manual route uses the exact same shared execution service as automatic
-Telegram routing and future LIVE accounts. It cannot reintroduce a separate zone,
-margin-capacity or market-entry policy.
+This diagnostic/manual route uses the exact same shared execution service and resilient
+read policy as automatic Telegram routing and future LIVE accounts. It cannot reintroduce
+a separate zone, margin-capacity, market-entry or broker-read policy.
 """
 
 from __future__ import annotations
@@ -16,10 +16,10 @@ from pydantic import BaseModel, Field
 
 from app.access_control import require_permission
 from app.metaapi_margin_gateway import MetaApiMarginGateway
-from app.metaapi_read_gateway import MetaApiReadGateway
 from app.metaapi_trade_gateway import MetaApiTradeGateway
 from app.mt5_execution_day26 import Day26ExecutionError
 from app.mt5_runtime import require_mt5_service
+from app.paper_resilient_read_gateway import ResilientMetaApiReadGateway
 from app.trading_execution_canonical import CanonicalTradingExecutionService
 
 router = APIRouter(prefix="/owner/mt5/day26", tags=["mt5", "execution"])
@@ -64,7 +64,7 @@ def _service(request: Request) -> CanonicalTradingExecutionService:
     service = CanonicalTradingExecutionService(
         session_factory=mt5_service._session_factory,
         cipher=mt5_service._cipher,
-        read_gateway=MetaApiReadGateway(),
+        read_gateway=ResilientMetaApiReadGateway(),
         margin_gateway=MetaApiMarginGateway(),
         trade_gateway=MetaApiTradeGateway(),
     )
