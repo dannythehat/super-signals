@@ -10,7 +10,7 @@ from app.ai_message_pipeline_canonical import CanonicalAiMessagePipeline, explic
 from app.ai_message_supervisor import AiMessageDecision
 from app.canonical_signal_ledger import CanonicalSignalLedger
 from app.mt5_execution_day26 import Day26ExecutionError, _SignalInput
-from app.paper_fresh_start_execution import PaperFreshStartExecutionService
+from app.trading_execution_canonical import CanonicalTradingExecutionService
 import app.v1_message_policy as v1
 
 
@@ -103,8 +103,8 @@ def test_canonical_signal_accepts_nullable_market_entry() -> None:
     assert trade.stop_loss == Decimal("4380")
 
 
-def _service() -> PaperFreshStartExecutionService:
-    service = object.__new__(PaperFreshStartExecutionService)
+def _service() -> CanonicalTradingExecutionService:
+    service = object.__new__(CanonicalTradingExecutionService)
     service._paper_max_signal_age_seconds = 90.0
     return service
 
