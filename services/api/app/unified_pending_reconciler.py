@@ -18,7 +18,10 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from app.metaapi_read_gateway import MetaApiReadGateway
 from app.mt5_crypto import MetaApiTokenCipher
-from app.paper_pending_reconciler import PaperPendingReconcileResult, PaperPendingReconciler
+from app.pending_reconciliation_canonical import (
+    AccountPendingReconciler,
+    PendingReconcileResult,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -32,10 +35,12 @@ def _live_enabled() -> bool:
     }
 
 
-class LiveMemberPendingReconciler(PaperPendingReconciler):
-    """Use the exact paper pending reconciliation algorithm with an approved LIVE account."""
+class LiveMemberPendingReconciler(AccountPendingReconciler):
+    """Use the exact shared pending reconciliation algorithm for an approved LIVE account."""
 
-    def _demo_account(self) -> tuple[str, bytes] | None:
+    account_environment = "live"
+
+    def _broker_account(self) -> tuple[str, bytes] | None:
         with self._session_factory() as session:
             row = session.execute(
                 text(
@@ -93,13 +98,13 @@ class UnifiedPendingReconciler:
         poll_seconds: int = 3,
     ) -> None:
         if poll_seconds < 1:
-            raise ValueError("paper_pending_poll_seconds_invalid")
+            raise ValueError("pending_poll_seconds_invalid")
         self._session_factory = session_factory
         self._cipher = cipher
         self._gateway = gateway
         self._owner_user_id = owner_user_id
         self._poll_seconds = poll_seconds
-        self._owner = PaperPendingReconciler(
+        self._owner = AccountPendingReconciler(
             session_factory=session_factory,
             cipher=cipher,
             gateway=gateway,
@@ -144,7 +149,7 @@ class UnifiedPendingReconciler:
             except TimeoutError:
                 pass
 
-    async def reconcile_once(self) -> PaperPendingReconcileResult:
+    async def reconcile_once(self) -> PendingReconcileResult:
         results = [await self._owner.reconcile_once()]
         if _live_enabled():
             for user_id in self._live_pending_users():
@@ -156,7 +161,7 @@ class UnifiedPendingReconciler:
                     poll_seconds=self._poll_seconds,
                 )
                 results.append(await reconciler.reconcile_once())
-        return PaperPendingReconcileResult(
+        return PendingReconcileResult(
             pending_seen=sum(item.pending_seen for item in results),
             fills_mapped=sum(item.fills_mapped for item in results),
             still_pending=sum(item.still_pending for item in results),
