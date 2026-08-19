@@ -1,8 +1,8 @@
 """Canonical reconnect/restart safety acceptance.
 
-This proves durable execution idempotency, stale-entry recovery safety, immediate MT5
-reconciliation, and broker-authoritative SL/TP truth across fresh service instances.
-No second retry engine exists.
+This proves stale-entry recovery safety, immediate MT5 reconciliation, and
+broker-authoritative SL/TP truth across fresh service instances. Durable route
+idempotency and no-automatic-retry behavior are covered by test_canonical_execution_dispatch.
 """
 
 from __future__ import annotations
@@ -13,150 +13,14 @@ from decimal import Decimal
 from types import SimpleNamespace
 from uuid import UUID, uuid4
 
-from app.day28_full_execution import Day28FullExecutionRouter, _StoredDecision
 from app.manual_reconciliation_day36 import (
     Day36ManualMt5ReconciliationService,
     _Account as Day36Account,
     _MappedPosition,
 )
 from app.mt5_connection_manager import Mt5ConnectionManager
-from app.mt5_execution_day26 import Day26ExecutionError
 from app.telegram_listener_day21 import Day21TelegramListenerManager
 from app.telegram_listener_canonical import CanonicalProductionTelegramListenerManager
-
-
-class _Execution:
-    def __init__(self) -> None:
-        self.calls: list[dict] = []
-        self.completed: dict[UUID, int] = {}
-        self.failure_code: str | None = None
-
-    async def execute_owner_demo_signal(self, **kwargs):
-        self.calls.append(dict(kwargs))
-        if self.failure_code:
-            raise Day26ExecutionError(self.failure_code)
-        signal_id = kwargs["signal_id"]
-        self.completed[signal_id] = 3
-        return SimpleNamespace(
-            positions=(object(), object(), object()),
-            double_lot_applied=False,
-        )
-
-
-class _Management:
-    async def execute_owner_demo_event(self, **kwargs):  # pragma: no cover - never used here
-        raise AssertionError(f"unexpected management call: {kwargs}")
-
-
-class _Router(Day28FullExecutionRouter):
-    def __init__(
-        self,
-        *,
-        owner_id: UUID,
-        source_id: UUID,
-        execution: _Execution,
-        signal_id: UUID,
-    ) -> None:
-        super().__init__(
-            session_factory=lambda: None,
-            owner_user_id=owner_id,
-            execution_service=execution,
-            management_service=_Management(),
-            allowed_source_ids=(source_id,),
-            risk_percent="1",
-            double_lot_approved=False,
-        )
-        self._test_signal_id = signal_id
-        self._execution_state = execution
-        self.audits: list[dict] = []
-
-    def _load_stored_decision(self, **kwargs):
-        return _StoredDecision(
-            message_id=uuid4(),
-            decision="new_trade",
-            action="execute",
-            reason="v1_complete_signal",
-        )
-
-    def _resolve_signal_id(self, message_id, revision_index):
-        return self._test_signal_id
-
-    def _has_position_records(self, signal_id):
-        return signal_id in self._execution_state.completed
-
-    def _position_count(self, signal_id):
-        return self._execution_state.completed.get(signal_id, 0)
-
-    def _audit_success(self, *, entity_id, entity_type, payload):
-        self.audits.append({"kind": "success", **payload})
-
-    def _audit_failure(self, **kwargs):
-        self.audits.append({"kind": "failure", **kwargs})
-
-
-def test_broker_disconnect_blocks_signal_and_does_not_schedule_retry() -> None:
-    owner, source, signal = uuid4(), uuid4(), uuid4()
-    execution = _Execution()
-    execution.failure_code = "mt5_account_not_connected"
-    router = _Router(
-        owner_id=owner,
-        source_id=source,
-        execution=execution,
-        signal_id=signal,
-    )
-
-    result = asyncio.run(
-        router.dispatch_stored_decision(
-            source_id=source,
-            telegram_message_id=37001,
-        )
-    )
-
-    assert result.outcome == "blocked"
-    assert result.error_code == "mt5_account_not_connected"
-    assert len(execution.calls) == 1
-    assert execution.completed == {}
-    assert router.audits[-1]["kind"] == "failure"
-    assert router.audits[-1].get("automatic_retry") is not True
-
-
-def test_fresh_router_after_service_restart_cannot_duplicate_existing_positions() -> None:
-    owner, source, signal = uuid4(), uuid4(), uuid4()
-    execution = _Execution()
-    before_restart = _Router(
-        owner_id=owner,
-        source_id=source,
-        execution=execution,
-        signal_id=signal,
-    )
-
-    first = asyncio.run(
-        before_restart.dispatch_stored_decision(
-            source_id=source,
-            telegram_message_id=37002,
-        )
-    )
-    assert first.outcome == "executed"
-    assert execution.completed[signal] == 3
-    assert len(execution.calls) == 1
-
-    after_restart = _Router(
-        owner_id=owner,
-        source_id=source,
-        execution=execution,
-        signal_id=signal,
-    )
-    replay = asyncio.run(
-        after_restart.dispatch_stored_decision(
-            source_id=source,
-            telegram_message_id=37002,
-        )
-    )
-
-    assert replay.outcome == "already_applied"
-    assert replay.already_applied is True
-    assert replay.position_count == 3
-    assert len(execution.calls) == 1
 
 
 class _CatchupClient:
