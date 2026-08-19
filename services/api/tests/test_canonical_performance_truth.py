@@ -1,10 +1,19 @@
 """Regression guards for canonical broker-account performance truth."""
 
+from datetime import UTC, datetime
+from decimal import Decimal
 from inspect import getsource
+from uuid import UUID
 
 from app.broker_settlement_canonical import CanonicalBrokerSettlementManager
 from app.dashboard_today_summary import TodayTradingSummaryService
+from app.paper_run_epoch import (
+    PAPER_RUN_BASELINE_BALANCE,
+    PAPER_RUN_STARTED_AT,
+    active_paper_epoch,
+)
 from app.performance_ledger_canonical import CanonicalPerformanceLedgerService
+from app.performance_runtime import CanonicalPerformanceRuntimeService
 
 
 def test_account_sync_uses_complete_time_range_history() -> None:
@@ -40,3 +49,39 @@ def test_flat_account_still_reconciles_broker_history() -> None:
     assert "_has_unsettled_mapped_positions" in source
     assert "sync_user" in source
     assert "flat_account_truth_sync_complete" in source
+
+
+def test_owner_paper_origin_is_immutable_and_not_environment_resettable(monkeypatch) -> None:
+    owner = UUID("11111111-1111-4111-8111-111111111111")
+    monkeypatch.setenv("SUPER_SIGNALS_DAY28_OWNER_ID", str(owner))
+    # Legacy reset/baseline variables are deliberately ignored by canonical runtime.
+    monkeypatch.setenv("SUPER_SIGNALS_PAPER_RESET_AT", "2099-01-01T00:00:00Z")
+    monkeypatch.setenv("SUPER_SIGNALS_PAPER_BASELINE_BALANCE", "999999")
+
+    epoch = active_paper_epoch(owner)
+    assert epoch is not None
+    assert PAPER_RUN_STARTED_AT == datetime(2026, 8, 19, 8, 12, tzinfo=UTC)
+    assert PAPER_RUN_BASELINE_BALANCE == Decimal("1000")
+    assert epoch.started_at == PAPER_RUN_STARTED_AT
+    assert epoch.baseline_balance == Decimal("1000")
+
+
+class _CumulativeWindowHarness(CanonicalPerformanceRuntimeService):
+    def __init__(self) -> None:
+        pass
+
+    def _run_start(self, user_id):  # noqa: ANN001, ANN201
+        return PAPER_RUN_STARTED_AT
+
+    def _signal_window(self, user_id, key, label, since, now):  # noqa: ANN001, ANN201
+        return key, since, now
+
+
+def test_every_performance_window_accumulates_from_same_origin_on_start_day() -> None:
+    owner = UUID("11111111-1111-4111-8111-111111111111")
+    point = datetime(2026, 8, 19, 18, 0, tzinfo=UTC)
+    windows = _CumulativeWindowHarness().read_windows(owner, now=point)
+
+    assert [item[0] for item in windows] == ["today", "7d", "30d", "month", "all"]
+    assert all(item[1] == PAPER_RUN_STARTED_AT for item in windows)
+    assert all(item[2] == point for item in windows)
