@@ -21,12 +21,6 @@ from app.account_truth_poll_override import install_account_truth_poll_override
 
 install_account_truth_poll_override()
 
-from app.ambiguous_trade_reconciliation_override import (
-    install_ambiguous_trade_reconciliation_override,
-)
-
-install_ambiguous_trade_reconciliation_override()
-
 from app.aug18_readiness_cleanup import install_aug18_readiness_cleanup
 
 install_aug18_readiness_cleanup()
