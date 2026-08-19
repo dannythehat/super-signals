@@ -13,10 +13,6 @@ from app.bare_gold_now_loader_fix import install_bare_gold_now_loader_fix
 
 install_bare_gold_now_loader_fix()
 
-from app.breakeven_tp_repair import install_breakeven_tp_repair
-
-install_breakeven_tp_repair()
-
 from app.pending_reconciliation_parity_override import (
     install_pending_reconciliation_parity_override,
 )
