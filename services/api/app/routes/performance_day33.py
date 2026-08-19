@@ -1,4 +1,4 @@
-"""Authenticated Day 33 canonical performance and timeline endpoints."""
+"""Authenticated canonical broker performance and timeline endpoints."""
 
 from __future__ import annotations
 
@@ -18,6 +18,7 @@ from app.mt5_connection_service_day30 import Day30Mt5ConnectionService
 from app.mt5_runtime import require_mt5_service
 from app.performance_ledger_day33 import Day33LedgerError
 from app.performance_ledger_day33_v2 import Day33PerformanceLedgerServiceV2
+from app.performance_runtime import CanonicalPerformanceRuntimeService
 
 router = APIRouter(prefix="/performance", tags=["performance-day33"])
 Identity = Annotated[dict[str, Any], Depends(get_current_identity)]
@@ -140,7 +141,7 @@ class AdminPortfolioResponse(BaseModel):
 
 def _service(request: Request) -> Day33PerformanceLedgerServiceV2:
     existing = getattr(request.app.state, "day33_performance_service", None)
-    if isinstance(existing, Day33PerformanceLedgerServiceV2):
+    if isinstance(existing, CanonicalPerformanceRuntimeService):
         return existing
     base = require_mt5_service(request)
     if not isinstance(base, Day30Mt5ConnectionService):
@@ -151,7 +152,7 @@ def _service(request: Request) -> Day33PerformanceLedgerServiceV2:
                 "message": "Performance data is temporarily unavailable.",
             },
         )
-    service = Day33PerformanceLedgerServiceV2(
+    service = CanonicalPerformanceRuntimeService(
         session_factory=base._session_factory,
         cipher=base._cipher,
         gateway=MetaApiReadGateway(),
@@ -208,8 +209,6 @@ async def sync_performance(
     response: Response,
     identity: Identity,
 ) -> SyncResponse:
-    # Mutation-like broker reconciliation stays bound to the signed-in account. The
-    # acceptance mirror is deliberately read-only and never syncs/rebuilds Owner state.
     try:
         result = await _service(request).sync_user(identity["id"])
     except Day33LedgerError as exc:

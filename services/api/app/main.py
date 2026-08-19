@@ -13,7 +13,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
-from app.broker_settlement_day34 import Day34BrokerSettlementManager
+from app.broker_settlement_canonical import CanonicalBrokerSettlementManager
 from app.config import get_settings
 from app.day26_code_acceptance import run_day26_code_acceptance_probe
 from app.day27_code_acceptance import run_day27_code_acceptance_probe
@@ -32,7 +32,7 @@ from app.mt5_recovery import (
     reencrypt_existing_metaapi_token,
     verify_existing_metaapi_token,
 )
-from app.performance_ledger_day33_v2 import Day33PerformanceLedgerServiceV2
+from app.performance_runtime import CanonicalPerformanceRuntimeService as CanonicalPerformanceLedgerService
 from app.production_listener import build_production_listener_manager
 from app.publisher_config import get_publisher_settings
 from app.push_notifications_day34 import Day34PushNotificationManager
@@ -64,7 +64,7 @@ from app.routes.telegram_sources import (
 from app.routes.user_mt5_accounts import router as user_mt5_accounts_router
 from app.telegram_crypto import TelegramSessionCipher
 from app.telegram_listener import TelegramListenerManager
-from app.telegram_publisher_day34_cutover import Day34CutoverTelegramPublisherManager
+from app.telegram_publisher_canonical import CanonicalTelegramPublisherManager
 
 logger = logging.getLogger(__name__)
 
@@ -159,7 +159,7 @@ async def _lifespan(application: FastAPI) -> AsyncIterator[None]:
     broker_keys = tuple(value.strip() for value in broker_key_value.split(",") if value.strip())
     mt5_connection_manager: Mt5ConnectionManager | None = None
     mt5_bootstrap_task: asyncio.Task[None] | None = None
-    day34_settlement_manager: Day34BrokerSettlementManager | None = None
+    day34_settlement_manager: CanonicalBrokerSettlementManager | None = None
     day34_live_acceptance_task: asyncio.Task[None] | None = None
     if broker_keys:
         broker_cipher = MetaApiTokenCipher(broker_keys)
@@ -171,7 +171,7 @@ async def _lifespan(application: FastAPI) -> AsyncIterator[None]:
         )
         application.state.mt5_connection_service = mt5_connection_service
 
-        day33_performance_service = Day33PerformanceLedgerServiceV2(
+        day33_performance_service = CanonicalPerformanceLedgerService(
             session_factory=session_factory,
             cipher=broker_cipher,
             gateway=MetaApiReadGateway(),
@@ -189,7 +189,7 @@ async def _lifespan(application: FastAPI) -> AsyncIterator[None]:
                         os.getenv("SUPER_SIGNALS_DAY34_SETTLEMENT_POLL_SECONDS", "15").strip()
                         or "15"
                     )
-                    day34_settlement_manager = Day34BrokerSettlementManager(
+                    day34_settlement_manager = CanonicalBrokerSettlementManager(
                         session_factory=session_factory,
                         performance_service=day33_performance_service,
                         reference_user_id=day34_reference_user_id,
@@ -283,7 +283,7 @@ async def _lifespan(application: FastAPI) -> AsyncIterator[None]:
         publisher_settings.enabled and publisher_settings.destination_chat_id is not None
     )
 
-    publisher = Day34CutoverTelegramPublisherManager(
+    publisher = CanonicalTelegramPublisherManager(
         session_factory=session_factory,
         enabled=publisher_settings.enabled,
         bot_token=publisher_settings.bot_token,
@@ -375,19 +375,9 @@ def _mount_web_application(application: FastAPI) -> None:
 def _configure_logging() -> None:
     """Make the application's own diagnostics visible in the platform log.
 
-    Nothing configured the root logger, so every module-level logger inherited
-    the default WARNING threshold. Python's lastResort handler still leaked
-    warnings and errors to stderr, which is why failures were visible while
-    every successful-path logger.info was silently dropped -- including the MT5
-    startup reconciliation result, the Telegram reader listening confirmation
-    and the stale-gap "evidence only" notice that proves the no-replay rule is
-    working. Operators could see that something broke but never that anything
-    worked.
-
-    Uvicorn configures its own loggers with propagate disabled, so adding a
-    root handler here does not duplicate access or server lines. Every existing
-    call site already logs sanitized values only; this changes visibility, not
-    content.
+    Uvicorn configures its own loggers with propagate disabled, so adding a root handler
+    here does not duplicate access/server lines. Existing call sites log sanitized
+    values only; this changes visibility, not content.
     """
     level_name = os.getenv("SUPER_SIGNALS_LOG_LEVEL", "INFO").strip().upper()
     level = getattr(logging, level_name, logging.INFO)

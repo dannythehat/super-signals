@@ -17,20 +17,6 @@ def _service(max_age: float = 90.0) -> PaperExecutionPriorityService:
     return service
 
 
-def test_broker_minimum_risk_overrun_is_guidance_not_demo_veto() -> None:
-    sizings = (
-        SimpleNamespace(actual_risk_per_position=Decimal("60")),
-        SimpleNamespace(actual_risk_per_position=Decimal("60")),
-    )
-    PaperExecutionPriorityService._assert_layer_risk_cap(
-        real_balance=Decimal("10000"),
-        risk_percent=Decimal("1"),
-        double_applied=False,
-        sizings=sizings,
-        tp_count=3,
-    )
-
-
 def test_market_layer_uses_current_market_even_after_quote_moves() -> None:
     entries = (
         SimpleNamespace(order_type="market", price=Decimal("4398")),

@@ -2,12 +2,20 @@ from types import SimpleNamespace
 
 import pytest
 
-from app.telegram_entity_recovery import get_messages_with_entity_recovery
+from app.telegram_entity_recovery import read_messages_with_entity_recovery
 
 
 class _Client:
-    def __init__(self, dialogs):
+    def __init__(self, dialogs, *, numeric_error: str | None = None) -> None:
         self._dialogs = dialogs
+        self._numeric_error = numeric_error
+        self.calls = []
+
+    async def get_messages(self, entity, *args, **kwargs):
+        self.calls.append((entity, kwargs))
+        if isinstance(entity, int) and self._numeric_error is not None:
+            raise ValueError(self._numeric_error)
+        return ["message"]
 
     async def iter_dialogs(self):
         for item in self._dialogs:
@@ -20,44 +28,38 @@ class _Client:
 @pytest.mark.asyncio
 async def test_numeric_channel_recovers_input_entity_from_dialog() -> None:
     recovered = object()
-    client = _Client([SimpleNamespace(id=-1002176701424, input_entity=recovered)])
-    calls = []
+    client = _Client(
+        [SimpleNamespace(id=-1002176701424, input_entity=recovered)],
+        numeric_error="cold entity cache",
+    )
 
-    async def original(_client, entity, *args, **kwargs):
-        calls.append((entity, kwargs))
-        if entity == -1002176701424:
-            raise ValueError("cold entity cache")
-        return ["message"]
-
-    result = await get_messages_with_entity_recovery(
+    result = await read_messages_with_entity_recovery(
         client,
-        original,
         -1002176701424,
         limit=25,
     )
     assert result == ["message"]
-    assert calls[0][0] == -1002176701424
-    assert calls[1][0] is recovered
-    assert calls[1][1]["limit"] == 25
+    assert client.calls[0][0] == -1002176701424
+    assert client.calls[1][0] is recovered
+    assert client.calls[1][1]["limit"] == 25
 
 
 @pytest.mark.asyncio
 async def test_non_numeric_entity_error_is_not_hidden() -> None:
-    client = _Client([])
+    class _NamedClient(_Client):
+        async def get_messages(self, entity, *args, **kwargs):
+            raise ValueError("real error")
 
-    async def original(_client, entity, *args, **kwargs):
-        raise ValueError("real error")
-
+    client = _NamedClient([])
     with pytest.raises(ValueError, match="real error"):
-        await get_messages_with_entity_recovery(client, original, "channel-name")
+        await read_messages_with_entity_recovery(client, "channel-name")
 
 
 @pytest.mark.asyncio
 async def test_unknown_numeric_channel_still_fails_closed() -> None:
-    client = _Client([SimpleNamespace(id=-100123, input_entity=object())])
-
-    async def original(_client, entity, *args, **kwargs):
-        raise ValueError("missing channel")
-
+    client = _Client(
+        [SimpleNamespace(id=-100123, input_entity=object())],
+        numeric_error="missing channel",
+    )
     with pytest.raises(ValueError, match="missing channel"):
-        await get_messages_with_entity_recovery(client, original, -1002176701424)
+        await read_messages_with_entity_recovery(client, -1002176701424)

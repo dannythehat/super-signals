@@ -51,8 +51,8 @@ def test_fxt_result_text_closes_hit_tps_before_move_to_entry() -> None:
     )
     result = day27.extract_day27_management_actions(raw)
     assert result.actions == (
-        {"type": "close", "target": "tp1", "value": None},
-        {"type": "close", "target": "tp2", "value": None},
+        {"type": "close", "target": "TP1", "value": None},
+        {"type": "close", "target": "TP2", "value": None},
         {"type": "move_to_break_even", "target": "all", "value": None},
     )
 
@@ -67,8 +67,8 @@ def test_v1_fxt_result_plus_management_overrides_ai_ignore() -> None:
     assert allowed.decision == "trade_update"
     assert allowed.action == "apply_update"
     assert allowed.extracted["management_actions"] == [
-        {"type": "close", "target": "tp1", "value": None},
-        {"type": "close", "target": "tp2", "value": None},
+        {"type": "close", "target": "TP1", "value": None},
+        {"type": "close", "target": "TP2", "value": None},
         {"type": "move_to_break_even", "target": "all", "value": None},
     ]
 

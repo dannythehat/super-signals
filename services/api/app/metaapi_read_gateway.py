@@ -1,4 +1,4 @@
-"""Read-only MetaAPI terminal data gateway for Day 23+ trading gates.
+"""Read-only MetaAPI terminal data gateway for trading gates and reconciliation.
 
 This module exposes account-state, position, open-order, quote, symbol-specification
 and broker-history reads only. There is no trade/order mutation method here.
@@ -24,7 +24,7 @@ DEFAULT_METAAPI_PROVISIONING_URL = (
 
 
 class MetaApiReadGateway:
-    """Small read-only client for MetaAPI terminal and market state."""
+    """Small read-only client for MetaAPI terminal and immutable broker history."""
 
     def __init__(self, *, timeout_seconds: float = 30.0) -> None:
         self._timeout = httpx.Timeout(timeout_seconds)
@@ -81,11 +81,67 @@ class MetaApiReadGateway:
     async def read_orders(
         self, *, token: str, account_id: str, region: str
     ) -> list[dict[str, object]]:
-        """Read currently active terminal orders for Day 27 pending-order cancellation."""
+        """Read currently active terminal orders."""
         payload = await self._read_terminal_json(
             token=token,
             region=region,
             path=f"/users/current/accounts/{account_id}/orders",
+        )
+        if not isinstance(payload, list) or any(not isinstance(item, dict) for item in payload):
+            raise MetaApiGatewayError("metaapi_invalid_response")
+        return payload
+
+    async def read_history_orders_by_ticket(
+        self,
+        *,
+        token: str,
+        account_id: str,
+        region: str,
+        order_id: str,
+    ) -> list[dict[str, object]]:
+        """Read broker-completed order truth for one MT order ticket.
+
+        MetaAPI exposes completed orders separately from currently active orders. This
+        read lets reconciliation distinguish a genuinely cancelled/rejected/expired
+        pending order from a temporarily stale `/orders` snapshot without guessing from
+        absence.
+        """
+        encoded_order = quote(str(order_id), safe="")
+        payload = await self._read_terminal_json(
+            token=token,
+            region=region,
+            path=(
+                f"/users/current/accounts/{account_id}/history-orders/"
+                f"ticket/{encoded_order}"
+            ),
+        )
+        if not isinstance(payload, list) or any(not isinstance(item, dict) for item in payload):
+            raise MetaApiGatewayError("metaapi_invalid_response")
+        return payload
+
+    async def read_history_orders_by_time_range(
+        self,
+        *,
+        token: str,
+        account_id: str,
+        region: str,
+        start_time: datetime,
+        end_time: datetime,
+        offset: int = 0,
+        limit: int = 1000,
+    ) -> list[dict[str, object]]:
+        """Read completed broker orders for a time window."""
+        if offset < 0 or not 1 <= limit <= 1000:
+            raise ValueError("Invalid MetaAPI history pagination.")
+        start = quote(start_time.isoformat().replace("+00:00", "Z"), safe=":-T.Z+")
+        end = quote(end_time.isoformat().replace("+00:00", "Z"), safe=":-T.Z+")
+        payload = await self._read_terminal_json(
+            token=token,
+            region=region,
+            path=(
+                f"/users/current/accounts/{account_id}/history-orders/time/{start}/{end}"
+                f"?offset={offset}&limit={limit}"
+            ),
         )
         if not isinstance(payload, list) or any(not isinstance(item, dict) for item in payload):
             raise MetaApiGatewayError("metaapi_invalid_response")

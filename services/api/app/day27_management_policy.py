@@ -1,9 +1,8 @@
-"""Fail-closed provider follow-up extraction for Day 27.
+"""Canonical fail-closed provider management policy.
 
-The AI supervisor remains responsible for semantic understanding and lifecycle linking.
-This module decides which management instructions are mechanically explicit enough to
-be sent to the broker. It reads only the current provider message: ambient history may
-identify the trade, but may never donate a management action or numeric value.
+OpenAI may identify which trade a provider is talking about, but broker mutations come
+only from mechanically explicit current-message instructions defined here. Ambient
+history may link a trade; it may never donate an action, price, TP index or side.
 """
 
 from __future__ import annotations
@@ -34,6 +33,41 @@ _CLOSE_ALL = re.compile(
     r"\b(?:CLOSE(?:D)?\s+ALL|CLOSE\s+EVERYTHING|OUT\s+AT\s+ENTRY\s+ON\s+THE\s+REST(?:\s+OF\s+(?:MY|THE)\s+POSITION)?|OUT\s+ON\s+THE\s+REST)\b",
     re.IGNORECASE,
 )
+_EXIT_NOW = re.compile(
+    r"\b(?:EXIT|CLOSE)\s+(?:IT|NOW|THE\s+(?:TRADE|POSITIONS?|LOT|BUY|SELL))\b"
+    r"|\bCLOSE\s+(?:(?:OUR|MY|YOUR|THE|THIS)\s+)?(?:TRADE|SETUP|SET\s*UP)\b"
+    r"|\bCLOSE\s+THIS\s+OUT\b"
+    r"|\bCLOSE\s+OUT(?:\s+OVERALL)?\b"
+    r"|\bCLOSING\s+OUT\s+NOW\b"
+    r"|\bGET\s+OUT\s+(?:NOW|OF\s+(?:IT|THE\s+TRADE))\b"
+    r"|\bGO\s+FLAT\b"
+    r"|\bCLOSE\s+(?:YOUR|MY|ALL)?\s*(?:REMAINING|OPEN)\s+(?:TRADES?|POSITIONS?)\b",
+    re.IGNORECASE,
+)
+_OUT_THIS_SETUP = re.compile(
+    r"\b(?:WE\s*(?:['’]RE|ARE)\s+)?OUT\s+(?:OF\s+)?(?:THIS|THE)\s+"
+    r"(?:SET\s*UP|SETUP|TRADE|POSITION)\b",
+    re.IGNORECASE,
+)
+_CLOSE_NOW = re.compile(
+    r"\bCLOSE\b.{0,70}\b(?:TRADE|POSITION|SET\s*UP|SETUP|BUY|SELL)\b.{0,30}\bNOW\b"
+    r"|\bCLOSE\b.{0,30}\bNOW\b",
+    re.IGNORECASE | re.DOTALL,
+)
+_OR_PROTECTIVE_CHOICE = re.compile(
+    r"\bOR\b.{0,100}\b(?:BE|BREAKEVEN|BREAK\s+EVEN|RISK\s*[- ]?FREE)\b",
+    re.IGNORECASE | re.DOTALL,
+)
+_TARGETED_OR_PARTIAL_CLOSE = re.compile(
+    r"\bCLOSE\s+(?:THE\s+)?(?:TP\s*\d+|HALF|PARTIAL(?:LY)?|ONE|FIRST|SECOND|THIRD)\b",
+    re.IGNORECASE,
+)
+_CLOSE_PROFIT = re.compile(
+    r"\bCLOSE\s+(?:THE\s+)?PROFITS?\b"
+    r"|\bCLOSE\s+PROFIT\s+WHEN\s+YOU\s+SEE\s+IT\b"
+    r"|\bTAKE\s+PROFIT\s+WHEN\s+YOU\s+SEE\s+IT\b",
+    re.IGNORECASE,
+)
 _CLOSE_NUMBERED = re.compile(
     r"\bCLOSE\s+(?:YOUR\s+)?(?:TP|POSITION)\s*([1-9]\d*)\b",
     re.IGNORECASE,
@@ -47,12 +81,19 @@ _CLOSE_FIRST_ENTRY = re.compile(
     re.IGNORECASE,
 )
 _CANCEL = re.compile(r"\bCANCEL(?:LED|ED|ING)?\b", re.IGNORECASE)
+_OPEN_EXTRA = re.compile(
+    r"(?im)^\s*OPEN\s+EXTRA\s+(?:GOLD|XAUUSD)\s+(BUYS?|SELLS?)\b"
+)
 
+_NUMERIC_STOP = re.compile(
+    r"\b(?:MOVE|SET|CHANGE|UPDATE|PLACE)\s+"
+    r"(?:ALL\s+)?(?:(?:THE|YOUR|MY|OUR)\s+)?(?:(?:GOLD|XAUUSD)\s+)?"
+    r"(?:SL(?:S)?|STOP\s*LOSS(?:ES)?)\s+(?:BACK\s+)?(?:TO|AT)?\s*"
+    r"(\d+(?:\.\d+)?)\b",
+    re.IGNORECASE,
+)
 _SL_PATTERNS = (
-    re.compile(
-        r"\b(?:MOVE|SET|CHANGE|UPDATE)\s+(?:THE\s+)?(?:SL|STOP\s*LOSS)\s*(?:TO|AT)?\s*(\d+(?:\.\d+)?)\b",
-        re.IGNORECASE,
-    ),
+    _NUMERIC_STOP,
     re.compile(
         r"\b(?:SL|STOP\s*LOSS)\s+(?:IS\s+)?SET\s+TO\s+BE\s+AT\s+(\d+(?:\.\d+)?)\b",
         re.IGNORECASE,
@@ -62,10 +103,8 @@ _SL_PATTERNS = (
         r"\bUSE\s+(\d+(?:\.\d+)?)\s+AS\s+(?:AN?\s+)?(?:SL|STOP\s*LOSS)\b",
         re.IGNORECASE,
     ),
-    # TDC dialect, observed live: "+20 / RISK FREE 4324" means move the stop to
-    # 4324. The price is explicit, so it must win over a generic breakeven.
     re.compile(
-        r"\bRISK\s*[- ]?FREE\s+(?:AT\s+|@\s*)?(\d+(?:\.\d+)?)\b",
+        r"\bRISK\s*[- ]?FREE+\s+(?:AT\s+|@\s*)?(\d+(?:\.\d+)?)\b",
         re.IGNORECASE,
     ),
 )
@@ -74,85 +113,47 @@ _TP_CHANGE = re.compile(
     re.IGNORECASE,
 )
 _MOVE_BE = re.compile(
-    r"\b(?:MOVE|SET)\s+(?:THE\s+)?(?:SL|STOP\s*LOSS)\s+TO\s+(?:BE|BREAKEVEN|BREAK\s+EVEN)\b"
-    # Observed GTMO/David dialects: "set breakeven now", "set fully breakeven",
-    # "Set Break Even". A leading MOVE/SET makes this an instruction; result-only
-    # wording such as "I'm at BE" is still protected by _RESULT_BE below.
+    r"\b(?:MOVE|SET|PUT)\s+(?:ALL\s+)?(?:(?:THE|YOUR|MY|OUR)\s+)?"
+    r"(?:(?:GOLD|XAUUSD)\s+)?(?:SL(?:S)?|STOP\s*LOSS(?:ES)?|STOP|STOPS)\s+"
+    r"(?:BACK\s+)?(?:TO|AT)\s+(?:ENTRY|BE|BREAKEVEN|BREAK\s+EVEN)\b"
     r"|\b(?:MOVE|SET)\s+(?:TO\s+)?(?:FULLY\s+)?(?:BE|BREAKEVEN|BREAK\s+EVEN)\b"
     r"|^\s*(?:BE|BREAKEVEN|BREAK\s+EVEN)\s+NOW\s*[.!✅🔥]*\s*$"
     r"|\bBREAKEVEN\s+SET\b"
     r"|\bMAKE\s+(?:(?:YOUR|MY|THE)\s+)?(?:TRADE|SETUP|SET\s*UP|POSITION)\s+(?:OVERALL\s+)?RISK\s*[- ]?FREE\b"
     r"|\bI\s+WILL\s+MAKE\s+(?:MY|THE)\s+TRADE\s+RISK\s*[- ]?FREE\s+NOW\b"
-    # Owner rule: protective wording moves the stop to breakeven.
-    r"|\b(?:MOVE|SET|PUT)\s+(?:THE\s+)?(?:SL|STOP\s*LOSS|STOP|STOPS)\s+(?:TO|AT)\s+ENTRY\b"
     r"|\b(?:LOCK|LOCKING)\s+IN\s+(?:SOME\s+|THE\s+)?PROFITS?\b"
     r"|\b(?:SECURE|PROTECT)\s+(?:SOME\s+|THE\s+|YOUR\s+)?PROFITS?\b"
     r"|\bRISK\s*[- ]?FREE\s+(?:IT|NOW|THE\s+TRADE)\b",
     re.IGNORECASE,
 )
-
-# Partial-taking wording. Deliberately requires a partial sense: a bare "close"
-# must not land here, and "close all" is matched earlier and wins.
+_TP_HIT = re.compile(
+    r"\bTP\s*(\d+)\b"
+    r"(?:\s*(?:&|AND|,)\s*(?:TP\s*)?(\d+)\b)?"
+    r"(?:\s*(?:&|AND|,)\s*(?:TP\s*)?(\d+)\b)?"
+    r"\s*(?:ARE\s+)?(?:BOTH\s+|ALL\s+)?HIT\b",
+    re.IGNORECASE,
+)
 _TAKE_PARTIALS = re.compile(
     r"\b(?:TAKE|BOOK)\s+(?:SOME\s+|YOUR\s+|THE\s+|MAXIMUM\s+)?(?:PARTIALS?|PARTIALLY\s+PROFITS?|MORES?|PROFITS?)\b"
-    r"|\bBOOK\s+PARTIAL\b"
-    r"|\bTAKE\s+PARTIAL\s+PROFITS?\b"
-    # SureShot's observed command is "XAUUSD CLOSE PARTIAL ...".
-    r"|\bCLOSE\s+PARTIALS?\b"
+    r"|\bBOOK\s+PARTIAL\b|\bTAKE\s+PARTIAL\s+PROFITS?\b|\bCLOSE\s+PARTIALS?\b"
     r"|\b(?:CLOSE|BANK|SECURE|TAKE)\s+(?:OFF\s+)?HALF\b"
     r"|\bCLOSE\s+(?:SOME|A\s+PORTION)\s+(?:OF\s+)?(?:IT|THE\s+(?:TRADE|POSITIONS?))?\b"
     r"|\bBANK\s+(?:SOME|PART)\s+(?:OF\s+)?(?:IT|THE\s+PROFITS?)\b",
     re.IGNORECASE,
 )
-
-# Statements of future intent are not instructions. "At TP2 I'll close half" tells
-# you what the provider plans to do later; acting on it closes a leg now, against a
-# message that instructed nothing. This guard is why partial wording alone is never
-# enough to act on.
 _FUTURE_INTENT = re.compile(
-    r"\b(?:I|WE)\s*(?:['’]LL|WILL)\b"
-    r"|\bGOING\s+TO\b"
-    r"|\bAT\s+TP\s*\d"
+    r"\b(?:I|WE)\s*(?:['’]LL|WILL)\b|\bGOING\s+TO\b|\bAT\s+TP\s*\d"
     r"|\b(?:WHEN|ONCE)\s+(?:IT|PRICE|WE|TP\s*\d)",
     re.IGNORECASE,
 )
-
-# A future trigger must never be promoted into an immediate protective broker action.
-# Keep this narrower than _FUTURE_INTENT so an explicit current instruction such as
-# "I will make my trade risk free now" remains executable, while "At TP2 ... set
-# breakeven" and "when price reaches ... move to BE" remain evidence only.
 _FUTURE_CONDITIONAL_BE = re.compile(
     r"\bAT\s+TP\s*\d\b.*\b(?:BE|BREAKEVEN|BREAK\s+EVEN|RISK\s*[- ]?FREE)\b"
     r"|\b(?:WHEN|ONCE)\b.*\b(?:BE|BREAKEVEN|BREAK\s+EVEN|RISK\s*[- ]?FREE)\b",
     re.IGNORECASE | re.DOTALL,
 )
-
-# Exit wording that means "get out of the trade" without relying on one exact
-# provider dialect. These are imperative/current-action forms only. Past-result
-# wording such as "all positions closed" or "I've closed out" deliberately does not
-# match, so broker truth remains the authority for provider result statements.
-_EXIT_NOW = re.compile(
-    r"\b(?:EXIT|CLOSE)\s+(?:IT|NOW|THE\s+(?:TRADE|POSITIONS?|LOT|BUY|SELL))\b"
-    r"|\bCLOSE\s+(?:(?:OUR|MY|YOUR|THE|THIS)\s+)?(?:TRADE|SETUP|SET\s*UP)\b"
-    r"|\bCLOSE\s+THIS\s+OUT\b"
-    r"|\bCLOSE\s+OUT(?:\s+OVERALL)?\b"
-    r"|\bCLOSING\s+OUT\s+NOW\b"
-    r"|\bGET\s+OUT\s+(?:NOW|OF\s+(?:IT|THE\s+TRADE))\b"
-    r"|\bGO\s+FLAT\b"
-    r"|\bCLOSE\s+(?:YOUR|MY|ALL)?\s*(?:REMAINING|OPEN)\s+(?:TRADES?|POSITIONS?)\b",
-    re.IGNORECASE,
-)
-
-# Optional wording that still concerns protecting an open trade. The Owner's rule is
-# that ambiguity here resolves to the cautious action rather than to doing nothing:
-# moving the stop to breakeven removes downside while leaving a winner running.
-# Deliberately narrow: it requires a breakeven/risk-free/profit-protection outcome to
-# be named. Optional wording about ENTERING a trade is never made executable by this.
 _OPTIONAL_PROTECTIVE = re.compile(
-    r"\b(?:BE|BREAKEVEN|BREAK\s+EVEN)\b"
-    r"|\bRISK\s*[- ]?FREE\b"
-    r"|\b(?:LOCK|LOCKING)\s+IN\b"
-    r"|\b(?:SECURE|PROTECT)\s+(?:SOME\s+|THE\s+|YOUR\s+)?PROFITS?\b",
+    r"\b(?:BE|BREAKEVEN|BREAK\s+EVEN)\b|\bRISK\s*[- ]?FREE\b"
+    r"|\b(?:LOCK|LOCKING)\s+IN\b|\b(?:SECURE|PROTECT)\s+(?:SOME\s+|THE\s+|YOUR\s+)?PROFITS?\b",
     re.IGNORECASE,
 )
 _OPTIONAL_ENTRY = re.compile(
@@ -183,13 +184,23 @@ def _dedupe(actions: list[dict[str, str | None]]) -> tuple[dict[str, str | None]
     return tuple(result)
 
 
+def _decisive_close(text: str) -> bool:
+    if _OUT_THIS_SETUP.search(text):
+        return True
+    if _TARGETED_OR_PARTIAL_CLOSE.search(text):
+        return False
+    return _CLOSE_NOW.search(text) is not None and _OR_PROTECTIVE_CHOICE.search(text) is None
+
+
 def _extract_actions(text: str) -> list[dict[str, str | None]]:
-    """Pull every mechanically explicit management action out of one message."""
     actions: list[dict[str, str | None]] = []
 
-    # Close actions are first because a combined message such as "close TP1 and move
-    # SL to BE" must close the intended leg before modifying the surviving positions.
-    if _CLOSE_ALL.search(text) or _EXIT_NOW.search(text):
+    # Profit-qualified language is never an unconditional close. The management
+    # executor must inspect current broker floating P/L and close only profitable
+    # mapped positions.
+    if _CLOSE_PROFIT.search(text):
+        actions.append({"type": "close", "target": "profitable_only", "value": None})
+    elif _CLOSE_ALL.search(text) or _EXIT_NOW.search(text) or _decisive_close(text):
         actions.append({"type": "close", "target": "all", "value": None})
     else:
         for match in _CLOSE_NUMBERED.finditer(text):
@@ -197,16 +208,8 @@ def _extract_actions(text: str) -> list[dict[str, str | None]]:
         if _CLOSE_FIRST_POSITION.search(text) or (
             _TAKE_PARTIALS.search(text) and not _FUTURE_INTENT.search(text)
         ):
-            # Owner reading, 14 Aug 2026: "take partials" and "close half" are written
-            # for followers holding a single position, and mean bank some now and let
-            # the rest run. Super Signals opens one position per TP level, so the
-            # equivalent is closing the nearest leg and leaving the others open. That
-            # needs no partial-volume close: it is the same action as "close your
-            # first position", which providers already say.
             actions.append({"type": "close", "target": "TP1", "value": None})
         if _CLOSE_FIRST_ENTRY.search(text):
-            # Day 26 V1 opens only one supported entry layer. Keep the semantic target
-            # distinct so future layered-entry support does not silently change this rule.
             actions.append({"type": "close", "target": "entry_1", "value": None})
 
     numeric_sl_found = False
@@ -220,79 +223,85 @@ def _extract_actions(text: str) -> list[dict[str, str | None]]:
     for match in _TP_CHANGE.finditer(text):
         value = _price(match.group(2))
         if value is not None:
-            actions.append(
-                {"type": "edit_take_profit", "target": f"TP{match.group(1)}", "value": value}
-            )
+            actions.append({"type": "edit_take_profit", "target": f"TP{match.group(1)}", "value": value})
 
-    if (
-        not numeric_sl_found
-        and _MOVE_BE.search(text)
-        and not _FUTURE_CONDITIONAL_BE.search(text)
-    ):
+    protective = numeric_sl_found or bool(
+        _MOVE_BE.search(text) and not _FUTURE_CONDITIONAL_BE.search(text)
+    )
+    if not numeric_sl_found and protective:
         actions.append({"type": "move_to_break_even", "target": "all", "value": None})
+
+    # A provider result such as "TP1 HIT" is evidence only by itself. In the same
+    # message as an explicit protective instruction it becomes a compound management
+    # command: resolve the named TP legs first, then protect what remains.
+    if protective:
+        tp_actions: list[dict[str, str | None]] = []
+        for match in _TP_HIT.finditer(text):
+            for raw_index in match.groups():
+                if raw_index:
+                    tp_actions.append({"type": "close", "target": f"TP{int(raw_index)}", "value": None})
+        if tp_actions:
+            actions = tp_actions + actions
 
     if _CANCEL.search(text):
         actions.append({"type": "cancel_pending", "target": "all", "value": None})
+
+    add = _OPEN_EXTRA.search(text)
+    if add is not None:
+        word = add.group(1).upper()
+        side = "BUY" if word.startswith("BUY") else "SELL"
+        actions.append({"type": "add_market", "target": "same_trade", "value": side})
+
     return actions
 
 
 def extract_day27_management_actions(raw_text: str) -> Day27ManagementPolicyResult:
-    """Extract mechanically explicit Day 27 broker-management actions.
-
-    Optional/choice language is deliberately ignored rather than converted into a
-    broker action. Provider result statements such as "I'm at BE" are also evidence,
-    not instructions.
-    """
+    """Extract every mechanically explicit broker-management action from this post."""
     text = (raw_text or "").strip()
     if not text:
         return Day27ManagementPolicyResult((), "unsupported_management")
+    if _RESULT_BE.fullmatch(text):
+        return Day27ManagementPolicyResult((), "provider_result_only")
+
     optional = _OPTIONAL.search(text) is not None
+    actions = _dedupe(_extract_actions(text))
+
     if optional:
-        # An explicit instruction in the same message must survive optional wording.
-        #
-        # Observed live, TIG message 447:
-        #     "Trade is running +40pips from best entry
-        #      Move SL to 4314
-        #      Making Second entry Risk Free if you want team"
-        #
-        # That contains a precise "Move SL to 4314". The optional check used to
-        # return before extraction ran, so the explicit stop was discarded because
-        # a later sentence happened to say "if you want". The Blueprint already
-        # requires the opposite: a combined message such as "TP1 hit, move SL to
-        # 4385" must still produce the explicit action.
-        #
-        # Extract first. Explicit stop, target and breakeven instructions are kept.
-        # Close actions are deliberately dropped here: exiting a trade is not
-        # something to infer from a sentence offering a choice.
+        # Explicit numeric/protective instructions survive optional wording. A decisive
+        # whole-trade close survives only when it was literally commanded now and is
+        # not an OR protective choice. Profit-qualified close retains its qualification.
         explicit = [
             action
-            for action in _extract_actions(text)
+            for action in actions
             if action.get("type") != "close"
+            or action.get("target") == "profitable_only"
+            or _decisive_close(text)
         ]
         if explicit:
             return Day27ManagementPolicyResult(
                 _dedupe(explicit), "explicit_instruction_within_optional_message"
             )
-
-        # Owner rule, 14 Aug 2026: with no explicit instruction to follow, a choice
-        # about protecting an open trade takes the cautious option rather than doing
-        # nothing. Breakeven removes the downside while leaving a winner running.
-        #
-        # Narrow on purpose: only when the optional sentence names a protective
-        # outcome, and never when it concerns entering or adding to a position.
         if _OPTIONAL_PROTECTIVE.search(text) and not _OPTIONAL_ENTRY.search(text):
             return Day27ManagementPolicyResult(
                 ({"type": "move_to_break_even", "target": "all", "value": None},),
                 "optional_protective_resolved_to_breakeven",
             )
         return Day27ManagementPolicyResult((), "optional_management_instruction")
-    if _RESULT_BE.fullmatch(text):
-        return Day27ManagementPolicyResult((), "provider_result_only")
 
-    deduped = _dedupe(_extract_actions(text))
-    if not deduped:
+    if not actions:
         return Day27ManagementPolicyResult((), "unsupported_management")
-    return Day27ManagementPolicyResult(deduped, "day27_explicit_management")
+    if any(action.get("type") == "add_market" for action in actions):
+        return Day27ManagementPolicyResult(actions, "explicit_active_trade_add_entry")
+    if any(action.get("target") == "profitable_only" for action in actions):
+        return Day27ManagementPolicyResult(actions, "profit_qualified_close")
+    if _OUT_THIS_SETUP.search(text) or _decisive_close(text):
+        return Day27ManagementPolicyResult(actions, "explicit_literal_close")
+    if protective := any(
+        action.get("type") in {"edit_stop_loss", "move_to_break_even"} for action in actions
+    ):
+        if protective and _TP_HIT.search(text):
+            return Day27ManagementPolicyResult(actions, "compound_tp_hit_and_protect")
+    return Day27ManagementPolicyResult(actions, "day27_explicit_management")
 
 
 __all__ = ["Day27ManagementPolicyResult", "extract_day27_management_actions"]

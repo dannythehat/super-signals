@@ -75,8 +75,6 @@ class _FakeDay23:
         assert owner_user_id == OWNER
         return _live_state()
 
-    # Delegate to the real side-selection rule rather than reimplementing it, so
-    # this stand-in cannot drift from the executable-price contract under test.
     executable_price = Day23Mt5ReadService.executable_price
 
 
@@ -94,6 +92,9 @@ class _ReadGateway:
 
     async def read_positions(self, **_: object) -> list[dict[str, object]]:
         return list(self.positions)
+
+    async def read_orders(self, **_: object) -> list[dict[str, object]]:
+        return []
 
 
 class _MarginGateway:

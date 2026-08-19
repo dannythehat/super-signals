@@ -1,10 +1,14 @@
-"""Fail-closed Super Signals message policy.
+"""Canonical fail-closed Super Signals message policy.
 
-The OpenAI supervisor may understand provider grammar using bounded same-source context,
-but this module is the final mechanical contract for what may progress to execution.
-Only values literally present in the current Telegram message are allowed to satisfy a
-new-trade execution gate. Explicit broker pending orders and explicitly declared entry
-layers are supported; ambiguous or implicit layering still fails closed.
+OpenAI may understand provider grammar using bounded same-source context, but this
+module is the final mechanical contract for execution. Trade numbers must come from
+the current Telegram message. A tightly-scoped source profile may supply only a known
+instrument identity for a dedicated Gold/XAUUSD provider; it can never donate entry,
+SL, TP, order type or size.
+
+The only exception to provider-supplied SL/TP is the exact standalone Gold/XAUUSD NOW
+product profile. That whole-message command carries no invented provider prices in the
+canonical Signal; broker protection is derived later by the execution engine.
 """
 
 from __future__ import annotations
@@ -15,17 +19,16 @@ from decimal import Decimal, InvalidOperation
 from typing import Any
 
 from app.ai_message_supervisor import AiMessageDecision
-from app.critical_entry_policy import (
-    augment_management_actions,
-    envelope,
-    parse_critical_entries,
-)
+from app.bare_gold_now_policy import PROFILE as BARE_NOW_PROFILE, bare_now_side
+from app.critical_entry_policy import augment_management_actions, envelope, parse_critical_entries
 from app.day27_management_policy import extract_day27_management_actions
 
 _NUMBER_TOKEN = re.compile(r"(?<![A-Za-z0-9_.])\d+(?:\.\d+)?(?![A-Za-z0-9_.])")
 _INSTRUMENT = re.compile(r"\b(?:XAUUSD|GOLD)\b", re.IGNORECASE)
 _BUY = re.compile(r"\bBUY(?:S|ING)?\b", re.IGNORECASE)
-_SELL = re.compile(r"\bSELL(?:S|ING)?\b", re.IGNORECASE)
+# Observed TGC spellings are mechanical side evidence only. They do not donate an
+# instrument or any price, SL, TP, size or order type.
+_SELL = re.compile(r"\b(?:SELL(?:S|ING)?|SELING|SELLIMG)\b", re.IGNORECASE)
 _PENDING = re.compile(r"\b(?:BUY|SELL)\s+(?:LIMITS?|STOPS?)\b|\bPENDING\b", re.IGNORECASE)
 _OPEN_TARGET = re.compile(
     r"\b(?:TP\s*\d*\s*[:=@-]?\s*OPEN|TP\s+OPEN|RUNNER|LEAVE\s+(?:IT\s+)?OPEN)\b",
@@ -41,10 +44,8 @@ _RESULT_ONLY = re.compile(
     re.IGNORECASE,
 )
 
-# Some providers construct one trade in-place. TIG may post a terse activation and then
-# expand it into the structured setup. TDC repeatedly posts "Buy Gold Now" plus a range,
-# then adds TP/SL lines over several edits. An edit may create the first canonical signal
-# only when the immediately previous revision already proves the same trade intent.
+_XAUUSD_SOURCE_PROFILES = {"tgc_xauusd", "tdc_xauusd"}
+
 _ACTIVATION_STUB = re.compile(
     r"(?is)^\s*(?:🔴|🟢|🔥|⚡|✅|🚨|\s)*"
     r"(BUY|SELL)\s+(?:XAUUSD|GOLD)\b"
@@ -73,19 +74,21 @@ def _literal_numbers(raw_text: str) -> set[Decimal]:
     return values
 
 
+def _profile_supplies_xauusd(source_profile: str | None) -> bool:
+    return str(source_profile or "").strip().lower() in _XAUUSD_SOURCE_PROFILES
+
+
 def _same_trade_progressive_edit(
     previous_text: str | None,
     *,
     side: str,
     entry_low: Decimal | None,
     entry_high: Decimal | None,
+    source_profile: str | None,
 ) -> bool:
-    """Prove that an edited setup is continuation of the immediately prior trade post."""
     if not previous_text or side not in {"BUY", "SELL"}:
         return False
     previous = previous_text.strip()
-
-    # Preserve the already-approved TIG terse-activation completion path.
     stub = _ACTIVATION_STUB.fullmatch(previous)
     if stub is not None:
         if stub.group(1).upper() != side:
@@ -93,12 +96,7 @@ def _same_trade_progressive_edit(
         stub_price = _decimal(stub.group(2))
         current_entries = {value for value in (entry_low, entry_high) if value is not None}
         return stub_price is not None and stub_price in current_entries
-
-    # TDC and similar progressive builders: the previous revision must already contain
-    # the same unambiguous side + Gold/XAUUSD intent and at least one of the current
-    # entry-zone endpoints. This prevents unrelated chatter/preparation from becoming a
-    # trade merely because a later edit happens to be complete.
-    if _INSTRUMENT.search(previous) is None:
+    if _INSTRUMENT.search(previous) is None and not _profile_supplies_xauusd(source_profile):
         return False
     previous_has_buy = _BUY.search(previous) is not None
     previous_has_sell = _SELL.search(previous) is not None
@@ -158,6 +156,8 @@ def _normalise_trade_values(
     extracted = dict(decision.extracted)
     entry_low = _decimal(extracted.get("entry_low"))
     entry_high = _decimal(extracted.get("entry_high"))
+    if entry_low is not None and entry_high is not None and entry_low > entry_high:
+        entry_low, entry_high = entry_high, entry_low
     stop_loss = _decimal(extracted.get("stop_loss"))
     take_profits = tuple(
         parsed
@@ -167,6 +167,16 @@ def _normalise_trade_values(
     extracted["tp_open"] = bool(_OPEN_TARGET.search(raw_text))
     extracted["double_lot"] = bool(_DOUBLE_SIZE.search(raw_text))
     return extracted, entry_low, entry_high, stop_loss, take_profits
+
+
+def _ordered_targets(side: str, targets: tuple[Decimal, ...]) -> bool:
+    if not targets:
+        return False
+    if side == "BUY":
+        return all(right > left for left, right in zip(targets, targets[1:]))
+    if side == "SELL":
+        return all(right < left for left, right in zip(targets, targets[1:]))
+    return False
 
 
 def _directionally_valid(
@@ -182,12 +192,12 @@ def _directionally_valid(
         return (
             stop_loss < entry_low
             and all(target > entry_high for target in take_profits)
-            and all(right > left for left, right in zip(take_profits, take_profits[1:]))
+            and _ordered_targets(side, take_profits)
         )
     return (
         stop_loss > entry_high
         and all(target < entry_low for target in take_profits)
-        and all(right < left for left, right in zip(take_profits, take_profits[1:]))
+        and _ordered_targets(side, take_profits)
     )
 
 
@@ -199,28 +209,43 @@ def apply_v1_message_policy(
     original_has_signal: bool | None = None,
     previous_text: str | None = None,
 ) -> AiMessageDecision:
-    """Return the mechanically allowed decision.
-
-    Context can help the AI classify semantics, but cannot donate trade numbers. The
-    current message alone must contain instrument, side, entry structure, SL and at
-    least one numeric TP. Pending orders require an explicit LIMIT/STOP family. Entry
-    layering requires explicit prices in a mechanically proven provider structure.
-
-    A first trade completed by edit is allowed only when the caller explicitly proves
-    that no canonical signal exists yet and the immediately previous revision already
-    proves the same trade intent. The current edited message must still pass every
-    normal literal and directional gate below.
-    """
+    """Return the mechanically allowed decision."""
     text = raw_text or ""
 
     if decision.decision == "new_trade":
+        exact_bare_side = bare_now_side(text)
+        if exact_bare_side is not None:
+            if is_edit:
+                return _skip(decision, "bare_gold_now_edit_not_executable")
+            extracted = dict(decision.extracted or {})
+            extracted.update(
+                {
+                    "symbol": "XAUUSD",
+                    "side": exact_bare_side,
+                    "order_type": "market",
+                    "entry_low": None,
+                    "entry_high": None,
+                    "stop_loss": None,
+                    "take_profits": [],
+                    "double_lot": False,
+                    "tp_open": False,
+                    "execution_profile": BARE_NOW_PROFILE,
+                }
+            )
+            return replace(
+                decision,
+                decision="new_trade",
+                action="execute",
+                reason=BARE_NOW_PROFILE,
+                extracted=extracted,
+            )
+
         extracted, entry_low, entry_high, stop_loss, take_profits = _normalise_trade_values(
             decision, text
         )
         side = str(extracted.get("side") or "").strip().upper()
+        source_profile = str(extracted.get("source_profile") or "").strip().lower() or None
 
-        # Preserve the historical public contract: if the caller cannot prove signal
-        # state, or the edit is not a genuine text progression, it cannot create a trade.
         if is_edit and original_has_signal is None:
             return _skip(decision, "edit_cannot_create_first_trade", extracted)
         edit_completed_first_trade = is_edit and original_has_signal is False
@@ -232,10 +257,11 @@ def apply_v1_message_policy(
                 side=side,
                 entry_low=entry_low,
                 entry_high=entry_high,
+                source_profile=source_profile,
             ):
                 return _skip(decision, "edit_cannot_create_first_trade", extracted)
 
-        if _INSTRUMENT.search(text) is None:
+        if _INSTRUMENT.search(text) is None and not _profile_supplies_xauusd(source_profile):
             return _skip(decision, "missing_instrument", extracted)
 
         has_buy = _BUY.search(text) is not None
@@ -247,20 +273,31 @@ def apply_v1_message_policy(
         if side not in {"BUY", "SELL"} or has_buy == has_sell:
             return _skip(decision, "missing_side", extracted)
 
-        try:
-            critical_entries = parse_critical_entries(
-                text,
-                side=side,
-                entry_low=entry_low,
-                entry_high=entry_high,
-            )
-        except ValueError as exc:
-            return _skip(decision, str(exc), extracted)
+        no_entry_market = (
+            entry_low is None
+            and entry_high is None
+            and _PENDING.search(text) is None
+        )
+        if (entry_low is None) != (entry_high is None):
+            return _skip(decision, "signal_entry_invalid", extracted)
+
+        if no_entry_market:
+            critical_entries = ()
+        else:
+            try:
+                critical_entries = parse_critical_entries(
+                    text,
+                    side=side,
+                    entry_low=entry_low,
+                    entry_high=entry_high,
+                )
+            except ValueError as exc:
+                return _skip(decision, str(exc), extracted)
 
         if critical_entries:
             plan_low, plan_high = envelope(critical_entries)
-            entry_low = plan_low
-            entry_high = plan_high
+            if entry_low is None or entry_high is None:
+                entry_low, entry_high = plan_low, plan_high
             extracted["entry_plan"] = [
                 {
                     "entry_index": item.entry_index,
@@ -271,26 +308,54 @@ def apply_v1_message_policy(
             ]
             all_pending = all(item.order_type != "market" for item in critical_entries)
             extracted["order_type"] = "pending" if all_pending else "market"
-        elif _PENDING.search(text) or str(extracted.get("order_type") or "").lower() == "pending":
+        elif _PENDING.search(text):
             return _skip(decision, "pending_order_type_ambiguous", extracted)
+        elif str(extracted.get("order_type") or "").strip().lower() == "pending":
+            extracted["order_type"] = "market"
 
-        if entry_low is None or entry_high is None:
-            return _skip(decision, "missing_entry", extracted)
         if stop_loss is None:
             return _skip(decision, "missing_sl", extracted)
         if not take_profits:
             return _skip(decision, "missing_tp", extracted)
 
         literals = _literal_numbers(text)
+        if no_entry_market:
+            required = {
+                stop_loss.normalize(),
+                *(value.normalize() for value in take_profits),
+            }
+            if not required.issubset(literals):
+                return _skip(decision, "literal_value_verification_failed", extracted)
+            if not _ordered_targets(side, take_profits):
+                return _skip(decision, "strict_directional_validation_failed", extracted)
+            extracted.update(
+                {
+                    "symbol": "XAUUSD",
+                    "side": side,
+                    "order_type": "market",
+                    "entry_low": None,
+                    "entry_high": None,
+                    "stop_loss": str(stop_loss),
+                    "take_profits": [str(value) for value in take_profits],
+                }
+            )
+            return replace(
+                decision,
+                decision="new_trade",
+                action="execute",
+                reason="v1_complete_market_signal_live_entry",
+                extracted=extracted,
+            )
+
+        if entry_low is None or entry_high is None:
+            return _skip(decision, "missing_entry", extracted)
+
         required = {
             entry_low.normalize(),
             entry_high.normalize(),
             stop_loss.normalize(),
             *(value.normalize() for value in take_profits),
         }
-        # Intermediate TDC grid prices are mechanically derived from the two literal
-        # zone endpoints. They are allowed only because parse_critical_entries proved
-        # the exact HIGH RISK template; they are not required to appear as extra text.
         plan = extracted.get("entry_plan") or []
         literal_plan_prices = [
             _decimal(item.get("price"))
@@ -303,7 +368,6 @@ def apply_v1_message_policy(
                     required.add(parsed.normalize())
         if not required.issubset(literals):
             return _skip(decision, "literal_value_verification_failed", extracted)
-
         if not _directionally_valid(side, entry_low, entry_high, stop_loss, take_profits):
             return _skip(decision, "strict_directional_validation_failed", extracted)
 
@@ -331,7 +395,6 @@ def apply_v1_message_policy(
             reason = "v1_complete_exact_signal"
         if edit_completed_first_trade:
             reason = f"{reason}_from_structured_edit"
-
         return replace(
             decision,
             decision="new_trade",
@@ -366,10 +429,8 @@ def apply_v1_message_policy(
                 ),
                 extracted=extracted,
             )
-
         if policy.reason in {"optional_management_instruction", "provider_result_only"}:
             return _ignore_update(decision, policy.reason)
-
         if _RESULT_ONLY.search(text):
             return _ignore_update(decision, "provider_result_only")
         return _ignore_update(decision)

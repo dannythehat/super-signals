@@ -1,8 +1,13 @@
-"""Day 15 conservative Telegram message classification.
+"""Conservative Telegram message classification.
 
-The classifier has three business categories: New Trade, Trade Update and
-Chatter. ``uncertain`` is an internal safety stop, not a fourth business
-category. Day 15 never parses a Signal and never creates a Position or trade.
+The classifier has three business categories: New Trade, Trade Update and Chatter.
+``uncertain`` is an internal safety route to semantic interpretation, not a fourth
+business category. Classification never creates a Signal, Position or broker action.
+
+Observed provider shorthand such as ``I'm buying 4397`` or TGC's ``Im seling 4390``
+is deliberately trade-looking even before SL/TP arrive. Those messages must reach the
+semantic pipeline and may never be discarded as chatter simply because the provider
+omitted the instrument token or misspelled SELLING.
 """
 
 from __future__ import annotations
@@ -30,8 +35,8 @@ class ClassificationResult:
     matched_rules: tuple[str, ...]
 
 
-_DIRECTION_BUY = re.compile(r"\bBUY\b", re.IGNORECASE)
-_DIRECTION_SELL = re.compile(r"\bSELL\b", re.IGNORECASE)
+_DIRECTION_BUY = re.compile(r"\bBUY(?:ING)?\b", re.IGNORECASE)
+_DIRECTION_SELL = re.compile(r"\b(?:SELL(?:S|ING)?|SELING|SELLIMG)\b", re.IGNORECASE)
 _INSTRUMENT = re.compile(
     r"\b(?:"
     r"XAUUSD|XAGUSD|GOLD|SILVER|"
@@ -47,6 +52,13 @@ _ENTRY_MARKER = re.compile(
 _SL_MARKER = re.compile(r"\b(?:SL|STOP\s*LOSS)\b", re.IGNORECASE)
 _TP_MARKER = re.compile(r"\b(?:TP\s*\d*|TAKE\s*PROFIT)\b", re.IGNORECASE)
 _NUMBER = re.compile(r"(?<![A-Z])\d+(?:[.,]\d+)?", re.IGNORECASE)
+_PRESENT_TENSE_NUMERIC_ENTRY = re.compile(
+    r"\b(?:I\s*['’]?\s*M|I\s+AM)\s+"
+    r"(?:BUYING|SELLING|SELING|SELLIMG)\b"
+    r"(?:\s+(?:NOW|IF\s+WE\s+TAP(?:\s+IT)?))?"
+    r"[^\d]{0,24}\d+(?:[.,]\d+)?\b",
+    re.IGNORECASE,
+)
 
 _UPDATE_RULES: tuple[tuple[str, re.Pattern[str]], ...] = (
     ("move_stop", re.compile(r"\bMOVE\s+(?:SL|STOP(?:\s+LOSS)?)\b", re.IGNORECASE)),
@@ -149,12 +161,11 @@ def classify_message(
     has_sl = bool(_SL_MARKER.search(normalised))
     has_tp = bool(_TP_MARKER.search(normalised))
     number_count = len(_NUMBER.findall(normalised))
+    present_tense_numeric_entry = bool(_PRESENT_TENSE_NUMERIC_ENTRY.search(normalised))
 
     update_rules = tuple(name for name, pattern in _UPDATE_RULES if pattern.search(normalised))
     chatter_rules = tuple(name for name, pattern in _CHATTER_RULES if pattern.search(normalised))
 
-    # A reply that contains explicit management vocabulary is stronger evidence
-    # of an update, but reply identity by itself never forces classification.
     reply_update_hint = bool(
         reply_to_message_id is not None
         and re.search(
@@ -221,8 +232,18 @@ def classify_message(
             matched_rules=tuple(rules),
         )
 
-    # Trade-looking but incomplete text must stop rather than being guessed as a
-    # new trade. Generic market opinion without trade structure remains chatter.
+    # Present-tense numeric entry language is a provider action candidate even when the
+    # post omits the instrument/SL/TP. It must reach the semantic resolver rather than
+    # being irreversibly labelled chatter. The execution gate still requires a complete,
+    # source-valid trade before any broker mutation.
+    if present_tense_numeric_entry:
+        return ClassificationResult(
+            classification="uncertain",
+            decision_status="review",
+            reason="Present-tense numeric BUY/SELL entry must reach semantic interpretation.",
+            matched_rules=("present_tense_numeric_entry",),
+        )
+
     trade_looking = bool(has_direction or has_entry or has_sl or has_tp)
     if trade_looking:
         rules: list[str] = []
@@ -252,7 +273,7 @@ def classify_message(
 
 
 class MessageClassificationService:
-    """Persist append-only Day 15 classification evidence."""
+    """Persist append-only classification evidence."""
 
     def __init__(self, session_factory: sessionmaker[Session]) -> None:
         self._session_factory = session_factory
@@ -313,8 +334,6 @@ class MessageClassificationService:
             return inserted
 
     def backfill_unclassified(self) -> int:
-        """Classify existing undeleted raw evidence after a safe service restart."""
-
         inserted_count = 0
         with self._session_factory() as session:
             messages = session.scalars(

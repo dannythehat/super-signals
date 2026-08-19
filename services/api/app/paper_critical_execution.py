@@ -1,47 +1,48 @@
-"""Critical pending/layer execution for the Vantage DEMO paper-test boundary.
+"""Canonical explicit pending/layer execution shared by paper and future LIVE.
 
-This service extends the proven Day 28 owner executor only for structures that the old
-engine could not represent: explicit broker pending orders and explicit numbered entry
-layers. It is deliberately DEMO-only. Ordinary exact/zone market trades continue down
-the existing Day 28 path unchanged.
+This service owns only broker structure that ordinary atomic MARKET execution cannot
+represent: literal LIMIT/STOP orders and explicit multiple provider entry sections.
 
-Safety invariants:
-* no delayed/chased market entry;
-* pending orders are held broker-side at the provider's exact price;
-* declared entry layers share the existing per-TP risk budget instead of multiplying it;
-* every TP/runner remains a separately mapped tranche;
-* any submission failure triggers best-effort exact-ID compensation (cancel pending,
-  close opened market legs) and never retries a trade order.
+Trading-policy invariants:
+* one atomic provider leg/section receives the selected risk percentage in full;
+* risk is never divided across entry layers and no aggregate account-risk cap is applied;
+* balance is used only to calculate what the selected risk percentage means;
+* local free margin/capacity is never an execution veto; Vantage/MT5 is authoritative;
+* pending orders stay broker-side at the provider's exact literal price and are never
+  chased or converted to market;
+* a fresh market layer uses the current executable quote and is not rejected merely
+  because price moved away from the provider's earlier printed level;
+* any ambiguous/partial broker mutation is reconciled by exact client/order/position ID
+  before compensation and no trade POST is automatically retried.
 """
 
 from __future__ import annotations
 
 import asyncio
-import logging
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from decimal import Decimal
-from typing import Any
 from uuid import UUID, uuid4
 
 from sqlalchemy import text
-from sqlalchemy.orm import Session, sessionmaker
 
 from app.critical_entry_policy import CriticalEntry, parse_critical_entries
-from app.day28_zone_guard import Day28GuardedExecutionService
 from app.metaapi_gateway import MetaApiGatewayError
-from app.mt5_execution_day26 import (
-    Day26ExecutionError,
-    _AccountInput,
-    _SignalInput,
-)
+from app.metaapi_pending_gateway import MetaApiPendingOrderGateway, MetaApiPendingOrderRequest
+from app.mt5_execution_day26 import Day26ExecutionError, _AccountInput, _SignalInput
+from app.mt5_execution_day26_atomic import AtomicDay26Mt5ExecutionService
 from app.mt5_read_service_day23 import Day23Mt5ReadService, Day23ReadError
-from app.paper_pending_gateway import PaperPendingOrderGateway, PaperPendingOrderRequest
 from app.risk_sizing_day24 import Day24RiskSizingResult
 
-logger = logging.getLogger(__name__)
 _VERIFY_ATTEMPTS = 3
 _VERIFY_DELAY_SECONDS = 0.25
+_AMBIGUOUS_BROKER_CODES = {
+    "metaapi_timeout",
+    "metaapi_unreachable",
+    "metaapi_temporarily_unavailable",
+}
+_RECONCILE_ATTEMPTS = 3
+_RECONCILE_DELAY_SECONDS = 0.35
 
 
 @dataclass(frozen=True, slots=True)
@@ -90,8 +91,15 @@ class _Planned:
     sizing: Day24RiskSizingResult
 
 
-class PaperCriticalExecutionService(Day28GuardedExecutionService):
-    """Owner DEMO executor for explicit pending and layered provider structures."""
+@dataclass(frozen=True, slots=True)
+class AtomicLayerAllocation:
+    entry: CriticalEntry
+    tp_index: int
+    take_profit: Decimal | None
+
+
+class PaperCriticalExecutionService(AtomicDay26Mt5ExecutionService):
+    """Shared executor for explicit pending and multiple-entry provider structures."""
 
     async def execute_owner_demo_signal(
         self,
@@ -135,9 +143,9 @@ class PaperCriticalExecutionService(Day28GuardedExecutionService):
             row = session.execute(
                 text(
                     """
-                    SELECT id, symbol, side, order_type, entry_low, entry_high,
-                           stop_loss, take_profits, has_open_runner, parser_status,
-                           risk_multiplier, source_revision_index, source_posted_at,
+                    SELECT id,symbol,side,order_type,entry_low,entry_high,
+                           stop_loss,take_profits,has_open_runner,parser_status,
+                           risk_multiplier,source_revision_index,source_posted_at,
                            original_text
                     FROM signals
                     WHERE id=:signal_id
@@ -222,8 +230,8 @@ class PaperCriticalExecutionService(Day28GuardedExecutionService):
             row = session.execute(
                 text(
                     """
-                    SELECT id, metaapi_account_id, metaapi_token_ciphertext,
-                           account_environment, status
+                    SELECT id,metaapi_account_id,metaapi_token_ciphertext,
+                           account_environment,status
                     FROM mt5_accounts
                     WHERE owner_user_id=:user_id AND status!='revoked'
                     ORDER BY created_at DESC
@@ -281,9 +289,7 @@ class PaperCriticalExecutionService(Day28GuardedExecutionService):
         except Day23ReadError as exc:
             raise Day26ExecutionError(exc.code) from exc
 
-        self._validate_entry_timing(entries, signal.side, current)
-        layer_count = Decimal(len(entries))
-        layer_balance = Decimal(str(state.account.balance)) / layer_count
+        self._validate_entry_structure(entries, signal.side)
         sizings: dict[int, Day24RiskSizingResult] = {}
         for entry in entries:
             sizing_entry = current if entry.order_type == "market" else entry.price
@@ -303,30 +309,15 @@ class PaperCriticalExecutionService(Day28GuardedExecutionService):
             sizings[entry.entry_index] = self._size_signal(
                 signal=synthetic,
                 execution_entry=sizing_entry,
-                balance=float(layer_balance),
+                balance=state.account.balance,
                 price_loss_tick_value=state.price.loss_tick_value,
                 specification=specification,
                 risk_percent=risk_percent,
                 double_lot_approved=double_lot_approved,
             )
 
-        self._assert_layer_risk_cap(
-            real_balance=Decimal(str(state.account.balance)),
-            risk_percent=Decimal(str(risk_percent)),
-            double_applied=any(item.double_lot_applied for item in sizings.values()),
-            sizings=tuple(sizings.values()),
-            tp_count=signal.position_count,
-        )
-        await self._margin_preflight(
-            token=token,
-            account_id=account.metaapi_account_id,
-            region=state.region,
-            symbol=signal.symbol,
-            side=signal.side,
-            free_margin=Decimal(str(state.account.free_margin)),
-            entries=entries,
-            sizings=sizings,
-        )
+        # No local balance/free-margin/capacity approval step exists here. A valid
+        # provider leg is sent to the broker; broker rejection is preserved as truth.
         self._assert_signal_still_current(owner_user_id, signal)
         planned = self._create_layered_plans(
             owner_user_id=owner_user_id,
@@ -337,10 +328,10 @@ class PaperCriticalExecutionService(Day28GuardedExecutionService):
         )
 
         submitted: dict[UUID, str] = {}
-        pending_gateway = PaperPendingOrderGateway(self._trade_gateway)
+        pending_gateway = MetaApiPendingOrderGateway(self._trade_gateway)
         try:
-            # Broker-held pending layers first. The immediate market layer is last so
-            # a rejected pending request cannot leave an uncovered market position.
+            # Broker-held pending legs first. Immediate market legs are last so a
+            # rejected pending request cannot leave only part of the requested setup.
             ordered = sorted(planned, key=lambda item: item.entry.order_type == "market")
             for item in ordered:
                 if item.entry.order_type == "market":
@@ -352,22 +343,25 @@ class PaperCriticalExecutionService(Day28GuardedExecutionService):
                         symbol=signal.symbol,
                         volume=float(item.sizing.volume),
                         stop_loss=float(signal.stop_loss),
-                        take_profit=float(item.take_profit) if item.take_profit is not None else None,
+                        take_profit=(
+                            float(item.take_profit) if item.take_profit is not None else None
+                        ),
                         client_id=item.client_id,
                     )
                 else:
                     result = await pending_gateway.place_pending_order(
-                        account_environment="demo",
                         token=token,
                         account_id=account.metaapi_account_id,
                         region=state.region,
-                        request=PaperPendingOrderRequest(
+                        request=MetaApiPendingOrderRequest(
                             order_type=item.entry.order_type,
                             symbol=signal.symbol,
                             volume=float(item.sizing.volume),
                             open_price=float(item.entry.price),
                             stop_loss=float(signal.stop_loss),
-                            take_profit=float(item.take_profit) if item.take_profit is not None else None,
+                            take_profit=(
+                                float(item.take_profit) if item.take_profit is not None else None
+                            ),
                             client_id=item.client_id,
                         ),
                     )
@@ -404,11 +398,13 @@ class PaperCriticalExecutionService(Day28GuardedExecutionService):
             signal_id=signal.signal_id,
             event_type="mt5.paper_critical_execution_success",
             payload={
-                "entry_layers": len(entries),
-                "pending_layers": sum(1 for item in entries if item.order_type != "market"),
-                "tranche_count": len(mapped),
-                "risk_split_across_layers": True,
-                "paper_demo_only": True,
+                "entry_sections": len(entries),
+                "pending_sections": sum(1 for item in entries if item.order_type != "market"),
+                "atomic_leg_count": len(mapped),
+                "risk_per_atomic_leg": True,
+                "risk_split_across_layers": False,
+                "local_margin_veto": False,
+                "broker_margin_authority": True,
                 "automatic_retry": False,
             },
         )
@@ -417,7 +413,7 @@ class PaperCriticalExecutionService(Day28GuardedExecutionService):
             user_id=owner_user_id,
             symbol=signal.symbol,
             side=signal.side,
-            signal_entry_price=entries[0].price,
+            signal_entry_price=current,
             stop_loss=signal.stop_loss,
             base_risk_percent=first_sizing.base_risk_percent,
             effective_risk_percent=first_sizing.effective_risk_percent,
@@ -425,79 +421,71 @@ class PaperCriticalExecutionService(Day28GuardedExecutionService):
             positions=mapped,
         )
 
-    def _validate_entry_timing(
-        self,
-        entries: tuple[CriticalEntry, ...],
-        side: str,
-        current: Decimal,
-    ) -> None:
+    @staticmethod
+    def _validate_entry_structure(entries: tuple[CriticalEntry, ...], side: str) -> None:
+        normalized_side = side.strip().upper()
+        if normalized_side not in {"BUY", "SELL"}:
+            raise Day26ExecutionError("trade_side_invalid")
         for entry in entries:
-            if entry.order_type == "market":
-                if abs(current - entry.price) > self._entry_tolerance:
-                    raise Day26ExecutionError("layer_market_entry_no_longer_fresh")
+            order_type = entry.order_type.strip().lower()
+            if order_type == "market":
                 continue
-            if entry.order_type == "buy_limit" and not entry.price < current:
-                raise Day26ExecutionError("pending_entry_no_longer_valid")
-            if entry.order_type == "buy_stop" and not entry.price > current:
-                raise Day26ExecutionError("pending_entry_no_longer_valid")
-            if entry.order_type == "sell_limit" and not entry.price > current:
-                raise Day26ExecutionError("pending_entry_no_longer_valid")
-            if entry.order_type == "sell_stop" and not entry.price < current:
-                raise Day26ExecutionError("pending_entry_no_longer_valid")
-            if side == "BUY" and not entry.order_type.startswith("buy_"):
+            if normalized_side == "BUY" and order_type not in {"buy_limit", "buy_stop"}:
                 raise Day26ExecutionError("pending_side_mismatch")
-            if side == "SELL" and not entry.order_type.startswith("sell_"):
+            if normalized_side == "SELL" and order_type not in {"sell_limit", "sell_stop"}:
                 raise Day26ExecutionError("pending_side_mismatch")
 
     @staticmethod
-    def _assert_layer_risk_cap(
-        *,
-        real_balance: Decimal,
-        risk_percent: Decimal,
-        double_applied: bool,
-        sizings: tuple[Day24RiskSizingResult, ...],
-        tp_count: int,
-    ) -> None:
-        multiplier = Decimal("2") if double_applied else Decimal("1")
-        per_tp_cap = real_balance * risk_percent * multiplier / Decimal("100")
-        actual_per_tp = sum((item.actual_risk_per_position for item in sizings), Decimal("0"))
-        if actual_per_tp > per_tp_cap:
-            raise Day26ExecutionError("layer_risk_budget_exceeded_by_broker_minimum")
-        if tp_count <= 0:
-            raise Day26ExecutionError("position_count_invalid")
-
-    async def _margin_preflight(
-        self,
-        *,
-        token: str,
-        account_id: str,
-        region: str,
-        symbol: str,
-        side: str,
-        free_margin: Decimal,
+    def _allocation_pairs(
         entries: tuple[CriticalEntry, ...],
-        sizings: dict[int, Day24RiskSizingResult],
-    ) -> None:
-        required_total = Decimal("0")
-        complete = True
-        for entry in entries:
-            sizing = sizings[entry.entry_index]
-            total_volume = sizing.volume * Decimal(sizing.position_count)
-            try:
-                required = await self._margin_gateway.calculate_margin(
-                    token=token,
-                    account_id=account_id,
-                    region=region,
-                    symbol=symbol,
-                    side=side,
-                    volume=float(total_volume),
-                    open_price=float(entry.price),
+        targets: tuple[Decimal | None, ...],
+    ) -> tuple[AtomicLayerAllocation, ...]:
+        if not entries:
+            raise Day26ExecutionError("critical_entry_plan_missing")
+        if not targets:
+            raise Day26ExecutionError("position_count_invalid")
+        slot_count = max(len(entries), len(targets))
+        has_runner = targets[-1] is None
+        target_indexes = list(range(1, len(targets) + 1))
+        if slot_count > len(targets):
+            repeatable = list(range(1, len(targets) if has_runner else len(targets) + 1))
+            if not repeatable:
+                raise Day26ExecutionError("position_count_invalid")
+            for offset in range(slot_count - len(targets)):
+                target_indexes.append(repeatable[offset % len(repeatable)])
+        allocations = [
+            AtomicLayerAllocation(
+                entry=entries[index % len(entries)],
+                tp_index=target_index,
+                take_profit=targets[target_index - 1],
+            )
+            for index, target_index in enumerate(target_indexes)
+        ]
+        if has_runner:
+            runner_slot = next(
+                index for index, item in enumerate(allocations) if item.take_profit is None
+            )
+            best_entry = entries[-1]
+            if allocations[runner_slot].entry.entry_index != best_entry.entry_index:
+                best_slot = next(
+                    index
+                    for index, item in enumerate(allocations)
+                    if item.entry.entry_index == best_entry.entry_index
+                    and item.take_profit is not None
                 )
-                required_total += Decimal(str(required))
-            except MetaApiGatewayError:
-                complete = False
-        if complete and required_total > free_margin:
-            raise Day26ExecutionError("insufficient_funds")
+                runner_item = allocations[runner_slot]
+                best_item = allocations[best_slot]
+                allocations[runner_slot] = AtomicLayerAllocation(
+                    entry=best_item.entry,
+                    tp_index=runner_item.tp_index,
+                    take_profit=runner_item.take_profit,
+                )
+                allocations[best_slot] = AtomicLayerAllocation(
+                    entry=runner_item.entry,
+                    tp_index=best_item.tp_index,
+                    take_profit=best_item.take_profit,
+                )
+        return tuple(allocations)
 
     def _create_layered_plans(
         self,
@@ -511,55 +499,54 @@ class PaperCriticalExecutionService(Day28GuardedExecutionService):
         targets: list[Decimal | None] = list(signal.take_profits)
         if signal.has_open_runner:
             targets.append(None)
+        allocations = self._allocation_pairs(entries, tuple(targets))
         planned: list[_Planned] = []
-        layer_count = Decimal(len(entries))
         with self._session_factory() as session:
-            for entry in entries:
+            for allocation in allocations:
+                entry = allocation.entry
                 sizing = sizings[entry.entry_index]
-                actual_risk_percent = sizing.effective_risk_percent / layer_count
+                local_id = uuid4()
+                client_id = f"SS_{local_id.hex[:12]}_E{entry.entry_index}T{allocation.tp_index}"
                 local_entry = market_entry if entry.order_type == "market" else entry.price
-                for tp_index, take_profit in enumerate(targets, start=1):
-                    local_id = uuid4()
-                    client_id = f"SS_{local_id.hex[:12]}_E{entry.entry_index}T{tp_index}"
-                    session.execute(
-                        text(
-                            """
-                            INSERT INTO positions (
-                                id, signal_id, user_id, entry_index, entry_order_type,
-                                tp_index, take_profit, planned_risk_percent, volume,
-                                stop_loss, broker_client_id, status, entry_price
-                            ) VALUES (
-                                :id, :signal_id, :user_id, :entry_index, :entry_order_type,
-                                :tp_index, :take_profit, :risk_percent, :volume,
-                                :stop_loss, :client_id, 'planned', :entry_price
-                            )
-                            """
-                        ),
-                        {
-                            "id": local_id,
-                            "signal_id": signal.signal_id,
-                            "user_id": owner_user_id,
-                            "entry_index": entry.entry_index,
-                            "entry_order_type": entry.order_type,
-                            "tp_index": tp_index,
-                            "take_profit": take_profit,
-                            "risk_percent": actual_risk_percent,
-                            "volume": sizing.volume,
-                            "stop_loss": signal.stop_loss,
-                            "client_id": client_id,
-                            "entry_price": local_entry,
-                        },
-                    )
-                    planned.append(
-                        _Planned(
-                            local_id=local_id,
-                            entry=entry,
-                            tp_index=tp_index,
-                            take_profit=take_profit,
-                            client_id=client_id,
-                            sizing=sizing,
+                session.execute(
+                    text(
+                        """
+                        INSERT INTO positions (
+                            id,signal_id,user_id,entry_index,entry_order_type,
+                            tp_index,take_profit,planned_risk_percent,volume,
+                            stop_loss,broker_client_id,status,entry_price
+                        ) VALUES (
+                            :id,:signal_id,:user_id,:entry_index,:entry_order_type,
+                            :tp_index,:take_profit,:risk_percent,:volume,
+                            :stop_loss,:client_id,'planned',:entry_price
                         )
+                        """
+                    ),
+                    {
+                        "id": local_id,
+                        "signal_id": signal.signal_id,
+                        "user_id": owner_user_id,
+                        "entry_index": entry.entry_index,
+                        "entry_order_type": entry.order_type,
+                        "tp_index": allocation.tp_index,
+                        "take_profit": allocation.take_profit,
+                        "risk_percent": sizing.effective_risk_percent,
+                        "volume": sizing.volume,
+                        "stop_loss": signal.stop_loss,
+                        "client_id": client_id,
+                        "entry_price": local_entry,
+                    },
+                )
+                planned.append(
+                    _Planned(
+                        local_id=local_id,
+                        entry=entry,
+                        tp_index=allocation.tp_index,
+                        take_profit=allocation.take_profit,
+                        client_id=client_id,
+                        sizing=sizing,
                     )
+                )
             session.commit()
         return tuple(planned)
 
@@ -569,16 +556,24 @@ class PaperCriticalExecutionService(Day28GuardedExecutionService):
         order_id: str,
         position_id: str | None,
     ) -> None:
-        status = "open" if position_id else "pending" if item.entry.order_type != "market" else "planned"
+        status = (
+            "open"
+            if position_id
+            else "pending"
+            if item.entry.order_type != "market"
+            else "planned"
+        )
         with self._session_factory() as session:
             session.execute(
                 text(
                     """
                     UPDATE positions
                     SET broker_order_id=:order_id,
-                        broker_position_id=COALESCE(:position_id, broker_position_id),
+                        broker_position_id=COALESCE(:position_id,broker_position_id),
                         status=:status,
-                        opened_at=CASE WHEN :status='open' THEN COALESCE(opened_at, now()) ELSE opened_at END,
+                        opened_at=CASE WHEN :is_open
+                                       THEN COALESCE(opened_at,now())
+                                       ELSE opened_at END,
                         updated_at=now()
                     WHERE id=:id
                     """
@@ -588,6 +583,7 @@ class PaperCriticalExecutionService(Day28GuardedExecutionService):
                     "order_id": order_id,
                     "position_id": position_id,
                     "status": status,
+                    "is_open": status == "open",
                 },
             )
             session.commit()
@@ -604,14 +600,19 @@ class PaperCriticalExecutionService(Day28GuardedExecutionService):
         submitted: dict[UUID, str],
         current_market_entry: Decimal,
     ) -> tuple[CriticalPaperTranche, ...]:
+        del current_market_entry
         last_code = "critical_broker_mapping_missing"
         for attempt in range(_VERIFY_ATTEMPTS):
             try:
                 positions = await self._read_gateway.read_positions(
-                    token=token, account_id=account.metaapi_account_id, region=region
+                    token=token,
+                    account_id=account.metaapi_account_id,
+                    region=region,
                 )
                 orders = await self._read_gateway.read_orders(
-                    token=token, account_id=account.metaapi_account_id, region=region
+                    token=token,
+                    account_id=account.metaapi_account_id,
+                    region=region,
                 )
                 by_client_position = {
                     str(row.get("clientId") or ""): row
@@ -682,7 +683,11 @@ class PaperCriticalExecutionService(Day28GuardedExecutionService):
         )
 
     def _persist_open_mapping(
-        self, local_id: UUID, position_id: str, order_id: str, open_price: Decimal
+        self,
+        local_id: UUID,
+        position_id: str,
+        order_id: str,
+        open_price: Decimal,
     ) -> None:
         now = datetime.now(UTC)
         with self._session_factory() as session:
@@ -690,9 +695,9 @@ class PaperCriticalExecutionService(Day28GuardedExecutionService):
                 text(
                     """
                     UPDATE positions
-                    SET broker_position_id=:position_id, broker_order_id=:order_id,
-                        entry_price=:open_price, status='open',
-                        opened_at=COALESCE(opened_at,:now), updated_at=:now
+                    SET broker_position_id=:position_id,broker_order_id=:order_id,
+                        entry_price=:open_price,status='open',
+                        opened_at=COALESCE(opened_at,:now),updated_at=:now
                     WHERE id=:id
                     """
                 ),
@@ -710,7 +715,11 @@ class PaperCriticalExecutionService(Day28GuardedExecutionService):
         with self._session_factory() as session:
             session.execute(
                 text(
-                    "UPDATE positions SET broker_order_id=:order_id, status='pending', updated_at=now() WHERE id=:id"
+                    """
+                    UPDATE positions
+                    SET broker_order_id=:order_id,status='pending',updated_at=now()
+                    WHERE id=:id
+                    """
                 ),
                 {"id": local_id, "order_id": order_id},
             )
@@ -728,31 +737,63 @@ class PaperCriticalExecutionService(Day28GuardedExecutionService):
         submitted: dict[UUID, str],
         reason: str,
     ) -> bool:
-        unresolved = 0
-        try:
-            positions = await self._read_gateway.read_positions(
-                token=token, account_id=account.metaapi_account_id, region=region
-            )
-            orders = await self._read_gateway.read_orders(
-                token=token, account_id=account.metaapi_account_id, region=region
-            )
-        except MetaApiGatewayError:
-            positions, orders = [], []
-            unresolved = len(submitted)
+        """Reconcile every planned client ID before exact-ID compensation."""
+        attempts = _RECONCILE_ATTEMPTS if reason in _AMBIGUOUS_BROKER_CODES else 1
+        positions: list[dict[str, object]] = []
+        orders: list[dict[str, object]] = []
+        read_failed = False
+        for attempt in range(attempts):
+            try:
+                positions = await self._read_gateway.read_positions(
+                    token=token,
+                    account_id=account.metaapi_account_id,
+                    region=region,
+                )
+                orders = await self._read_gateway.read_orders(
+                    token=token,
+                    account_id=account.metaapi_account_id,
+                    region=region,
+                )
+                read_failed = False
+                break
+            except MetaApiGatewayError:
+                read_failed = True
+                if attempt + 1 < attempts:
+                    await asyncio.sleep(_RECONCILE_DELAY_SECONDS)
 
-        by_client = {
+        by_client_position = {
             str(row.get("clientId") or ""): str(row.get("id") or "").strip()
             for row in positions
-            if str(row.get("clientId") or "")
+            if str(row.get("clientId") or "") and str(row.get("id") or "").strip()
         }
-        active_orders = {str(row.get("id") or "") for row in orders}
+        by_client_order = {
+            str(row.get("clientId") or ""): str(row.get("id") or "").strip()
+            for row in orders
+            if str(row.get("clientId") or "") and str(row.get("id") or "").strip()
+        }
+        active_order_ids = {
+            str(row.get("id") or "").strip()
+            for row in orders
+            if str(row.get("id") or "").strip()
+        }
+
         closed_ids: set[UUID] = set()
         cancelled_ids: set[UUID] = set()
+        hidden_detected: set[UUID] = set()
+        unresolved_ids: set[UUID] = set()
         for item in reversed(planned):
-            if item.local_id not in submitted:
+            returned_order_id = str(submitted.get(item.local_id, "") or "").strip()
+            position_id = by_client_position.get(item.client_id, "")
+            discovered_order_id = by_client_order.get(item.client_id, "")
+            order_id = returned_order_id or discovered_order_id
+
+            if item.local_id not in submitted and (position_id or discovered_order_id):
+                hidden_detected.add(item.local_id)
+            if not position_id and not order_id:
+                if read_failed and item.local_id in submitted:
+                    unresolved_ids.add(item.local_id)
                 continue
-            position_id = by_client.get(item.client_id, "")
-            order_id = submitted[item.local_id]
+
             try:
                 if position_id:
                     await self._trade_gateway.close_position(
@@ -762,7 +803,7 @@ class PaperCriticalExecutionService(Day28GuardedExecutionService):
                         position_id=position_id,
                     )
                     closed_ids.add(item.local_id)
-                elif order_id in active_orders:
+                elif order_id in active_order_ids:
                     await self._trade_gateway.cancel_order(
                         token=token,
                         account_id=account.metaapi_account_id,
@@ -770,19 +811,21 @@ class PaperCriticalExecutionService(Day28GuardedExecutionService):
                         order_id=order_id,
                     )
                     cancelled_ids.add(item.local_id)
-                else:
-                    unresolved += 1
+                elif item.local_id in submitted or item.local_id in hidden_detected:
+                    unresolved_ids.add(item.local_id)
             except MetaApiGatewayError:
-                unresolved += 1
+                unresolved_ids.add(item.local_id)
 
         now = datetime.now(UTC)
         with self._session_factory() as session:
             for item in planned:
-                if item.local_id in closed_ids or item.local_id in cancelled_ids:
+                cleaned = item.local_id in closed_ids or item.local_id in cancelled_ids
+                known_mutation = item.local_id in submitted or item.local_id in hidden_detected
+                if cleaned:
                     status = "closed"
                     close_reason = "critical_compensating_rollback"
                     closed_at = now
-                elif item.local_id in submitted:
+                elif item.local_id in unresolved_ids or known_mutation:
                     status = "error"
                     close_reason = f"critical_rollback_unresolved:{reason}"[:80]
                     closed_at = None
@@ -794,8 +837,8 @@ class PaperCriticalExecutionService(Day28GuardedExecutionService):
                     text(
                         """
                         UPDATE positions
-                        SET status=:status, close_reason=:close_reason,
-                            closed_at=:closed_at, updated_at=:now
+                        SET status=:status,close_reason=:close_reason,
+                            closed_at=:closed_at,updated_at=:now
                         WHERE id=:id
                         """
                     ),
@@ -808,6 +851,7 @@ class PaperCriticalExecutionService(Day28GuardedExecutionService):
                     },
                 )
             session.commit()
+
         self._audit(
             owner_user_id=owner_user_id,
             signal_id=signal.signal_id,
@@ -816,12 +860,20 @@ class PaperCriticalExecutionService(Day28GuardedExecutionService):
                 "submitted": len(submitted),
                 "positions_closed": len(closed_ids),
                 "orders_cancelled": len(cancelled_ids),
-                "unresolved": unresolved,
-                "paper_demo_only": True,
+                "hidden_mutations_detected": len(hidden_detected),
+                "unresolved": len(unresolved_ids),
+                "ambiguous_mutation_reconciled": reason in _AMBIGUOUS_BROKER_CODES,
                 "automatic_retry": False,
             },
         )
-        return unresolved == 0
+        return not unresolved_ids
 
 
-__all__ = ["CriticalPaperExecutionResult", "CriticalPaperTranche", "PaperCriticalExecutionService"]
+__all__ = [
+    "AtomicLayerAllocation",
+    "CriticalPaperExecutionResult",
+    "CriticalPaperTranche",
+    "PaperCriticalExecutionService",
+    "_CriticalSignal",
+    "_Planned",
+]

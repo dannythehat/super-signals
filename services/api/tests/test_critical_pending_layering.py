@@ -1,5 +1,5 @@
 from decimal import Decimal
-from types import SimpleNamespace
+from inspect import signature
 from uuid import uuid4
 
 import pytest
@@ -9,15 +9,14 @@ from app.critical_entry_policy import (
     parse_critical_entries,
 )
 from app.metaapi_gateway import MetaApiGatewayError
+from app.metaapi_pending_gateway import MetaApiPendingOrderGateway
 from app.metaapi_trade_gateway import MetaApiTradeGateway
-from app.mt5_execution_day26 import Day26ExecutionError
 from app.mt5_management_day27 import Day27ManagementError
 from app.paper_critical_execution import PaperCriticalExecutionService
 from app.paper_critical_management import PaperCriticalManagementService, _LayerPosition
-from app.paper_critical_management_v2 import PaperCriticalManagementV2
 from app.paper_partial_close_gateway import PaperPartialCloseGateway
-from app.paper_pending_gateway import PaperPendingOrderGateway, PaperPendingOrderRequest
-from app.paper_pending_reconciler import PaperPendingReconciler
+from app.pending_reconciliation_canonical import AccountPendingReconciler
+from app.trading_management_canonical import CanonicalTradingManagementService
 
 
 def _position(entry: int, tp: int, price: str) -> _LayerPosition:
@@ -125,7 +124,7 @@ def test_layer_management_keeps_second_entry_scope() -> None:
     assert {"type": "edit_stop_loss", "target": "entry_2", "value": "4373"} in actions
 
 
-def test_tdc_risk_free_close_table_closes_named_layers_and_keeps_best_only() -> None:
+def test_tdc_close_table_executes_only_named_layers_and_preserves_best_state_text() -> None:
     raw = (
         "+25\n\nRISK FREEE 4393\n\n"
         "4393 SL TO BE\n"
@@ -143,7 +142,7 @@ def test_tdc_risk_free_close_table_closes_named_layers_and_keeps_best_only() -> 
     assert {"type": "close", "target": "entry_price_4395", "value": None} in actions
     assert {"type": "close", "target": "entry_price_4396", "value": None} in actions
     assert {"type": "close", "target": "entry_price_4397", "value": None} in actions
-    assert {"type": "close", "target": "all_but_best", "value": None} in actions
+    assert {"type": "close", "target": "all_but_best", "value": None} not in actions
     assert {
         "type": "edit_stop_loss",
         "target": "best_entry_risk_free_4393",
@@ -171,7 +170,7 @@ def test_leave_best_buy_closes_highest_price_layers_only() -> None:
         _position(3, 1, "4342"),
         _position(4, 1, "4338"),
     )
-    selected = PaperCriticalManagementV2._select_layer_positions(
+    selected = CanonicalTradingManagementService._select_layer_positions(
         positions,
         "worst_3_layers",
         side="BUY",
@@ -189,13 +188,13 @@ def test_best_entry_buy_is_lowest_actual_fill() -> None:
         _position(5, 1, "4394"),
         _position(6, 1, "4393"),
     )
-    selected = PaperCriticalManagementV2._select_layer_positions(
+    selected = CanonicalTradingManagementService._select_layer_positions(
         positions,
         "best_entry",
         side="BUY",
     )
     assert {item.entry_index for item in selected} == {6}
-    worse = PaperCriticalManagementV2._select_layer_positions(
+    worse = CanonicalTradingManagementService._select_layer_positions(
         positions,
         "all_but_best",
         side="BUY",
@@ -212,7 +211,7 @@ def test_buy_risk_free_stop_is_allowed_when_best_layer_really_filled_at_that_pri
         _position(5, 1, "4394"),
         _position(6, 1, "4393"),
     )
-    selected = PaperCriticalManagementV2._select_layer_positions(
+    selected = CanonicalTradingManagementService._select_layer_positions(
         positions,
         "best_entry_risk_free_4393",
         side="BUY",
@@ -223,7 +222,7 @@ def test_buy_risk_free_stop_is_allowed_when_best_layer_really_filled_at_that_pri
 def test_buy_risk_free_stop_fails_if_only_worse_layer_has_filled() -> None:
     positions = (_position(1, 1, "4397.51"),)
     with pytest.raises(Day27ManagementError, match="risk_free_stop_not_protective"):
-        PaperCriticalManagementV2._select_layer_positions(
+        CanonicalTradingManagementService._select_layer_positions(
             positions,
             "best_entry_risk_free_4393",
             side="BUY",
@@ -236,14 +235,14 @@ def test_sell_risk_free_stop_uses_inverse_protection_rule() -> None:
         _position(2, 1, "4394"),
         _position(3, 1, "4395"),
     )
-    selected = PaperCriticalManagementV2._select_layer_positions(
+    selected = CanonicalTradingManagementService._select_layer_positions(
         positions,
         "best_entry_risk_free_4395",
         side="SELL",
     )
     assert {item.entry_index for item in selected} == {3}
     with pytest.raises(Day27ManagementError, match="risk_free_stop_not_protective"):
-        PaperCriticalManagementV2._select_layer_positions(
+        CanonicalTradingManagementService._select_layer_positions(
             (_position(1, 1, "4393"),),
             "best_entry_risk_free_4395",
             side="SELL",
@@ -259,7 +258,7 @@ def test_provider_close_price_maps_to_unique_nearest_actual_layer() -> None:
         _position(5, 1, "4394.00"),
         _position(6, 1, "4393.00"),
     )
-    selected = PaperCriticalManagementV2._select_layer_positions(
+    selected = CanonicalTradingManagementService._select_layer_positions(
         positions,
         "entry_price_4394",
         side="BUY",
@@ -270,7 +269,7 @@ def test_provider_close_price_maps_to_unique_nearest_actual_layer() -> None:
 def test_provider_close_price_fails_closed_when_no_layer_is_close_enough() -> None:
     positions = (_position(1, 1, "4397.5"), _position(2, 1, "4396.5"))
     with pytest.raises(Day27ManagementError, match="layer_provider_price_unresolved"):
-        PaperCriticalManagementV2._select_layer_positions(
+        CanonicalTradingManagementService._select_layer_positions(
             positions,
             "entry_price_4394",
             side="BUY",
@@ -284,7 +283,7 @@ def test_leave_best_sell_closes_lowest_price_layers_only() -> None:
         _position(3, 1, "4358"),
         _position(4, 1, "4362"),
     )
-    selected = PaperCriticalManagementV2._select_layer_positions(
+    selected = CanonicalTradingManagementService._select_layer_positions(
         positions,
         "worst_3_layers",
         side="SELL",
@@ -322,41 +321,13 @@ def test_partial_of_single_minimum_lot_fails_closed() -> None:
         )
 
 
-def test_layer_risk_guard_rejects_broker_minimum_overexposure() -> None:
-    # Two layers are meant to share one 1% per-TP budget on a 10k account = $100.
-    sizings = (
-        SimpleNamespace(actual_risk_per_position=Decimal("60"), double_lot_applied=False),
-        SimpleNamespace(actual_risk_per_position=Decimal("60"), double_lot_applied=False),
-    )
-    with pytest.raises(Day26ExecutionError, match="layer_risk_budget_exceeded_by_broker_minimum"):
-        PaperCriticalExecutionService._assert_layer_risk_cap(
-            real_balance=Decimal("10000"),
-            risk_percent=Decimal("1"),
-            double_applied=False,
-            sizings=sizings,
-            tp_count=3,
-        )
+def test_critical_executor_has_no_aggregate_layer_risk_cap() -> None:
+    assert not hasattr(PaperCriticalExecutionService, "_assert_layer_risk_cap")
 
 
-@pytest.mark.asyncio
-async def test_pending_gateway_cannot_operate_non_demo_account() -> None:
-    gateway = PaperPendingOrderGateway(MetaApiTradeGateway())
-    with pytest.raises(MetaApiGatewayError, match="paper_pending_demo_account_required"):
-        await gateway.place_pending_order(
-            account_environment="live",
-            token="x" * 40,
-            account_id="account",
-            region="london",
-            request=PaperPendingOrderRequest(
-                order_type="buy_limit",
-                symbol="XAUUSD",
-                volume=0.01,
-                open_price=4390,
-                stop_loss=4380,
-                take_profit=4410,
-                client_id="SS_ABCDEFGHIJKL_E1T1",
-            ),
-        )
+def test_canonical_pending_gateway_has_no_paper_live_environment_switch() -> None:
+    parameters = signature(MetaApiPendingOrderGateway.place_pending_order).parameters
+    assert "account_environment" not in parameters
 
 
 @pytest.mark.asyncio
@@ -381,7 +352,7 @@ def test_pending_fill_mapping_requires_exact_trade_identity() -> None:
         "stop_loss": Decimal("4380"),
         "take_profit": Decimal("4410"),
     }
-    position_id, open_price = PaperPendingReconciler._validate_fill(
+    position_id, open_price = AccountPendingReconciler._validate_fill(
         local,
         {
             "id": "777",
@@ -406,7 +377,7 @@ def test_pending_fill_wrong_side_is_never_mapped() -> None:
         "take_profit": Decimal("4410"),
     }
     with pytest.raises(ValueError, match="pending_fill_side_mismatch"):
-        PaperPendingReconciler._validate_fill(
+        AccountPendingReconciler._validate_fill(
             local,
             {
                 "id": "777",

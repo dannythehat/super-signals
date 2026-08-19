@@ -12,20 +12,19 @@ import app.mt5_execution_day26 as day26_module
 from app.metaapi_gateway import MetaApiGatewayError
 from app.metaapi_trade_gateway import MetaApiMarketOrderResult, MetaApiTradeGateway
 from app.mt5_execution_day26 import (
-    Day26ExecutionError,
     Day26MappedPosition,
     Day26Mt5ExecutionService,
     _AccountInput,
     _PlannedPosition,
     _SignalInput,
 )
-from app.mt5_execution_day38 import Day38LiveUserExecutionService
 from app.mt5_read_service_day23 import (
     Day23AccountState,
     Day23LiveState,
     Day23Mt5ReadService,
     Day23PriceState,
 )
+from app.trading_execution_canonical import MemberTradingExecutionService
 
 OWNER = UUID("ea604df2-f8ee-47d1-bc51-f0078dbf160d")
 SIGNAL = UUID("11111111-1111-4111-8111-111111111111")
@@ -160,7 +159,7 @@ def test_cached_disconnected_word_cannot_veto_a_successful_live_terminal_read() 
 
 
 def test_member_live_account_validation_does_not_require_cached_connected_status() -> None:
-    Day38LiveUserExecutionService._validate_live_account_row(
+    MemberTradingExecutionService._validate_live_account_row(
         {
             "account_environment": "live",
             "login": "777001",
