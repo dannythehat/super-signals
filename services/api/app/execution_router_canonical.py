@@ -20,12 +20,14 @@ from app.metaapi_margin_gateway import MetaApiMarginGateway
 from app.metaapi_read_gateway import MetaApiReadGateway
 from app.metaapi_trade_gateway import MetaApiTradeGateway
 from app.mt5_crypto import MetaApiTokenCipher
-from app.mt5_management_day38 import Day38LiveUserManagementService
-from app.paper_critical_management_v2 import PaperCriticalManagementV2
 from app.paper_resilient_read_gateway import PaperResilientMetaApiReadGateway
 from app.trading_execution_canonical import (
     CanonicalTradingExecutionService,
     MemberTradingExecutionService,
+)
+from app.trading_management_canonical import (
+    CanonicalTradingManagementService,
+    MemberTradingManagementService,
 )
 from app.unified_pending_reconciler import UnifiedPendingReconciler
 
@@ -87,7 +89,7 @@ def build_canonical_execution_router(
             margin_gateway=margin,
             trade_gateway=trade,
         )
-        owner_management = PaperCriticalManagementV2(
+        owner_management = CanonicalTradingManagementService(
             session_factory=session_factory,
             cipher=cipher,
             read_gateway=owner_read,
@@ -100,7 +102,7 @@ def build_canonical_execution_router(
             margin_gateway=margin,
             trade_gateway=trade,
         )
-        member_management = Day38LiveUserManagementService(
+        member_management = MemberTradingManagementService(
             session_factory=session_factory,
             cipher=cipher,
             read_gateway=member_read,
