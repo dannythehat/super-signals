@@ -9,7 +9,7 @@ from app.member_routing_canonical import (
     MemberDistributionTarget,
     MemberManagementService,
 )
-from app.paper_pending_reconciler import PaperPendingReconciler
+from app.pending_reconciliation_canonical import AccountPendingReconciler
 from app.trading_execution_canonical import (
     CanonicalTradingExecutionService,
     MemberTradingExecutionService,
@@ -23,7 +23,6 @@ from app.unified_pending_reconciler import LiveMemberPendingReconciler
 
 def test_member_live_execution_inherits_exact_shared_engine() -> None:
     assert issubclass(MemberTradingExecutionService, CanonicalTradingExecutionService)
-    # Trading policy must remain inherited, not reimplemented for member LIVE.
     assert "_size_signal" not in MemberTradingExecutionService.__dict__
     assert "_margin_preflight" not in MemberTradingExecutionService.__dict__
     assert "_create_layered_plans" not in MemberTradingExecutionService.__dict__
@@ -32,15 +31,17 @@ def test_member_live_execution_inherits_exact_shared_engine() -> None:
 
 def test_member_live_management_inherits_exact_shared_engine() -> None:
     assert issubclass(MemberTradingManagementService, CanonicalTradingManagementService)
-    # Layer/partial/best-entry/provider-price behaviour must remain shared.
     assert "_select_layer_positions" not in MemberTradingManagementService.__dict__
     assert "_needs_critical_management" not in MemberTradingManagementService.__dict__
 
 
-def test_live_pending_fill_reconciliation_reuses_proven_fill_algorithm() -> None:
-    assert issubclass(LiveMemberPendingReconciler, PaperPendingReconciler)
+def test_live_pending_reconciliation_inherits_exact_shared_algorithm() -> None:
+    assert issubclass(LiveMemberPendingReconciler, AccountPendingReconciler)
+    assert "reconcile_once" not in LiveMemberPendingReconciler.__dict__
     assert "_validate_fill" not in LiveMemberPendingReconciler.__dict__
+    assert "_matching_history_order" not in LiveMemberPendingReconciler.__dict__
     assert "_persist_fill" not in LiveMemberPendingReconciler.__dict__
+    assert "_persist_terminal_no_fill" not in LiveMemberPendingReconciler.__dict__
 
 
 class _DistributionHarness(MemberDistributionService):
