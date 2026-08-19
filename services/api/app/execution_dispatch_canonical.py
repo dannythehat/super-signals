@@ -8,7 +8,12 @@ the distribution switch outside the trading-policy engine.
 
 Existing ``mt5.day28_*``/``mt5.day38_*`` audit event names are retained only as durable
 DB compatibility/idempotency keys. Renaming those persisted keys requires a deliberate
-data migration and must never make an already-attempted signal look new.
+data migration and must never make an already-executed signal look new.
+
+A failed provider revision does not permanently poison a later corrected provider edit.
+A newer revision may be attempted only when the earlier failure was non-ambiguous and no
+broker-linked local artifact exists. Ambiguous MetaAPI mutation failures never trigger an
+automatic broker retry.
 """
 
 from __future__ import annotations
@@ -30,6 +35,13 @@ from app.mt5_management_day27 import Day27ManagementError
 
 logger = logging.getLogger(__name__)
 _ALLOWED_RISK = {Decimal("0.5"), Decimal("1"), Decimal("1.5"), Decimal("2")}
+_AMBIGUOUS_EXECUTION_ERRORS = {
+    "metaapi_timeout",
+    "metaapi_unreachable",
+    "metaapi_temporarily_unavailable",
+    "day26_partial_execution_rollback_failed",
+    "critical_partial_execution_rollback_failed",
+}
 
 
 @dataclass(frozen=True, slots=True)
@@ -168,25 +180,39 @@ class CanonicalExecutionDispatcher:
         async with lock:
             prior = self._prior_new_trade_route(signal_id)
             if prior is not None:
-                if prior["outcome"] == "executed":
+                if prior.get("outcome") == "executed":
                     return CanonicalRouteResult(
                         outcome="already_applied",
                         decision=stored.decision,
                         action=stored.action,
                         signal_id=signal_id,
-                        position_count=int(prior["position_count"] or 0),
+                        position_count=int(prior.get("position_count") or 0),
                         already_applied=True,
                         reason="distribution_already_attempted",
                     )
-                error = str(prior["error_code"] or "distribution_already_attempted")
-                return CanonicalRouteResult(
-                    outcome="blocked",
-                    decision=stored.decision,
-                    action=stored.action,
-                    signal_id=signal_id,
-                    error_code=error,
-                    reason=error,
-                )
+
+                error = str(prior.get("error_code") or "distribution_already_attempted")
+                if self._prior_failure_blocks_revision(prior, revision_index):
+                    return CanonicalRouteResult(
+                        outcome="blocked",
+                        decision=stored.decision,
+                        action=stored.action,
+                        signal_id=signal_id,
+                        error_code=error,
+                        reason=error,
+                    )
+
+                if not self._clear_unmapped_failed_owner_plans(signal_id):
+                    # A prior attempt left broker-linked or otherwise non-disposable
+                    # state. Never turn a newer Telegram edit into a duplicate mutation.
+                    return CanonicalRouteResult(
+                        outcome="blocked",
+                        decision=stored.decision,
+                        action=stored.action,
+                        signal_id=signal_id,
+                        error_code="prior_execution_state_requires_reconciliation",
+                        reason="prior_execution_state_requires_reconciliation",
+                    )
 
             owner_position_count = self._position_count(signal_id)
             owner_succeeded = owner_position_count > 0
@@ -272,6 +298,7 @@ class CanonicalExecutionDispatcher:
                 decision=stored.decision,
                 action=stored.action,
                 extra={
+                    "source_revision_index": revision_index,
                     "multi_user": True,
                     "member_target_count": (
                         member_result.target_count if member_result is not None else None
@@ -393,6 +420,7 @@ class CanonicalExecutionDispatcher:
                     decision=stored.decision,
                     action=stored.action,
                     extra={
+                        "source_revision_index": revision_index,
                         "lifecycle_event_id": str(lifecycle_event_id),
                         "multi_user": True,
                         "owner_failure_blocked_members": False,
@@ -543,6 +571,7 @@ class CanonicalExecutionDispatcher:
         return self._position_count(signal_id) > 0
 
     def _position_count(self, signal_id: UUID) -> int:
+        """Count only broker-backed execution truth, never planned/error debris."""
         with self._session_factory() as session:
             value = session.execute(
                 text(
@@ -551,11 +580,90 @@ class CanonicalExecutionDispatcher:
                     FROM positions
                     WHERE signal_id=:signal_id
                       AND user_id=:user_id
+                      AND (
+                        (status='pending' AND broker_order_id IS NOT NULL)
+                        OR (status='open' AND broker_position_id IS NOT NULL)
+                        OR (
+                            status='closed'
+                            AND broker_position_id IS NOT NULL
+                            AND COALESCE(close_reason,'') NOT ILIKE '%rollback%'
+                        )
+                      )
                     """
                 ),
                 {"signal_id": signal_id, "user_id": self._owner_user_id},
             ).scalar_one()
         return int(value)
+
+    @staticmethod
+    def _prior_failure_blocks_revision(prior: dict[str, Any], revision_index: int) -> bool:
+        error = str(prior.get("error_code") or "")
+        if error in _AMBIGUOUS_EXECUTION_ERRORS:
+            return True
+        try:
+            prior_revision = int(prior.get("source_revision_index"))
+        except (TypeError, ValueError):
+            # A legacy route record does not contain enough evidence to prove a new
+            # attempt is distinct. Fail closed rather than reinterpret old state.
+            return True
+        return prior_revision >= revision_index
+
+    def _clear_unmapped_failed_owner_plans(self, signal_id: UUID) -> bool:
+        """Discard only broker-free error rows before a newer provider revision.
+
+        The route-failure audit remains immutable. If any row is broker-linked, pending,
+        open, closed or otherwise non-error, the newer revision is blocked for explicit
+        reconciliation instead of risking a duplicate trade.
+        """
+        with self._session_factory() as session:
+            rows = session.execute(
+                text(
+                    """
+                    SELECT id,status,broker_order_id,broker_position_id
+                    FROM positions
+                    WHERE signal_id=:signal_id AND user_id=:user_id
+                    """
+                ),
+                {"signal_id": signal_id, "user_id": self._owner_user_id},
+            ).mappings().all()
+            if not rows:
+                return True
+            disposable = all(
+                str(row["status"] or "") == "error"
+                and not str(row["broker_order_id"] or "").strip()
+                and not str(row["broker_position_id"] or "").strip()
+                for row in rows
+            )
+            if not disposable:
+                return False
+            session.execute(
+                text(
+                    """
+                    DELETE FROM positions
+                    WHERE signal_id=:signal_id
+                      AND user_id=:user_id
+                      AND status='error'
+                      AND broker_order_id IS NULL
+                      AND broker_position_id IS NULL
+                    """
+                ),
+                {"signal_id": signal_id, "user_id": self._owner_user_id},
+            )
+            session.add(
+                AuditEvent(
+                    actor_user_id=self._owner_user_id,
+                    event_type="mt5.canonical_failed_plan_cleared_for_provider_revision",
+                    entity_type="signal",
+                    entity_id=signal_id,
+                    payload={
+                        "rows_cleared": len(rows),
+                        "broker_mutation_present": False,
+                        "automatic_retry": False,
+                    },
+                )
+            )
+            session.commit()
+        return True
 
     def _prior_new_trade_route(self, signal_id: UUID) -> dict[str, Any] | None:
         with self._session_factory() as session:
@@ -584,6 +692,10 @@ class CanonicalExecutionDispatcher:
         error_code: str | None,
     ) -> None:
         with self._session_factory() as session:
+            revision_index = session.execute(
+                text("SELECT source_revision_index FROM signals WHERE id=:signal_id LIMIT 1"),
+                {"signal_id": signal_id},
+            ).scalar_one_or_none()
             session.add(
                 AuditEvent(
                     actor_user_id=self._owner_user_id,
@@ -594,6 +706,9 @@ class CanonicalExecutionDispatcher:
                         "outcome": outcome,
                         "position_count": position_count,
                         "error_code": error_code,
+                        "source_revision_index": (
+                            int(revision_index) if revision_index is not None else None
+                        ),
                         "automatic_retry": False,
                     },
                 )
