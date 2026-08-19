@@ -1,11 +1,15 @@
-"""Explicit active paper-run epoch for the Owner reference account.
+"""Immutable active paper-run origin for the Owner reference account.
 
-Historical broker deals, positions, signals and audit events remain immutable evidence.
-The active paper-testing UI/reporting view begins at ``SUPER_SIGNALS_PAPER_RESET_AT``
-and uses ``SUPER_SIGNALS_PAPER_BASELINE_BALANCE`` as its virtual starting balance.
+The accepted paper test began once, on 19 August 2026 at 11:12 Europe/Sofia
+(08:12 UTC), from a virtual balance of USD 1,000. That origin is product truth, not a
+runtime reset control. Deploys, restarts, environment changes and future dates must
+never move it or erase post-origin performance.
 
-This module contains configuration only. It installs no monkey patches and performs no
-broker mutation.
+Historical broker deals, positions, signals and audit events remain immutable forensic
+truth. Owner dashboard/reporting views exclude pre-origin activity while every genuine
+post-origin trade continues accumulating permanently.
+
+This module installs no monkey patches and performs no broker mutation.
 """
 
 from __future__ import annotations
@@ -13,10 +17,11 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from decimal import Decimal, InvalidOperation
+from decimal import Decimal
 from uuid import UUID
 
-_DEFAULT_BASELINE = Decimal("1000")
+PAPER_RUN_STARTED_AT = datetime(2026, 8, 19, 8, 12, tzinfo=UTC)
+PAPER_RUN_BASELINE_BALANCE = Decimal("1000")
 
 
 @dataclass(frozen=True, slots=True)
@@ -32,19 +37,6 @@ def _utc(value: datetime) -> datetime:
     return value.astimezone(UTC)
 
 
-def paper_reset_at() -> datetime | None:
-    raw = os.getenv("SUPER_SIGNALS_PAPER_RESET_AT", "").strip()
-    if not raw:
-        return None
-    if raw.endswith("Z"):
-        raw = f"{raw[:-1]}+00:00"
-    try:
-        value = datetime.fromisoformat(raw)
-    except ValueError:
-        return None
-    return _utc(value)
-
-
 def paper_owner_id() -> UUID | None:
     raw = os.getenv("SUPER_SIGNALS_DAY28_OWNER_ID", "").strip()
     try:
@@ -53,26 +45,14 @@ def paper_owner_id() -> UUID | None:
         return None
 
 
-def paper_baseline_balance() -> Decimal:
-    raw = os.getenv("SUPER_SIGNALS_PAPER_BASELINE_BALANCE", "1000").strip() or "1000"
-    try:
-        value = Decimal(raw)
-    except (InvalidOperation, ValueError):
-        return _DEFAULT_BASELINE
-    if not value.is_finite() or value <= 0:
-        return _DEFAULT_BASELINE
-    return value
-
-
 def active_paper_epoch(user_id: UUID) -> PaperRunEpoch | None:
     owner_id = paper_owner_id()
-    started_at = paper_reset_at()
-    if owner_id is None or started_at is None or user_id != owner_id:
+    if owner_id is None or user_id != owner_id:
         return None
     return PaperRunEpoch(
         owner_user_id=owner_id,
-        started_at=started_at,
-        baseline_balance=paper_baseline_balance(),
+        started_at=PAPER_RUN_STARTED_AT,
+        baseline_balance=PAPER_RUN_BASELINE_BALANCE,
     )
 
 
@@ -85,10 +65,10 @@ def clamp_to_epoch(user_id: UUID, value: datetime) -> datetime:
 
 
 __all__ = [
+    "PAPER_RUN_BASELINE_BALANCE",
+    "PAPER_RUN_STARTED_AT",
     "PaperRunEpoch",
     "active_paper_epoch",
     "clamp_to_epoch",
-    "paper_baseline_balance",
     "paper_owner_id",
-    "paper_reset_at",
 ]
