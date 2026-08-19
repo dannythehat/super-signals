@@ -1,9 +1,9 @@
 """Pending-order reconciliation shared by paper and future LIVE execution.
 
-The broker is authoritative for pending-order fills. The reconciliation algorithm is
-identical for DEMO and LIVE; only account eligibility differs. LIVE accounts are read
-only when the global live-execution switch is enabled, and must match an active MT5
-approval before any broker state is trusted.
+The broker is authoritative for pending-order fills and terminal order outcomes. The
+reconciliation algorithm is identical for DEMO and LIVE; only account eligibility
+differs. LIVE accounts are read only when the global live-execution switch is enabled,
+and must match an active MT5 approval before any broker state is trusted.
 """
 
 from __future__ import annotations
@@ -33,7 +33,7 @@ def _live_enabled() -> bool:
 
 
 class LiveMemberPendingReconciler(PaperPendingReconciler):
-    """Use the exact paper pending-fill algorithm with an approved LIVE account."""
+    """Use the exact paper pending reconciliation algorithm with an approved LIVE account."""
 
     def _demo_account(self) -> tuple[str, bytes] | None:
         with self._session_factory() as session:
@@ -81,7 +81,7 @@ class LiveMemberPendingReconciler(PaperPendingReconciler):
 
 
 class UnifiedPendingReconciler:
-    """Continuously reconcile Owner DEMO plus enabled LIVE member pending fills."""
+    """Continuously reconcile Owner DEMO plus enabled LIVE member pending truth."""
 
     def __init__(
         self,
@@ -161,6 +161,7 @@ class UnifiedPendingReconciler:
             fills_mapped=sum(item.fills_mapped for item in results),
             still_pending=sum(item.still_pending for item in results),
             unresolved=sum(item.unresolved for item in results),
+            terminalized=sum(item.terminalized for item in results),
         )
 
     def _live_pending_users(self) -> tuple[UUID, ...]:
