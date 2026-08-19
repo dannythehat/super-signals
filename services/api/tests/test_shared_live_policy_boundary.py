@@ -5,21 +5,25 @@ from app.member_routing_canonical import (
     MemberManagementService,
     live_execution_enabled,
 )
-from app.mt5_execution_day38 import Day38LiveUserExecutionService
-from app.mt5_management_day38 import Day38LiveUserManagementService
-from app.paper_critical_management_v2 import PaperCriticalManagementV2
-from app.paper_fresh_start_execution import PaperFreshStartExecutionService
+from app.trading_execution_canonical import (
+    CanonicalTradingExecutionService,
+    MemberTradingExecutionService,
+)
+from app.trading_management_canonical import (
+    CanonicalTradingManagementService,
+    MemberTradingManagementService,
+)
 
 
 def test_layered_execution_is_not_paper_only_structure() -> None:
-    assert issubclass(Day38LiveUserExecutionService, PaperFreshStartExecutionService)
+    assert issubclass(MemberTradingExecutionService, CanonicalTradingExecutionService)
     source = inspect.getsource(MemberDistributionService)
     assert "critical_structure_paper_only" not in source
     assert "_critical_signal" not in source
 
 
 def test_layer_management_is_not_blocked_from_future_live_engine() -> None:
-    assert issubclass(Day38LiveUserManagementService, PaperCriticalManagementV2)
+    assert issubclass(MemberTradingManagementService, CanonicalTradingManagementService)
     source = inspect.getsource(MemberManagementService)
     assert "critical_management_paper_only" not in source
     assert "_critical_event" not in source
