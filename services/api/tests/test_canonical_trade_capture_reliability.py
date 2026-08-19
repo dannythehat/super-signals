@@ -26,6 +26,30 @@ def test_ordinary_market_range_is_not_converted_into_fake_pending_layers() -> No
     assert entries == ()
 
 
+def test_united_kings_valid_sell_range_is_market_and_passes_directional_safety() -> None:
+    raw = (
+        "Sell Gold @4363-4373\n\n"
+        "SL: 4377\n\n"
+        "TP1: 4358\nTP2: 4355\n\n"
+        "Enter slowly — layer your entries with proper risk management.\n\n"
+        "Do not rush entries."
+    )
+    entries = parse_critical_entries(
+        raw,
+        side="SELL",
+        entry_low=Decimal("4363"),
+        entry_high=Decimal("4373"),
+    )
+    assert entries == ()
+    assert Day26Mt5ExecutionService._directionally_valid(
+        side="SELL",
+        entry_low=Decimal("4363"),
+        entry_high=Decimal("4373"),
+        stop_loss=Decimal("4377"),
+        take_profits=(Decimal("4358"), Decimal("4355")),
+    )
+
+
 def test_four_numeric_take_profits_are_valid_execution_input() -> None:
     values = Day26Mt5ExecutionService._take_profits(["4396.5", "4399", "4402", "4413"])
     assert len(values) == 4
