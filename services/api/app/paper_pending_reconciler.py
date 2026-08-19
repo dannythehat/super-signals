@@ -21,6 +21,7 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from app.metaapi_gateway import MetaApiGatewayError
 from app.metaapi_read_gateway import MetaApiReadGateway
+from app.models import AuditEvent
 from app.mt5_crypto import BrokerCredentialDecryptionError, MetaApiTokenCipher
 
 logger = logging.getLogger(__name__)
@@ -386,25 +387,18 @@ class PaperPendingReconciler:
                     "now": now,
                 },
             )
-            session.execute(
-                text(
-                    """
-                    INSERT INTO audit_events (
-                        actor_user_id, event_type, entity_type, entity_id, payload
-                    ) VALUES (
-                        :actor, 'mt5.paper_pending_fill_mapped', 'position', :position,
-                        CAST(:payload AS jsonb)
-                    )
-                    """
-                ),
-                {
-                    "actor": self._owner_user_id,
-                    "position": local_id,
-                    "payload": (
-                        '{"broker_authoritative":true,"paper_demo_only":true,'
-                        '"trade_action_created":false}'
-                    ),
-                },
+            session.add(
+                AuditEvent(
+                    actor_user_id=self._owner_user_id,
+                    event_type="mt5.paper_pending_fill_mapped",
+                    entity_type="position",
+                    entity_id=local_id,
+                    payload={
+                        "broker_authoritative": True,
+                        "paper_demo_only": True,
+                        "trade_action_created": False,
+                    },
+                )
             )
             session.commit()
 
@@ -429,7 +423,7 @@ class PaperPendingReconciler:
                 {"id": row["id"], "reason": reason, "now": now},
             )
             session.add(
-                __import__("app.models", fromlist=["AuditEvent"]).AuditEvent(
+                AuditEvent(
                     actor_user_id=self._owner_user_id,
                     event_type="mt5.pending_broker_terminal_no_fill",
                     entity_type="position",
@@ -468,7 +462,7 @@ class PaperPendingReconciler:
                 {"id": row["id"], "position_id": position_id, "now": now},
             )
             session.add(
-                __import__("app.models", fromlist=["AuditEvent"]).AuditEvent(
+                AuditEvent(
                     actor_user_id=self._owner_user_id,
                     event_type="mt5.pending_broker_fill_requires_settlement",
                     entity_type="position",
@@ -507,26 +501,18 @@ class PaperPendingReconciler:
             )
             if exists:
                 return
-            payload = (
-                '{"code":"' + code.replace('"', "") + '",'
-                '"paper_demo_only":true,"trade_action_created":false}'
-            )
-            session.execute(
-                text(
-                    """
-                    INSERT INTO audit_events (
-                        actor_user_id, event_type, entity_type, entity_id, payload
-                    ) VALUES (
-                        :actor, 'mt5.paper_pending_reconcile_unresolved', 'position',
-                        :position, CAST(:payload AS jsonb)
-                    )
-                    """
-                ),
-                {
-                    "actor": self._owner_user_id,
-                    "position": row["id"],
-                    "payload": payload,
-                },
+            session.add(
+                AuditEvent(
+                    actor_user_id=self._owner_user_id,
+                    event_type="mt5.paper_pending_reconcile_unresolved",
+                    entity_type="position",
+                    entity_id=row["id"],
+                    payload={
+                        "code": code,
+                        "paper_demo_only": True,
+                        "trade_action_created": False,
+                    },
+                )
             )
             session.commit()
 
