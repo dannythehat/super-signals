@@ -13,12 +13,6 @@ from app.bare_gold_now_loader_fix import install_bare_gold_now_loader_fix
 
 install_bare_gold_now_loader_fix()
 
-from app.pending_reconciliation_parity_override import (
-    install_pending_reconciliation_parity_override,
-)
-
-install_pending_reconciliation_parity_override()
-
 from app.performance_account_truth_override import install_performance_account_truth_override
 
 install_performance_account_truth_override()
