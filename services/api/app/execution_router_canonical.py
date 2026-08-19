@@ -1,9 +1,9 @@
 """Canonical production execution-router wiring.
 
 This is the only production builder for provider decisions -> paper/future-LIVE broker
-routing. It installs no runtime patches. Paper and future LIVE use the same execution
-and management policy classes; only account eligibility/credentials and the explicit
-member-distribution switch differ.
+routing. It installs no runtime patches. Paper and future LIVE use the same execution,
+management and pending-fill reconciliation policy; only account eligibility/credentials
+and the explicit member-distribution switch differ.
 """
 
 from __future__ import annotations
@@ -23,9 +23,9 @@ from app.mt5_execution_day38 import Day38LiveUserExecutionService
 from app.mt5_management_day38 import Day38LiveUserManagementService
 from app.paper_critical_management_v2 import PaperCriticalManagementV2
 from app.paper_fresh_start_execution import PaperFreshStartExecutionService
-from app.paper_pending_reconciler import PaperPendingReconciler
 from app.paper_resilient_read_gateway import PaperResilientMetaApiReadGateway
 from app.paper_safe_member_routing import PaperSafeMemberDistribution, PaperSafeMemberManagement
+from app.unified_pending_reconciler import UnifiedPendingReconciler
 
 logger = logging.getLogger(__name__)
 
@@ -73,8 +73,8 @@ def build_canonical_execution_router(
         owner_read = PaperResilientMetaApiReadGateway()
         member_read = MetaApiReadGateway()
         trade = MetaApiTradeGateway()
-        # Retained for constructor compatibility only. The canonical execution engine
-        # never uses a local margin calculator as an approval/veto budget.
+        # Constructor compatibility only. Canonical execution never uses local margin
+        # availability as an approval/veto budget; Vantage/MT5 is authoritative.
         margin = MetaApiMarginGateway()
 
         owner_execution = PaperFreshStartExecutionService(
@@ -128,16 +128,18 @@ def build_canonical_pending_reconciler(
     *,
     session_factory: sessionmaker[Session],
     router: DatabaseSourceDay38FullExecutionRouter | None,
-) -> PaperPendingReconciler | None:
+) -> UnifiedPendingReconciler | None:
     if router is None:
         return None
     try:
         owner_user_id = UUID(os.getenv("SUPER_SIGNALS_DAY28_OWNER_ID", "").strip())
-        poll_seconds = int(os.getenv("SUPER_SIGNALS_PAPER_PENDING_POLL_SECONDS", "3").strip() or "3")
+        poll_seconds = int(
+            os.getenv("SUPER_SIGNALS_PAPER_PENDING_POLL_SECONDS", "3").strip() or "3"
+        )
         broker_keys = _broker_keys()
         if not broker_keys:
             return None
-        return PaperPendingReconciler(
+        return UnifiedPendingReconciler(
             session_factory=session_factory,
             cipher=MetaApiTokenCipher(broker_keys),
             gateway=PaperResilientMetaApiReadGateway(),
