@@ -12,8 +12,11 @@ from pydantic import BaseModel
 
 from app.acceptance_self_test import acceptance_mirror_owner_user_id
 from app.access_control import get_current_identity
-from app.dashboard_day32 import Day32DashboardService, QuietDay23Mt5ReadService
-from app.dashboard_today_summary import TodayTradingSummaryService
+from app.dashboard_day32 import QuietDay23Mt5ReadService
+from app.dashboard_runtime import (
+    CanonicalDashboardRuntimeService,
+    CanonicalTodayTradingSummaryService,
+)
 from app.metaapi_read_gateway import MetaApiReadGateway
 from app.mt5_connection_service_day30 import Day30Mt5ConnectionService
 from app.mt5_runtime import require_mt5_service
@@ -149,9 +152,9 @@ class DashboardResponse(BaseModel):
     broker_trade_action_created: bool = False
 
 
-def _service(request: Request) -> Day32DashboardService:
+def _service(request: Request) -> CanonicalDashboardRuntimeService:
     existing = getattr(request.app.state, "day32_dashboard_service", None)
-    if isinstance(existing, Day32DashboardService):
+    if isinstance(existing, CanonicalDashboardRuntimeService):
         return existing
     base = require_mt5_service(request)
     if not isinstance(base, Day30Mt5ConnectionService):
@@ -167,7 +170,7 @@ def _service(request: Request) -> Day32DashboardService:
         cipher=base._cipher,
         gateway=MetaApiReadGateway(),
     )
-    service = Day32DashboardService(
+    service = CanonicalDashboardRuntimeService(
         session_factory=base._session_factory,
         read_service=read_service,
     )
@@ -196,7 +199,9 @@ def account_dashboard_today(
     service = _service(request)
     mirror_user_id = acceptance_mirror_owner_user_id(identity, service._session_factory)
     data_user_id = mirror_user_id or identity["id"]
-    summary = TodayTradingSummaryService(session_factory=service._session_factory).read(
+    summary = CanonicalTodayTradingSummaryService(
+        session_factory=service._session_factory
+    ).read(
         data_user_id,
         timezone_name=timezone_name,
     )
