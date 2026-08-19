@@ -35,43 +35,35 @@ def test_high_risk_tdc_grid_keeps_existing_declared_grid_semantics() -> None:
     assert [str(item.price) for item in entries] == ["4391", "4390", "4389", "4388", "4387"]
 
 
-def test_tgc_present_tense_numeric_entry_is_never_chatter() -> None:
-    result = classify_message("Im selling 4390")
+def _assert_present_tense_review(raw: str) -> None:
+    result = classify_message(raw)
     assert result.classification == "uncertain"
     assert result.decision_status == "review"
     assert "present_tense_numeric_entry" in result.matched_rules
 
 
+def test_tgc_present_tense_numeric_entry_is_never_chatter() -> None:
+    _assert_present_tense_review("Im selling 4390")
+
+
 def test_tgc_present_tense_buy_is_never_chatter() -> None:
-    result = classify_message("I'm buying 4397")
-    assert result.classification == "uncertain"
-    assert result.decision_status == "review"
+    _assert_present_tense_review("I'm buying 4397")
 
 
 def test_tgc_observed_seling_typo_is_never_chatter() -> None:
-    result = classify_message("Im seling 4390")
-    assert result.classification == "uncertain"
-    assert result.decision_status == "review"
-    assert "tgc_present_tense_numeric_entry" in result.matched_rules
+    _assert_present_tense_review("Im seling 4390")
 
 
 def test_tgc_observed_sellimg_typo_is_never_chatter() -> None:
-    result = classify_message("Im sellimg 4392")
-    assert result.classification == "uncertain"
-    assert result.decision_status == "review"
-    assert "tgc_present_tense_numeric_entry" in result.matched_rules
+    _assert_present_tense_review("Im sellimg 4392")
 
 
 def test_tgc_newline_present_tense_entry_is_never_chatter() -> None:
-    result = classify_message("Im\nSelling 4404")
-    assert result.classification == "uncertain"
-    assert result.decision_status == "review"
+    _assert_present_tense_review("Im\nSelling 4404")
 
 
 def test_tgc_conditional_present_tense_entry_reaches_semantic_review() -> None:
-    result = classify_message("Im selling if we tap 4390")
-    assert result.classification == "uncertain"
-    assert result.decision_status == "review"
+    _assert_present_tense_review("Im selling if we tap 4390")
 
 
 def test_fx_open_extra_sells_is_explicit_active_trade_management() -> None:
