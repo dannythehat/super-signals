@@ -69,7 +69,7 @@ class RouterHarness(CanonicalExecutionDispatcher):
         management: FakeManagementService,
     ) -> None:
         super().__init__(
-            session_factory=lambda: None,  # overridden DB helpers below
+            session_factory=lambda: None,
             owner_user_id=owner_user_id,
             execution_service=execution,
             management_service=management,
@@ -86,12 +86,15 @@ class RouterHarness(CanonicalExecutionDispatcher):
         self.audits: list[tuple[str, dict]] = []
         self.route_record: dict | None = None
         self.load_calls = 0
+        self.current_revision = 0
+        self.failed_plans_cleared = 0
 
     def _load_stored_decision(self, **kwargs):
         self.load_calls += 1
         return self.stored
 
     def _resolve_signal_id(self, message_id, revision_index):
+        self.current_revision = revision_index
         return self.signal_id
 
     def _resolve_lifecycle_event(self, message_id, revision_index):
@@ -103,11 +106,16 @@ class RouterHarness(CanonicalExecutionDispatcher):
     def _prior_new_trade_route(self, signal_id):
         return self.route_record
 
+    def _clear_unmapped_failed_owner_plans(self, signal_id):
+        self.failed_plans_cleared += 1
+        return True
+
     def _audit_new_trade_route(self, *, signal_id, outcome, position_count, error_code):
         self.route_record = {
             "outcome": outcome,
             "position_count": position_count,
             "error_code": error_code,
+            "source_revision_index": self.current_revision,
         }
 
     def _audit_success(self, *, entity_id, entity_type, payload):
@@ -230,6 +238,63 @@ async def test_execution_failure_code_is_returned_once_without_retry() -> None:
     assert result.error_code == "entry_price_unavailable"
     assert len(execution.calls) == 1
     assert router.audits[-1][0] == "failure"
+
+
+@pytest.mark.asyncio
+async def test_later_valid_provider_revision_can_retry_non_ambiguous_prior_block() -> None:
+    execution = FakeExecutionService()
+    execution.failure_code = "strict_directional_validation_failed"
+    management = FakeManagementService()
+    router = RouterHarness(
+        owner_user_id=uuid4(),
+        execution=execution,
+        management=management,
+    )
+    router.stored = decision(kind="new_trade", action="execute")
+
+    first = await router.dispatch_stored_decision(
+        source_id=uuid4(), telegram_message_id=6861, revision_index=0
+    )
+    assert first.outcome == "blocked"
+    assert router.route_record is not None
+    assert router.route_record["source_revision_index"] == 0
+
+    execution.failure_code = None
+    corrected = await router.dispatch_stored_decision(
+        source_id=uuid4(), telegram_message_id=6861, revision_index=6
+    )
+
+    assert corrected.outcome == "executed"
+    assert len(execution.calls) == 2
+    assert router.failed_plans_cleared == 1
+
+
+@pytest.mark.asyncio
+async def test_later_revision_never_blind_retries_ambiguous_metaapi_mutation_failure() -> None:
+    execution = FakeExecutionService()
+    execution.failure_code = "metaapi_timeout"
+    management = FakeManagementService()
+    router = RouterHarness(
+        owner_user_id=uuid4(),
+        execution=execution,
+        management=management,
+    )
+    router.stored = decision(kind="new_trade", action="execute")
+
+    first = await router.dispatch_stored_decision(
+        source_id=uuid4(), telegram_message_id=7001, revision_index=0
+    )
+    assert first.outcome == "blocked"
+
+    execution.failure_code = None
+    later = await router.dispatch_stored_decision(
+        source_id=uuid4(), telegram_message_id=7001, revision_index=1
+    )
+
+    assert later.outcome == "blocked"
+    assert later.error_code == "metaapi_timeout"
+    assert len(execution.calls) == 1
+    assert router.failed_plans_cleared == 0
 
 
 @pytest.mark.asyncio
