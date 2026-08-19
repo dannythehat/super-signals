@@ -76,7 +76,7 @@ class _PerformanceHarness(CanonicalPerformanceRuntimeService):
         return _zero_window(key, label)
 
 
-def test_clean_start_day_keeps_today_live_and_historical_windows_zero(
+def test_origin_day_all_windows_accumulate_from_same_permanent_start(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setenv("SUPER_SIGNALS_DAY28_OWNER_ID", str(OWNER))
@@ -86,10 +86,13 @@ def test_clean_start_day_keeps_today_live_and_historical_windows_zero(
     windows = service.read_windows(OWNER, now=now)
 
     assert [item.key for item in windows] == ["today", "7d", "30d", "month", "all"]
-    assert service.calls == [("today", PAPER_RUN_STARTED_AT, now)]
-    assert all(item.cash_pnl == ZERO for item in windows[1:])
-    assert all(item.closed_trades == 0 for item in windows[1:])
-    assert all(item.wins == item.losses == item.breakeven == 0 for item in windows[1:])
+    assert service.calls == [
+        ("today", PAPER_RUN_STARTED_AT, now),
+        ("7d", PAPER_RUN_STARTED_AT, now),
+        ("30d", PAPER_RUN_STARTED_AT, now),
+        ("month", PAPER_RUN_STARTED_AT, now),
+        ("all", PAPER_RUN_STARTED_AT, now),
+    ]
 
 
 def test_future_windows_can_never_reach_before_paper_origin(monkeypatch: pytest.MonkeyPatch) -> None:
