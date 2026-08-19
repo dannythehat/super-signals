@@ -5,8 +5,8 @@ from uuid import uuid4
 from app.critical_entry_policy import parse_critical_entries
 from app.mt5_execution_day26 import _SignalInput
 from app.paper_execution_priority import PaperExecutionPriorityService
-from app.paper_fresh_start_execution import (
-    PaperFreshStartExecutionService,
+from app.trading_execution_canonical import (
+    CanonicalTradingExecutionService,
     _full_risk_section_count,
 )
 
@@ -38,7 +38,7 @@ def test_tdc_six_sections_keep_six_atomic_positions_not_twenty_four() -> None:
         entry_low="4393",
         entry_high="4398",
     )
-    allocations = PaperFreshStartExecutionService._allocation_pairs(
+    allocations = CanonicalTradingExecutionService._allocation_pairs(
         entries,
         (Decimal("4400"), Decimal("4403"), Decimal("4407"), None),
     )
@@ -48,7 +48,7 @@ def test_tdc_six_sections_keep_six_atomic_positions_not_twenty_four() -> None:
 
 
 def test_six_section_signal_sizes_each_section_from_full_balance() -> None:
-    service = object.__new__(PaperFreshStartExecutionService)
+    service = object.__new__(CanonicalTradingExecutionService)
     signal = _signal()
     specification = {
         "minVolume": 0.01,
@@ -61,7 +61,7 @@ def test_six_section_signal_sizes_each_section_from_full_balance() -> None:
 
     token = _full_risk_section_count.set(6)
     try:
-        actual = PaperFreshStartExecutionService._size_signal(
+        actual = CanonicalTradingExecutionService._size_signal(
             service,
             signal=signal,
             execution_entry=Decimal("4398"),
