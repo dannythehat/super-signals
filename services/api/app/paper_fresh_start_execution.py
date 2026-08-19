@@ -22,7 +22,7 @@ from uuid import UUID, uuid4
 from sqlalchemy import text
 
 from app.critical_entry_policy import CriticalEntry, parse_critical_entries
-from app.mt5_execution_day26 import Day26ExecutionError, _SignalInput
+from app.mt5_execution_day26 import Day26ExecutionError, Day26Mt5ExecutionService, _SignalInput
 from app.mt5_execution_day26_atomic import AtomicDay26Mt5ExecutionService
 from app.paper_critical_execution import PaperCriticalExecutionService, _Planned
 from app.paper_execution_priority import PaperExecutionPriorityService
@@ -53,22 +53,45 @@ class PaperFreshStartExecutionService(PaperExecutionPriorityService):
         risk_percent,
         double_lot_approved: bool,
     ):
-        """Route one canonical signal by its literal broker structure."""
-        critical = self._load_critical_signal(signal_id)
-        try:
-            entries = parse_critical_entries(
-                critical.original_text,
-                side=critical.base.side,
-                entry_low=critical.base.entry_low,
-                entry_high=critical.base.entry_high,
-            )
-        except ValueError as exc:
-            raise Day26ExecutionError(str(exc)) from exc
+        """Route one canonical signal by literal provider broker structure."""
+        with self._session_factory() as session:
+            shape = session.execute(
+                text(
+                    """
+                    SELECT order_type,entry_low,entry_high
+                    FROM signals WHERE id=:signal_id LIMIT 1
+                    """
+                ),
+                {"signal_id": signal_id},
+            ).mappings().first()
+        if shape is None:
+            raise Day26ExecutionError("signal_not_found")
 
-        section_count = max(1, len(entries))
+        no_entry_market = (
+            str(shape["order_type"] or "").lower() == "market"
+            and shape["entry_low"] is None
+            and shape["entry_high"] is None
+        )
+        if no_entry_market:
+            section_count = 1
+            entries: tuple[CriticalEntry, ...] = ()
+            is_critical = False
+        else:
+            critical = self._load_critical_signal(signal_id)
+            try:
+                entries = parse_critical_entries(
+                    critical.original_text,
+                    side=critical.base.side,
+                    entry_low=critical.base.entry_low,
+                    entry_high=critical.base.entry_high,
+                )
+            except ValueError as exc:
+                raise Day26ExecutionError(str(exc)) from exc
+            section_count = max(1, len(entries))
+            is_critical = critical.broad_order_type == "pending" or len(entries) > 1
+
         context_token = _full_risk_section_count.set(section_count)
         try:
-            is_critical = critical.broad_order_type == "pending" or len(entries) > 1
             if is_critical:
                 return await PaperCriticalExecutionService.execute_owner_demo_signal(
                     self,
@@ -86,6 +109,50 @@ class PaperFreshStartExecutionService(PaperExecutionPriorityService):
             )
         finally:
             _full_risk_section_count.reset(context_token)
+
+    @staticmethod
+    def _required_decimal(value: object, code: str) -> Decimal:
+        # NULL entry is deliberate provider truth for a complete market signal with no
+        # explicit entry. Zero is internal execution sentinel only and is never written
+        # back to the Signal ledger.
+        if code == "signal_entry_invalid" and value is None:
+            return Decimal("0")
+        return Day26Mt5ExecutionService._required_decimal(value, code)
+
+    @staticmethod
+    def _directionally_valid(
+        *,
+        side: str,
+        entry_low: Decimal,
+        entry_high: Decimal,
+        stop_loss: Decimal,
+        take_profits: tuple[Decimal, ...],
+    ) -> bool:
+        if entry_low == 0 and entry_high == 0:
+            if stop_loss <= 0 or not take_profits:
+                return False
+            if side == "BUY":
+                return all(right > left for left, right in zip(take_profits, take_profits[1:]))
+            if side == "SELL":
+                return all(right < left for left, right in zip(take_profits, take_profits[1:]))
+            return False
+        return Day26Mt5ExecutionService._directionally_valid(
+            side=side,
+            entry_low=entry_low,
+            entry_high=entry_high,
+            stop_loss=stop_loss,
+            take_profits=take_profits,
+        )
+
+    def _provider_zone(self, signal_id: UUID) -> tuple[Decimal, Decimal]:
+        with self._session_factory() as session:
+            row = session.execute(
+                text("SELECT entry_low,entry_high FROM signals WHERE id=:signal_id LIMIT 1"),
+                {"signal_id": signal_id},
+            ).mappings().first()
+        if row is not None and row["entry_low"] is None and row["entry_high"] is None:
+            return Decimal("0"), Decimal("0")
+        return super()._provider_zone(signal_id)
 
     def _size_signal(
         self,
@@ -190,7 +257,6 @@ class PaperFreshStartExecutionService(PaperExecutionPriorityService):
         order_id: str,
         position_id: str | None,
     ) -> None:
-        """Persist broker truth using PostgreSQL-safe bound values."""
         status = (
             "open"
             if position_id
@@ -204,10 +270,10 @@ class PaperFreshStartExecutionService(PaperExecutionPriorityService):
                     """
                     UPDATE positions
                     SET broker_order_id=:order_id,
-                        broker_position_id=COALESCE(:position_id, broker_position_id),
+                        broker_position_id=COALESCE(:position_id,broker_position_id),
                         status=:status,
                         opened_at=CASE WHEN :is_open
-                                       THEN COALESCE(opened_at, now())
+                                       THEN COALESCE(opened_at,now())
                                        ELSE opened_at END,
                         updated_at=now()
                     WHERE id=:id
@@ -248,13 +314,13 @@ class PaperFreshStartExecutionService(PaperExecutionPriorityService):
                     text(
                         """
                         INSERT INTO positions (
-                            id, signal_id, user_id, entry_index, entry_order_type,
-                            tp_index, take_profit, planned_risk_percent, volume,
-                            stop_loss, broker_client_id, status, entry_price
+                            id,signal_id,user_id,entry_index,entry_order_type,
+                            tp_index,take_profit,planned_risk_percent,volume,
+                            stop_loss,broker_client_id,status,entry_price
                         ) VALUES (
-                            :id, :signal_id, :user_id, :entry_index, :entry_order_type,
-                            :tp_index, :take_profit, :risk_percent, :volume,
-                            :stop_loss, :client_id, 'planned', :entry_price
+                            :id,:signal_id,:user_id,:entry_index,:entry_order_type,
+                            :tp_index,:take_profit,:risk_percent,:volume,
+                            :stop_loss,:client_id,'planned',:entry_price
                         )
                         """
                     ),
