@@ -85,7 +85,7 @@ class _StoredRouter:
 
 def _recovery_manager(decision: str, action: str):
     manager = object.__new__(CanonicalProductionTelegramListenerManager)
-    manager._day28_router = _StoredRouter(decision, action)
+    manager._canonical_router = _StoredRouter(decision, action)
     calls: list[dict] = []
 
     def dispatch(self, **kwargs):
