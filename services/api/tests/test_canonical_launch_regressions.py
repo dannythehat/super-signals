@@ -2,6 +2,7 @@ import asyncio
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from hashlib import sha256
+from threading import RLock
 from types import MethodType, SimpleNamespace
 from uuid import uuid4
 
@@ -14,6 +15,13 @@ from app.telegram_listener import ListeningSource, ReaderListeningPlan
 from app.telegram_listener_day21 import Day21TelegramListenerManager
 from app.telegram_listener_canonical import CanonicalProductionTelegramListenerManager
 from app.v1_message_policy import apply_v1_message_policy
+
+
+def _bare_listener() -> CanonicalProductionTelegramListenerManager:
+    """Construct only the listener state required by isolated unit tests."""
+    manager = object.__new__(CanonicalProductionTelegramListenerManager)
+    manager._telegram_revision_locks = tuple(RLock() for _ in range(128))
+    return manager
 
 
 def _fx_double_lot_decision() -> AiMessageDecision:
@@ -121,7 +129,7 @@ async def test_live_recovery_backs_off_when_telegram_asks_for_flood_wait(
         raise_flood,
     )
 
-    manager = object.__new__(CanonicalProductionTelegramListenerManager)
+    manager = _bare_listener()
     await Day21TelegramListenerManager._run_live_recovery(manager, FakeClient(), plan)
 
     assert slept[0] == 15
@@ -182,8 +190,9 @@ async def test_fresh_missing_post_is_routed_but_stale_post_is_evidence_only(
 
     monkeypatch.setattr(Day21TelegramListenerManager, "_persist_message", fake_persist)
 
-    manager = object.__new__(CanonicalProductionTelegramListenerManager)
+    manager = _bare_listener()
     manager._canonical_router = _StoredNewTradeRouter()
+    manager._ai_pipeline = None
     manager._dispatch_sync = lambda **kwargs: dispatched.append(kwargs["telegram_message_id"])
 
     await manager._recover_live_gaps(FakeClient(), plan)
@@ -232,7 +241,8 @@ async def test_one_unreadable_source_does_not_stop_the_others(
         lambda _self, captured: (persisted.append(captured.telegram_message_id) or True),
     )
 
-    manager = object.__new__(CanonicalProductionTelegramListenerManager)
+    manager = _bare_listener()
+    manager._ai_pipeline = None
 
     async def record_dispatch(self, **kwargs):
         dispatched.append(kwargs["telegram_message_id"])
