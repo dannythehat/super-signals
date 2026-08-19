@@ -37,8 +37,6 @@ _RESULT_ONLY = re.compile(
     re.IGNORECASE,
 )
 
-# These profiles are intentionally narrow. Source identity may establish that an
-# otherwise complete provider post is about XAUUSD, but no numeric field is borrowed.
 _XAUUSD_SOURCE_PROFILES = {"tgc_xauusd", "tdc_xauusd"}
 
 _ACTIVATION_STUB = re.compile(
@@ -81,11 +79,9 @@ def _same_trade_progressive_edit(
     entry_high: Decimal | None,
     source_profile: str | None,
 ) -> bool:
-    """Prove that an edited setup continues the immediately prior trade post."""
     if not previous_text or side not in {"BUY", "SELL"}:
         return False
     previous = previous_text.strip()
-
     stub = _ACTIVATION_STUB.fullmatch(previous)
     if stub is not None:
         if stub.group(1).upper() != side:
@@ -93,9 +89,6 @@ def _same_trade_progressive_edit(
         stub_price = _decimal(stub.group(2))
         current_entries = {value for value in (entry_low, entry_high) if value is not None}
         return stub_price is not None and stub_price in current_entries
-
-    # Dedicated Gold-source identity may satisfy instrument identity only. Side and
-    # entry continuity still have to be literal in the previous and current revisions.
     if _INSTRUMENT.search(previous) is None and not _profile_supplies_xauusd(source_profile):
         return False
     previous_has_buy = _BUY.search(previous) is not None
@@ -169,6 +162,16 @@ def _normalise_trade_values(
     return extracted, entry_low, entry_high, stop_loss, take_profits
 
 
+def _ordered_targets(side: str, targets: tuple[Decimal, ...]) -> bool:
+    if not targets:
+        return False
+    if side == "BUY":
+        return all(right > left for left, right in zip(targets, targets[1:]))
+    if side == "SELL":
+        return all(right < left for left, right in zip(targets, targets[1:]))
+    return False
+
+
 def _directionally_valid(
     side: str,
     entry_low: Decimal,
@@ -182,12 +185,12 @@ def _directionally_valid(
         return (
             stop_loss < entry_low
             and all(target > entry_high for target in take_profits)
-            and all(right > left for left, right in zip(take_profits, take_profits[1:]))
+            and _ordered_targets(side, take_profits)
         )
     return (
         stop_loss > entry_high
         and all(target < entry_low for target in take_profits)
-        and all(right < left for left, right in zip(take_profits, take_profits[1:]))
+        and _ordered_targets(side, take_profits)
     )
 
 
@@ -199,12 +202,7 @@ def apply_v1_message_policy(
     original_has_signal: bool | None = None,
     previous_text: str | None = None,
 ) -> AiMessageDecision:
-    """Return the mechanically allowed decision.
-
-    Context may classify semantics, but it cannot donate trade numbers. A dedicated
-    source profile may establish XAUUSD instrument identity only. Explicit pending and
-    layered order types still require literal current-message evidence.
-    """
+    """Return the mechanically allowed decision."""
     text = raw_text or ""
 
     if decision.decision == "new_trade":
@@ -241,21 +239,29 @@ def apply_v1_message_policy(
         if side not in {"BUY", "SELL"} or has_buy == has_sell:
             return _skip(decision, "missing_side", extracted)
 
-        try:
-            critical_entries = parse_critical_entries(
-                text,
-                side=side,
-                entry_low=entry_low,
-                entry_high=entry_high,
-            )
-        except ValueError as exc:
-            return _skip(decision, str(exc), extracted)
+        no_entry_market = (
+            entry_low is None
+            and entry_high is None
+            and _PENDING.search(text) is None
+        )
+        if (entry_low is None) != (entry_high is None):
+            return _skip(decision, "signal_entry_invalid", extracted)
+
+        if no_entry_market:
+            critical_entries = ()
+        else:
+            try:
+                critical_entries = parse_critical_entries(
+                    text,
+                    side=side,
+                    entry_low=entry_low,
+                    entry_high=entry_high,
+                )
+            except ValueError as exc:
+                return _skip(decision, str(exc), extracted)
 
         if critical_entries:
             plan_low, plan_high = envelope(critical_entries)
-            # Preserve the provider's literal range when the broker plan is a single
-            # explicit pending order at one boundary of that range. Execution uses
-            # entry_plan; canonical provider truth keeps the full stated zone.
             if entry_low is None or entry_high is None:
                 entry_low, entry_high = plan_low, plan_high
             extracted["entry_plan"] = [
@@ -271,19 +277,48 @@ def apply_v1_message_policy(
         elif _PENDING.search(text):
             return _skip(decision, "pending_order_type_ambiguous", extracted)
         elif str(extracted.get("order_type") or "").strip().lower() == "pending":
-            # AI may call a plain provider entry zone "pending" because it is a range.
-            # Without literal LIMIT/STOP/PENDING wording that semantic guess cannot
-            # change broker order type; the literal message is a market entry zone.
             extracted["order_type"] = "market"
 
-        if entry_low is None or entry_high is None:
-            return _skip(decision, "missing_entry", extracted)
         if stop_loss is None:
             return _skip(decision, "missing_sl", extracted)
         if not take_profits:
             return _skip(decision, "missing_tp", extracted)
 
         literals = _literal_numbers(text)
+        if no_entry_market:
+            # No provider entry is invented or persisted. The broker executable quote
+            # is selected later: BUY ask, SELL bid. Only literal provider SL/TP values
+            # are validated here.
+            required = {
+                stop_loss.normalize(),
+                *(value.normalize() for value in take_profits),
+            }
+            if not required.issubset(literals):
+                return _skip(decision, "literal_value_verification_failed", extracted)
+            if not _ordered_targets(side, take_profits):
+                return _skip(decision, "strict_directional_validation_failed", extracted)
+            extracted.update(
+                {
+                    "symbol": "XAUUSD",
+                    "side": side,
+                    "order_type": "market",
+                    "entry_low": None,
+                    "entry_high": None,
+                    "stop_loss": str(stop_loss),
+                    "take_profits": [str(value) for value in take_profits],
+                }
+            )
+            return replace(
+                decision,
+                decision="new_trade",
+                action="execute",
+                reason="v1_complete_market_signal_live_entry",
+                extracted=extracted,
+            )
+
+        if entry_low is None or entry_high is None:
+            return _skip(decision, "missing_entry", extracted)
+
         required = {
             entry_low.normalize(),
             entry_high.normalize(),
@@ -302,7 +337,6 @@ def apply_v1_message_policy(
                     required.add(parsed.normalize())
         if not required.issubset(literals):
             return _skip(decision, "literal_value_verification_failed", extracted)
-
         if not _directionally_valid(side, entry_low, entry_high, stop_loss, take_profits):
             return _skip(decision, "strict_directional_validation_failed", extracted)
 
@@ -330,7 +364,6 @@ def apply_v1_message_policy(
             reason = "v1_complete_exact_signal"
         if edit_completed_first_trade:
             reason = f"{reason}_from_structured_edit"
-
         return replace(
             decision,
             decision="new_trade",
@@ -365,10 +398,8 @@ def apply_v1_message_policy(
                 ),
                 extracted=extracted,
             )
-
         if policy.reason in {"optional_management_instruction", "provider_result_only"}:
             return _ignore_update(decision, policy.reason)
-
         if _RESULT_ONLY.search(text):
             return _ignore_update(decision, "provider_result_only")
         return _ignore_update(decision)
