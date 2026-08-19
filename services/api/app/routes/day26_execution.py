@@ -20,7 +20,7 @@ from app.metaapi_read_gateway import MetaApiReadGateway
 from app.metaapi_trade_gateway import MetaApiTradeGateway
 from app.mt5_execution_day26 import Day26ExecutionError
 from app.mt5_runtime import require_mt5_service
-from app.paper_fresh_start_execution import PaperFreshStartExecutionService
+from app.trading_execution_canonical import CanonicalTradingExecutionService
 
 router = APIRouter(prefix="/owner/mt5/day26", tags=["mt5", "execution"])
 OwnerIdentity = Annotated[dict[str, Any], Depends(require_permission("mt5_accounts.approve"))]
@@ -56,12 +56,12 @@ class Day26ExecutionResponse(BaseModel):
     positions: list[Day26PositionResponse]
 
 
-def _service(request: Request) -> PaperFreshStartExecutionService:
+def _service(request: Request) -> CanonicalTradingExecutionService:
     cached = getattr(request.app.state, "canonical_mt5_execution_service", None)
-    if isinstance(cached, PaperFreshStartExecutionService):
+    if isinstance(cached, CanonicalTradingExecutionService):
         return cached
     mt5_service = require_mt5_service(request)
-    service = PaperFreshStartExecutionService(
+    service = CanonicalTradingExecutionService(
         session_factory=mt5_service._session_factory,
         cipher=mt5_service._cipher,
         read_gateway=MetaApiReadGateway(),
