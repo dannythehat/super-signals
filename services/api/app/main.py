@@ -32,7 +32,7 @@ from app.mt5_recovery import (
     reencrypt_existing_metaapi_token,
     verify_existing_metaapi_token,
 )
-from app.performance_ledger_canonical import CanonicalPerformanceLedgerService
+from app.performance_runtime import CanonicalPerformanceRuntimeService as CanonicalPerformanceLedgerService
 from app.production_listener import build_production_listener_manager
 from app.publisher_config import get_publisher_settings
 from app.push_notifications_day34 import Day34PushNotificationManager
