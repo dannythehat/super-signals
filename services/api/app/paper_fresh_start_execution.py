@@ -10,18 +10,25 @@ fresh broker balance to calculate the monetary amount represented by 1% risk, bu
 code does not decide whether the account can afford the requested provider trade. Every
 valid broker mutation is submitted; Vantage/MT5 is the sole authority for an actual
 funds/margin rejection.
+
+An ambiguous MetaAPI POST failure is never retried. Compensation reconciles every
+planned client ID against broker positions/orders and closes/cancels only exact broker
+artifacts that actually exist.
 """
 
 from __future__ import annotations
 
+import asyncio
 from contextvars import ContextVar
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from decimal import Decimal
 from uuid import UUID, uuid4
 
 from sqlalchemy import text
 
 from app.critical_entry_policy import CriticalEntry, parse_critical_entries
+from app.metaapi_gateway import MetaApiGatewayError
 from app.mt5_execution_day26 import Day26ExecutionError, Day26Mt5ExecutionService, _SignalInput
 from app.mt5_execution_day26_atomic import AtomicDay26Mt5ExecutionService
 from app.paper_critical_execution import PaperCriticalExecutionService, _Planned
@@ -33,6 +40,13 @@ _full_risk_section_count: ContextVar[int] = ContextVar(
     "super_signals_full_risk_section_count",
     default=1,
 )
+_AMBIGUOUS_BROKER_CODES = {
+    "metaapi_timeout",
+    "metaapi_unreachable",
+    "metaapi_temporarily_unavailable",
+}
+_RECONCILE_ATTEMPTS = 3
+_RECONCILE_DELAY_SECONDS = 0.35
 
 
 @dataclass(frozen=True, slots=True)
@@ -351,6 +365,152 @@ class PaperFreshStartExecutionService(PaperExecutionPriorityService):
                 )
             session.commit()
         return tuple(planned)
+
+    async def _rollback_critical(
+        self,
+        *,
+        owner_user_id: UUID,
+        signal: _SignalInput,
+        account,
+        token: str,
+        region: str,
+        planned: tuple[_Planned, ...],
+        submitted: dict[UUID, str],
+        reason: str,
+    ) -> bool:
+        """Reconcile all planned client IDs before exact-ID compensation."""
+        attempts = _RECONCILE_ATTEMPTS if reason in _AMBIGUOUS_BROKER_CODES else 1
+        positions: list[dict[str, object]] = []
+        orders: list[dict[str, object]] = []
+        read_failed = False
+
+        for attempt in range(attempts):
+            try:
+                positions = await self._read_gateway.read_positions(
+                    token=token,
+                    account_id=account.metaapi_account_id,
+                    region=region,
+                )
+                orders = await self._read_gateway.read_orders(
+                    token=token,
+                    account_id=account.metaapi_account_id,
+                    region=region,
+                )
+                read_failed = False
+                break
+            except MetaApiGatewayError:
+                read_failed = True
+                if attempt + 1 < attempts:
+                    await asyncio.sleep(_RECONCILE_DELAY_SECONDS)
+
+        by_client_position = {
+            str(row.get("clientId") or ""): str(row.get("id") or "").strip()
+            for row in positions
+            if str(row.get("clientId") or "") and str(row.get("id") or "").strip()
+        }
+        by_client_order = {
+            str(row.get("clientId") or ""): str(row.get("id") or "").strip()
+            for row in orders
+            if str(row.get("clientId") or "") and str(row.get("id") or "").strip()
+        }
+        active_order_ids = {
+            str(row.get("id") or "").strip()
+            for row in orders
+            if str(row.get("id") or "").strip()
+        }
+
+        closed_ids: set[UUID] = set()
+        cancelled_ids: set[UUID] = set()
+        hidden_detected: set[UUID] = set()
+        unresolved_ids: set[UUID] = set()
+
+        for item in reversed(planned):
+            returned_order_id = str(submitted.get(item.local_id, "") or "").strip()
+            position_id = by_client_position.get(item.client_id, "")
+            discovered_order_id = by_client_order.get(item.client_id, "")
+            order_id = returned_order_id or discovered_order_id
+
+            if item.local_id not in submitted and (position_id or discovered_order_id):
+                hidden_detected.add(item.local_id)
+
+            if not position_id and not order_id:
+                if read_failed and item.local_id in submitted:
+                    unresolved_ids.add(item.local_id)
+                continue
+
+            try:
+                if position_id:
+                    await self._trade_gateway.close_position(
+                        token=token,
+                        account_id=account.metaapi_account_id,
+                        region=region,
+                        position_id=position_id,
+                    )
+                    closed_ids.add(item.local_id)
+                elif order_id in active_order_ids:
+                    await self._trade_gateway.cancel_order(
+                        token=token,
+                        account_id=account.metaapi_account_id,
+                        region=region,
+                        order_id=order_id,
+                    )
+                    cancelled_ids.add(item.local_id)
+                elif item.local_id in submitted or item.local_id in hidden_detected:
+                    unresolved_ids.add(item.local_id)
+            except MetaApiGatewayError:
+                unresolved_ids.add(item.local_id)
+
+        now = datetime.now(UTC)
+        with self._session_factory() as session:
+            for item in planned:
+                cleaned = item.local_id in closed_ids or item.local_id in cancelled_ids
+                known_broker_mutation = item.local_id in submitted or item.local_id in hidden_detected
+                if cleaned:
+                    status = "closed"
+                    close_reason = "critical_compensating_rollback"
+                    closed_at = now
+                elif item.local_id in unresolved_ids or known_broker_mutation:
+                    status = "error"
+                    close_reason = f"critical_rollback_unresolved:{reason}"[:80]
+                    closed_at = None
+                else:
+                    status = "error"
+                    close_reason = f"critical_failed:{reason}"[:80]
+                    closed_at = None
+                session.execute(
+                    text(
+                        """
+                        UPDATE positions
+                        SET status=:status,close_reason=:close_reason,
+                            closed_at=:closed_at,updated_at=:now
+                        WHERE id=:id
+                        """
+                    ),
+                    {
+                        "id": item.local_id,
+                        "status": status,
+                        "close_reason": close_reason,
+                        "closed_at": closed_at,
+                        "now": now,
+                    },
+                )
+            session.commit()
+
+        self._audit(
+            owner_user_id=owner_user_id,
+            signal_id=signal.signal_id,
+            event_type="mt5.paper_critical_compensating_rollback",
+            payload={
+                "submitted": len(submitted),
+                "positions_closed": len(closed_ids),
+                "orders_cancelled": len(cancelled_ids),
+                "hidden_mutations_detected": len(hidden_detected),
+                "unresolved": len(unresolved_ids),
+                "ambiguous_mutation_reconciled": reason in _AMBIGUOUS_BROKER_CODES,
+                "automatic_retry": False,
+            },
+        )
+        return len(unresolved_ids) == 0
 
 
 __all__ = ["AtomicLayerAllocation", "PaperFreshStartExecutionService"]
