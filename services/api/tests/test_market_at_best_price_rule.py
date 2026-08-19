@@ -6,11 +6,11 @@ from decimal import Decimal
 from types import SimpleNamespace
 from uuid import uuid4
 
-from app.ai_canonical_signal import AiCanonicalSignalService
 from app.ai_message_pipeline_canonical import CanonicalAiMessagePipeline, explicit_management_without_ai
 from app.ai_message_supervisor import AiMessageDecision
-from app.mt5_execution_day26 import Day26ExecutionError, Day26Mt5ExecutionService, _SignalInput
-from app.paper_execution_priority import PaperExecutionPriorityService
+from app.canonical_signal_ledger import CanonicalSignalLedger
+from app.mt5_execution_day26 import Day26ExecutionError, _SignalInput
+from app.paper_fresh_start_execution import PaperFreshStartExecutionService
 import app.v1_message_policy as v1
 
 
@@ -86,7 +86,7 @@ def test_no_entry_rule_never_converts_explicit_pending_to_market() -> None:
 
 
 def test_canonical_signal_accepts_nullable_market_entry() -> None:
-    trade = AiCanonicalSignalService._parse_extracted(
+    trade = CanonicalSignalLedger._parse_extracted(
         {
             "symbol": "XAUUSD",
             "side": "BUY",
@@ -103,21 +103,31 @@ def test_canonical_signal_accepts_nullable_market_entry() -> None:
     assert trade.stop_loss == Decimal("4380")
 
 
-def test_live_execution_uses_ask_for_buy_when_provider_has_no_entry() -> None:
-    service = object.__new__(Day26Mt5ExecutionService)
-    signal = _SignalInput(
+def _service() -> PaperFreshStartExecutionService:
+    service = object.__new__(PaperFreshStartExecutionService)
+    service._paper_max_signal_age_seconds = 90.0
+    return service
+
+
+def _signal(*, side: str, stop: str, targets: tuple[str, ...]) -> _SignalInput:
+    return _SignalInput(
         signal_id=uuid4(),
         symbol="XAUUSD",
-        side="BUY",
+        side=side,
         entry_low=Decimal("0"),
         entry_high=Decimal("0"),
-        stop_loss=Decimal("4380"),
-        take_profits=(Decimal("4395"), Decimal("4400")),
+        stop_loss=Decimal(stop),
+        take_profits=tuple(Decimal(value) for value in targets),
         has_open_runner=False,
         signal_requests_double_lot=False,
         source_revision_index=0,
         source_posted_at=datetime.now(UTC),
     )
+
+
+def test_live_execution_uses_ask_for_buy_when_provider_has_no_entry() -> None:
+    service = _service()
+    signal = _signal(side="BUY", stop="4380", targets=("4395", "4400"))
     state = SimpleNamespace(
         execution_ready=True,
         execution_block_reason=None,
@@ -136,20 +146,8 @@ def test_live_execution_uses_ask_for_buy_when_provider_has_no_entry() -> None:
 
 
 def test_live_execution_uses_bid_for_sell_when_provider_has_no_entry() -> None:
-    service = object.__new__(Day26Mt5ExecutionService)
-    signal = _SignalInput(
-        signal_id=uuid4(),
-        symbol="XAUUSD",
-        side="SELL",
-        entry_low=Decimal("0"),
-        entry_high=Decimal("0"),
-        stop_loss=Decimal("4420"),
-        take_profits=(Decimal("4380"), Decimal("4370")),
-        has_open_runner=False,
-        signal_requests_double_lot=False,
-        source_revision_index=0,
-        source_posted_at=datetime.now(UTC),
-    )
+    service = _service()
+    signal = _signal(side="SELL", stop="4420", targets=("4380", "4370"))
     state = SimpleNamespace(
         execution_ready=True,
         execution_block_reason=None,
@@ -167,20 +165,8 @@ def test_live_execution_uses_bid_for_sell_when_provider_has_no_entry() -> None:
 
 
 def test_live_price_must_still_be_inside_sl_tp_geometry() -> None:
-    service = object.__new__(Day26Mt5ExecutionService)
-    signal = _SignalInput(
-        signal_id=uuid4(),
-        symbol="XAUUSD",
-        side="BUY",
-        entry_low=Decimal("0"),
-        entry_high=Decimal("0"),
-        stop_loss=Decimal("4380"),
-        take_profits=(Decimal("4390"),),
-        has_open_runner=False,
-        signal_requests_double_lot=False,
-        source_revision_index=0,
-        source_posted_at=datetime.now(UTC),
-    )
+    service = _service()
+    signal = _signal(side="BUY", stop="4380", targets=("4390",))
     state = SimpleNamespace(
         execution_ready=True,
         execution_block_reason=None,
@@ -199,38 +185,6 @@ def test_live_price_must_still_be_inside_sl_tp_geometry() -> None:
         assert exc.code == "strict_directional_validation_failed"
     else:
         raise AssertionError("live price beyond TP must fail closed")
-
-
-def test_owner_paper_path_validates_the_same_live_entry_geometry() -> None:
-    service = object.__new__(PaperExecutionPriorityService)
-    service._paper_max_signal_age_seconds = 90.0
-    signal = _SignalInput(
-        signal_id=uuid4(),
-        symbol="XAUUSD",
-        side="BUY",
-        entry_low=Decimal("0"),
-        entry_high=Decimal("0"),
-        stop_loss=Decimal("4380"),
-        take_profits=(Decimal("4395"),),
-        has_open_runner=False,
-        signal_requests_double_lot=False,
-        source_revision_index=0,
-        source_posted_at=datetime.now(UTC),
-    )
-    state = SimpleNamespace(
-        execution_ready=True,
-        execution_block_reason=None,
-        price=SimpleNamespace(ask=Decimal("4390"), bid=Decimal("4389.5")),
-    )
-    entry, _ = asyncio.run(
-        service._resolve_entry(
-            owner_user_id=uuid4(),
-            signal=signal,
-            day23=SimpleNamespace(),
-            initial_state=state,
-        )
-    )
-    assert entry == Decimal("4390")
 
 
 def test_gtmo_place_sl_is_literal_management_without_ai() -> None:
