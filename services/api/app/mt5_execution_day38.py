@@ -1,13 +1,13 @@
-"""Day 38 LIVE-account adapter over the single Super Signals trading engine.
+"""LIVE-account adapter over the single Super Signals trading engine.
 
 Trading-policy parity is a product invariant: DEMO and LIVE accounts must interpret and
 execute the same canonical provider signal identically. This class therefore inherits
 the exact PaperFreshStartExecutionService used by the Owner paper account. The only
-LIVE-specific behaviour here is account/user eligibility and credential selection.
+LIVE-specific behaviour is account/user eligibility and credential selection.
 
-When LIVE execution is enabled by the outer distribution switch, pending/layered trades,
-per-provider-section risk, fresh market execution, atomic compensation and all later
-execution-path reliability fixes therefore come from the same implementation as paper.
+When LIVE execution is enabled by the outer distribution switch, market, bare-NOW,
+pending/layered trades, per-provider-section risk, atomic compensation and all later
+execution-path reliability behavior come from the same implementation as paper.
 """
 
 from __future__ import annotations
@@ -33,9 +33,6 @@ class Day38LiveUserExecutionService(PaperFreshStartExecutionService):
     """Run the exact paper-tested trading engine against one approved LIVE account."""
 
     def __init__(self, **kwargs) -> None:
-        # Production wiring historically supplied a plain MetaApiReadGateway to LIVE
-        # members while paper used bounded idempotent GET retries. Normalise only the
-        # concrete production gateway; unit-test/fake gateways remain injectable.
         read_gateway = kwargs.get("read_gateway")
         if type(read_gateway) is MetaApiReadGateway:
             kwargs["read_gateway"] = ResilientMetaApiReadGateway()
@@ -78,7 +75,11 @@ class Day38LiveUserExecutionService(PaperFreshStartExecutionService):
         return str(row["risk_percent"]), bool(row["allow_double_lot"])
 
     def _load_inputs(self, user_id: UUID, signal_id: UUID) -> tuple[_SignalInput, _AccountInput]:
-        """Load an ordinary canonical market signal plus the approved LIVE account."""
+        """Load the canonical signal plus the approved LIVE account."""
+        bare = self._load_bare_now_signal(signal_id)
+        if bare is not None:
+            return bare, self._load_demo_account(user_id, signal_id)
+
         with self._session_factory() as session:
             signal_row = session.execute(
                 text(
@@ -189,7 +190,7 @@ class Day38LiveUserExecutionService(PaperFreshStartExecutionService):
         return signal, account
 
     def _load_demo_account(self, user_id: UUID, signal_id: UUID) -> _AccountInput:
-        """Critical-engine account adapter: use the same engine with a LIVE account."""
+        """Critical/shared-engine account adapter: select the approved LIVE account."""
         with self._session_factory() as session:
             existing = int(
                 session.execute(
