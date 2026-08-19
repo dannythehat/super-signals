@@ -28,6 +28,7 @@ from app.execution_router_canonical import (
     build_canonical_pending_reconciler,
 )
 from app.telegram_crypto import TelegramSessionCipher
+from app.telegram_entity_recovery import read_messages_with_entity_recovery
 from app.telegram_listener import CapturedTelegramMessage, ReaderListeningPlan, TelegramListenerManager
 from app.telegram_listener_day13 import CapturedTelegramEdit, Day13TelegramListenerManager
 from app.telegram_listener_day21 import Day21TelegramListenerManager
@@ -369,7 +370,11 @@ class CanonicalProductionTelegramListenerManager(Day21TelegramListenerManager):
         """Repair missed push delivery and persisted-but-unrouted decisions."""
         for source in plan.sources:
             try:
-                messages = await client.get_messages(source.chat_id, limit=_RECOVERY_HISTORY_LIMIT)
+                messages = await read_messages_with_entity_recovery(
+                    client,
+                    source.chat_id,
+                    limit=_RECOVERY_HISTORY_LIMIT,
+                )
             except Exception:
                 logger.exception(
                     "Telegram recovery skipped one unreadable source",
