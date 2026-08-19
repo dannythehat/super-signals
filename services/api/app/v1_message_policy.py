@@ -5,6 +5,10 @@ module is the final mechanical contract for execution. Trade numbers must come f
 the current Telegram message. A tightly-scoped source profile may supply only a known
 instrument identity for a dedicated Gold/XAUUSD provider; it can never donate entry,
 SL, TP, order type or size.
+
+The only exception to provider-supplied SL/TP is the exact standalone Gold/XAUUSD NOW
+product profile. That whole-message command carries no invented provider prices in the
+canonical Signal; broker protection is derived later by the execution engine.
 """
 
 from __future__ import annotations
@@ -15,6 +19,7 @@ from decimal import Decimal, InvalidOperation
 from typing import Any
 
 from app.ai_message_supervisor import AiMessageDecision
+from app.bare_gold_now_policy import PROFILE as BARE_NOW_PROFILE, bare_now_side
 from app.critical_entry_policy import augment_management_actions, envelope, parse_critical_entries
 from app.day27_management_policy import extract_day27_management_actions
 
@@ -206,6 +211,33 @@ def apply_v1_message_policy(
     text = raw_text or ""
 
     if decision.decision == "new_trade":
+        exact_bare_side = bare_now_side(text)
+        if exact_bare_side is not None:
+            if is_edit:
+                return _skip(decision, "bare_gold_now_edit_not_executable")
+            extracted = dict(decision.extracted or {})
+            extracted.update(
+                {
+                    "symbol": "XAUUSD",
+                    "side": exact_bare_side,
+                    "order_type": "market",
+                    "entry_low": None,
+                    "entry_high": None,
+                    "stop_loss": None,
+                    "take_profits": [],
+                    "double_lot": False,
+                    "tp_open": False,
+                    "execution_profile": BARE_NOW_PROFILE,
+                }
+            )
+            return replace(
+                decision,
+                decision="new_trade",
+                action="execute",
+                reason=BARE_NOW_PROFILE,
+                extracted=extracted,
+            )
+
         extracted, entry_low, entry_high, stop_loss, take_profits = _normalise_trade_values(
             decision, text
         )
@@ -286,9 +318,6 @@ def apply_v1_message_policy(
 
         literals = _literal_numbers(text)
         if no_entry_market:
-            # No provider entry is invented or persisted. The broker executable quote
-            # is selected later: BUY ask, SELL bid. Only literal provider SL/TP values
-            # are validated here.
             required = {
                 stop_loss.normalize(),
                 *(value.normalize() for value in take_profits),
