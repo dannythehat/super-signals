@@ -1,19 +1,13 @@
 """Super Signals API package.
 
 Temporary compatibility installs remain only for behaviours not yet folded into the
-canonical runtime.  The canonical cleanup removes these imports block by block; no new
+canonical runtime. The canonical cleanup removes these imports block by block; no new
 runtime override may be added here.
 """
 
 from app.literal_management_overrides import install_literal_management_overrides
-from app.plain_range_order_type_override import install_plain_range_order_type_override
 
 install_literal_management_overrides()
-install_plain_range_order_type_override()
-
-from app.deterministic_first_ai import install_deterministic_first_ai
-
-install_deterministic_first_ai()
 
 from app.market_at_best_price_override import install_market_at_best_price_override
 
@@ -46,10 +40,6 @@ install_paper_market_execution_policy()
 from app.provider_entry_reliability_overrides import install_provider_entry_reliability_overrides
 
 install_provider_entry_reliability_overrides()
-
-from app.tgc_entry_dialect_override import install_tgc_entry_dialect_override
-
-install_tgc_entry_dialect_override()
 
 from app.tgc_source_profile_override import install_tgc_source_profile_override
 
