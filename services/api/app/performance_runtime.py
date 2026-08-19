@@ -11,9 +11,8 @@ Accounting contract:
 * the Owner paper run has one immutable origin. Pre-origin evidence remains in the
   broker/audit ledger but can never re-enter dashboard windows or timeline after a
   deploy/restart;
-* on the accepted clean-start calendar day, Today is live while 7d/30d/Month/All-time
-  remain explicitly zero. From the following local day onward those periods accumulate
-  normally, bounded by the permanent paper-run origin.
+* Today, 7d, 30d, Month and All-time are ordinary cumulative views. No calendar day,
+  deploy or restart may manufacture zero windows or reset post-origin results.
 
 The underlying account/deal synchronisation remains CanonicalPerformanceLedgerService.
 """
@@ -43,26 +42,6 @@ from app.performance_ledger_day33 import (
 _DEFAULT_TIMEZONE = "Europe/Sofia"
 _DECIDED = {"won", "lost", "breakeven"}
 _UNRESOLVED = {"open", "pending", "closed_unknown"}
-_ZERO = Decimal("0")
-
-
-def _zero_window(key: str, label: str) -> Day33PerformanceWindow:
-    return Day33PerformanceWindow(
-        key=key,
-        label=label,
-        cash_pnl=_ZERO,
-        return_percent=None,
-        model_500_pnl=_ZERO,
-        model_500_return_percent=_ZERO,
-        closed_trades=0,
-        wins=0,
-        losses=0,
-        breakeven=0,
-        open_trades=0,
-        win_rate_percent=None,
-        net_pips=None,
-        mixed_instrument_pips=False,
-    )
 
 
 class CanonicalPerformanceRuntimeService(CanonicalPerformanceLedgerService):
@@ -152,31 +131,16 @@ class CanonicalPerformanceRuntimeService(CanonicalPerformanceLedgerService):
         def bounded(value: datetime) -> datetime:
             return self._later(value, run_start) if run_start is not None else value
 
-        today = self._signal_window(user_id, "today", "Today", bounded(start_today), point)
-        if (
-            run_start is not None
-            and local_now.date() == run_start.astimezone(zone).date()
-        ):
-            return (
-                today,
-                _zero_window("7d", "7 days"),
-                _zero_window("30d", "30 days"),
-                _zero_window("month", "Month"),
-                _zero_window("all", "All time"),
-            )
-
         windows = (
+            ("today", "Today", bounded(start_today)),
             ("7d", "7 days", bounded(point - timedelta(days=7))),
             ("30d", "30 days", bounded(point - timedelta(days=30))),
             ("month", "Month", bounded(start_month)),
             ("all", "All time", run_start),
         )
-        return (
-            today,
-            *(
-                self._signal_window(user_id, key, label, since, point)
-                for key, label, since in windows
-            ),
+        return tuple(
+            self._signal_window(user_id, key, label, since, point)
+            for key, label, since in windows
         )
 
     def _signal_window(
