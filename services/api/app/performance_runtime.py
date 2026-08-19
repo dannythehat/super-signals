@@ -8,8 +8,9 @@ Accounting contract:
 * open/pending state is reported separately;
 * Today is the configured local calendar day (Europe/Sofia by default), never UTC
   midnight unless explicitly configured that way;
-* the Owner paper-test epoch is an explicit visibility/accounting boundary: pre-epoch
-  broker truth remains stored but cannot contaminate active dashboard or Telegram stats.
+* the Owner paper run has one immutable origin. Pre-origin evidence remains in the
+  broker/audit ledger but can never re-enter dashboard windows or timeline after a
+  deploy/restart; all periods accumulate from that fixed origin without resetting.
 
 The underlying account/deal synchronisation remains CanonicalPerformanceLedgerService.
 """
@@ -26,7 +27,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from sqlalchemy import text
 
 from app.dashboard_today_summary import local_day_bounds
-from app.paper_run_epoch import active_paper_epoch
+from app.paper_run_epoch import PAPER_RUN_STARTED_AT, active_paper_epoch
 from app.performance_ledger_canonical import CanonicalPerformanceLedgerService
 from app.performance_ledger_day33 import (
     MODEL_BALANCE,
@@ -39,26 +40,6 @@ from app.performance_ledger_day33 import (
 _DEFAULT_TIMEZONE = "Europe/Sofia"
 _DECIDED = {"won", "lost", "breakeven"}
 _UNRESOLVED = {"open", "pending", "closed_unknown"}
-_ZERO = Decimal("0")
-
-
-def _zero_window(key: str, label: str) -> Day33PerformanceWindow:
-    return Day33PerformanceWindow(
-        key=key,
-        label=label,
-        cash_pnl=_ZERO,
-        return_percent=None,
-        model_500_pnl=_ZERO,
-        model_500_return_percent=_ZERO,
-        closed_trades=0,
-        wins=0,
-        losses=0,
-        breakeven=0,
-        open_trades=0,
-        win_rate_percent=None,
-        net_pips=None,
-        mixed_instrument_pips=False,
-    )
 
 
 class CanonicalPerformanceRuntimeService(CanonicalPerformanceLedgerService):
@@ -71,20 +52,34 @@ class CanonicalPerformanceRuntimeService(CanonicalPerformanceLedgerService):
             or _DEFAULT_TIMEZONE
         )
 
-    def _eligible_signal_ids(self, user_id: UUID) -> set[UUID] | None:
+    @staticmethod
+    def _later(left: datetime, right: datetime) -> datetime:
+        if left.tzinfo is None:
+            left = left.replace(tzinfo=UTC)
+        if right.tzinfo is None:
+            right = right.replace(tzinfo=UTC)
+        return max(left.astimezone(UTC), right.astimezone(UTC))
+
+    def _run_start(self, user_id: UUID) -> datetime | None:
         epoch = active_paper_epoch(user_id)
-        if epoch is None:
+        return epoch.started_at if epoch is not None else None
+
+    def _eligible_signal_ids(self, user_id: UUID) -> set[UUID] | None:
+        run_start = self._run_start(user_id)
+        if run_start is None:
             return None
         with self._session_factory() as session:
             values = session.execute(
                 text(
                     """
-                    SELECT id
-                    FROM signals
-                    WHERE COALESCE(source_posted_at,created_at)>=:cutoff
+                    SELECT DISTINCT s.id
+                    FROM signals AS s
+                    LEFT JOIN positions AS p ON p.signal_id=s.id
+                    WHERE COALESCE(s.source_posted_at,s.created_at)>=:run_started_at
+                      AND (p.user_id=:user_id OR p.user_id IS NULL)
                     """
                 ),
-                {"cutoff": epoch.started_at},
+                {"run_started_at": run_start, "user_id": user_id},
             ).scalars().all()
         return {UUID(str(value)) for value in values}
 
@@ -96,6 +91,8 @@ class CanonicalPerformanceRuntimeService(CanonicalPerformanceLedgerService):
     ) -> Decimal | None:
         epoch = active_paper_epoch(user_id)
         if epoch is not None:
+            if epoch.baseline_balance <= 0:
+                return None
             return _pct(cash_pnl / epoch.baseline_balance * Decimal("100"))
         return super()._period_return_percent(user_id, period_start, cash_pnl)
 
@@ -127,44 +124,21 @@ class CanonicalPerformanceRuntimeService(CanonicalPerformanceLedgerService):
             microsecond=0,
         )
         start_month = local_month.astimezone(UTC)
+        run_start = self._run_start(user_id)
 
-        epoch = active_paper_epoch(user_id)
-        if epoch is None:
-            windows = (
-                ("today", "Today", start_today),
-                ("7d", "7 days", point - timedelta(days=7)),
-                ("30d", "30 days", point - timedelta(days=30)),
-                ("month", "Month", start_month),
-                ("all", "All time", None),
-            )
-            return tuple(
-                self._signal_window(user_id, key, label, since, point)
-                for key, label, since in windows
-            )
-
-        today_start = max(start_today, epoch.started_at)
-        today = self._signal_window(user_id, "today", "Today", today_start, point)
-        if point.astimezone(zone).date() == epoch.started_at.astimezone(zone).date():
-            return (
-                today,
-                _zero_window("7d", "7 days"),
-                _zero_window("30d", "30 days"),
-                _zero_window("month", "Month"),
-                _zero_window("all", "All time"),
-            )
+        def bounded(value: datetime) -> datetime:
+            return self._later(value, run_start) if run_start is not None else value
 
         windows = (
-            ("7d", "7 days", max(point - timedelta(days=7), epoch.started_at)),
-            ("30d", "30 days", max(point - timedelta(days=30), epoch.started_at)),
-            ("month", "Month", max(start_month, epoch.started_at)),
-            ("all", "All time", epoch.started_at),
+            ("today", "Today", bounded(start_today)),
+            ("7d", "7 days", bounded(point - timedelta(days=7))),
+            ("30d", "30 days", bounded(point - timedelta(days=30))),
+            ("month", "Month", bounded(start_month)),
+            ("all", "All time", run_start),
         )
-        return (
-            today,
-            *(
-                self._signal_window(user_id, key, label, since, point)
-                for key, label, since in windows
-            ),
+        return tuple(
+            self._signal_window(user_id, key, label, since, point)
+            for key, label, since in windows
         )
 
     def _signal_window(
@@ -177,11 +151,10 @@ class CanonicalPerformanceRuntimeService(CanonicalPerformanceLedgerService):
     ) -> Day33PerformanceWindow:
         clauses = ["o.user_id=:user_id"]
         params: dict[str, Any] = {"user_id": user_id, "window_end": now}
-        epoch = active_paper_epoch(user_id)
-        if epoch is not None:
-            clauses.append("COALESCE(s.source_posted_at,s.created_at)>=:epoch_start")
-            params["epoch_start"] = epoch.started_at
-            since = max(since or epoch.started_at, epoch.started_at)
+        run_start = self._run_start(user_id)
+        if run_start is not None:
+            clauses.append("COALESCE(s.source_posted_at,s.created_at)>=:run_started_at")
+            params["run_started_at"] = run_start
         if since is not None:
             clauses.append(
                 "(o.closed_at>=:since OR "
@@ -308,22 +281,27 @@ class CanonicalPerformanceRuntimeService(CanonicalPerformanceLedgerService):
         )
 
     def _timeline_rows(self, user_id: UUID) -> list[Any]:
-        rows = super()._timeline_rows(user_id)
+        rows = list(super()._timeline_rows(user_id))
         eligible = self._eligible_signal_ids(user_id)
         if eligible is None:
             return rows
         return [row for row in rows if UUID(str(row["signal_id"])) in eligible]
 
     def read_shared_live_board(self) -> list[Any]:
-        rows = super().read_shared_live_board()
-        owner_raw = os.getenv("SUPER_SIGNALS_DAY28_OWNER_ID", "").strip()
-        try:
-            owner_id = UUID(owner_raw)
-        except (TypeError, ValueError):
+        rows = list(super().read_shared_live_board())
+        if not rows:
             return rows
-        eligible = self._eligible_signal_ids(owner_id)
-        if eligible is None:
-            return rows
+        with self._session_factory() as session:
+            values = session.execute(
+                text(
+                    """
+                    SELECT id FROM signals
+                    WHERE COALESCE(source_posted_at,created_at)>=:run_started_at
+                    """
+                ),
+                {"run_started_at": PAPER_RUN_STARTED_AT},
+            ).scalars().all()
+        eligible = {UUID(str(value)) for value in values}
         return [row for row in rows if UUID(str(row["signal_id"])) in eligible]
 
     def _summary_metrics(
@@ -334,12 +312,11 @@ class CanonicalPerformanceRuntimeService(CanonicalPerformanceLedgerService):
         end: datetime,
     ) -> dict[str, Any]:
         """Build persisted summaries as one Signal = one trade."""
-        eligible = self._eligible_signal_ids(user_id)
-        if eligible is not None:
+        run_start = self._run_start(user_id)
+        if run_start is not None:
+            eligible = self._eligible_signal_ids(user_id) or set()
             rows = [row for row in rows if UUID(str(row["signal_id"])) in eligible]
-            epoch = active_paper_epoch(user_id)
-            if epoch is not None:
-                start = max(start, epoch.started_at)
+            start = self._later(start, run_start)
 
         by_signal: dict[UUID, list[Any]] = {}
         for row in rows:
