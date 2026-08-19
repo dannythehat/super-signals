@@ -1,9 +1,8 @@
 """Super Signals API package.
 
-Explicit present-tense provider protection/exit instructions are production safety
-policy, not test helpers. Install deterministic policy overrides as soon as the
-application package is imported so the live listener, V1 policy and regression tests
-all run the same broker-facing rules.
+Temporary compatibility installs remain only for behaviours not yet folded into the
+canonical runtime.  The canonical cleanup removes these imports block by block; no new
+runtime override may be added here.
 """
 
 from app.literal_management_overrides import install_literal_management_overrides
@@ -73,14 +72,6 @@ from app.pending_reconciliation_parity_override import (
 )
 
 install_pending_reconciliation_parity_override()
-
-from app.telegram_revision_serialization import install_telegram_revision_serialization
-
-install_telegram_revision_serialization()
-
-from app.telegram_fast_ingress import install_telegram_fast_ingress
-
-install_telegram_fast_ingress()
 
 from app.performance_account_truth_override import install_performance_account_truth_override
 
