@@ -11,6 +11,11 @@ code does not decide whether the account can afford the requested provider trade
 valid broker mutation is submitted; Vantage/MT5 is the sole authority for an actual
 funds/margin rejection.
 
+The exact standalone BUY/SELL GOLD/XAUUSD NOW profile is the only trade allowed to have
+neither provider SL nor TP. Its canonical Signal remains NULL for those fields. This
+request-local executor derives the paper-tested 50-pip TP and 100-pip SL from the fresh
+broker executable quote immediately before sizing/submission.
+
 An ambiguous MetaAPI POST failure is never retried. Compensation reconciles every
 planned client ID against broker positions/orders and closes/cancels only exact broker
 artifacts that actually exist.
@@ -27,10 +32,16 @@ from uuid import UUID, uuid4
 
 from sqlalchemy import text
 
+from app.bare_gold_now_policy import (
+    STOP_LOSS_DISTANCE,
+    TAKE_PROFIT_DISTANCE,
+    bare_now_side,
+)
 from app.critical_entry_policy import CriticalEntry, parse_critical_entries
 from app.metaapi_gateway import MetaApiGatewayError
 from app.mt5_execution_day26 import Day26ExecutionError, Day26Mt5ExecutionService, _SignalInput
 from app.mt5_execution_day26_atomic import AtomicDay26Mt5ExecutionService
+from app.mt5_read_service_day23 import Day23LiveState, Day23Mt5ReadService, Day23ReadError
 from app.paper_critical_execution import PaperCriticalExecutionService, _Planned
 from app.paper_execution_priority import PaperExecutionPriorityService
 from app.risk_sizing_day24 import Day24RiskSizingResult
@@ -123,6 +134,118 @@ class PaperFreshStartExecutionService(PaperExecutionPriorityService):
             )
         finally:
             _full_risk_section_count.reset(context_token)
+
+    def _load_inputs(self, owner_user_id: UUID, signal_id: UUID):
+        bare = self._load_bare_now_signal(signal_id)
+        if bare is not None:
+            return bare, self._load_demo_account(owner_user_id, signal_id)
+        return super()._load_inputs(owner_user_id, signal_id)
+
+    def _load_bare_now_signal(self, signal_id: UUID) -> _SignalInput | None:
+        with self._session_factory() as session:
+            row = session.execute(
+                text(
+                    """
+                    SELECT symbol,side,order_type,entry_low,entry_high,stop_loss,
+                           take_profits,has_open_runner,parser_status,risk_multiplier,
+                           source_revision_index,source_posted_at,original_text
+                    FROM signals
+                    WHERE id=:signal_id
+                    LIMIT 1
+                    """
+                ),
+                {"signal_id": signal_id},
+            ).mappings().first()
+        if row is None:
+            return None
+
+        literal_side = bare_now_side(str(row["original_text"] or ""))
+        if literal_side is None:
+            return None
+        targets = row["take_profits"] if isinstance(row["take_profits"], (list, tuple)) else []
+        if (
+            str(row["parser_status"] or "") != "accepted"
+            or str(row["symbol"] or "").strip().upper() != "XAUUSD"
+            or str(row["side"] or "").strip().upper() != literal_side
+            or str(row["order_type"] or "").strip().lower() != "market"
+            or row["entry_low"] is not None
+            or row["entry_high"] is not None
+            or row["stop_loss"] is not None
+            or targets
+            or bool(row["has_open_runner"])
+        ):
+            raise Day26ExecutionError("bare_gold_now_profile_invalid")
+        posted_at = row["source_posted_at"]
+        if not isinstance(posted_at, datetime):
+            raise Day26ExecutionError("signal_posted_at_invalid")
+        risk_multiplier = Day26Mt5ExecutionService._required_decimal(
+            row["risk_multiplier"], "signal_risk_multiplier_invalid"
+        )
+        if risk_multiplier != Decimal("1"):
+            raise Day26ExecutionError("bare_gold_now_profile_invalid")
+        return _SignalInput(
+            signal_id=signal_id,
+            symbol="XAUUSD",
+            side=literal_side,
+            entry_low=Decimal("0"),
+            entry_high=Decimal("0"),
+            stop_loss=Decimal("0"),
+            take_profits=(),
+            has_open_runner=False,
+            signal_requests_double_lot=False,
+            source_revision_index=int(row["source_revision_index"]),
+            source_posted_at=posted_at,
+        )
+
+    async def _resolve_entry(
+        self,
+        *,
+        owner_user_id: UUID,
+        signal: _SignalInput,
+        day23: Day23Mt5ReadService,
+        initial_state: Day23LiveState,
+    ) -> tuple[Decimal, Day23LiveState]:
+        if (
+            signal.entry_low == 0
+            and signal.entry_high == 0
+            and signal.stop_loss == 0
+            and not signal.take_profits
+        ):
+            self._assert_signal_recent(signal)
+            with self._session_factory() as session:
+                raw_text = session.execute(
+                    text("SELECT original_text FROM signals WHERE id=:signal_id LIMIT 1"),
+                    {"signal_id": signal.signal_id},
+                ).scalar_one_or_none()
+            literal_side = bare_now_side(str(raw_text or ""))
+            if literal_side is None or literal_side != signal.side:
+                raise Day26ExecutionError("bare_gold_now_profile_invalid")
+            try:
+                executable = Decimal(
+                    str(Day23Mt5ReadService.executable_price(initial_state, signal.side))
+                )
+            except Day23ReadError as exc:
+                raise Day26ExecutionError(exc.code) from exc
+            if signal.side == "BUY":
+                stop_loss = executable - STOP_LOSS_DISTANCE
+                take_profit = executable + TAKE_PROFIT_DISTANCE
+            else:
+                stop_loss = executable + STOP_LOSS_DISTANCE
+                take_profit = executable - TAKE_PROFIT_DISTANCE
+            if stop_loss <= 0 or take_profit <= 0:
+                raise Day26ExecutionError("bare_gold_now_protection_invalid")
+            # _SignalInput is frozen, but this object is request-local and has not yet
+            # been sized or submitted. Canonical provider truth in `signals` remains
+            # untouched and therefore correctly records no provider SL/TP.
+            object.__setattr__(signal, "stop_loss", stop_loss)
+            object.__setattr__(signal, "take_profits", (take_profit,))
+            return executable, initial_state
+        return await super()._resolve_entry(
+            owner_user_id=owner_user_id,
+            signal=signal,
+            day23=day23,
+            initial_state=initial_state,
+        )
 
     @staticmethod
     def _required_decimal(value: object, code: str) -> Decimal:
