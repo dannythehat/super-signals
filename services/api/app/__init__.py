@@ -25,14 +25,6 @@ from app.breakeven_tp_repair import install_breakeven_tp_repair
 
 install_breakeven_tp_repair()
 
-from app.provider_entry_reliability_overrides import install_provider_entry_reliability_overrides
-
-install_provider_entry_reliability_overrides()
-
-from app.add_market_lifecycle_override import install_add_market_lifecycle_override
-
-install_add_market_lifecycle_override()
-
 from app.pending_reconciliation_parity_override import (
     install_pending_reconciliation_parity_override,
 )
