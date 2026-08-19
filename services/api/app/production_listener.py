@@ -13,8 +13,8 @@ from __future__ import annotations
 
 from typing import Any
 
-from app.ai_message_pipeline_canonical import CanonicalAiMessagePipeline
 from app.canonical_signal_ledger import CanonicalSignalLedger
+from app.production_ai_pipeline import ProductionAiMessagePipeline
 from app.telegram_listener_canonical import (
     CanonicalProductionTelegramListenerManager,
     build_canonical_production_listener_manager,
@@ -33,7 +33,7 @@ def build_production_listener_manager(**kwargs: Any) -> CanonicalProductionTeleg
 
     existing_pipeline = getattr(manager, "_ai_pipeline", None)
     if existing_pipeline is not None:
-        pipeline = CanonicalAiMessagePipeline(
+        pipeline = ProductionAiMessagePipeline(
             session_factory=manager._session_factory_day28,
             supervisor=getattr(existing_pipeline, "_supervisor", None),
         )
