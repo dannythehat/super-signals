@@ -15,7 +15,7 @@ from app.mt5_management_day27 import Day27ManagementError
 from app.paper_critical_execution import PaperCriticalExecutionService
 from app.paper_critical_management import PaperCriticalManagementService, _LayerPosition
 from app.paper_partial_close_gateway import PaperPartialCloseGateway
-from app.paper_pending_reconciler import PaperPendingReconciler
+from app.pending_reconciliation_canonical import AccountPendingReconciler
 from app.trading_management_canonical import CanonicalTradingManagementService
 
 
@@ -352,7 +352,7 @@ def test_pending_fill_mapping_requires_exact_trade_identity() -> None:
         "stop_loss": Decimal("4380"),
         "take_profit": Decimal("4410"),
     }
-    position_id, open_price = PaperPendingReconciler._validate_fill(
+    position_id, open_price = AccountPendingReconciler._validate_fill(
         local,
         {
             "id": "777",
@@ -377,7 +377,7 @@ def test_pending_fill_wrong_side_is_never_mapped() -> None:
         "take_profit": Decimal("4410"),
     }
     with pytest.raises(ValueError, match="pending_fill_side_mismatch"):
-        PaperPendingReconciler._validate_fill(
+        AccountPendingReconciler._validate_fill(
             local,
             {
                 "id": "777",
