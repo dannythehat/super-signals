@@ -15,6 +15,7 @@ from typing import Any
 
 from app.ai_canonical_signal import (
     AiCanonicalSignalService,
+    AiSignalResult,
     _ParsedTrade,
     _timestamp_token,
     _token,
@@ -45,6 +46,31 @@ def _ordered_targets(side: str, targets: tuple[Decimal, ...]) -> bool:
 
 
 class CanonicalSignalLedger(AiCanonicalSignalService):
+    """Single production signal ledger, including pre-execution provider revisions."""
+
+    def revise(
+        self,
+        *,
+        message_id,
+        extracted: dict[str, Any],
+        revision_index: int,
+        allow_revision: bool,
+        reason: str,
+    ) -> AiSignalResult:
+        """Apply one provider edit to the existing canonical signal.
+
+        This deliberately exposes the base ledger's revision operation under the name
+        used by the canonical semantic pipeline. Keeping it here avoids any import-time
+        compatibility alias or monkey patch.
+        """
+        return self.apply_pre_execution_revision(
+            message_id=message_id,
+            extracted=extracted,
+            revision_index=revision_index,
+            execute=allow_revision,
+            reason=reason,
+        )
+
     @staticmethod
     def _parse_extracted(extracted: dict[str, Any]) -> _ParsedTrade:
         profile = str(extracted.get("execution_profile") or "")
