@@ -117,3 +117,25 @@ def test_gold_short_trade_direction_is_explicit_sell_evidence() -> None:
     )
     assert result.action == "execute"
     assert result.extracted["side"] == "SELL"
+
+
+def test_completed_edit_can_create_first_executable_trade() -> None:
+    raw = (
+        "🔴SELL XAUUSD\n\nENTRY: 4521\nSecond entry: 4525\n\n"
+        "SL: 4537\nTP1: 4515\nTP2: 4510\nTP3: 4504\nTP4: open"
+    )
+    result = apply_v1_message_policy(
+        _decision(
+            side="SELL",
+            entry_low="4521",
+            entry_high="4525",
+            stop_loss="4537",
+            take_profits=["4515", "4510", "4504"],
+        ),
+        raw_text=raw,
+        is_edit=True,
+        original_has_signal=False,
+        previous_text="SELL GOLD NOW 4521",
+    )
+    assert result.action == "execute"
+    assert result.reason == "v1_complete_layered_signal_from_structured_edit"
