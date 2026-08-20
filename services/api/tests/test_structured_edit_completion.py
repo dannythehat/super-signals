@@ -4,7 +4,15 @@ from app.ai_message_supervisor import AiMessageDecision
 from app.v1_message_policy import apply_v1_message_policy
 
 
-def _decision(raw: str, *, side: str, entry_low: str, entry_high: str, stop_loss: str, tps: list[str]) -> AiMessageDecision:
+def _decision(
+    raw: str,
+    *,
+    side: str,
+    entry_low: str,
+    entry_high: str,
+    stop_loss: str,
+    tps: list[str],
+) -> AiMessageDecision:
     return AiMessageDecision(
         decision="new_trade",
         action="skip",
@@ -67,9 +75,10 @@ def test_tig_structured_edit_can_complete_matching_activation_stub() -> None:
     ]
 
 
-def test_structured_edit_with_no_prior_activation_stays_fail_closed() -> None:
+def test_complete_current_edit_needs_no_prior_activation_stub() -> None:
     raw = (
-        "SELL XAUUSD\nENTRY 4394\nSL 4410\nTP1 4389\nTP2 4383\nTP3 4377\nTP4 OPEN"
+        "SELL XAUUSD\nENTRY 4394\nSL 4410\n"
+        "TP1 4389\nTP2 4383\nTP3 4377\nTP4 OPEN"
     )
     result = apply_v1_message_policy(
         _decision(
@@ -83,32 +92,44 @@ def test_structured_edit_with_no_prior_activation_stays_fail_closed() -> None:
         raw_text=raw,
         is_edit=True,
         original_has_signal=False,
+        previous_text=None,
     )
-    assert result.action == "skip"
-    assert result.reason == "edit_cannot_create_first_trade"
+    assert result.action == "execute"
+    assert result.reason == "v1_complete_exact_signal_from_structured_edit"
 
 
-def test_structured_edit_cannot_change_activation_price() -> None:
-    raw = "SELL XAUUSD\nENTRY 4394\nSL 4410\nTP1 4389"
+def test_current_edit_wins_over_intermediate_typo_price() -> None:
+    raw = (
+        "🔴SELL  XAUUSD\n\n"
+        "ENTRY: 4521\nSecond entry: 4525\n\n"
+        "SL: 4537\nTP1: 4515\nTP2: 4510\nTP3: 4504\nTP4: open\n\n"
+        "Manage risk properly."
+    )
     result = apply_v1_message_policy(
         _decision(
             raw,
             side="SELL",
-            entry_low="4394",
-            entry_high="4394",
-            stop_loss="4410",
-            tps=["4389"],
+            entry_low="4521",
+            entry_high="4525",
+            stop_loss="4537",
+            tps=["4515", "4510", "4504"],
         ),
         raw_text=raw,
         is_edit=True,
         original_has_signal=False,
-        previous_text="SELL GOLD NOW 4395",
+        previous_text=(
+            "🔴SELL  XAUUSD\n\n"
+            "ENTRY: 4421\nSecond entry: 4425\n\n"
+            "SL: 4437\nTP1: 4415\nTP2: 4410\nTP3: 4404\nTP4: open"
+        ),
     )
-    assert result.action == "skip"
-    assert result.reason == "edit_cannot_create_first_trade"
+    assert result.action == "execute"
+    assert result.reason == "v1_complete_layered_signal_from_structured_edit"
+    assert result.extracted["entry_low"] == "4521"
+    assert result.extracted["entry_high"] == "4525"
 
 
-def test_structured_edit_cannot_flip_activation_side() -> None:
+def test_current_edit_can_correct_side_from_superseded_revision() -> None:
     raw = "SELL XAUUSD\nENTRY 4394\nSL 4410\nTP1 4389"
     result = apply_v1_message_policy(
         _decision(
@@ -124,25 +145,28 @@ def test_structured_edit_cannot_flip_activation_side() -> None:
         original_has_signal=False,
         previous_text="BUY GOLD NOW 4394",
     )
-    assert result.action == "skip"
-    assert result.reason == "edit_cannot_create_first_trade"
+    assert result.action == "execute"
+    assert result.reason == "v1_complete_exact_signal_from_structured_edit"
 
 
-def test_unstructured_edit_still_cannot_create_first_trade() -> None:
-    raw = "SELL GOLD NOW 4394"
+def test_invalid_current_edit_still_fails_directional_integrity() -> None:
+    raw = (
+        "🔴SELL XAUUSD\nENTRY: 4509\nSecond entry: 4513\n"
+        "SL: 4425\nTP1: 4504\nTP2: 4498\nTP3: 4492\nTP4: open"
+    )
     result = apply_v1_message_policy(
         _decision(
             raw,
             side="SELL",
-            entry_low="4394",
-            entry_high="4394",
-            stop_loss="4410",
-            tps=["4389"],
+            entry_low="4509",
+            entry_high="4513",
+            stop_loss="4425",
+            tps=["4504", "4498", "4492"],
         ),
         raw_text=raw,
         is_edit=True,
         original_has_signal=False,
-        previous_text="SELL GOLD NOW 4394",
+        previous_text="SELL GOLD NOW 4509",
     )
     assert result.action == "skip"
-    assert result.reason == "edit_cannot_create_first_trade"
+    assert result.reason == "strict_directional_validation_failed"
