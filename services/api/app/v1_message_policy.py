@@ -1,10 +1,16 @@
-"""Canonical fail-closed Super Signals message policy.
+"""Canonical Super Signals message policy.
 
-OpenAI may understand provider grammar using bounded same-source context, but this
-module is the final mechanical contract for execution. Trade numbers must come from
-the current Telegram message. A tightly-scoped source profile may supply only a known
-instrument identity for a dedicated Gold/XAUUSD provider; it can never donate entry,
-SL, TP, order type or size.
+The current Telegram revision is the mechanical execution evidence. OpenAI may use
+bounded same-source context to understand provider grammar, but trade numbers must come
+from the current message itself. A source profile may supply only a known instrument
+identity for a dedicated Gold/XAUUSD provider; it can never donate entry, SL, TP, order
+type or size.
+
+A completed edit is the current state of the same Telegram message. It is evaluated on
+its own merits and is never rejected because an earlier revision was incomplete, typoed
+or used a different price. Duplicate prevention and post-execution immutability belong
+to the canonical signal ledger/dispatch path, not to textual comparison with an old
+revision.
 
 The only exception to provider-supplied SL/TP is the exact standalone Gold/XAUUSD NOW
 product profile. That whole-message command carries no invented provider prices in the
@@ -46,12 +52,6 @@ _RESULT_ONLY = re.compile(
 
 _XAUUSD_SOURCE_PROFILES = {"tgc_xauusd", "tdc_xauusd"}
 
-_ACTIVATION_STUB = re.compile(
-    r"(?is)^\s*(?:🔴|🟢|🔥|⚡|✅|🚨|\s)*"
-    r"(BUY|SELL)\s+(?:XAUUSD|GOLD)\b"
-    r"(?:\s+(?:NOW|AT))?\s*(?:@|:|=)?\s*(\d+(?:\.\d+)?)\s*[.!🔥✅\s]*$"
-)
-
 
 def _decimal(value: Any) -> Decimal | None:
     if value is None or isinstance(value, bool):
@@ -76,40 +76,6 @@ def _literal_numbers(raw_text: str) -> set[Decimal]:
 
 def _profile_supplies_xauusd(source_profile: str | None) -> bool:
     return str(source_profile or "").strip().lower() in _XAUUSD_SOURCE_PROFILES
-
-
-def _same_trade_progressive_edit(
-    previous_text: str | None,
-    *,
-    side: str,
-    entry_low: Decimal | None,
-    entry_high: Decimal | None,
-    source_profile: str | None,
-) -> bool:
-    if not previous_text or side not in {"BUY", "SELL"}:
-        return False
-    previous = previous_text.strip()
-    stub = _ACTIVATION_STUB.fullmatch(previous)
-    if stub is not None:
-        if stub.group(1).upper() != side:
-            return False
-        stub_price = _decimal(stub.group(2))
-        current_entries = {value for value in (entry_low, entry_high) if value is not None}
-        return stub_price is not None and stub_price in current_entries
-    if _INSTRUMENT.search(previous) is None and not _profile_supplies_xauusd(source_profile):
-        return False
-    previous_has_buy = _BUY.search(previous) is not None
-    previous_has_sell = _SELL.search(previous) is not None
-    if side == "BUY" and (not previous_has_buy or previous_has_sell):
-        return False
-    if side == "SELL" and (not previous_has_sell or previous_has_buy):
-        return False
-    current_entries = {
-        value.normalize() for value in (entry_low, entry_high) if value is not None
-    }
-    if not current_entries:
-        return False
-    return bool(_literal_numbers(previous) & current_entries)
 
 
 def _skip(
@@ -209,14 +175,16 @@ def apply_v1_message_policy(
     original_has_signal: bool | None = None,
     previous_text: str | None = None,
 ) -> AiMessageDecision:
-    """Return the mechanically allowed decision."""
+    """Return the mechanically allowed decision for the current Telegram revision."""
+    # previous_text is accepted only for call-site compatibility and semantic model
+    # context. Mechanical execution never compares the current trade to a superseded
+    # revision, because provider typo/fill-in edits must not poison a valid final setup.
+    del previous_text
     text = raw_text or ""
 
     if decision.decision == "new_trade":
         exact_bare_side = bare_now_side(text)
         if exact_bare_side is not None:
-            if is_edit:
-                return _skip(decision, "bare_gold_now_edit_not_executable")
             extracted = dict(decision.extracted or {})
             extracted.update(
                 {
@@ -245,21 +213,7 @@ def apply_v1_message_policy(
         )
         side = str(extracted.get("side") or "").strip().upper()
         source_profile = str(extracted.get("source_profile") or "").strip().lower() or None
-
-        if is_edit and original_has_signal is None:
-            return _skip(decision, "edit_cannot_create_first_trade", extracted)
         edit_completed_first_trade = is_edit and original_has_signal is False
-        if edit_completed_first_trade:
-            if previous_text is None or previous_text.strip() == text.strip():
-                return _skip(decision, "edit_cannot_create_first_trade", extracted)
-            if not _same_trade_progressive_edit(
-                previous_text,
-                side=side,
-                entry_low=entry_low,
-                entry_high=entry_high,
-                source_profile=source_profile,
-            ):
-                return _skip(decision, "edit_cannot_create_first_trade", extracted)
 
         if _INSTRUMENT.search(text) is None and not _profile_supplies_xauusd(source_profile):
             return _skip(decision, "missing_instrument", extracted)
@@ -309,8 +263,10 @@ def apply_v1_message_policy(
             all_pending = all(item.order_type != "market" for item in critical_entries)
             extracted["order_type"] = "pending" if all_pending else "market"
         elif _PENDING.search(text):
-            return _skip(decision, "pending_order_type_ambiguous", extracted)
+            return _skip(decision, "pending_order_structure_missing", extracted)
         elif str(extracted.get("order_type") or "").strip().lower() == "pending":
+            # Model guesses never override literal provider wording. Without a literal
+            # pending instruction this is an ordinary market/zone signal.
             extracted["order_type"] = "market"
 
         if stop_loss is None:
@@ -339,11 +295,14 @@ def apply_v1_message_policy(
                     "take_profits": [str(value) for value in take_profits],
                 }
             )
+            reason = "v1_complete_market_signal_live_entry"
+            if edit_completed_first_trade:
+                reason = f"{reason}_from_structured_edit"
             return replace(
                 decision,
                 decision="new_trade",
                 action="execute",
-                reason="v1_complete_market_signal_live_entry",
+                reason=reason,
                 extracted=extracted,
             )
 

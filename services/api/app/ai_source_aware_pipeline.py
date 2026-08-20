@@ -4,6 +4,9 @@ The base pipeline owns idempotency, persistence, canonical Signal creation and l
 bridging. This subclass changes only the OpenAI interpretation input: each decision gets
 the provider name, bounded recent history from the same source, and from Day 34 onward a
 bounded broker-backed Active Trade Watch context for that same source.
+
+If the semantic supervisor is unavailable, the current message is recorded as
+non-actionable. Old classification/parse rows are never consulted as a fallback.
 """
 
 from __future__ import annotations
@@ -73,11 +76,9 @@ class SourceAwareAiMessagePipeline(AiMessagePipeline):
             except AiSupervisorError:
                 pass
 
-        return self._deterministic_fallback(
-            source_id=source_id,
-            telegram_message_id=telegram_message_id,
-            revision_index=revision_index,
-            raw_text=raw_text,
+        return self._non_actionable_without_ai(
+            raw_text,
+            reason="semantic_supervisor_unavailable_no_legacy_trade_fallback",
         )
 
     def _source_context(

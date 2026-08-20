@@ -4,6 +4,11 @@ The broker account remains the reconciliation authority, but the Owner paper UI 
 virtual test run beginning at the configured paper epoch. Pre-epoch broker/audit truth
 is retained and simply excluded from the active dashboard. No runtime monkey patching is
 used.
+
+A transient MetaAPI read failure must never make an already broker-mapped Super Signals
+position disappear from the app. During a live-read outage we expose the durable local
+broker mapping with live price/P&L left unknown. Once broker reads recover, broker state
+immediately resumes authority and normal reconciliation applies.
 """
 
 from __future__ import annotations
@@ -15,7 +20,11 @@ from uuid import UUID
 
 from sqlalchemy import text
 
-from app.dashboard_day32 import Day32DashboardService
+from app.dashboard_day32 import (
+    Day32DashboardService,
+    Day32DashboardView,
+    Day32OpenPosition,
+)
 from app.dashboard_today_summary import TodayTradingSummaryService
 from app.paper_run_epoch import active_paper_epoch
 
@@ -75,6 +84,72 @@ class CanonicalDashboardRuntimeService(Day32DashboardService):
         if eligible is None:
             return values
         return tuple(item for item in values if item.signal_id in eligible)
+
+    def _durable_mapped_open_positions(self, user_id: UUID) -> tuple[Day32OpenPosition, ...]:
+        """Last broker-mapped local truth used only while the broker read is unavailable."""
+        eligible = self._eligible_signal_ids(user_id)
+        with self._session_factory() as session:
+            rows = session.execute(
+                text(
+                    """
+                    SELECT
+                        p.id,p.signal_id,p.tp_index,p.planned_risk_percent,
+                        p.broker_position_id,p.volume,p.entry_price,p.stop_loss,
+                        p.take_profit,p.opened_at,s.symbol,s.side
+                    FROM positions AS p
+                    JOIN signals AS s ON s.id=p.signal_id
+                    WHERE p.user_id=:user_id
+                      AND p.status='open'
+                      AND p.broker_position_id IS NOT NULL
+                      AND p.volume IS NOT NULL
+                      AND p.entry_price IS NOT NULL
+                    ORDER BY p.opened_at NULLS LAST,p.entry_index,p.tp_index,p.id
+                    """
+                ),
+                {"user_id": user_id},
+            ).mappings().all()
+        values: list[Day32OpenPosition] = []
+        for row in rows:
+            signal_id = UUID(str(row["signal_id"]))
+            if eligible is not None and signal_id not in eligible:
+                continue
+            values.append(
+                Day32OpenPosition(
+                    position_id=UUID(str(row["id"])),
+                    broker_position_id=str(row["broker_position_id"]),
+                    signal_id=signal_id,
+                    tp_index=int(row["tp_index"]),
+                    symbol=str(row["symbol"] or ""),
+                    side=str(row["side"] or ""),
+                    volume=float(row["volume"]),
+                    planned_risk_percent=Decimal(str(row["planned_risk_percent"])),
+                    entry_price=float(row["entry_price"]),
+                    current_price=None,
+                    stop_loss=(float(row["stop_loss"]) if row["stop_loss"] is not None else None),
+                    take_profit=(float(row["take_profit"]) if row["take_profit"] is not None else None),
+                    profit=None,
+                    opened_at=row["opened_at"],
+                )
+            )
+        return tuple(values)
+
+    def _without_live_state(self, *, connection, trading, user_id: UUID, now: datetime):  # noqa: ANN001,ANN201
+        view: Day32DashboardView = super()._without_live_state(
+            connection=connection,
+            trading=trading,
+            user_id=user_id,
+            now=now,
+        )
+        if not connection.configured:
+            return view
+        durable = self._durable_mapped_open_positions(user_id)
+        if not durable:
+            return view
+        return replace(
+            view,
+            open_positions=durable,
+            open_profit=None,
+        )
 
     def _latest_signal(self, user_id: UUID):  # noqa: ANN201
         value = super()._latest_signal(user_id)

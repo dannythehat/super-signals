@@ -1,14 +1,14 @@
 """Canonical Super Signals Telegram/member publication manager.
 
-The publisher consumes one broker-placement truth: the shared Day38 route audit with
-``outcome=executed``. It does not care whether the underlying executor used market,
-pending or layered placement, so those paths cannot silently disappear from Telegram.
+Member output is a live mirror of broker-confirmed Super Signals activity, not a replay
+queue for historical lifecycle rows. Broker/audit history remains durable in PostgreSQL,
+but stale events are never converted into Telegram or in-app notifications after a
+restart or deployment.
 
-Root and lifecycle posts are claimed directly here rather than through legacy render
-helpers. Sparse canonical values are safe, broker-mapped execution values fill display
-fields where the provider intentionally supplied none, and any event older than five
-minutes is unmistakably labelled DELAYED. Publishing remains a one-way mirror and can
-never place or manage a trade.
+Root trade posts require a recent successful canonical broker route. Lifecycle posts and
+in-app lifecycle notifications require a fresh lifecycle event. The pinned Live Trades
+board remains broker-state based and can show older trades that are genuinely still
+active without replaying their historical updates.
 """
 
 from __future__ import annotations
@@ -26,7 +26,7 @@ from app.telegram_publisher_day34_cutover import Day34CutoverTelegramPublisherMa
 from app.trade_identity import prefix_public_trade_identity, public_trade_identity
 
 _PLACEMENT_EVENT = "mt5.day38_route_new_trade"
-_DELAY_THRESHOLD = timedelta(minutes=5)
+_MEMBER_EVENT_FRESHNESS = timedelta(minutes=5)
 
 
 def _decimal_text(value: Any) -> str:
@@ -39,28 +39,6 @@ def _decimal_text(value: Any) -> str:
     if not parsed.is_finite():
         return "N/A"
     return format(parsed.normalize(), "f")
-
-
-def _utc(value: datetime) -> datetime:
-    return value.replace(tzinfo=UTC) if value.tzinfo is None else value.astimezone(UTC)
-
-
-def _age_text(age: timedelta) -> str:
-    seconds = max(0, int(age.total_seconds()))
-    hours, remainder = divmod(seconds, 3600)
-    minutes = remainder // 60
-    if hours:
-        return f"{hours}h {minutes}m"
-    return f"{max(1, minutes)}m"
-
-
-def _mark_delayed(text_value: str, occurred_at: datetime | None) -> str:
-    if occurred_at is None:
-        return text_value
-    age = datetime.now(UTC) - _utc(occurred_at)
-    if age <= _DELAY_THRESHOLD or text_value.startswith("⏱ DELAYED UPDATE"):
-        return text_value
-    return f"⏱ DELAYED UPDATE · original event {_age_text(age)} earlier\n{text_value}"
 
 
 def _render_root(row: Any) -> str:
@@ -102,7 +80,7 @@ def _render_root(row: Any) -> str:
 
 
 class CanonicalTelegramPublisherManager(Day34CutoverTelegramPublisherManager):
-    """One broker-route-driven publication path for roots, updates and summaries."""
+    """Fresh-only member publication path plus broker-backed live board."""
 
     @staticmethod
     def _placement_exists_sql(alias: str) -> str:
@@ -114,28 +92,27 @@ class CanonicalTelegramPublisherManager(Day34CutoverTelegramPublisherManager):
                   AND placed.entity_id={alias}
                   AND placed.event_type='{_PLACEMENT_EVENT}'
                   AND placed.payload->>'outcome'='executed'
-                  AND placed.created_at>:publish_after
+                  AND placed.created_at>:fresh_after
             )
         """
 
     def _seed_missing_publications(self) -> None:
-        """Seed from the shared successful broker route, never executor-specific events."""
+        """Seed only current member events; stale history remains audit-only."""
+        fresh_after = datetime.now(UTC) - _MEMBER_EVENT_FRESHNESS
         with self._session_factory() as session:
-            publish_after = session.execute(
-                text("SELECT publish_after FROM day34_summary_state WHERE id=1")
-            ).scalar_one()
-
             placement_for_pub = self._placement_exists_sql("pub.signal_id")
             placement_for_sig = self._placement_exists_sql("sig.id")
             placement_for_ev = self._placement_exists_sql("ev.signal_id")
 
+            # Old unsent roots are not replayed after restart. A new root is publishable
+            # only when its successful broker route itself is recent.
             session.execute(
                 text(
                     f"""
                     UPDATE telegram_publications AS pub
                     SET status='suppressed',
-                        failure_code='canonical_not_broker_placed',
-                        failure_reason='Member roots require a confirmed canonical broker route.',
+                        failure_code='stale_or_unconfirmed_member_root',
+                        failure_reason='Member trade roots are forward-only and require a recent confirmed broker route.',
                         updated_at=now()
                     WHERE pub.publication_kind='signal_created'
                       AND pub.lifecycle_event_id IS NULL
@@ -143,7 +120,7 @@ class CanonicalTelegramPublisherManager(Day34CutoverTelegramPublisherManager):
                       AND NOT {placement_for_pub}
                     """
                 ),
-                {"publish_after": publish_after},
+                {"fresh_after": fresh_after},
             )
 
             session.execute(
@@ -154,12 +131,16 @@ class CanonicalTelegramPublisherManager(Day34CutoverTelegramPublisherManager):
                     WHERE pub.publication_kind='signal_created'
                       AND pub.lifecycle_event_id IS NULL
                       AND pub.status='suppressed'
-                      AND pub.failure_code IN ('day34_not_broker_placed','canonical_not_broker_placed')
+                      AND pub.failure_code IN (
+                          'day34_not_broker_placed',
+                          'canonical_not_broker_placed',
+                          'stale_or_unconfirmed_member_root'
+                      )
                       AND pub.telegram_message_id IS NULL
                       AND {placement_for_pub}
                     """
                 ),
-                {"publish_after": publish_after},
+                {"fresh_after": fresh_after},
             )
 
             session.execute(
@@ -178,7 +159,29 @@ class CanonicalTelegramPublisherManager(Day34CutoverTelegramPublisherManager):
                     ON CONFLICT DO NOTHING
                     """
                 ),
-                {"publish_after": publish_after},
+                {"fresh_after": fresh_after},
+            )
+
+            # Hard-stop any previously queued stale lifecycle rows before claim/send.
+            session.execute(
+                text(
+                    """
+                    UPDATE telegram_publications AS pub
+                    SET status='suppressed',
+                        failure_code='stale_lifecycle_audit_only',
+                        failure_reason='Historical lifecycle events are audit-only and are never replayed to members.',
+                        updated_at=now()
+                    FROM signal_lifecycle_events AS ev
+                    WHERE pub.lifecycle_event_id=ev.id
+                      AND pub.publication_kind='lifecycle_event'
+                      AND pub.status='pending'
+                      AND (
+                          ev.occurred_at<:fresh_after
+                          OR ev.created_at<:fresh_after
+                      )
+                    """
+                ),
+                {"fresh_after": fresh_after},
             )
 
             session.execute(
@@ -189,7 +192,8 @@ class CanonicalTelegramPublisherManager(Day34CutoverTelegramPublisherManager):
                     )
                     SELECT ev.signal_id,ev.id,'lifecycle_event','pending'
                     FROM signal_lifecycle_events AS ev
-                    WHERE ev.occurred_at>:publish_after
+                    WHERE ev.occurred_at>=:fresh_after
+                      AND ev.created_at>=:fresh_after
                       AND (
                           EXISTS (
                               SELECT 1 FROM telegram_publications AS root
@@ -208,10 +212,11 @@ class CanonicalTelegramPublisherManager(Day34CutoverTelegramPublisherManager):
                     ON CONFLICT DO NOTHING
                     """
                 ),
-                {"publish_after": publish_after},
+                {"fresh_after": fresh_after},
             )
 
-            self._seed_canonical_in_app_notifications(session, publish_after=publish_after)
+            self._seed_fresh_in_app_notifications(session, fresh_after=fresh_after)
+            self._suppress_stale_in_app_replays(session)
             session.commit()
 
         if self._summary_service is not None:
@@ -220,7 +225,7 @@ class CanonicalTelegramPublisherManager(Day34CutoverTelegramPublisherManager):
         self._sync_live_board_safely()
 
     @staticmethod
-    def _seed_canonical_in_app_notifications(session: Any, *, publish_after: datetime) -> None:
+    def _seed_fresh_in_app_notifications(session: Any, *, fresh_after: datetime) -> None:
         session.execute(
             text(
                 f"""
@@ -248,12 +253,12 @@ class CanonicalTelegramPublisherManager(Day34CutoverTelegramPublisherManager):
                       AND placed.entity_id=sig.id
                       AND placed.event_type='{_PLACEMENT_EVENT}'
                       AND placed.payload->>'outcome'='executed'
-                      AND placed.created_at>:publish_after
+                      AND placed.created_at>:fresh_after
                 )
                 ON CONFLICT (event_key) DO NOTHING
                 """
             ),
-            {"publish_after": publish_after},
+            {"fresh_after": fresh_after},
         )
         session.execute(
             text(
@@ -284,21 +289,35 @@ class CanonicalTelegramPublisherManager(Day34CutoverTelegramPublisherManager):
                         'trade_action_created',false
                     )
                 FROM signal_lifecycle_events AS ev
-                WHERE ev.occurred_at>:publish_after
+                WHERE ev.occurred_at>=:fresh_after
+                  AND ev.created_at>=:fresh_after
                   AND EXISTS (
                       SELECT 1 FROM telegram_publications AS root
                       WHERE root.signal_id=ev.signal_id
                         AND root.publication_kind='signal_created'
                         AND root.lifecycle_event_id IS NULL
-                        AND (
-                            root.status='sent'
-                            OR root.status IN ('pending','sending')
-                        )
+                        AND root.status IN ('sent','pending','sending')
                   )
                 ON CONFLICT (event_key) DO NOTHING
                 """
             ),
-            {"publish_after": publish_after},
+            {"fresh_after": fresh_after},
+        )
+
+    @staticmethod
+    def _suppress_stale_in_app_replays(session: Any) -> None:
+        """Hide previously replayed stale rows while retaining them for forensic audit."""
+        session.execute(
+            text(
+                """
+                UPDATE notification_events AS n
+                SET audience='suppressed'
+                FROM signal_lifecycle_events AS ev
+                WHERE n.lifecycle_event_id=ev.id
+                  AND n.audience='shared'
+                  AND n.created_at>ev.occurred_at+interval '5 minutes'
+                """
+            )
         )
 
     def _claim_next(self) -> PublicationAttempt | SummaryPublicationAttempt | None:
@@ -312,15 +331,15 @@ class CanonicalTelegramPublisherManager(Day34CutoverTelegramPublisherManager):
 
     def _claim_root(self) -> PublicationAttempt | None:
         assert self._destination_chat_id is not None
+        fresh_after = datetime.now(UTC) - _MEMBER_EVENT_FRESHNESS
         with self._session_factory() as session:
             row = session.execute(
                 text(
-                    """
+                    f"""
                     SELECT
                         pub.id AS publication_id,pub.signal_id,
                         sig.symbol,sig.side,sig.entry_low,sig.entry_high,sig.stop_loss,
                         sig.take_profits,sig.has_open_runner,sig.risk_multiplier,
-                        sig.source_posted_at,
                         (SELECT MIN(p.entry_price) FROM positions p
                          WHERE p.signal_id=sig.id AND p.entry_price IS NOT NULL) AS broker_entry,
                         (SELECT MIN(p.stop_loss) FROM positions p
@@ -333,19 +352,18 @@ class CanonicalTelegramPublisherManager(Day34CutoverTelegramPublisherManager):
                     WHERE pub.status='pending'
                       AND pub.publication_kind='signal_created'
                       AND pub.lifecycle_event_id IS NULL
+                      AND {self._placement_exists_sql('pub.signal_id')}
                     ORDER BY pub.created_at,pub.id
                     FOR UPDATE OF pub SKIP LOCKED
                     LIMIT 1
                     """
-                )
+                ),
+                {"fresh_after": fresh_after},
             ).mappings().first()
             if row is None:
                 session.rollback()
                 return None
-            rendered = prefix_public_trade_identity(
-                row["signal_id"],
-                _mark_delayed(_render_root(row), row["source_posted_at"]),
-            )
+            rendered = prefix_public_trade_identity(row["signal_id"], _render_root(row))
             session.execute(
                 text(
                     """
@@ -372,13 +390,14 @@ class CanonicalTelegramPublisherManager(Day34CutoverTelegramPublisherManager):
 
     def _claim_lifecycle(self) -> LifecyclePublicationAttempt | None:
         assert self._destination_chat_id is not None
+        fresh_after = datetime.now(UTC) - _MEMBER_EVENT_FRESHNESS
         with self._session_factory() as session:
             row = session.execute(
                 text(
                     """
                     SELECT
                         pub.id AS publication_id,pub.signal_id,
-                        ev.rendered_text,ev.occurred_at,
+                        ev.rendered_text,
                         root.telegram_message_id AS reply_to_message_id
                     FROM telegram_publications AS pub
                     JOIN signal_lifecycle_events AS ev ON ev.id=pub.lifecycle_event_id
@@ -390,18 +409,21 @@ class CanonicalTelegramPublisherManager(Day34CutoverTelegramPublisherManager):
                       AND pub.publication_kind='lifecycle_event'
                       AND root.status='sent'
                       AND root.telegram_message_id IS NOT NULL
+                      AND ev.occurred_at>=:fresh_after
+                      AND ev.created_at>=:fresh_after
                     ORDER BY ev.occurred_at,ev.created_at,pub.id
                     FOR UPDATE OF pub SKIP LOCKED
                     LIMIT 1
                     """
-                )
+                ),
+                {"fresh_after": fresh_after},
             ).mappings().first()
             if row is None:
                 session.rollback()
                 return None
             rendered = prefix_public_trade_identity(
                 row["signal_id"],
-                _mark_delayed(str(row["rendered_text"] or "Trade update."), row["occurred_at"]),
+                str(row["rendered_text"] or "Trade update."),
             )
             reply_id = int(row["reply_to_message_id"])
             session.execute(
@@ -441,6 +463,7 @@ class CanonicalTelegramPublisherManager(Day34CutoverTelegramPublisherManager):
                     FROM telegram_notification_deliveries AS d
                     JOIN notification_events AS n ON n.id=d.notification_id
                     WHERE d.status='pending'
+                      AND n.audience!='suppressed'
                     ORDER BY d.created_at,d.id
                     FOR UPDATE OF d SKIP LOCKED
                     LIMIT 1
@@ -476,7 +499,7 @@ class CanonicalTelegramPublisherManager(Day34CutoverTelegramPublisherManager):
             )
 
     def _live_board_rows(self) -> list[Any]:
-        """Show broker-active Signals regardless of underlying market/pending executor."""
+        """Show broker-active Signals regardless of their original publication age."""
         with self._session_factory() as session:
             return list(
                 session.execute(
