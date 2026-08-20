@@ -1,6 +1,6 @@
 from datetime import UTC, datetime
 
-from app.dashboard_today_summary import local_day_bounds
+from app.dashboard_today_summary import TodayTradingSummary, local_day_bounds
 from app.routes.dashboard_day32 import (
     TodayTradingSummaryResponse,
     _broker_pending_trade_count,
@@ -89,3 +89,7 @@ def test_missing_mt5_active_order_read_never_falls_back_to_local_pending_rows() 
         session_started_at=datetime(2026, 8, 20, 0, 0, tzinfo=UTC),
         active_order_ids=None,
     ) is None
+
+
+def test_today_summary_has_no_local_pending_field_or_fallback() -> None:
+    assert "pending" not in TodayTradingSummary.__dataclass_fields__
