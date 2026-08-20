@@ -1,7 +1,10 @@
 from datetime import UTC, datetime
 
 from app.dashboard_today_summary import local_day_bounds
-from app.routes.dashboard_day32 import TodayTradingSummaryResponse
+from app.routes.dashboard_day32 import (
+    TodayTradingSummaryResponse,
+    _broker_pending_trade_count,
+)
 
 
 def test_sofia_today_uses_local_calendar_day_not_utc_day() -> None:
@@ -51,3 +54,38 @@ def test_today_summary_contract_counts_signals_not_tp_positions() -> None:
     assert "reconciled" not in payload
     assert "provider" not in payload
     assert "source_id" not in payload
+
+
+def test_today_pending_is_unknown_when_broker_truth_is_unavailable() -> None:
+    response = TodayTradingSummaryResponse(
+        timezone="Europe/Sofia",
+        trades=0,
+        wins=0,
+        losses=0,
+        breakeven=0,
+        open=0,
+        pending=None,
+        settling=0,
+        realised_pnl=0,
+        winning_pips=0,
+        net_pips=0,
+    )
+    assert response.pending is None
+
+
+def test_empty_mt5_active_order_list_means_zero_pending_trades() -> None:
+    assert _broker_pending_trade_count(
+        object(),  # type: ignore[arg-type]
+        object(),  # type: ignore[arg-type]
+        session_started_at=datetime(2026, 8, 20, 0, 0, tzinfo=UTC),
+        active_order_ids=set(),
+    ) == 0
+
+
+def test_missing_mt5_active_order_read_never_falls_back_to_local_pending_rows() -> None:
+    assert _broker_pending_trade_count(
+        object(),  # type: ignore[arg-type]
+        object(),  # type: ignore[arg-type]
+        session_started_at=datetime(2026, 8, 20, 0, 0, tzinfo=UTC),
+        active_order_ids=None,
+    ) is None
