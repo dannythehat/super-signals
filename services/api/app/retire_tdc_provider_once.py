@@ -1,14 +1,13 @@
 """One-time operational retirement of TDC.
 
-This module is deliberately temporary. It runs during one controlled deployment,
-removes any still-active TDC broker exposure, purges TDC from mutable user-facing
-trading/performance data, rebuilds the remaining provider summaries, and is then
-deleted from the production tree.
+TDC is permanently revoked before cleanup starts. Any genuinely active TDC broker
+position/order is removed first. Mutable user-facing/performance material is then
+purged and rebuilt without TDC.
 
-Raw Telegram messages, Signals, lifecycle events, audit events and broker deals are
-immutable forensic evidence. They remain internal and cannot re-enter user-facing
-performance because the TDC source is permanently revoked and all of its Position /
-performance outcome mappings are removed.
+Signals, Positions, broker deals, lifecycle events, source messages and audit rows are
+retained as internal forensic evidence because several of those ledgers are intentionally
+immutable. Production performance/history code excludes revoked providers, so retained
+evidence cannot re-enter dashboard statistics or Trade History.
 """
 
 from __future__ import annotations
@@ -27,7 +26,7 @@ from app.db import get_engine, get_session_factory
 from app.metaapi_read_gateway import MetaApiReadGateway
 from app.metaapi_trade_gateway import MetaApiTradeGateway
 from app.mt5_crypto import MetaApiTokenCipher
-from app.performance_ledger_canonical import CanonicalPerformanceLedgerService
+from app.performance_runtime import CanonicalPerformanceRuntimeService
 
 _TDC_CHAT_ID = -1004415242875
 _MARKER = "provider.tdc_retirement_completed"
@@ -64,8 +63,6 @@ def _load_targets(session: Session) -> tuple[UUID, list[AccountTarget], set[UUID
     if source_id is None:
         raise RuntimeError("tdc_retirement_source_missing")
 
-    # Revoke first. The production listener and canonical dispatcher both require
-    # testing/live, so no new TDC broker intent can race the cleanup.
     session.execute(
         text("UPDATE sources SET status='revoked', updated_at=now() WHERE id=:source_id"),
         {"source_id": source_id},
@@ -151,7 +148,6 @@ async def _terminal_order_ids(
     account_id: str,
     region: str,
 ) -> set[str]:
-    """Return terminal order tickets from bounded bulk broker history."""
     end = datetime.now(UTC)
     start = end - timedelta(days=7)
     terminal: set[str] = set()
@@ -235,16 +231,11 @@ async def _remove_broker_exposure(
         )
         cancelled += 1
 
-    # Never make the app look clean while a TDC broker position/order is still active.
     remaining_positions = await read.read_positions(
-        token=token,
-        account_id=target.account_id,
-        region=region,
+        token=token, account_id=target.account_id, region=region
     )
     remaining_orders = await read.read_orders(
-        token=token,
-        account_id=target.account_id,
-        region=region,
+        token=token, account_id=target.account_id, region=region
     )
     terminal_after = await _terminal_order_ids(
         read,
@@ -266,19 +257,13 @@ async def _remove_broker_exposure(
     return closed, cancelled
 
 
-def _purge_mutable_trading_artifacts(source_id: UUID, user_ids: set[UUID]) -> dict[str, int]:
-    """Remove TDC from every mutable app/performance surface.
-
-    Signals, lifecycle events, audits, Telegram messages and raw broker deals are
-    intentionally untouched. PostgreSQL enforces append-only lifecycle evidence.
-    """
+def _purge_mutable_performance(source_id: UUID, user_ids: set[UUID]) -> dict[str, int]:
     counts: dict[str, int] = {}
     with Session(get_engine()) as session:
         signal_subquery = "SELECT id FROM signals WHERE source_id=:source_id"
         lifecycle_subquery = (
             "SELECT id FROM signal_lifecycle_events WHERE signal_id IN (" + signal_subquery + ")"
         )
-
         counts["notifications"] = session.execute(
             text(
                 "DELETE FROM notification_events "
@@ -299,21 +284,11 @@ def _purge_mutable_trading_artifacts(source_id: UUID, user_ids: set[UUID]) -> di
             text("DELETE FROM performance_trade_outcomes WHERE signal_id IN (" + signal_subquery + ")"),
             {"source_id": source_id},
         ).rowcount or 0
-
-        # broker_deals.position_id is ON DELETE SET NULL, preserving immutable broker
-        # evidence while severing it from the user-facing Position model.
-        counts["positions"] = session.execute(
-            text("DELETE FROM positions WHERE signal_id IN (" + signal_subquery + ")"),
-            {"source_id": source_id},
-        ).rowcount or 0
-
-        # Summary rows are derived. They are rebuilt from the remaining providers only.
         for user_id in user_ids:
             session.execute(
                 text("DELETE FROM performance_summaries WHERE user_id=:user_id"),
                 {"user_id": user_id},
             )
-
         session.execute(
             text(
                 """
@@ -335,7 +310,7 @@ def _purge_mutable_trading_artifacts(source_id: UUID, user_ids: set[UUID]) -> di
 
 
 def _rebuild_remaining_summaries(user_ids: set[UUID], cipher: MetaApiTokenCipher) -> int:
-    service = CanonicalPerformanceLedgerService(
+    service = CanonicalPerformanceRuntimeService(
         session_factory=get_session_factory(),
         cipher=cipher,
         gateway=MetaApiReadGateway(),
@@ -365,12 +340,11 @@ async def main() -> None:
         closed += account_closed
         cancelled += account_cancelled
 
-    counts = _purge_mutable_trading_artifacts(source_id, user_ids)
+    counts = _purge_mutable_performance(source_id, user_ids)
     summaries = _rebuild_remaining_summaries(user_ids, cipher)
     print(
         "TDC retirement completed "
         f"broker_positions_closed={closed} broker_orders_cancelled={cancelled} "
-        f"positions_removed={counts.get('positions', 0)} "
         f"outcomes_removed={counts.get('outcomes', 0)} "
         f"notifications_removed={counts.get('notifications', 0)} "
         f"publications_removed={counts.get('publications', 0)} "
