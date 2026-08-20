@@ -19,11 +19,11 @@ from app.dashboard_runtime import (
     CanonicalTodayTradingSummaryService,
 )
 from app.metaapi_gateway import MetaApiGatewayError
-from app.metaapi_read_gateway import MetaApiReadGateway
 from app.metaapi_token_scope import inspect_metaapi_token_scope
 from app.mt5_connection_service_day30 import Day30Mt5ConnectionService
 from app.mt5_crypto import BrokerCredentialDecryptionError
 from app.mt5_runtime import require_mt5_service
+from app.paper_resilient_read_gateway import ResilientMetaApiReadGateway
 from app.routes.performance_day33 import (
     _service as _performance_service,
     router as performance_day33_router,
@@ -159,7 +159,7 @@ class DashboardResponse(BaseModel):
     activity: tuple[ActivityResponse, ...]
     reconciled_external_positions: int
     canonical_performance_ready: bool
-    performance_basis: str = "broker_deal_ledger"
+    performance_basis: str = "selected_provider_broker_ledger"
     broker_trade_action_created: bool = False
 
 
@@ -179,7 +179,7 @@ def _service(request: Request) -> CanonicalDashboardRuntimeService:
     read_service = QuietDay23Mt5ReadService(
         session_factory=base._session_factory,
         cipher=base._cipher,
-        gateway=MetaApiReadGateway(),
+        gateway=ResilientMetaApiReadGateway(),
     )
     service = CanonicalDashboardRuntimeService(
         session_factory=base._session_factory,
@@ -283,7 +283,6 @@ async def _active_broker_order_ids(
             offset=0,
             limit=1000,
         )
-        # The dashboard must not guess if the bulk history window is saturated.
         if len(history) >= 1000:
             return None
         return current_order_ids - _terminal_broker_order_ids(history)
@@ -308,10 +307,13 @@ def _broker_pending_trade_count(
                 """
                 SELECT COUNT(DISTINCT p.signal_id)::int
                 FROM positions AS p
+                JOIN signals AS s ON s.id=p.signal_id
+                JOIN sources AS src ON src.id=s.source_id
                 WHERE p.user_id=:user_id
                   AND p.status='pending'
                   AND p.broker_order_id = ANY(:active_order_ids)
                   AND p.created_at>=:session_started_at
+                  AND src.status<>'revoked'
                 """
             ),
             {
