@@ -33,6 +33,13 @@ router = APIRouter(prefix="/dashboard", tags=["dashboard-day32"])
 router.include_router(performance_day33_router)
 Identity = Annotated[dict[str, Any], Depends(get_current_identity)]
 
+_TERMINAL_BROKER_ORDER_STATES = {
+    "ORDER_STATE_CANCELED",
+    "ORDER_STATE_REJECTED",
+    "ORDER_STATE_EXPIRED",
+    "ORDER_STATE_FILLED",
+}
+
 
 class ConnectionResponse(BaseModel):
     configured: bool
@@ -193,15 +200,34 @@ def _safe_open_profit(view: Any) -> float | None:
     return view.open_profit
 
 
+def _broker_history_proves_terminal(
+    order_id: str,
+    history: list[dict[str, object]],
+) -> bool:
+    """True only when immutable broker history proves this ticket is no longer pending."""
+    for item in history:
+        if str(item.get("id") or "").strip() != order_id:
+            continue
+        state = str(item.get("state") or "").strip().upper()
+        done_time = str(item.get("doneTime") or "").strip()
+        if state in _TERMINAL_BROKER_ORDER_STATES or done_time:
+            return True
+    return False
+
+
 async def _active_broker_order_ids(
     service: CanonicalDashboardRuntimeService,
     user_id: UUID,
 ) -> set[str] | None:
-    """Return MT5's current active order tickets, or None when broker truth is unavailable.
+    """Return broker-verified active pending-entry tickets, or None when unavailable.
 
-    The Today card must never fall back to local ``positions.status='pending'`` rows.
-    An empty broker list means zero pending trades. A failed broker read means unknown,
-    which the UI renders as an em dash instead of a stale count.
+    MetaAPI's current ``/orders`` replica can lag terminal MT5 state. A ticket returned
+    there is therefore cross-checked against immutable broker order history. Broker
+    history wins: if that ticket is already filled/cancelled/rejected/expired (or has a
+    broker doneTime), it is not pending even if the current-order replica still echoes it.
+
+    The dashboard never falls back to a local pending count when broker verification
+    fails; the UI renders unknown instead of a stale number.
     """
     read_service = service._read_service
     row = read_service._load_row(user_id)
@@ -231,14 +257,23 @@ async def _active_broker_order_ids(
             account_id=account_id,
             region=region,
         )
+        verified: set[str] = set()
+        for item in orders:
+            order_id = str(item.get("id") or "").strip()
+            if not order_id:
+                continue
+            history = await read_service._gateway.read_history_orders_by_ticket(
+                token=token,
+                account_id=account_id,
+                region=region,
+                order_id=order_id,
+            )
+            if _broker_history_proves_terminal(order_id, history):
+                continue
+            verified.add(order_id)
+        return verified
     except MetaApiGatewayError:
         return None
-
-    return {
-        str(item.get("id") or "").strip()
-        for item in orders
-        if str(item.get("id") or "").strip()
-    }
 
 
 def _broker_pending_trade_count(
@@ -259,6 +294,7 @@ def _broker_pending_trade_count(
                 SELECT COUNT(DISTINCT p.signal_id)::int
                 FROM positions AS p
                 WHERE p.user_id=:user_id
+                  AND p.status='pending'
                   AND p.broker_order_id = ANY(:active_order_ids)
                   AND p.created_at>=:session_started_at
                 """
