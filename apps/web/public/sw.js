@@ -1,10 +1,10 @@
-const CACHE_NAME = 'super-signals-shell-v3';
-const SHELL_ASSETS = ['/', '/manifest.webmanifest', '/app-icon.svg', '/super-signals-logo.png'];
+const CACHE_NAME = 'super-signals-static-v4';
+const STATIC_ASSETS = ['/manifest.webmanifest', '/app-icon.svg', '/super-signals-logo.png'];
 const PRIVATE_PREFIXES = ['/api/', '/auth/', '/account/', '/admin/', '/owner/', '/notifications'];
-const STATIC_DESTINATIONS = new Set(['style', 'script', 'image', 'font']);
+const CACHEABLE_DESTINATIONS = new Set(['image', 'font']);
 
 self.addEventListener('install', (event) => {
-  event.waitUntil(caches.open(CACHE_NAME).then((cache) => cache.addAll(SHELL_ASSETS)));
+  event.waitUntil(caches.open(CACHE_NAME).then((cache) => cache.addAll(STATIC_ASSETS)));
   self.skipWaiting();
 });
 
@@ -23,23 +23,15 @@ self.addEventListener('fetch', (event) => {
   if (url.origin !== self.location.origin) return;
   if (PRIVATE_PREFIXES.some((prefix) => url.pathname.startsWith(prefix))) return;
 
-  if (request.mode === 'navigate') {
-    event.respondWith(
-      fetch(request)
-        .then((response) => {
-          if (response.ok) {
-            const copy = response.clone();
-            void caches.open(CACHE_NAME).then((cache) => cache.put('/', copy));
-          }
-          return response;
-        })
-        .catch(() => caches.match('/')),
-    );
+  // App HTML and executable assets must always follow the deployed build. Never let
+  // a service-worker cache keep an old dashboard bundle alive after production moves.
+  if (request.mode === 'navigate' || request.destination === 'script' || request.destination === 'style') {
+    event.respondWith(fetch(request, { cache: 'no-store' }));
     return;
   }
 
-  const isKnownShellAsset = SHELL_ASSETS.includes(url.pathname);
-  if (!isKnownShellAsset && !STATIC_DESTINATIONS.has(request.destination)) return;
+  const isKnownStaticAsset = STATIC_ASSETS.includes(url.pathname);
+  if (!isKnownStaticAsset && !CACHEABLE_DESTINATIONS.has(request.destination)) return;
 
   event.respondWith(
     caches.match(request).then((cached) => {
@@ -74,9 +66,6 @@ self.addEventListener('push', (event) => {
       body,
       icon: '/app-icon.svg',
       badge: '/app-icon.svg',
-      // A crash after the push service accepted a send can produce a retry. Reusing
-      // the persisted notification id replaces the same visible card instead of
-      // showing the user a duplicate trade alert.
       tag: notificationId ? `super-signals:${notificationId}` : 'super-signals:update',
       renotify: false,
       data: {
