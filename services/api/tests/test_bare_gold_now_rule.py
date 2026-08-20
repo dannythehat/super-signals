@@ -67,15 +67,16 @@ def test_bare_buy_gold_now_becomes_special_market_profile() -> None:
     assert result.extracted["take_profits"] == []
 
 
-def test_bare_now_edit_is_never_a_new_entry() -> None:
+def test_bare_now_current_revision_is_not_blocked_only_because_it_is_an_edit() -> None:
     result = v1.apply_v1_message_policy(
         _decision(side="BUY"),
         raw_text="Buy Gold Now",
         is_edit=True,
         original_has_signal=True,
     )
-    assert result.action == "skip"
-    assert result.reason == "bare_gold_now_edit_not_executable"
+    assert result.action == "execute"
+    assert result.reason == PROFILE
+    assert result.extracted["execution_profile"] == PROFILE
 
 
 def test_normal_complete_signal_is_not_rewritten_as_bare_now() -> None:
