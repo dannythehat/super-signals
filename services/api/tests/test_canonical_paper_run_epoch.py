@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
-from types import MethodType
+from pathlib import Path
 from uuid import uuid4
 
 import pytest
@@ -32,6 +32,7 @@ from app.performance_runtime import CanonicalPerformanceRuntimeService
 OWNER = uuid4()
 OTHER = uuid4()
 ZERO = Decimal("0")
+ROOT = Path(__file__).resolve().parents[3]
 
 
 def _zero_window(key: str, label: str) -> Day33PerformanceWindow:
@@ -185,7 +186,7 @@ def _base_dashboard_view(open_profit: float) -> Day32DashboardView:
 
 
 @pytest.mark.asyncio
-async def test_dashboard_virtual_balance_ignores_pre_origin_broker_balance(
+async def test_dashboard_account_card_preserves_broker_values(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setenv("SUPER_SIGNALS_DAY28_OWNER_ID", str(OWNER))
@@ -197,15 +198,24 @@ async def test_dashboard_virtual_balance_ignores_pre_origin_broker_balance(
 
     monkeypatch.setattr(Day32DashboardService, "read", fake_base_read)
     service = object.__new__(CanonicalDashboardRuntimeService)
-    service._post_epoch_realised_cash = MethodType(lambda _self, _user: Decimal("31"), service)
 
     result = await service.read(OWNER)
 
     assert result.account is not None
-    assert result.account.balance == 1031.0
-    assert result.account.equity == 1028.5
-    assert result.account.free_margin == 1028.5
-    assert result.account.margin == 0.0
+    assert result.account.balance == 812.0
+    assert result.account.equity == 810.0
+    assert result.account.free_margin == 710.0
+    assert result.account.margin == 100.0
+    assert result.open_profit == -2.5
+
+
+def test_dashboard_runtime_can_never_reintroduce_virtual_account_rewrite() -> None:
+    runtime = (ROOT / "services/api/app/dashboard_runtime.py").read_text(encoding="utf-8")
+    assert "_post_epoch_realised_cash" not in runtime
+    assert "epoch.baseline_balance + realised" not in runtime
+    assert "margin=0.0" not in runtime
+    assert "balance=float(balance)" not in runtime
+    assert "account card is broker truth" in runtime.lower()
 
 
 def test_today_session_starts_at_permanent_epoch_on_origin_day(
