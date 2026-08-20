@@ -2,9 +2,14 @@ from datetime import UTC, datetime
 from decimal import Decimal
 from uuid import uuid4
 
+import app.trading_execution_canonical as canonical_module
 from app.critical_entry_policy import parse_critical_entries
-from app.mt5_execution_day26 import _SignalInput
-from app.trading_execution_canonical import CanonicalTradingExecutionService
+from app.mt5_execution_day26 import Day26Mt5ExecutionService, _SignalInput
+from app.paper_critical_execution import PaperCriticalExecutionService
+from app.trading_execution_canonical import (
+    CanonicalTradingExecutionService,
+    MemberTradingExecutionService,
+)
 
 
 def _signal() -> _SignalInput:
@@ -23,7 +28,7 @@ def _signal() -> _SignalInput:
     )
 
 
-def test_tdc_six_sections_keep_six_atomic_positions_not_twenty_four() -> None:
+def test_tdc_six_entries_keep_six_atomic_positions_not_twenty_four() -> None:
     raw = (
         "BUY GOLD @ 4398/4393\n\n"
         "TP 4400\nTP 4403\nTP 4407\nTP OPEN\nSL 4392\n\nHIGH RISK TRADE"
@@ -43,11 +48,19 @@ def test_tdc_six_sections_keep_six_atomic_positions_not_twenty_four() -> None:
     assert {item.entry.entry_index for item in allocations} == {1, 2, 3, 4, 5, 6}
 
 
-def test_six_section_signal_uses_real_balance_once_for_each_leg() -> None:
-    # The canonical executor must not multiply balance by the number of entry sections.
-    # Every leg independently receives the selected percentage of the real account balance.
+def test_demo_and_live_share_one_unmodified_risk_sizer() -> None:
+    # There is one sizing implementation for normal, layered/pending, demo and LIVE.
+    # No execution subclass may scale account balance by entry/TP count.
+    assert "_full_risk_section_count" not in vars(canonical_module)
     assert "_size_signal" not in CanonicalTradingExecutionService.__dict__
+    assert "_size_signal" not in MemberTradingExecutionService.__dict__
+    assert "_size_signal" not in PaperCriticalExecutionService.__dict__
+    assert CanonicalTradingExecutionService._size_signal is Day26Mt5ExecutionService._size_signal
+    assert MemberTradingExecutionService._size_signal is Day26Mt5ExecutionService._size_signal
+    assert PaperCriticalExecutionService._size_signal is Day26Mt5ExecutionService._size_signal
 
+
+def test_six_entry_signal_uses_real_balance_once_for_each_atomic_leg() -> None:
     service = object.__new__(CanonicalTradingExecutionService)
     actual = CanonicalTradingExecutionService._size_signal(
         service,
@@ -72,7 +85,7 @@ def test_six_section_signal_uses_real_balance_once_for_each_leg() -> None:
     assert actual.actual_risk_per_position == Decimal("18.00")
 
 
-def test_double_signal_uses_two_percent_of_real_balance_not_section_count() -> None:
+def test_double_signal_uses_two_percent_of_real_balance_only() -> None:
     service = object.__new__(CanonicalTradingExecutionService)
     signal = _signal()
     object.__setattr__(signal, "signal_requests_double_lot", True)
