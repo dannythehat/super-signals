@@ -9,7 +9,7 @@
 
 .today-trading-head {
   display: grid;
-  grid-template-columns: minmax(150px, 1.25fr) repeat(3, minmax(110px, 0.8fr));
+  grid-template-columns: minmax(150px, 1.25fr) repeat(2, minmax(110px, 0.8fr));
   align-items: end;
   gap: 14px;
 }
@@ -47,13 +47,14 @@
 }
 
 .today-trading-headline strong {
+  color: #f3f6f9;
   font-size: clamp(1.12rem, 3.4vw, 1.55rem);
   letter-spacing: -0.025em;
 }
 
 .today-trading-stats {
   display: grid;
-  grid-template-columns: repeat(6, minmax(0, 1fr));
+  grid-template-columns: repeat(5, minmax(0, 1fr));
   gap: 8px;
 }
 
