@@ -13,6 +13,7 @@ import asyncio
 import os
 from collections import defaultdict
 from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta
 from uuid import UUID
 
 from sqlalchemy import text
@@ -26,6 +27,7 @@ from app.performance_ledger_canonical import CanonicalPerformanceLedgerService
 
 _TDC_CHAT_ID = -1004415242875
 _MARKER = "provider.tdc_retirement_completed"
+_ACTIVE_ORDER_STATES = {"ORDER_STATE_PLACED", "ORDER_STATE_PARTIAL"}
 
 
 @dataclass(frozen=True, slots=True)
@@ -106,7 +108,11 @@ def _load_targets(session: Session) -> tuple[UUID, list[AccountTarget], set[UUID
         lambda: {"positions": set(), "orders": set(), "clients": set()}
     )
     for row in rows:
-        key = (row["user_id"], str(row["metaapi_account_id"]), bytes(row["metaapi_token_ciphertext"]))
+        key = (
+            row["user_id"],
+            str(row["metaapi_account_id"]),
+            bytes(row["metaapi_token_ciphertext"]),
+        )
         if row["broker_position_id"]:
             grouped[key]["positions"].add(str(row["broker_position_id"]))
         if row["broker_order_id"]:
@@ -134,7 +140,51 @@ def _matches(item: dict[str, object], *, ids: frozenset[str], clients: frozenset
     return bool((item_id and item_id in ids) or (client_id and client_id in clients))
 
 
-async def _remove_broker_exposure(target: AccountTarget, cipher: MetaApiTokenCipher) -> tuple[int, int]:
+async def _terminal_order_ids(
+    read: MetaApiReadGateway,
+    *,
+    token: str,
+    account_id: str,
+    region: str,
+) -> set[str]:
+    """Return terminal order tickets from one bounded bulk history read.
+
+    MetaAPI's live /orders replica can lag MT5. The retirement therefore cross-checks
+    any apparently-active TDC ticket against immutable order history before attempting
+    cancellation. This deliberately avoids the per-ticket history-call pattern that was
+    removed from the dashboard.
+    """
+    end = datetime.now(UTC)
+    start = end - timedelta(days=7)
+    terminal: set[str] = set()
+    offset = 0
+    while True:
+        page = await read.read_history_orders_by_time_range(
+            token=token,
+            account_id=account_id,
+            region=region,
+            start_time=start,
+            end_time=end,
+            offset=offset,
+            limit=1000,
+        )
+        for item in page:
+            order_id = str(item.get("id") or "").strip()
+            state = str(item.get("state") or "").strip().upper()
+            if order_id and state and state not in _ACTIVE_ORDER_STATES:
+                terminal.add(order_id)
+        if len(page) < 1000:
+            break
+        offset += len(page)
+        if offset > 10_000:
+            raise RuntimeError("tdc_retirement_history_too_large")
+    return terminal
+
+
+async def _remove_broker_exposure(
+    target: AccountTarget,
+    cipher: MetaApiTokenCipher,
+) -> tuple[int, int]:
     token = cipher.decrypt(target.token_ciphertext)
     read = MetaApiReadGateway()
     trade = MetaApiTradeGateway()
@@ -142,6 +192,12 @@ async def _remove_broker_exposure(target: AccountTarget, cipher: MetaApiTokenCip
 
     positions = await read.read_positions(token=token, account_id=target.account_id, region=region)
     orders = await read.read_orders(token=token, account_id=target.account_id, region=region)
+    terminal_order_ids = await _terminal_order_ids(
+        read,
+        token=token,
+        account_id=target.account_id,
+        region=region,
+    )
 
     target_positions = [
         item
@@ -152,6 +208,7 @@ async def _remove_broker_exposure(target: AccountTarget, cipher: MetaApiTokenCip
         item
         for item in orders
         if _matches(item, ids=target.broker_order_ids, clients=target.broker_client_ids)
+        and str(item.get("id") or "").strip() not in terminal_order_ids
     ]
 
     closed = 0
@@ -183,10 +240,20 @@ async def _remove_broker_exposure(target: AccountTarget, cipher: MetaApiTokenCip
     # Broker truth must prove there is no remaining TDC exposure before local mappings
     # are purged. Never make the app look clean while leaving a live broker order behind.
     remaining_positions = await read.read_positions(
-        token=token, account_id=target.account_id, region=region
+        token=token,
+        account_id=target.account_id,
+        region=region,
     )
     remaining_orders = await read.read_orders(
-        token=token, account_id=target.account_id, region=region
+        token=token,
+        account_id=target.account_id,
+        region=region,
+    )
+    terminal_after = await _terminal_order_ids(
+        read,
+        token=token,
+        account_id=target.account_id,
+        region=region,
     )
     if any(
         _matches(item, ids=target.broker_position_ids, clients=target.broker_client_ids)
@@ -195,6 +262,7 @@ async def _remove_broker_exposure(target: AccountTarget, cipher: MetaApiTokenCip
         raise RuntimeError("tdc_retirement_position_still_active")
     if any(
         _matches(item, ids=target.broker_order_ids, clients=target.broker_client_ids)
+        and str(item.get("id") or "").strip() not in terminal_after
         for item in remaining_orders
     ):
         raise RuntimeError("tdc_retirement_order_still_active")
@@ -252,8 +320,8 @@ def _purge_trading_artifacts(source_id: UUID, user_ids: set[UUID]) -> dict[str, 
             {"source_id": source_id},
         ).rowcount or 0
 
-        # Remove user-facing blocked/skipped evidence for this retired provider while
-        # retaining the rest of the internal audit trail.
+        # Remove the only TDC audit records that are rendered as user-facing skipped
+        # trades. Other audit evidence stays internal and immutable.
         counts["visible_block_audits"] = session.execute(
             text(
                 """
@@ -292,7 +360,10 @@ def _purge_trading_artifacts(source_id: UUID, user_ids: set[UUID]) -> dict[str, 
             {
                 "event_type": _MARKER,
                 "source_id": source_id,
-                "payload": '{"provider":"TDC","performance_excluded":true,"raw_provider_evidence_preserved":true}',
+                "payload": (
+                    '{"provider":"TDC","performance_excluded":true,'
+                    '"raw_provider_evidence_preserved":true}'
+                ),
             },
         )
         session.commit()
@@ -335,8 +406,10 @@ async def main() -> None:
     print(
         "TDC retirement completed "
         f"broker_positions_closed={closed} broker_orders_cancelled={cancelled} "
-        f"positions_removed={counts.get('positions', 0)} signals_removed={counts.get('signals', 0)} "
-        f"outcomes_removed={counts.get('outcomes', 0)} summaries_rebuilt={summaries}"
+        f"positions_removed={counts.get('positions', 0)} "
+        f"signals_removed={counts.get('signals', 0)} "
+        f"outcomes_removed={counts.get('outcomes', 0)} "
+        f"summaries_rebuilt={summaries}"
     )
 
 
