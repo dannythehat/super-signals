@@ -1,6 +1,6 @@
 """Add audit-only suppressed notification audience.
 
-Revision ID: 0026_notification_suppressed_audience
+Revision ID: 0026_notification_suppressed
 Revises: 0025_pending_layered_entries
 Create Date: 2026-08-20
 
@@ -13,7 +13,7 @@ from collections.abc import Sequence
 
 from alembic import op
 
-revision: str = "0026_notification_suppressed_audience"
+revision: str = "0026_notification_suppressed"
 down_revision: str | None = "0025_pending_layered_entries"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
