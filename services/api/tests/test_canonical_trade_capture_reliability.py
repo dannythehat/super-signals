@@ -4,7 +4,7 @@ import asyncio
 from datetime import UTC, datetime
 from decimal import Decimal
 from threading import RLock
-from types import MethodType, SimpleNamespace
+from types import SimpleNamespace
 from uuid import uuid4
 
 import pytest
@@ -72,7 +72,9 @@ def _bare_listener() -> CanonicalProductionTelegramListenerManager:
     return manager
 
 
-def test_live_recovery_repairs_already_persisted_unrouted_original(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_live_recovery_never_replays_already_persisted_original(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     persisted_calls: list[int] = []
 
     def already_persisted(self, captured):
@@ -99,15 +101,15 @@ def test_live_recovery_repairs_already_persisted_unrouted_original(monkeypatch: 
     manager = _bare_listener()
     dispatched: list[tuple[int, int]] = []
 
-    async def record_dispatch(self, **kwargs):
+    async def record_dispatch(**kwargs):
         dispatched.append((kwargs["telegram_message_id"], kwargs["revision_index"]))
 
-    manager._dispatch_recovered_if_required = MethodType(record_dispatch, manager)
+    manager._dispatch_recovered_if_required = record_dispatch
 
     asyncio.run(manager._recover_live_gaps(_RecoveryClient(message), plan))
 
     assert persisted_calls == [6503]
-    assert dispatched == [(6503, 0)]
+    assert dispatched == []
 
 
 class _UnresolvedRouter:
@@ -130,8 +132,12 @@ class _DispatchHarness:
     def __init__(self) -> None:
         self._canonical_router = _UnresolvedRouter()
 
+    @staticmethod
+    def _fresh_recovered_entry(value, *, now=None):
+        return CanonicalProductionTelegramListenerManager._fresh_recovered_entry(value, now=now)
 
-def test_recovered_unresolved_management_is_not_repeatedly_dispatched() -> None:
+
+def test_recovered_unresolved_management_is_not_dispatched() -> None:
     harness = _DispatchHarness()
     asyncio.run(
         CanonicalProductionTelegramListenerManager._dispatch_recovered_if_required(
