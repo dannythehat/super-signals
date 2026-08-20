@@ -30,11 +30,15 @@ from app.critical_entry_policy import augment_management_actions, envelope, pars
 from app.day27_management_policy import extract_day27_management_actions
 
 _NUMBER_TOKEN = re.compile(r"(?<![A-Za-z0-9_.])\d+(?:\.\d+)?(?![A-Za-z0-9_.])")
-_INSTRUMENT = re.compile(r"\b(?:XAUUSD|GOLD)\b", re.IGNORECASE)
-_BUY = re.compile(r"\bBUY(?:S|ING)?\b", re.IGNORECASE)
+# Providers commonly print the same instrument as XAUUSD, XAU/USD or XAU USD.
+# These are literal aliases of the one supported instrument, not context inference.
+_INSTRUMENT = re.compile(r"\b(?:XAU\s*(?:/\s*)?USD|GOLD)\b", re.IGNORECASE)
+# LONG/SHORT are explicit directional trade words used by real selected providers.
+# They are treated only as side evidence; they never donate any price/protection.
+_BUY = re.compile(r"\b(?:BUY(?:S|ING)?|LONG)\b", re.IGNORECASE)
 # Observed TGC spellings are mechanical side evidence only. They do not donate an
 # instrument or any price, SL, TP, size or order type.
-_SELL = re.compile(r"\b(?:SELL(?:S|ING)?|SELING|SELLIMG)\b", re.IGNORECASE)
+_SELL = re.compile(r"\b(?:SELL(?:S|ING)?|SELING|SELLIMG|SHORT)\b", re.IGNORECASE)
 _PENDING = re.compile(r"\b(?:BUY|SELL)\s+(?:LIMITS?|STOPS?)\b|\bPENDING\b", re.IGNORECASE)
 _OPEN_TARGET = re.compile(
     r"\b(?:TP\s*\d*\s*[:=@-]?\s*OPEN|TP\s+OPEN|RUNNER|LEAVE\s+(?:IT\s+)?OPEN)\b",
@@ -227,12 +231,17 @@ def apply_v1_message_policy(
         if side not in {"BUY", "SELL"} or has_buy == has_sell:
             return _skip(decision, "missing_side", extracted)
 
+        literal_pending = _PENDING.search(text) is not None
         no_entry_market = (
             entry_low is None
             and entry_high is None
-            and _PENDING.search(text) is None
+            and not literal_pending
         )
-        if (entry_low is None) != (entry_high is None):
+        # A model may return only one boundary for a literal singular BUY/SELL
+        # LIMIT/STOP. The deterministic pending parser below owns that structure and
+        # will recover the exact provider price from the message. A one-sided entry in
+        # an ordinary market signal is still invalid.
+        if (entry_low is None) != (entry_high is None) and not literal_pending:
             return _skip(decision, "signal_entry_invalid", extracted)
 
         if no_entry_market:
@@ -262,7 +271,7 @@ def apply_v1_message_policy(
             ]
             all_pending = all(item.order_type != "market" for item in critical_entries)
             extracted["order_type"] = "pending" if all_pending else "market"
-        elif _PENDING.search(text):
+        elif literal_pending:
             return _skip(decision, "pending_order_structure_missing", extracted)
         elif str(extracted.get("order_type") or "").strip().lower() == "pending":
             # Model guesses never override literal provider wording. Without a literal
