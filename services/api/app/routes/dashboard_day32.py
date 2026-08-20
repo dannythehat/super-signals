@@ -9,6 +9,7 @@ from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from pydantic import BaseModel
+from sqlalchemy import text
 
 from app.acceptance_self_test import acceptance_mirror_owner_user_id
 from app.access_control import get_current_identity
@@ -17,8 +18,11 @@ from app.dashboard_runtime import (
     CanonicalDashboardRuntimeService,
     CanonicalTodayTradingSummaryService,
 )
+from app.metaapi_gateway import MetaApiGatewayError
 from app.metaapi_read_gateway import MetaApiReadGateway
+from app.metaapi_token_scope import inspect_metaapi_token_scope
 from app.mt5_connection_service_day30 import Day30Mt5ConnectionService
+from app.mt5_crypto import BrokerCredentialDecryptionError
 from app.mt5_runtime import require_mt5_service
 from app.routes.performance_day33 import (
     _service as _performance_service,
@@ -126,7 +130,7 @@ class TodayTradingSummaryResponse(BaseModel):
     losses: int
     breakeven: int
     open: int
-    pending: int
+    pending: int | None
     settling: int
     realised_pnl: float
     winning_pips: float
@@ -189,8 +193,87 @@ def _safe_open_profit(view: Any) -> float | None:
     return view.open_profit
 
 
+async def _active_broker_order_ids(
+    service: CanonicalDashboardRuntimeService,
+    user_id: UUID,
+) -> set[str] | None:
+    """Return MT5's current active order tickets, or None when broker truth is unavailable.
+
+    The Today card must never fall back to local ``positions.status='pending'`` rows.
+    An empty broker list means zero pending trades. A failed broker read means unknown,
+    which the UI renders as an em dash instead of a stale count.
+    """
+    read_service = service._read_service
+    row = read_service._load_row(user_id)
+    if row is None:
+        return None
+    try:
+        token = read_service._cipher.decrypt(bytes(row["metaapi_token_ciphertext"]))
+    except BrokerCredentialDecryptionError:
+        return None
+
+    scope = inspect_metaapi_token_scope(token)
+    if (
+        scope.jwt_payload_decoded
+        and scope.is_explicitly_narrowed
+        and not scope.has_terminal_access
+    ):
+        return None
+
+    account_id = str(row["metaapi_account_id"])
+    try:
+        region = await read_service._gateway.resolve_account_region(
+            token=token,
+            account_id=account_id,
+        )
+        orders = await read_service._gateway.read_orders(
+            token=token,
+            account_id=account_id,
+            region=region,
+        )
+    except MetaApiGatewayError:
+        return None
+
+    return {
+        str(item.get("id") or "").strip()
+        for item in orders
+        if str(item.get("id") or "").strip()
+    }
+
+
+def _broker_pending_trade_count(
+    service: CanonicalDashboardRuntimeService,
+    user_id: UUID,
+    *,
+    session_started_at: datetime,
+    active_order_ids: set[str] | None,
+) -> int | None:
+    if active_order_ids is None:
+        return None
+    if not active_order_ids:
+        return 0
+    with service._session_factory() as session:
+        value = session.execute(
+            text(
+                """
+                SELECT COUNT(DISTINCT p.signal_id)::int
+                FROM positions AS p
+                WHERE p.user_id=:user_id
+                  AND p.broker_order_id = ANY(:active_order_ids)
+                  AND p.created_at>=:session_started_at
+                """
+            ),
+            {
+                "user_id": user_id,
+                "active_order_ids": list(active_order_ids),
+                "session_started_at": session_started_at,
+            },
+        ).scalar_one()
+    return int(value or 0)
+
+
 @router.get("/today", response_model=TodayTradingSummaryResponse)
-def account_dashboard_today(
+async def account_dashboard_today(
     request: Request,
     response: Response,
     identity: Identity,
@@ -205,6 +288,13 @@ def account_dashboard_today(
         data_user_id,
         timezone_name=timezone_name,
     )
+    active_order_ids = await _active_broker_order_ids(service, data_user_id)
+    pending = _broker_pending_trade_count(
+        service,
+        data_user_id,
+        session_started_at=summary.session_started_at,
+        active_order_ids=active_order_ids,
+    )
     _no_store(response)
     return TodayTradingSummaryResponse(
         timezone=summary.timezone,
@@ -214,7 +304,7 @@ def account_dashboard_today(
         losses=summary.losses,
         breakeven=summary.breakeven,
         open=summary.open,
-        pending=summary.pending,
+        pending=pending,
         settling=summary.settling,
         realised_pnl=float(summary.realised_pnl),
         winning_pips=float(summary.winning_pips),
