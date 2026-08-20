@@ -121,51 +121,40 @@ export function TradeTimeline({ apiBaseUrl, currency }: Props) {
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [syncNote, setSyncNote] = useState<string | null>(null);
 
   const refresh = useCallback(async (quiet = false) => {
     if (!quiet) setRefreshing(true);
-    let syncFailed = false;
-    try {
-      const syncResponse = await fetch(`${apiBaseUrl}/account/mt5/dashboard/performance/sync`, {
-        method: 'POST',
-        credentials: 'include',
-        headers: { Accept: 'application/json' },
-        cache: 'no-store',
-      });
-      if (!syncResponse.ok) syncFailed = true;
-    } catch {
-      syncFailed = true;
-    }
 
     try {
-      const response = await fetch(`${apiBaseUrl}/account/mt5/dashboard/performance/timeline?limit=250`, {
-        credentials: 'include',
-        headers: { Accept: 'application/json' },
-        cache: 'no-store',
-      });
-      const next = await readJson<TimelineData>(response);
+      const [timelineResponse, liveResponse] = await Promise.all([
+        fetch(`${apiBaseUrl}/account/mt5/dashboard/performance/timeline?limit=250`, {
+          credentials: 'include',
+          headers: { Accept: 'application/json' },
+          cache: 'no-store',
+        }),
+        (() => {
+          const timezone = Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC';
+          const query = new URLSearchParams({ timezone_name: timezone });
+          return fetch(`${apiBaseUrl}/account/mt5/dashboard/today?${query.toString()}`, {
+            credentials: 'include',
+            headers: { Accept: 'application/json' },
+            cache: 'no-store',
+          });
+        })(),
+      ]);
+
+      const next = await readJson<TimelineData>(timelineResponse);
       setData(next);
       setError(null);
-      setSyncNote(syncFailed ? 'Showing your most recent saved trade history. Live refresh is temporarily unavailable.' : null);
-      if (!syncFailed) window.dispatchEvent(new Event('super-signals-ledger-synced'));
+
+      if (liveResponse.ok) {
+        const state = (await liveResponse.json()) as LiveAccountState;
+        setLiveState({ open: state.open, pending: state.pending });
+      } else {
+        setLiveState(null);
+      }
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : 'Trade history is temporarily unavailable.');
-    }
-
-    try {
-      const timezone = Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC';
-      const query = new URLSearchParams({ timezone_name: timezone });
-      const response = await fetch(`${apiBaseUrl}/account/mt5/dashboard/today?${query.toString()}`, {
-        credentials: 'include',
-        headers: { Accept: 'application/json' },
-        cache: 'no-store',
-      });
-      if (!response.ok) throw new Error('live_state_unavailable');
-      const state = (await response.json()) as LiveAccountState;
-      setLiveState({ open: state.open, pending: state.pending });
-    } catch {
-      setLiveState(null);
     } finally {
       setLoading(false);
       setRefreshing(false);
@@ -224,7 +213,6 @@ export function TradeTimeline({ apiBaseUrl, currency }: Props) {
       <button type="button" className="day33-refresh" onClick={() => void refresh()} disabled={refreshing}>{refreshing ? 'Refreshing…' : 'Refresh'}</button>
     </div>
 
-    {syncNote && <div className="day33-sync-note" role="status">{syncNote}</div>}
     {error && <div className="day33-sync-note day33-sync-note--error" role="alert">{error}</div>}
 
     <div className="day33-live-strip" aria-label="Current live broker state">
