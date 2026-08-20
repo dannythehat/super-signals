@@ -330,25 +330,26 @@ _TIG_EDITED_RAW = (
 )
 
 
-def test_edit_cannot_resurrect_a_skipped_setup_into_a_new_trade() -> None:
+def test_complete_edit_can_create_first_canonical_trade() -> None:
     result = apply_v1_message_policy(
         _tig_complete_decision(),
         raw_text=_TIG_EDITED_RAW,
         is_edit=True,
         original_has_signal=False,
     )
-    assert result.action == "skip"
-    assert result.reason == "edit_cannot_create_first_trade"
+    assert result.action == "execute"
+    assert result.reason == "v1_complete_exact_signal_from_structured_edit"
+    assert result.extracted["tp_open"] is True
 
 
-def test_edit_enforcement_defaults_to_fail_closed() -> None:
+def test_complete_edit_needs_no_prior_signal_state_to_be_mechanically_valid() -> None:
     result = apply_v1_message_policy(
         _tig_complete_decision(),
         raw_text=_TIG_EDITED_RAW,
         is_edit=True,
     )
-    assert result.action == "skip"
-    assert result.reason == "edit_cannot_create_first_trade"
+    assert result.action == "execute"
+    assert result.reason == "v1_complete_exact_signal_from_structured_edit"
 
 
 def test_same_message_still_executes_when_it_is_not_an_edit() -> None:
@@ -371,7 +372,7 @@ def test_edit_may_still_revalidate_a_signal_that_already_exists() -> None:
     assert result.action == "execute"
 
 
-def test_edit_block_does_not_disturb_lifecycle_management() -> None:
+def test_edit_management_remains_management() -> None:
     decision = replace(
         _tig_complete_decision(),
         decision="trade_update",
@@ -384,7 +385,7 @@ def test_edit_block_does_not_disturb_lifecycle_management() -> None:
         original_has_signal=False,
     )
     assert result.decision == "trade_update"
-    assert result.reason != "edit_cannot_create_first_trade"
+    assert result.action == "apply_update"
 
 
 def test_application_logging_exposes_info_diagnostics() -> None:
