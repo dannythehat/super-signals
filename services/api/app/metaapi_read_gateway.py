@@ -7,6 +7,7 @@ and broker-history reads only. There is no trade/order mutation method here.
 from __future__ import annotations
 
 from datetime import datetime
+from decimal import Decimal, InvalidOperation
 from urllib.parse import quote
 
 import httpx
@@ -22,6 +23,14 @@ DEFAULT_METAAPI_PROVISIONING_URL = (
     "https://mt-provisioning-api-v1.agiliumtrade.agiliumtrade.ai"
 )
 
+_ACTIVE_PENDING_ORDER_TYPES = {
+    "ORDER_TYPE_BUY_LIMIT",
+    "ORDER_TYPE_SELL_LIMIT",
+    "ORDER_TYPE_BUY_STOP",
+    "ORDER_TYPE_SELL_STOP",
+}
+_ACTIVE_PENDING_STATES = {"ORDER_STATE_PLACED", "ORDER_STATE_PARTIAL"}
+
 
 class MetaApiReadGateway:
     """Small read-only client for MetaAPI terminal and immutable broker history."""
@@ -30,11 +39,6 @@ class MetaApiReadGateway:
         self._timeout = httpx.Timeout(timeout_seconds)
 
     async def resolve_account_region(self, *, token: str, account_id: str) -> str:
-        # Region is account metadata, not market data. The provisioning connection
-        # monitor learns it during startup reconciliation before the Telegram reader
-        # begins listening. Reuse that process-wide value here so a live trade does
-        # not depend on an extra provisioning round-trip just to rediscover which
-        # MetaAPI terminal hostname to call.
         cached = get_metaapi_region(account_id)
         if cached:
             return cached
@@ -81,7 +85,15 @@ class MetaApiReadGateway:
     async def read_orders(
         self, *, token: str, account_id: str, region: str
     ) -> list[dict[str, object]]:
-        """Read currently active terminal orders."""
+        """Read broker-confirmed active pending-entry orders only.
+
+        The dashboard, pending reconciler and execution checks all share this one
+        interpretation. A generic object returned by MetaAPI's ``/orders`` endpoint is
+        not automatically a Super Signals pending trade. Only the four entry order
+        types we actually place, in a broker-active state with remaining volume, are
+        returned. Malformed matching orders fail closed as unavailable rather than
+        being counted as pending.
+        """
         payload = await self._read_terminal_json(
             token=token,
             region=region,
@@ -89,7 +101,37 @@ class MetaApiReadGateway:
         )
         if not isinstance(payload, list) or any(not isinstance(item, dict) for item in payload):
             raise MetaApiGatewayError("metaapi_invalid_response")
-        return payload
+
+        active: list[dict[str, object]] = []
+        for item in payload:
+            order_type = str(item.get("type") or "").strip().upper()
+            if order_type not in _ACTIVE_PENDING_ORDER_TYPES:
+                continue
+
+            state = str(item.get("state") or "").strip().upper()
+            if not state:
+                raise MetaApiGatewayError("metaapi_invalid_response")
+            if state not in _ACTIVE_PENDING_STATES:
+                continue
+
+            order_id = str(item.get("id") or "").strip()
+            if not order_id:
+                raise MetaApiGatewayError("metaapi_invalid_response")
+
+            remaining = item.get("currentVolume", item.get("volume"))
+            if remaining is None or isinstance(remaining, bool):
+                raise MetaApiGatewayError("metaapi_invalid_response")
+            try:
+                remaining_volume = Decimal(str(remaining))
+            except (InvalidOperation, TypeError, ValueError) as exc:
+                raise MetaApiGatewayError("metaapi_invalid_response") from exc
+            if not remaining_volume.is_finite():
+                raise MetaApiGatewayError("metaapi_invalid_response")
+            if remaining_volume <= 0:
+                continue
+
+            active.append(item)
+        return active
 
     async def read_history_orders_by_ticket(
         self,
@@ -99,13 +141,7 @@ class MetaApiReadGateway:
         region: str,
         order_id: str,
     ) -> list[dict[str, object]]:
-        """Read broker-completed order truth for one MT order ticket.
-
-        MetaAPI exposes completed orders separately from currently active orders. This
-        read lets reconciliation distinguish a genuinely cancelled/rejected/expired
-        pending order from a temporarily stale `/orders` snapshot without guessing from
-        absence.
-        """
+        """Read broker-completed order truth for one MT order ticket."""
         encoded_order = quote(str(order_id), safe="")
         payload = await self._read_terminal_json(
             token=token,
