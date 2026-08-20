@@ -1,10 +1,14 @@
 """One-time operational retirement of TDC.
 
 This module is deliberately temporary. It runs during one controlled deployment,
-removes any still-active TDC broker exposure, purges TDC trading artifacts from the
-user-facing/performance data model, rebuilds the remaining provider summaries, and is
-then deleted from the production tree. Raw Telegram messages and immutable audit/broker
-history remain only as internal forensic evidence and are not performance inputs.
+removes any still-active TDC broker exposure, purges TDC from mutable user-facing
+trading/performance data, rebuilds the remaining provider summaries, and is then
+deleted from the production tree.
+
+Raw Telegram messages, Signals, lifecycle events, audit events and broker deals are
+immutable forensic evidence. They remain internal and cannot re-enter user-facing
+performance because the TDC source is permanently revoked and all of its Position /
+performance outcome mappings are removed.
 """
 
 from __future__ import annotations
@@ -147,13 +151,7 @@ async def _terminal_order_ids(
     account_id: str,
     region: str,
 ) -> set[str]:
-    """Return terminal order tickets from one bounded bulk history read.
-
-    MetaAPI's live /orders replica can lag MT5. The retirement therefore cross-checks
-    any apparently-active TDC ticket against immutable order history before attempting
-    cancellation. This deliberately avoids the per-ticket history-call pattern that was
-    removed from the dashboard.
-    """
+    """Return terminal order tickets from bounded bulk broker history."""
     end = datetime.now(UTC)
     start = end - timedelta(days=7)
     terminal: set[str] = set()
@@ -237,8 +235,7 @@ async def _remove_broker_exposure(
         )
         cancelled += 1
 
-    # Broker truth must prove there is no remaining TDC exposure before local mappings
-    # are purged. Never make the app look clean while leaving a live broker order behind.
+    # Never make the app look clean while a TDC broker position/order is still active.
     remaining_positions = await read.read_positions(
         token=token,
         account_id=target.account_id,
@@ -269,7 +266,12 @@ async def _remove_broker_exposure(
     return closed, cancelled
 
 
-def _purge_trading_artifacts(source_id: UUID, user_ids: set[UUID]) -> dict[str, int]:
+def _purge_mutable_trading_artifacts(source_id: UUID, user_ids: set[UUID]) -> dict[str, int]:
+    """Remove TDC from every mutable app/performance surface.
+
+    Signals, lifecycle events, audits, Telegram messages and raw broker deals are
+    intentionally untouched. PostgreSQL enforces append-only lifecycle evidence.
+    """
     counts: dict[str, int] = {}
     with Session(get_engine()) as session:
         signal_subquery = "SELECT id FROM signals WHERE source_id=:source_id"
@@ -293,57 +295,19 @@ def _purge_trading_artifacts(source_id: UUID, user_ids: set[UUID]) -> dict[str, 
             ),
             {"source_id": source_id},
         ).rowcount or 0
-        counts["observations"] = session.execute(
-            text("DELETE FROM signal_observations WHERE signal_id IN (" + signal_subquery + ")"),
-            {"source_id": source_id},
-        ).rowcount or 0
-        counts["lifecycle"] = session.execute(
-            text("DELETE FROM signal_lifecycle_events WHERE signal_id IN (" + signal_subquery + ")"),
-            {"source_id": source_id},
-        ).rowcount or 0
         counts["outcomes"] = session.execute(
             text("DELETE FROM performance_trade_outcomes WHERE signal_id IN (" + signal_subquery + ")"),
             {"source_id": source_id},
         ).rowcount or 0
 
-        # These raw broker rows remain immutable evidence, but TDC attribution is
-        # removed so no provider-level calculation can ever consume them again.
-        counts["broker_deals_detached"] = session.execute(
-            text(
-                """
-                UPDATE broker_deals
-                SET position_id=NULL, signal_id=NULL, source_id=NULL, trader_stream=NULL
-                WHERE source_id=:source_id
-                   OR signal_id IN (SELECT id FROM signals WHERE source_id=:source_id)
-                """
-            ),
-            {"source_id": source_id},
-        ).rowcount or 0
-
-        # Remove the only TDC audit records that are rendered as user-facing skipped
-        # trades. Other audit evidence stays internal and immutable.
-        counts["visible_block_audits"] = session.execute(
-            text(
-                """
-                DELETE FROM audit_events
-                WHERE entity_type='signal'
-                  AND event_type='mt5.day26_execution_blocked'
-                  AND entity_id IN (SELECT id FROM signals WHERE source_id=:source_id)
-                """
-            ),
-            {"source_id": source_id},
-        ).rowcount or 0
-
+        # broker_deals.position_id is ON DELETE SET NULL, preserving immutable broker
+        # evidence while severing it from the user-facing Position model.
         counts["positions"] = session.execute(
             text("DELETE FROM positions WHERE signal_id IN (" + signal_subquery + ")"),
             {"source_id": source_id},
         ).rowcount or 0
-        counts["signals"] = session.execute(
-            text("DELETE FROM signals WHERE source_id=:source_id"),
-            {"source_id": source_id},
-        ).rowcount or 0
 
-        # Summary rows are derived data. Rebuild them from the remaining providers only.
+        # Summary rows are derived. They are rebuilt from the remaining providers only.
         for user_id in user_ids:
             session.execute(
                 text("DELETE FROM performance_summaries WHERE user_id=:user_id"),
@@ -401,14 +365,15 @@ async def main() -> None:
         closed += account_closed
         cancelled += account_cancelled
 
-    counts = _purge_trading_artifacts(source_id, user_ids)
+    counts = _purge_mutable_trading_artifacts(source_id, user_ids)
     summaries = _rebuild_remaining_summaries(user_ids, cipher)
     print(
         "TDC retirement completed "
         f"broker_positions_closed={closed} broker_orders_cancelled={cancelled} "
         f"positions_removed={counts.get('positions', 0)} "
-        f"signals_removed={counts.get('signals', 0)} "
         f"outcomes_removed={counts.get('outcomes', 0)} "
+        f"notifications_removed={counts.get('notifications', 0)} "
+        f"publications_removed={counts.get('publications', 0)} "
         f"summaries_rebuilt={summaries}"
     )
 
