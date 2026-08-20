@@ -89,14 +89,17 @@ def test_tdc_immediate_buy_zone_opens_one_layer_then_uses_pending_retracement_la
     ]
 
 
-def test_unknown_plural_pending_zone_never_invents_a_grid() -> None:
-    with pytest.raises(ValueError, match="pending_layer_grid_unspecified"):
-        parse_critical_entries(
-            "BUY LIMITS GOLD @ 4332/4326 AREA\nTP 4335\nSL 4325",
-            side="BUY",
-            entry_low="4326",
-            entry_high="4332",
-        )
+def test_explicit_plural_pending_zone_uses_only_literal_boundaries() -> None:
+    entries = parse_critical_entries(
+        "BUY LIMITS GOLD @ 4332/4326 AREA\nTP 4335\nSL 4325",
+        side="BUY",
+        entry_low="4326",
+        entry_high="4332",
+    )
+    assert [(item.entry_index, item.order_type, item.price) for item in entries] == [
+        (1, "buy_limit", Decimal("4332")),
+        (2, "buy_limit", Decimal("4326")),
+    ]
 
 
 def test_tig_second_entry_becomes_retracement_limit_not_a_second_market_chase() -> None:
