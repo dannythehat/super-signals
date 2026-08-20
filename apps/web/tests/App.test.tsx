@@ -109,7 +109,7 @@ function htmlResponse(status: number): Response {
     status,
     headers: new Headers({ 'content-type': 'text/html; charset=utf-8' }),
     json: async () => { throw new SyntaxError("Unexpected token '<'"); },
-  } as Response;
+  } as unknown as Response;
 }
 
 type MockOptions = {
