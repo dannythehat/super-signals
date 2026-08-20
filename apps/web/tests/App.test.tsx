@@ -95,7 +95,21 @@ const dashboard = {
 };
 
 function jsonResponse(status: number, body: unknown): Response {
-  return { ok: status >= 200 && status < 300, status, json: async () => body } as Response;
+  return {
+    ok: status >= 200 && status < 300,
+    status,
+    headers: new Headers({ 'content-type': 'application/json' }),
+    json: async () => body,
+  } as Response;
+}
+
+function htmlResponse(status: number): Response {
+  return {
+    ok: status >= 200 && status < 300,
+    status,
+    headers: new Headers({ 'content-type': 'text/html; charset=utf-8' }),
+    json: async () => { throw new SyntaxError("Unexpected token '<'"); },
+  } as Response;
 }
 
 type MockOptions = {
@@ -138,11 +152,29 @@ describe('App', () => {
     expect(screen.getByLabelText('Password')).toBeInTheDocument();
   });
 
-  it('shows a safe service error without exposing technical details', async () => {
+  it('keeps the session in reconnecting state during a temporary service restart', async () => {
     vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new Error('private network details')));
     render(<App />);
-    expect(await screen.findByText('The secure service is unavailable.')).toBeInTheDocument();
+    expect(await screen.findByText('Reconnecting to the secure service…')).toBeInTheDocument();
+    expect(screen.queryByRole('heading', { name: 'Sign in securely' })).not.toBeInTheDocument();
     expect(screen.queryByText('private network details')).not.toBeInTheDocument();
+  });
+
+  it('never exposes an HTML parser error if login meets a platform restart page', async () => {
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.endsWith('/auth/me')) return jsonResponse(401, {});
+      if (url.endsWith('/auth/login')) return htmlResponse(503);
+      return jsonResponse(404, { detail: { message: 'Not configured.' } });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    render(<App />);
+    fireEvent.change(await screen.findByLabelText('Email'), { target: { value: 'owner@example.com' } });
+    fireEvent.change(screen.getByLabelText('Password'), { target: { value: 'correct horse battery staple' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Sign in' }));
+    expect(await screen.findByText('The secure service is reconnecting. Please try again in a moment.')).toBeInTheDocument();
+    expect(screen.queryByText(/Unexpected token/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/DOCTYPE/)).not.toBeInTheDocument();
   });
 
   it('signs the owner in to the current broker-backed Home', async () => {
