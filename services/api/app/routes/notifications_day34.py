@@ -3,6 +3,12 @@
 Notifications are derived from canonical broker/lifecycle events and stored in
 PostgreSQL. Reading, subscribing or acknowledging a notification is visibility/UI state
 only and can never place, close, modify or otherwise affect a trade.
+
+Historical lifecycle rows are audit evidence, not member notifications. A lifecycle
+notification is visible only when it was materialised within five minutes of the
+underlying event. This visibility rule is enforced at read time as well as by the
+publisher so stale rows can never reappear merely because an old database audience flag
+remains ``shared``.
 """
 
 from __future__ import annotations
@@ -86,7 +92,18 @@ def _no_store(response: Response) -> None:
 
 
 def _visible_filter() -> str:
-    return "(n.audience = 'shared' OR (n.audience = 'user' AND n.user_id = :user_id))"
+    return """
+        (n.audience = 'shared' OR (n.audience = 'user' AND n.user_id = :user_id))
+        AND (
+            n.lifecycle_event_id IS NULL
+            OR EXISTS (
+                SELECT 1
+                FROM signal_lifecycle_events AS visible_event
+                WHERE visible_event.id = n.lifecycle_event_id
+                  AND n.created_at <= visible_event.occurred_at + interval '5 minutes'
+            )
+        )
+    """
 
 
 def _endpoint_hash(endpoint: str) -> str:
@@ -321,22 +338,18 @@ def unsubscribe_push(
     session: DbSession,
     identity: Identity,
 ) -> PushUnsubscribeResponse:
-    endpoint = _validate_push_endpoint(payload.endpoint)
+    user_id = identity["id"]
+    endpoint_hash = _endpoint_hash(_validate_push_endpoint(payload.endpoint))
     changed = session.execute(
         text(
             """
             UPDATE push_subscriptions
             SET enabled=false, updated_at=now()
-            WHERE endpoint_hash=:endpoint_hash
-              AND user_id=:user_id
-              AND enabled=true
+            WHERE user_id=:user_id AND endpoint_hash=:endpoint_hash
             RETURNING id
             """
         ),
-        {
-            "endpoint_hash": _endpoint_hash(endpoint),
-            "user_id": identity["id"],
-        },
+        {"user_id": user_id, "endpoint_hash": endpoint_hash},
     ).scalar_one_or_none()
     session.commit()
     _no_store(response)
