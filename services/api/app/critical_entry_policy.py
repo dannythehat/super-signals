@@ -2,7 +2,8 @@
 
 Broker structure is derived from literal current-message evidence only. No price, SL or
 TP is borrowed from provider history. Explicit multi-entry setups are represented before
-execution; unknown grids still fail closed.
+execution. Literal pending ranges are represented from their literal boundaries rather
+than being rejected because a provider used different labels or spacing.
 """
 
 from __future__ import annotations
@@ -28,24 +29,23 @@ _TDC_LAYER_TEMPLATE = re.compile(
 )
 _HIGH_RISK = re.compile(r"\bHIGH\s+RISK\s+TRADE\b", re.IGNORECASE)
 _TP_OPEN = re.compile(r"\bTP\s*(?:\d+\s*)?OPEN\b", re.IGNORECASE)
-_TDC_TWO_POINT_PENDING = re.compile(
-    r"(?im)^\s*(BUY|SELL)\s+(LIMITS?|STOPS?)\s+(?:XAUUSD|GOLD)\s*"
-    r"@\s*(\d+(?:\.\d+)?)\s*/\s*(\d+(?:\.\d+)?)(?:\s+AREA)?\s*$"
+_LITERAL_TWO_POINT_PENDING = re.compile(
+    r"(?is)\b(BUY|SELL)\s+(LIMITS|STOPS)(?:\s+ORDERS?)?\b"
+    r"(?:\s+(?:XAUUSD|GOLD))?\s*"
+    r"(?:(?:ENTRY(?:\s+PRICE)?|PRICE)\s*)?(?:@|AT|:|=)?\s*"
+    r"(\d+(?:\.\d+)?)\s*(?:/|-|TO)\s*(\d+(?:\.\d+)?)"
 )
 _EXPLICIT_PENDING_ZONE = re.compile(
     r"(?is)\b(BUY|SELL)\s+(LIMIT|STOP)(?:\s+ORDER)?\b"
-    r"(?:\s+(?:XAUUSD|GOLD))?\s*(?:@|AT|:|=)?\s*"
+    r"(?:\s+(?:XAUUSD|GOLD))?\s*"
+    r"(?:(?:ENTRY(?:\s+PRICE)?|PRICE)\s*)?(?:@|AT|:|=)?\s*"
     r"(\d+(?:\.\d+)?)\s*(?:/|-|TO)\s*(\d+(?:\.\d+)?)"
 )
-_AMBIGUOUS_PENDING_ZONE = re.compile(
-    r"\b(?:BUY|SELL)\s+(?:LIMITS|STOPS)\b[^\n]{0,60}"
-    r"\d+(?:\.\d+)?\s*(?:/|-|TO)\s*\d+(?:\.\d+)?",
-    re.IGNORECASE,
-)
 _EXPLICIT_PENDING = re.compile(
-    r"\b(BUY|SELL)\s+(LIMIT|STOP)(?:\s+ORDER)?S?\b"
-    r"(?:\s+(?:XAUUSD|GOLD))?\s*(?:@|AT|:|=)?\s*(\d+(?:\.\d+)?)\b",
-    re.IGNORECASE,
+    r"(?is)\b(BUY|SELL)\s+(LIMIT|STOP)(?:\s+ORDER)?S?\b"
+    r"(?:\s+(?:XAUUSD|GOLD))?\s*"
+    r"(?:(?:ENTRY(?:\s+PRICE)?|PRICE)\s*)?(?:@|AT|:|=)?\s*"
+    r"(\d+(?:\.\d+)?)\b"
 )
 _FIRST_ENTRY = re.compile(
     r"(?im)^\s*(?:FIRST\s+ENTRY|ENTRY(?:\s*1)?)\s*[:=@-]?\s*(\d+(?:\.\d+)?)\b"
@@ -149,12 +149,13 @@ def _tdc_layer_grid(text: str, normalized_side: str) -> tuple[CriticalEntry, ...
     return tuple(entries)
 
 
-def _tdc_two_point_pending(text: str, normalized_side: str) -> tuple[CriticalEntry, ...] | None:
-    """Exact observed TDC plural two-price pending form; never invent an inner grid."""
-    match = _TDC_TWO_POINT_PENDING.search(text)
-    if match is None or _TP_OPEN.search(text) is None:
-        return None
-    if re.search(r"\bSL\b", text, re.IGNORECASE) is None:
+def _literal_two_point_pending(
+    text: str,
+    normalized_side: str,
+) -> tuple[CriticalEntry, ...] | None:
+    """Represent a literal plural pending range using exactly its two stated prices."""
+    match = _LITERAL_TWO_POINT_PENDING.search(text)
+    if match is None:
         return None
     provider_side = match.group(1).upper()
     if provider_side != normalized_side:
@@ -187,13 +188,13 @@ def parse_critical_entries(
     if proven_grid is not None:
         return proven_grid
 
-    two_point = _tdc_two_point_pending(text, normalized_side)
+    two_point = _literal_two_point_pending(text, normalized_side)
     if two_point is not None:
         return two_point
 
     # A singular LIMIT/STOP with a literal zone is one provider order, not permission
-    # to invent a grid. Place the broker pending at the first declared boundary while
-    # the canonical signal retains the full literal range.
+    # to invent a grid. Place it at the provider's first stated boundary while the
+    # canonical Signal retains both literal range values for evidence/audit.
     pending_zone = _EXPLICIT_PENDING_ZONE.search(text)
     if pending_zone is not None:
         pending_side = pending_zone.group(1).upper()
@@ -210,9 +211,6 @@ def parse_critical_entries(
                 price=first,
             ),
         )
-
-    if _AMBIGUOUS_PENDING_ZONE.search(text) is not None:
-        raise ValueError("pending_layer_grid_unspecified")
 
     pending = _EXPLICIT_PENDING.search(text)
     if pending is not None:
