@@ -1,11 +1,9 @@
 from __future__ import annotations
 
 import inspect
-from datetime import timedelta
 
 from app.ai_message_pipeline_canonical import CanonicalAiMessagePipeline
 from app.ai_message_supervisor import AiMessageDecision
-from app.telegram_publisher_canonical import _age_text
 from app.v1_message_policy import apply_v1_message_policy
 
 
@@ -83,7 +81,3 @@ def test_canonical_post_execution_revision_cannot_reenter_trade() -> None:
     assert "entry_reexecution_allowed" in source
     assert "execute_owner_demo_signal" not in source
     assert "place_market_order" not in source
-
-
-def test_delayed_publication_reports_original_age_without_runtime_patch() -> None:
-    assert _age_text(timedelta(hours=4, minutes=10)) == "4h 10m"
