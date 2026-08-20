@@ -120,7 +120,7 @@ export function TodayTradingSummary({ apiBaseUrl, currency }: Props) {
   return <section className="today-trading-card" aria-label="Today's trading summary" aria-live="polite">
     <div className="today-trading-head">
       <div className="today-trading-primary"><span>Today</span><strong>{summary.trades} trade{summary.trades === 1 ? '' : 's'}</strong></div>
-      <div className="today-trading-headline"><span>Trading P/L</span><strong className={pnlClass(summary.realised_pnl)}>{money(summary.realised_pnl, currency)}</strong></div>
+      <div className="today-trading-headline"><span>Provider P/L</span><strong className={pnlClass(summary.realised_pnl)}>{money(summary.realised_pnl, currency)}</strong></div>
       <div className="today-trading-headline"><span>Win rate</span><strong>{winRate === null ? '—' : percent(winRate)}</strong></div>
     </div>
     <div className="today-trading-stats">
@@ -135,8 +135,8 @@ export function TodayTradingSummary({ apiBaseUrl, currency }: Props) {
       {stale
         ? 'Broker reconciliation updating — last confirmed values shown'
         : summary.pending === null
-          ? 'Trading results are broker-backed · Pending orders are refreshing from MT5'
-          : 'Trading results and pending orders are broker-confirmed'}
+          ? 'Provider performance excludes retired sources · Pending orders are refreshing from MT5'
+          : 'Provider performance excludes retired sources · Account balance above is live MT5 broker truth'}
     </small>
   </section>;
 }
