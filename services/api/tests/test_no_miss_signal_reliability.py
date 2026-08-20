@@ -95,7 +95,7 @@ def _recovery_manager(decision: str, action: str):
     return manager, calls
 
 
-def test_restart_recovery_dispatches_stale_management() -> None:
+def test_restart_recovery_never_replays_stale_management() -> None:
     manager, calls = _recovery_manager("trade_update", "apply_update")
     asyncio.run(
         manager._dispatch_recovered_if_required(
@@ -105,7 +105,7 @@ def test_restart_recovery_dispatches_stale_management() -> None:
             occurred_at=datetime.now(UTC) - timedelta(hours=3),
         )
     )
-    assert len(calls) == 1
+    assert calls == []
 
 
 def test_restart_recovery_does_not_execute_stale_new_trade() -> None:
