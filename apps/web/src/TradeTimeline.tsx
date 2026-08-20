@@ -30,6 +30,11 @@ type TimelineData = {
   broker_trade_action_created: boolean;
 };
 
+type LiveAccountState = {
+  open: number;
+  pending: number | null;
+};
+
 type FilterKey = 'all' | 'open' | 'pending' | 'closed' | 'won' | 'lost' | 'breakeven' | 'skipped';
 
 type Props = {
@@ -109,6 +114,7 @@ function skippedReason(value: string | null): string {
 
 export function TradeTimeline({ apiBaseUrl, currency }: Props) {
   const [data, setData] = useState<TimelineData | null>(null);
+  const [liveState, setLiveState] = useState<LiveAccountState | null>(null);
   const [statusFilter, setStatusFilter] = useState<FilterKey>('all');
   const [sourceFilter, setSourceFilter] = useState('all');
   const [traderFilter, setTraderFilter] = useState('all');
@@ -145,6 +151,21 @@ export function TradeTimeline({ apiBaseUrl, currency }: Props) {
       if (!syncFailed) window.dispatchEvent(new Event('super-signals-ledger-synced'));
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : 'Trade history is temporarily unavailable.');
+    }
+
+    try {
+      const timezone = Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC';
+      const query = new URLSearchParams({ timezone_name: timezone });
+      const response = await fetch(`${apiBaseUrl}/account/mt5/dashboard/today?${query.toString()}`, {
+        credentials: 'include',
+        headers: { Accept: 'application/json' },
+        cache: 'no-store',
+      });
+      if (!response.ok) throw new Error('live_state_unavailable');
+      const state = (await response.json()) as LiveAccountState;
+      setLiveState({ open: state.open, pending: state.pending });
+    } catch {
+      setLiveState(null);
     } finally {
       setLoading(false);
       setRefreshing(false);
@@ -153,6 +174,13 @@ export function TradeTimeline({ apiBaseUrl, currency }: Props) {
 
   useEffect(() => {
     void refresh(true);
+    const interval = window.setInterval(() => void refresh(true), 30_000);
+    const onFocus = () => void refresh(true);
+    window.addEventListener('focus', onFocus);
+    return () => {
+      window.clearInterval(interval);
+      window.removeEventListener('focus', onFocus);
+    };
   }, [refresh]);
 
   const sources = useMemo(() => {
@@ -199,10 +227,10 @@ export function TradeTimeline({ apiBaseUrl, currency }: Props) {
     {syncNote && <div className="day33-sync-note" role="status">{syncNote}</div>}
     {error && <div className="day33-sync-note day33-sync-note--error" role="alert">{error}</div>}
 
-    <div className="day33-live-strip" aria-label="Current trade state">
-      <div><span className="day33-live-dot day33-live-dot--open" /><strong>{data?.open_count ?? 0}</strong><span>Open</span></div>
-      <div><span className="day33-live-dot day33-live-dot--pending" /><strong>{data?.pending_count ?? 0}</strong><span>Pending</span></div>
-      <small>Current account state</small>
+    <div className="day33-live-strip" aria-label="Current live broker state">
+      <div><span className="day33-live-dot day33-live-dot--open" /><strong>{liveState === null ? '—' : liveState.open}</strong><span>Open</span></div>
+      <div><span className="day33-live-dot day33-live-dot--pending" /><strong>{liveState?.pending === null || liveState === null ? '—' : liveState.pending}</strong><span>Pending</span></div>
+      <small>Live account state · Pending from MT5</small>
     </div>
 
     <div className="day33-status-filters" aria-label="Filter trade status">
