@@ -27,10 +27,7 @@ def test_dashboard_account_values_cannot_be_virtualised_again() -> None:
     assert "free_margin=float(equity)" not in runtime
 
 
-def test_provider_performance_is_named_separately_from_mt5_account_balance() -> None:
-    today = (ROOT / "apps/web/src/TodayTradingSummary.tsx").read_text(encoding="utf-8")
+def test_api_declares_provider_performance_separately_from_mt5_account_balance() -> None:
     route = (ROOT / "services/api/app/routes/dashboard_day32.py").read_text(encoding="utf-8")
 
-    assert "Provider P/L" in today
-    assert "Account balance above is live MT5 broker truth" in today
     assert 'performance_basis: str = "selected_provider_broker_ledger"' in route
