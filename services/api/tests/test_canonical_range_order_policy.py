@@ -12,6 +12,7 @@ def _decision(
     stop_loss: str = "4395",
     tps: list[str] | None = None,
     order_type: str = "pending",
+    source_profile: str | None = None,
 ) -> AiMessageDecision:
     raw = "fixture"
     return AiMessageDecision(
@@ -32,6 +33,7 @@ def _decision(
             "update_target": None,
             "update_value": None,
             "provider_claimed_pips": None,
+            "source_profile": source_profile,
         },
         model="fixture",
         response_id=None,
@@ -81,6 +83,7 @@ def test_tdc_sell_limit_entry_price_wording_executes() -> None:
             entry_high="4545",
             stop_loss="4560",
             tps=["4538", "4535", "4530", "4505"],
+            source_profile="tdc_xauusd",
         ),
         raw_text=raw,
     )
