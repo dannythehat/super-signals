@@ -14,7 +14,7 @@ def test_tdc_is_permanently_revoked_by_migration() -> None:
     assert "pass" in migration
 
 
-def test_tdc_cleanup_removes_broker_exposure_before_local_trade_artifacts() -> None:
+def test_tdc_cleanup_removes_broker_exposure_before_performance_cleanup() -> None:
     cleanup = (
         ROOT / "services/api/app/retire_tdc_provider_once.py"
     ).read_text(encoding="utf-8")
@@ -24,7 +24,7 @@ def test_tdc_cleanup_removes_broker_exposure_before_local_trade_artifacts() -> N
     assert "close_position" in cleanup
     assert "cancel_order" in cleanup
     assert cleanup.index("_remove_broker_exposure") < cleanup.index(
-        "_purge_mutable_trading_artifacts"
+        "_purge_mutable_performance"
     )
 
 
@@ -36,8 +36,8 @@ def test_tdc_cleanup_removes_mutable_user_facing_performance_artifacts() -> None
         "DELETE FROM notification_events",
         "DELETE FROM telegram_publications",
         "DELETE FROM performance_trade_outcomes",
-        "DELETE FROM positions",
         "DELETE FROM performance_summaries",
+        "CanonicalPerformanceRuntimeService",
         "rebuild_summaries",
     ):
         assert required in cleanup
@@ -52,6 +52,7 @@ def test_tdc_cleanup_never_mutates_immutable_forensic_evidence() -> None:
         "DELETE FROM signals",
         "DELETE FROM messages",
         "DELETE FROM audit_events",
+        "DELETE FROM positions",
         "UPDATE broker_deals\n                SET",
     )
     for statement in forbidden:
