@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import asdict, replace
-from datetime import UTC, datetime
+from datetime import datetime
 from typing import Annotated, Any
 from uuid import UUID
 
@@ -32,13 +32,6 @@ from app.routes.performance_day33 import (
 router = APIRouter(prefix="/dashboard", tags=["dashboard-day32"])
 router.include_router(performance_day33_router)
 Identity = Annotated[dict[str, Any], Depends(get_current_identity)]
-
-_TERMINAL_BROKER_ORDER_STATES = {
-    "ORDER_STATE_CANCELED",
-    "ORDER_STATE_REJECTED",
-    "ORDER_STATE_EXPIRED",
-    "ORDER_STATE_FILLED",
-}
 
 
 class ConnectionResponse(BaseModel):
@@ -200,43 +193,17 @@ def _safe_open_profit(view: Any) -> float | None:
     return view.open_profit
 
 
-def _terminal_broker_order_ids(history: list[dict[str, object]]) -> set[str]:
-    """Return tickets that immutable broker history proves are no longer pending."""
-    terminal: set[str] = set()
-    for item in history:
-        order_id = str(item.get("id") or "").strip()
-        if not order_id:
-            continue
-        state = str(item.get("state") or "").strip().upper()
-        done_time = str(item.get("doneTime") or "").strip()
-        if state in _TERMINAL_BROKER_ORDER_STATES or done_time:
-            terminal.add(order_id)
-    return terminal
-
-
-def _broker_history_proves_terminal(
-    order_id: str,
-    history: list[dict[str, object]],
-) -> bool:
-    """True only when immutable broker history proves this ticket is no longer pending."""
-    return order_id in _terminal_broker_order_ids(history)
-
-
 async def _active_broker_order_ids(
     service: CanonicalDashboardRuntimeService,
     user_id: UUID,
-    *,
-    history_start: datetime,
 ) -> set[str] | None:
-    """Return broker-verified active pending-entry tickets, or None when unavailable.
+    """Return current broker-active pending-entry tickets, or None when unavailable.
 
-    MetaAPI's current ``/orders`` replica can lag terminal MT5 state, so current pending
-    entries are cross-checked against one bulk immutable broker-history read. Broker
-    history wins when a ticket has already filled/cancelled/rejected/expired.
-
-    This deliberately performs at most two broker reads for the normal dashboard path:
-    one current-order read and one bulk history read. It must never make one network
-    request per order ticket.
+    MetaApiReadGateway.read_orders already filters the terminal payload to the four
+    pending entry types Super Signals can place, broker-active states only, and positive
+    remaining volume. The dashboard deliberately performs no broker-history reads: deal
+    and order history reconciliation belongs to the canonical settlement worker, never
+    to a user-facing page request.
     """
     read_service = service._read_service
     row = read_service._load_row(user_id)
@@ -266,26 +233,11 @@ async def _active_broker_order_ids(
             account_id=account_id,
             region=region,
         )
-        current_order_ids = {
+        return {
             str(item.get("id") or "").strip()
             for item in orders
             if str(item.get("id") or "").strip()
         }
-        if not current_order_ids:
-            return set()
-
-        history = await read_service._gateway.read_history_orders_by_time_range(
-            token=token,
-            account_id=account_id,
-            region=region,
-            start_time=history_start,
-            end_time=datetime.now(UTC),
-            offset=0,
-            limit=1000,
-        )
-        if len(history) >= 1000:
-            return None
-        return current_order_ids - _terminal_broker_order_ids(history)
     except MetaApiGatewayError:
         return None
 
@@ -341,11 +293,7 @@ async def account_dashboard_today(
         data_user_id,
         timezone_name=timezone_name,
     )
-    active_order_ids = await _active_broker_order_ids(
-        service,
-        data_user_id,
-        history_start=summary.session_started_at,
-    )
+    active_order_ids = await _active_broker_order_ids(service, data_user_id)
     pending = _broker_pending_trade_count(
         service,
         data_user_id,
