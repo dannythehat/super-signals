@@ -69,6 +69,16 @@ def test_revoked_sources_are_excluded_from_every_performance_surface() -> None:
     assert "revoked providers are outside the user-facing performance universe" in runtime
 
 
+def test_live_today_summary_excludes_revoked_provider_trades_and_reconciliation() -> None:
+    today = (
+        ROOT / "services/api/app/dashboard_today_summary.py"
+    ).read_text(encoding="utf-8")
+    assert "src.status <> 'revoked'" in today
+    assert "src_o.status <> 'revoked'" in today
+    assert "src.status='revoked'" in today
+    assert "reconciliation_ready = history_backfilled and not revoked_deals_present" in today
+
+
 def test_tdc_cleanup_is_wired_only_as_controlled_startup_maintenance() -> None:
     start = (ROOT / "scripts/render-start.sh").read_text(encoding="utf-8")
     assert "python -m app.retire_tdc_provider_once" in start
