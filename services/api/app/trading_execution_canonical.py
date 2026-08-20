@@ -28,7 +28,6 @@ whether ordinary LIVE member mutation is enabled.
 from __future__ import annotations
 
 import asyncio
-from contextvars import ContextVar
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from decimal import Decimal
@@ -60,10 +59,6 @@ from app.paper_resilient_read_gateway import ResilientMetaApiReadGateway
 from app.risk_sizing_day24 import Day24RiskSizingResult
 
 
-_full_risk_section_count: ContextVar[int] = ContextVar(
-    "super_signals_full_risk_section_count",
-    default=1,
-)
 _AMBIGUOUS_BROKER_CODES = {
     "metaapi_timeout",
     "metaapi_unreachable",
@@ -111,7 +106,6 @@ class CanonicalTradingExecutionService(PaperExecutionPriorityService):
             and shape["entry_high"] is None
         )
         if no_entry_market:
-            section_count = 1
             entries: tuple[CriticalEntry, ...] = ()
             is_critical = False
         else:
@@ -125,28 +119,23 @@ class CanonicalTradingExecutionService(PaperExecutionPriorityService):
                 )
             except ValueError as exc:
                 raise Day26ExecutionError(str(exc)) from exc
-            section_count = max(1, len(entries))
             is_critical = critical.broad_order_type == "pending" or len(entries) > 1
 
-        context_token = _full_risk_section_count.set(section_count)
-        try:
-            if is_critical:
-                return await PaperCriticalExecutionService.execute_owner_demo_signal(
-                    self,
-                    owner_user_id=owner_user_id,
-                    signal_id=signal_id,
-                    risk_percent=risk_percent,
-                    double_lot_approved=double_lot_approved,
-                )
-            return await AtomicDay26Mt5ExecutionService.execute_owner_demo_signal(
+        if is_critical:
+            return await PaperCriticalExecutionService.execute_owner_demo_signal(
                 self,
                 owner_user_id=owner_user_id,
                 signal_id=signal_id,
                 risk_percent=risk_percent,
                 double_lot_approved=double_lot_approved,
             )
-        finally:
-            _full_risk_section_count.reset(context_token)
+        return await AtomicDay26Mt5ExecutionService.execute_owner_demo_signal(
+            self,
+            owner_user_id=owner_user_id,
+            signal_id=signal_id,
+            risk_percent=risk_percent,
+            double_lot_approved=double_lot_approved,
+        )
 
     def _load_inputs(self, owner_user_id: UUID, signal_id: UUID):
         bare = self._load_bare_now_signal(signal_id)
@@ -297,31 +286,6 @@ class CanonicalTradingExecutionService(PaperExecutionPriorityService):
         if row is not None and row["entry_low"] is None and row["entry_high"] is None:
             return Decimal("0"), Decimal("0")
         return super()._provider_zone(signal_id)
-
-    def _size_signal(
-        self,
-        *,
-        signal: _SignalInput,
-        execution_entry: Decimal,
-        balance: float,
-        price_loss_tick_value: float | None,
-        specification: dict[str, object],
-        risk_percent,
-        double_lot_approved: bool,
-    ) -> Day24RiskSizingResult:
-        section_count = max(1, _full_risk_section_count.get())
-        reconstructed = Decimal(str(balance)) * Decimal(section_count)
-        if section_count > 1:
-            reconstructed = reconstructed.quantize(Decimal("0.01"))
-        return super()._size_signal(
-            signal=signal,
-            execution_entry=execution_entry,
-            balance=float(reconstructed),
-            price_loss_tick_value=price_loss_tick_value,
-            specification=specification,
-            risk_percent=risk_percent,
-            double_lot_approved=double_lot_approved,
-        )
 
     @staticmethod
     def _allocation_pairs(
