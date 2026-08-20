@@ -25,6 +25,9 @@ interface TelegramAccountSummary { id: string; status: string; }
 interface TelegramSetupSource { selected: boolean; managed_by_this_reader?: boolean; }
 
 const apiBaseUrl = import.meta.env.VITE_API_BASE_URL ?? '/api';
+const SESSION_RETRY_MS = 1500;
+const SERVICE_RECONNECT_MESSAGE = 'Reconnecting to the secure service…';
+const SERVICE_RESPONSE_ERROR = 'The secure service is reconnecting. Please try again in a moment.';
 
 function workspaceViewFromHistory(value: unknown): WorkspaceView | null {
   return value === 'overview' || value === 'settings' || value === 'setup' || value === 'telegram' || value === 'sources' || value === 'mt5' || value === 'access' ? value : null;
@@ -42,7 +45,15 @@ function urlForView(view: WorkspaceView): string {
   return `${url.pathname}${url.search}${url.hash}`;
 }
 async function readJson<T>(response: Response): Promise<T> {
-  const body = (await response.json()) as T;
+  const contentType = response.headers.get('content-type')?.toLowerCase() ?? '';
+  if (!contentType.includes('application/json')) throw new Error(SERVICE_RESPONSE_ERROR);
+
+  let body: T;
+  try {
+    body = (await response.json()) as T;
+  } catch {
+    throw new Error(SERVICE_RESPONSE_ERROR);
+  }
   if (!response.ok) {
     const detail = typeof body === 'object' && body !== null && 'detail' in body ? (body as { detail: unknown }).detail : 'Something went wrong.';
     const message = typeof detail === 'object' && detail !== null && 'message' in detail ? String((detail as { message: unknown }).message) : String(detail);
@@ -92,17 +103,25 @@ export function App() {
 
   useEffect(() => {
     const controller = new AbortController();
+    let retryTimer: number | null = null;
     async function restoreSession() {
       try {
         const response = await fetch(`${apiBaseUrl}/auth/me`, { credentials: 'include', headers: { Accept: 'application/json' }, signal: controller.signal });
-        if (response.status === 401) { setAuthState('signed-out'); return; }
-        setAccount(await readJson<Account>(response)); setAuthState('signed-in');
+        if (response.status === 401) { setNotice(null); setAuthState('signed-out'); return; }
+        const restoredAccount = await readJson<Account>(response);
+        setAccount(restoredAccount); setNotice(null); setAuthState('signed-in');
       } catch (error) {
         if (error instanceof DOMException && error.name === 'AbortError') return;
-        setNotice({ tone: 'error', message: 'The secure service is unavailable.' }); setAuthState('signed-out');
+        setNotice({ tone: 'error', message: SERVICE_RECONNECT_MESSAGE });
+        setAuthState('checking');
+        retryTimer = window.setTimeout(() => void restoreSession(), SESSION_RETRY_MS);
       }
     }
-    void restoreSession(); return () => controller.abort();
+    void restoreSession();
+    return () => {
+      controller.abort();
+      if (retryTimer !== null) window.clearTimeout(retryTimer);
+    };
   }, []);
 
   useEffect(() => { if (authState === 'signed-in') void refreshSharedSources(); }, [account?.id, authState, refreshSharedSources]);
@@ -174,7 +193,7 @@ export function App() {
     try { window.scrollTo({ top: 0, behavior: 'smooth' }); } catch { /* test environments */ }
   }
 
-  if (authState === 'checking') return <main className="app-shell"><section className="auth-card auth-card--loading" aria-live="polite"><img className="brand-logo" src="/super-signals-logo.png" alt="Super Signals" /><p>Checking secure session…</p></section></main>;
+  if (authState === 'checking') return <main className="app-shell"><section className="auth-card auth-card--loading" aria-live="polite"><img className="brand-logo" src="/super-signals-logo.png" alt="Super Signals" /><p>{notice?.message ?? 'Checking secure session…'}</p></section></main>;
 
   if (authState === 'signed-in' && account) {
     const visibleRoleLabel = account.role === 'user' ? 'Member' : account.role_label;
