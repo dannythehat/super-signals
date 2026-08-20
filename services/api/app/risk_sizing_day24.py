@@ -1,9 +1,10 @@
-"""Day 24 deterministic per-position risk sizing.
+"""Day 24 deterministic per-atomic-leg risk sizing.
 
 The parsed Telegram signal supplies the entry and stop loss. This module never
-invents, changes or optimizes either value. It only calculates a broker-valid
-position volume from the user's selected risk and broker-reported symbol/volume
-rules. No order placement or MetaAPI network request exists in this module.
+invents, changes or optimizes either value. It calculates one broker-valid volume
+from the real broker account balance, the selected risk percentage and broker-reported
+symbol/volume rules. Entry count and TP count never scale the balance used for sizing.
+No order placement or MetaAPI network request exists in this module.
 """
 
 from __future__ import annotations
@@ -94,7 +95,7 @@ class Day24RiskSizingResult:
 
 
 class Day24RiskSizer:
-    """Calculate one broker-valid volume for every TP position in a signal."""
+    """Calculate one broker-valid volume for each atomic broker leg."""
 
     @classmethod
     def size(
@@ -144,12 +145,12 @@ class Day24RiskSizer:
         volume = cls._round_volume_down(raw_volume, volume_rules)
         actual_risk = volume * loss_per_lot
 
-        # Normal broker-step rounding must never increase risk above the user's
-        # calculated target. The one intentional exception is the broker's hard
-        # minimum trade size: if the target volume is smaller than that minimum,
-        # use the minimum lot instead of refusing an otherwise valid trade. The
-        # actual risk is still reported truthfully and the downstream margin/funds
-        # gate remains responsible for deciding whether the account can fund it.
+        # Normal broker-step rounding must never increase risk above the selected
+        # per-leg target. The one intentional exception is the broker's hard minimum
+        # trade size: if the calculated volume is smaller, use the minimum lot instead
+        # of locally refusing an otherwise valid provider leg. Actual risk is reported
+        # truthfully; Vantage/MT5 remains the sole funds/margin acceptance authority
+        # when the order is submitted.
         if actual_risk > risk_budget and not broker_minimum_applied:
             raise Day24RiskSizingError("risk_budget_exceeded")
 
