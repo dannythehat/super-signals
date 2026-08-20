@@ -349,7 +349,7 @@ def test_complete_edit_needs_no_prior_signal_state_to_be_mechanically_valid() ->
         is_edit=True,
     )
     assert result.action == "execute"
-    assert result.reason == "v1_complete_exact_signal_from_structured_edit"
+    assert result.reason == "v1_complete_exact_signal"
 
 
 def test_same_message_still_executes_when_it_is_not_an_edit() -> None:
