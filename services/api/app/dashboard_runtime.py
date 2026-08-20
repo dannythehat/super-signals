@@ -1,9 +1,14 @@
 """Canonical mobile-dashboard view for the active paper-testing run.
 
-The broker account remains the reconciliation authority, but the Owner paper UI is a
-virtual test run beginning at the configured paper epoch. Pre-epoch broker/audit truth
-is retained and simply excluded from the active dashboard. No runtime monkey patching is
-used.
+The MT5 account card is broker truth. Balance, equity, margin and free margin must be the
+values returned by MetaAPI for the connected account and are never replaced by a virtual
+paper balance or by filtered provider performance.
+
+The paper-run epoch is only a reporting boundary for Super Signals trade history and
+performance. Revoked providers are outside that user-facing performance universe, while
+historical broker cash they already caused remains part of the real MT5 account balance.
+Those two accounting bases are deliberately kept separate instead of fabricating an
+account balance that appears to reconcile to filtered provider P/L.
 
 A transient MetaAPI read failure must never make an already broker-mapped Super Signals
 position disappear from the app. During a live-read outage we expose the durable local
@@ -15,7 +20,6 @@ from __future__ import annotations
 
 from dataclasses import replace
 from datetime import UTC, datetime
-from decimal import Decimal
 from uuid import UUID
 
 from sqlalchemy import text
@@ -27,8 +31,6 @@ from app.dashboard_day32 import (
 )
 from app.dashboard_today_summary import TodayTradingSummaryService
 from app.paper_run_epoch import active_paper_epoch
-
-_ZERO = Decimal("0")
 
 
 def _utc(value: datetime) -> datetime:
@@ -48,35 +50,16 @@ class CanonicalDashboardRuntimeService(Day32DashboardService):
             values = session.execute(
                 text(
                     """
-                    SELECT id
-                    FROM signals
-                    WHERE COALESCE(source_posted_at,created_at)>=:cutoff
+                    SELECT s.id
+                    FROM signals AS s
+                    JOIN sources AS src ON src.id=s.source_id
+                    WHERE COALESCE(s.source_posted_at,s.created_at)>=:cutoff
+                      AND src.status<>'revoked'
                     """
                 ),
                 {"cutoff": epoch.started_at},
             ).scalars().all()
         return {UUID(str(value)) for value in values}
-
-    def _post_epoch_realised_cash(self, user_id: UUID) -> Decimal:
-        epoch = active_paper_epoch(user_id)
-        if epoch is None:
-            return _ZERO
-        with self._session_factory() as session:
-            value = session.execute(
-                text(
-                    """
-                    SELECT COALESCE(SUM(o.cash_pnl),0)
-                    FROM performance_trade_outcomes AS o
-                    JOIN signals AS s ON s.id=o.signal_id
-                    WHERE o.user_id=:user_id
-                      AND COALESCE(s.source_posted_at,s.created_at)>=:cutoff
-                      AND o.status IN ('won','lost','breakeven')
-                      AND o.cash_pnl IS NOT NULL
-                    """
-                ),
-                {"user_id": user_id, "cutoff": epoch.started_at},
-            ).scalar_one()
-        return Decimal(str(value or 0)).quantize(Decimal("0.01"))
 
     def _mapped_open_positions(self, user_id: UUID, broker_positions):  # noqa: ANN001
         values = super()._mapped_open_positions(user_id, broker_positions)
@@ -122,7 +105,7 @@ class CanonicalDashboardRuntimeService(Day32DashboardService):
                     symbol=str(row["symbol"] or ""),
                     side=str(row["side"] or ""),
                     volume=float(row["volume"]),
-                    planned_risk_percent=Decimal(str(row["planned_risk_percent"])),
+                    planned_risk_percent=row["planned_risk_percent"],
                     entry_price=float(row["entry_price"]),
                     current_price=None,
                     stop_loss=(float(row["stop_loss"]) if row["stop_loss"] is not None else None),
@@ -171,35 +154,6 @@ class CanonicalDashboardRuntimeService(Day32DashboardService):
         if epoch is None:
             return values
         return tuple(item for item in values if _utc(item.created_at) >= epoch.started_at)
-
-    async def read(self, user_id: UUID):  # noqa: ANN201
-        view = await super().read(user_id)
-        epoch = active_paper_epoch(user_id)
-        if epoch is None or view.account is None:
-            return view
-
-        realised = self._post_epoch_realised_cash(user_id)
-        open_profit = sum(
-            (
-                Decimal(str(item.profit))
-                for item in view.open_positions
-                if item.profit is not None
-            ),
-            _ZERO,
-        ).quantize(Decimal("0.01"))
-        balance = (epoch.baseline_balance + realised).quantize(Decimal("0.01"))
-        equity = (balance + open_profit).quantize(Decimal("0.01"))
-        return replace(
-            view,
-            account=replace(
-                view.account,
-                balance=float(balance),
-                equity=float(equity),
-                margin=0.0,
-                free_margin=float(equity),
-            ),
-            open_profit=float(open_profit),
-        )
 
 
 class CanonicalTodayTradingSummaryService(TodayTradingSummaryService):
