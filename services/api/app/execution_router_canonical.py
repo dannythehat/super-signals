@@ -2,8 +2,9 @@
 
 This is the only production builder for provider decisions -> paper/future-LIVE broker
 routing. It installs no runtime patches and no day-numbered router generation. Paper and
-future LIVE use the same execution, management and pending-fill reconciliation policy;
-only account eligibility/credentials and the explicit member-distribution switch differ.
+future LIVE use the same execution, management, transient-capture retry and pending-fill
+reconciliation policy; only account eligibility/credentials and the explicit member-
+distribution switch differ.
 """
 
 from __future__ import annotations
@@ -14,6 +15,10 @@ from uuid import UUID
 
 from sqlalchemy.orm import Session, sessionmaker
 
+from app.execution_capture_reliability import (
+    CaptureReliableCanonicalTradingExecutionService,
+    CaptureReliableMemberTradingExecutionService,
+)
 from app.execution_dispatch_canonical import CanonicalExecutionDispatcher
 from app.member_routing_canonical import MemberDistributionService, MemberManagementService
 from app.metaapi_margin_gateway import MetaApiMarginGateway
@@ -21,10 +26,6 @@ from app.metaapi_read_gateway import MetaApiReadGateway
 from app.metaapi_trade_gateway import MetaApiTradeGateway
 from app.mt5_crypto import MetaApiTokenCipher
 from app.paper_resilient_read_gateway import PaperResilientMetaApiReadGateway
-from app.trading_execution_canonical import (
-    CanonicalTradingExecutionService,
-    MemberTradingExecutionService,
-)
 from app.trading_management_canonical import (
     CanonicalTradingManagementService,
     MemberTradingManagementService,
@@ -82,7 +83,7 @@ def build_canonical_execution_router(
         # approval/veto budget. Vantage/MT5 is authoritative for actual rejection.
         margin = MetaApiMarginGateway()
 
-        owner_execution = CanonicalTradingExecutionService(
+        owner_execution = CaptureReliableCanonicalTradingExecutionService(
             session_factory=session_factory,
             cipher=cipher,
             read_gateway=owner_read,
@@ -95,7 +96,7 @@ def build_canonical_execution_router(
             read_gateway=owner_read,
             trade_gateway=trade,
         )
-        member_execution = MemberTradingExecutionService(
+        member_execution = CaptureReliableMemberTradingExecutionService(
             session_factory=session_factory,
             cipher=cipher,
             read_gateway=member_read,
