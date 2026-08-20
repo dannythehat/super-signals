@@ -4,11 +4,7 @@ from uuid import uuid4
 
 from app.critical_entry_policy import parse_critical_entries
 from app.mt5_execution_day26 import _SignalInput
-from app.paper_execution_priority import PaperExecutionPriorityService
-from app.trading_execution_canonical import (
-    CanonicalTradingExecutionService,
-    _full_risk_section_count,
-)
+from app.trading_execution_canonical import CanonicalTradingExecutionService
 
 
 def _signal() -> _SignalInput:
@@ -47,46 +43,57 @@ def test_tdc_six_sections_keep_six_atomic_positions_not_twenty_four() -> None:
     assert {item.entry.entry_index for item in allocations} == {1, 2, 3, 4, 5, 6}
 
 
-def test_six_section_signal_sizes_each_section_from_full_balance() -> None:
+def test_six_section_signal_uses_real_balance_once_for_each_leg() -> None:
+    # The canonical executor must not multiply balance by the number of entry sections.
+    # Every leg independently receives the selected percentage of the real account balance.
+    assert "_size_signal" not in CanonicalTradingExecutionService.__dict__
+
     service = object.__new__(CanonicalTradingExecutionService)
-    signal = _signal()
-    specification = {
-        "minVolume": 0.01,
-        "maxVolume": 100.0,
-        "volumeStep": 0.01,
-        "tickSize": 0.01,
-    }
-    full_balance = Decimal("2000")
-    divided_balance = full_balance / Decimal("6")
-
-    token = _full_risk_section_count.set(6)
-    try:
-        actual = CanonicalTradingExecutionService._size_signal(
-            service,
-            signal=signal,
-            execution_entry=Decimal("4398"),
-            balance=float(divided_balance),
-            price_loss_tick_value=1.0,
-            specification=specification,
-            risk_percent=Decimal("1"),
-            double_lot_approved=False,
-        )
-    finally:
-        _full_risk_section_count.reset(token)
-
-    expected = PaperExecutionPriorityService._size_signal(
+    actual = CanonicalTradingExecutionService._size_signal(
         service,
-        signal=signal,
+        signal=_signal(),
         execution_entry=Decimal("4398"),
-        balance=float(full_balance),
+        balance=2000.0,
         price_loss_tick_value=1.0,
-        specification=specification,
+        specification={
+            "minVolume": 0.01,
+            "maxVolume": 100.0,
+            "volumeStep": 0.01,
+            "tickSize": 0.01,
+        },
         risk_percent=Decimal("1"),
         double_lot_approved=False,
     )
 
-    assert actual.risk_budget_per_position == expected.risk_budget_per_position
-    assert actual.actual_risk_per_position == expected.actual_risk_per_position
-    assert actual.volume == expected.volume
+    assert actual.balance == Decimal("2000.0")
     assert actual.effective_risk_percent == Decimal("1")
-    assert actual.risk_budget_per_position == Decimal("20")
+    assert actual.risk_budget_per_position == Decimal("20.0")
+    assert actual.volume == Decimal("0.03")
+    assert actual.actual_risk_per_position == Decimal("18.00")
+
+
+def test_double_signal_uses_two_percent_of_real_balance_not_section_count() -> None:
+    service = object.__new__(CanonicalTradingExecutionService)
+    signal = _signal()
+    object.__setattr__(signal, "signal_requests_double_lot", True)
+
+    actual = CanonicalTradingExecutionService._size_signal(
+        service,
+        signal=signal,
+        execution_entry=Decimal("4398"),
+        balance=1500.0,
+        price_loss_tick_value=1.0,
+        specification={
+            "minVolume": 0.01,
+            "maxVolume": 100.0,
+            "volumeStep": 0.01,
+            "tickSize": 0.01,
+        },
+        risk_percent=Decimal("1"),
+        double_lot_approved=True,
+    )
+
+    assert actual.effective_risk_percent == Decimal("2")
+    assert actual.risk_budget_per_position == Decimal("30.0")
+    assert actual.volume == Decimal("0.05")
+    assert actual.actual_risk_per_position == Decimal("30.00")
