@@ -18,8 +18,55 @@ ReactDOM.createRoot(document.getElementById('root')!).render(
   </React.StrictMode>,
 );
 
+const BUILD_CHECK_INTERVAL_MS = 30_000;
+let reloadStarted = false;
+
+function currentModuleScript(): string | null {
+  const script = document.querySelector<HTMLScriptElement>('script[type="module"][src]');
+  return script?.src || null;
+}
+
+async function reloadForNewBuild(): Promise<void> {
+  if (reloadStarted) return;
+  const current = currentModuleScript();
+  if (!current) return;
+
+  try {
+    const response = await fetch(`/?__super_signals_build=${Date.now()}`, {
+      cache: 'no-store',
+      headers: { Accept: 'text/html' },
+    });
+    if (!response.ok) return;
+    const html = await response.text();
+    const parsed = new DOMParser().parseFromString(html, 'text/html');
+    const latestPath = parsed.querySelector<HTMLScriptElement>('script[type="module"][src]')?.getAttribute('src');
+    if (!latestPath) return;
+    const latest = new URL(latestPath, window.location.origin).href;
+    if (latest !== current) {
+      reloadStarted = true;
+      window.location.reload();
+    }
+  } catch {
+    // A deployment or brief network interruption is not an authentication failure.
+    // Keep the current app running and try the build check again later.
+  }
+}
+
+void reloadForNewBuild();
+window.setInterval(() => void reloadForNewBuild(), BUILD_CHECK_INTERVAL_MS);
+window.addEventListener('focus', () => void reloadForNewBuild());
+
 if ('serviceWorker' in navigator) {
   window.addEventListener('load', () => {
-    void navigator.serviceWorker.register('/sw.js');
+    void navigator.serviceWorker.register('/sw.js').then((registration) => {
+      void registration.update();
+      window.setInterval(() => void registration.update(), BUILD_CHECK_INTERVAL_MS);
+    });
+  });
+
+  navigator.serviceWorker.addEventListener('controllerchange', () => {
+    if (reloadStarted) return;
+    reloadStarted = true;
+    window.location.reload();
   });
 }
