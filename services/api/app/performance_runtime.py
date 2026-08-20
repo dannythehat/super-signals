@@ -5,6 +5,7 @@ Accounting contract:
 * only fully broker-decided Signals are Won/Lost/BE headline trades;
 * any ``closed_unknown`` leg is settlement diagnostics, never a completed trade;
 * cash/P&L and pips come only from broker-decided legs;
+* revoked providers are outside the user-facing performance universe;
 * open/pending state is reported separately;
 * Today is the configured local calendar day (Europe/Sofia by default), never UTC
   midnight unless explicitly configured that way;
@@ -76,8 +77,10 @@ class CanonicalPerformanceRuntimeService(CanonicalPerformanceLedgerService):
                     """
                     SELECT DISTINCT s.id
                     FROM signals AS s
+                    JOIN sources AS src ON src.id=s.source_id
                     LEFT JOIN positions AS p ON p.signal_id=s.id
                     WHERE COALESCE(s.source_posted_at,s.created_at)>=:run_started_at
+                      AND src.status<>'revoked'
                       AND (p.user_id=:user_id OR p.user_id IS NULL)
                     """
                 ),
@@ -151,7 +154,7 @@ class CanonicalPerformanceRuntimeService(CanonicalPerformanceLedgerService):
         since: datetime | None,
         now: datetime,
     ) -> Day33PerformanceWindow:
-        clauses = ["o.user_id=:user_id"]
+        clauses = ["o.user_id=:user_id", "src.status<>'revoked'"]
         params: dict[str, Any] = {"user_id": user_id, "window_end": now}
         run_start = self._run_start(user_id)
         if run_start is not None:
@@ -200,6 +203,7 @@ class CanonicalPerformanceRuntimeService(CanonicalPerformanceLedgerService):
                         )::int AS missing_pip_legs
                     FROM performance_trade_outcomes AS o
                     JOIN signals AS s ON s.id=o.signal_id
+                    JOIN sources AS src ON src.id=s.source_id
                     WHERE {' AND '.join(clauses)}
                     GROUP BY o.signal_id
                     """
@@ -286,7 +290,18 @@ class CanonicalPerformanceRuntimeService(CanonicalPerformanceLedgerService):
         rows = list(super()._timeline_rows(user_id))
         eligible = self._eligible_signal_ids(user_id)
         if eligible is None:
-            return rows
+            with self._session_factory() as session:
+                values = session.execute(
+                    text(
+                        """
+                        SELECT s.id
+                        FROM signals s
+                        JOIN sources src ON src.id=s.source_id
+                        WHERE src.status<>'revoked'
+                        """
+                    )
+                ).scalars().all()
+            eligible = {UUID(str(value)) for value in values}
         return [row for row in rows if UUID(str(row["signal_id"])) in eligible]
 
     def read_shared_live_board(self) -> list[Any]:
@@ -297,8 +312,11 @@ class CanonicalPerformanceRuntimeService(CanonicalPerformanceLedgerService):
             values = session.execute(
                 text(
                     """
-                    SELECT id FROM signals
-                    WHERE COALESCE(source_posted_at,created_at)>=:run_started_at
+                    SELECT s.id
+                    FROM signals s
+                    JOIN sources src ON src.id=s.source_id
+                    WHERE COALESCE(s.source_posted_at,s.created_at)>=:run_started_at
+                      AND src.status<>'revoked'
                     """
                 ),
                 {"run_started_at": PAPER_RUN_STARTED_AT},
@@ -315,9 +333,10 @@ class CanonicalPerformanceRuntimeService(CanonicalPerformanceLedgerService):
     ) -> dict[str, Any]:
         """Build persisted summaries as one Signal = one trade."""
         run_start = self._run_start(user_id)
-        if run_start is not None:
-            eligible = self._eligible_signal_ids(user_id) or set()
+        eligible = self._eligible_signal_ids(user_id)
+        if eligible is not None:
             rows = [row for row in rows if UUID(str(row["signal_id"])) in eligible]
+        if run_start is not None:
             start = self._later(start, run_start)
 
         by_signal: dict[UUID, list[Any]] = {}
