@@ -1,8 +1,10 @@
+import inspect
 from datetime import UTC, datetime
 
 from app.dashboard_today_summary import TodayTradingSummary, local_day_bounds
 from app.routes.dashboard_day32 import (
     TodayTradingSummaryResponse,
+    _broker_history_proves_terminal,
     _broker_pending_trade_count,
 )
 
@@ -89,6 +91,40 @@ def test_missing_mt5_active_order_read_never_falls_back_to_local_pending_rows() 
         session_started_at=datetime(2026, 8, 20, 0, 0, tzinfo=UTC),
         active_order_ids=None,
     ) is None
+
+
+def test_broker_history_terminal_ticket_overrides_stale_current_order_replica() -> None:
+    order_id = "123456"
+    history = [
+        {
+            "id": order_id,
+            "state": "ORDER_STATE_FILLED",
+            "doneTime": "2026-08-20T10:00:00.000Z",
+        }
+    ]
+    assert _broker_history_proves_terminal(order_id, history) is True
+
+
+def test_unfinished_matching_ticket_is_not_terminal() -> None:
+    order_id = "123456"
+    history = [{"id": order_id, "state": "ORDER_STATE_PLACED", "doneTime": None}]
+    assert _broker_history_proves_terminal(order_id, history) is False
+
+
+def test_other_ticket_history_cannot_terminalize_current_pending_order() -> None:
+    history = [
+        {
+            "id": "different-ticket",
+            "state": "ORDER_STATE_FILLED",
+            "doneTime": "2026-08-20T10:00:00.000Z",
+        }
+    ]
+    assert _broker_history_proves_terminal("123456", history) is False
+
+
+def test_dashboard_pending_count_requires_current_canonical_pending_status() -> None:
+    source = inspect.getsource(_broker_pending_trade_count)
+    assert "p.status='pending'" in source
 
 
 def test_today_summary_has_no_local_pending_field_or_fallback() -> None:
