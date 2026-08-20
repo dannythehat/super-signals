@@ -10,11 +10,9 @@ type TodaySummary = {
   losses: number;
   breakeven: number;
   open: number;
-  pending: number;
+  pending: number | null;
   settling: number;
   realised_pnl: number;
-  winning_pips: number;
-  net_pips: number;
   broker_trade_action_created: boolean;
 };
 
@@ -38,9 +36,8 @@ function money(value: number, currency: string): string {
   }
 }
 
-function pips(value: number): string {
-  const sign = value > 0 ? '+' : '';
-  return `${sign}${new Intl.NumberFormat(undefined, { maximumFractionDigits: 1 }).format(value)}`;
+function percent(value: number): string {
+  return `${new Intl.NumberFormat(undefined, { maximumFractionDigits: 1 }).format(value)}%`;
 }
 
 function pnlClass(value: number): string {
@@ -117,25 +114,29 @@ export function TodayTradingSummary({ apiBaseUrl, currency }: Props) {
     </section>;
   }
 
+  const decidedTrades = summary.wins + summary.losses;
+  const winRate = decidedTrades > 0 ? (summary.wins / decidedTrades) * 100 : null;
+
   return <section className="today-trading-card" aria-label="Today's trading summary" aria-live="polite">
     <div className="today-trading-head">
       <div className="today-trading-primary"><span>Today</span><strong>{summary.trades} trade{summary.trades === 1 ? '' : 's'}</strong></div>
-      <div className="today-trading-headline"><span>Pips won</span><strong className={pnlClass(summary.winning_pips)}>{pips(summary.winning_pips)}</strong></div>
-      <div className="today-trading-headline"><span>Net pips</span><strong className={pnlClass(summary.net_pips)}>{pips(summary.net_pips)}</strong></div>
       <div className="today-trading-headline"><span>Trading P/L</span><strong className={pnlClass(summary.realised_pnl)}>{money(summary.realised_pnl, currency)}</strong></div>
+      <div className="today-trading-headline"><span>Win rate</span><strong>{winRate === null ? '—' : percent(winRate)}</strong></div>
     </div>
     <div className="today-trading-stats">
       <div><strong>{summary.wins}</strong><span>Wins</span></div>
       <div><strong>{summary.losses}</strong><span>Losses</span></div>
-      <div><strong>{summary.breakeven}</strong><span>BE</span></div>
+      <div><strong>{summary.breakeven}</strong><span>Break-even</span></div>
       <div><strong>{summary.open}</strong><span>Open</span></div>
-      <div><strong>{summary.pending}</strong><span>Pending</span></div>
+      <div><strong>{summary.pending === null ? '—' : summary.pending}</strong><span>Pending</span></div>
       {summary.settling > 0 && <div><strong>{summary.settling}</strong><span>Settling</span></div>}
     </div>
     <small>
       {stale
         ? 'Broker reconciliation updating — last confirmed values shown'
-        : 'Auto-updates from broker-backed trade records'}
+        : summary.pending === null
+          ? 'Trading results are broker-backed · Pending orders are refreshing from MT5'
+          : 'Trading results and pending orders are broker-confirmed'}
     </small>
   </section>;
 }
