@@ -1,20 +1,23 @@
-import pytest
+from decimal import Decimal
 
 from app.critical_entry_policy import parse_critical_entries
 
 
-def test_unproven_plural_pending_zone_fails_closed_instead_of_inventing_grid() -> None:
+def test_explicit_plural_pending_zone_uses_only_literal_boundaries() -> None:
     raw = (
         "BUY LIMITS GOLD @ 4332/4326 AREA\n\n"
         "TP 4335\nTP 4339\nTP 4344\nSL 4325"
     )
-    with pytest.raises(ValueError, match="pending_layer_grid_unspecified"):
-        parse_critical_entries(
-            raw,
-            side="BUY",
-            entry_low="4326",
-            entry_high="4332",
-        )
+    entries = parse_critical_entries(
+        raw,
+        side="BUY",
+        entry_low="4326",
+        entry_high="4332",
+    )
+    assert [(item.entry_index, item.order_type, item.price) for item in entries] == [
+        (1, "buy_limit", Decimal("4332")),
+        (2, "buy_limit", Decimal("4326")),
+    ]
 
 
 def test_explicit_numbered_entry_list_is_supported() -> None:
