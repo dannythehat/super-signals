@@ -1,11 +1,16 @@
 """Fast broker-backed summary for the dashboard's live Today strip.
 
 One provider signal is one trade even when it has several TP legs. Cash P/L and pips are
-derived from the same broker-backed outcomes. When a demo account is materially reset
-inside the local calendar day, the Today strip starts at that reset so pre-reset trades
-cannot be compared with the new account balance. Smaller balance movements which are not
-present in the complete broker deal history are exposed separately as broker balance
-adjustments and never counted as trading profit.
+derived from the same broker-backed outcomes. Revoked providers are outside the
+user-facing performance universe and therefore contribute no trades, P/L or pips.
+
+When a demo account is materially reset inside the local calendar day, the Today strip
+starts at that reset so pre-reset trades cannot be compared with the new account balance.
+Smaller balance movements which are not present in the complete broker deal history are
+exposed separately as broker balance adjustments and never counted as trading profit.
+Account-level reconciliation is deliberately withheld for a period containing a revoked
+provider deal because literal broker balance movement includes that historical cash while
+the performance view intentionally excludes it.
 """
 
 from __future__ import annotations
@@ -75,13 +80,7 @@ class TodayTradingSummaryService:
         day_start: datetime,
         day_end: datetime,
     ) -> datetime:
-        """Use a material same-day demo balance reset as the performance boundary.
-
-        A reset is intentionally conservative: at least $100 and at least 20% of the
-        previous balance. This catches deliberate paper-account rebases (for example
-        990.22 -> 1500.00) without treating a small broker adjustment such as +$30 as a
-        new trading session.
-        """
+        """Use a material same-day demo balance reset as the performance boundary."""
         reset_at = session.execute(
             text(
                 """
@@ -140,8 +139,11 @@ class TodayTradingSummaryService:
                             p.signal_id,
                             MIN(COALESCE(p.opened_at, p.created_at)) AS started_at
                         FROM positions AS p
+                        JOIN signals AS s ON s.id=p.signal_id
+                        JOIN sources AS src ON src.id=s.source_id
                         WHERE p.user_id = :user_id
                           AND p.broker_position_id IS NOT NULL
+                          AND src.status <> 'revoked'
                         GROUP BY p.signal_id
                         HAVING MIN(COALESCE(p.opened_at, p.created_at)) >= :start_utc
                            AND MIN(COALESCE(p.opened_at, p.created_at)) < :end_utc
@@ -166,7 +168,9 @@ class TodayTradingSummaryService:
                                 END
                             ) AS effective_pips
                         FROM performance_trade_outcomes AS o
+                        JOIN sources AS src_o ON src_o.id=o.source_id
                         WHERE o.user_id = :user_id
+                          AND src_o.status <> 'revoked'
                     ),
                     per_trade AS (
                         SELECT
@@ -256,7 +260,7 @@ class TodayTradingSummaryService:
                     "end_utc": end_utc,
                 },
             ).mappings().one()
-            reconciliation_ready = bool(
+            history_backfilled = bool(
                 session.execute(
                     text(
                         """
@@ -302,13 +306,26 @@ class TodayTradingSummaryService:
                             WHERE d.user_id=:user_id
                               AND d.occurred_at>=f.captured_at
                               AND d.occurred_at<=l.captured_at
-                        ),0) AS all_deal_cash
+                        ),0) AS all_deal_cash,
+                        COALESCE((
+                            SELECT COUNT(*)
+                            FROM broker_deals d
+                            JOIN sources src ON src.id=d.source_id
+                            WHERE d.user_id=:user_id
+                              AND d.occurred_at>=f.captured_at
+                              AND d.occurred_at<=l.captured_at
+                              AND src.status='revoked'
+                        ),0) AS revoked_deal_count
                     FROM first_snapshot f CROSS JOIN last_snapshot l
                     """
                 ),
                 {"user_id": user_id, "start_utc": start_utc, "end_utc": end_utc},
             ).mappings().first()
 
+        revoked_deals_present = bool(
+            account_row is not None and int(account_row["revoked_deal_count"] or 0) > 0
+        )
+        reconciliation_ready = history_backfilled and not revoked_deals_present
         balance_change: Decimal | None = None
         balance_adjustment: Decimal | None = None
         reconciliation_gap: Decimal | None = None
@@ -322,10 +339,6 @@ class TodayTradingSummaryService:
                 str(account_row["opening_balance"])
             )
             broker_deal_cash = Decimal(str(account_row["all_deal_cash"] or 0))
-            # MetaAPI does not expose Vantage demo balance rebases/adjustments as
-            # history deals. Once the complete deal stream has been backfilled, the
-            # residual between broker balance movement and broker deal cash is the
-            # broker-reported non-trading balance adjustment. Keep it separate.
             balance_adjustment = balance_change - broker_deal_cash
             reconciliation_gap = Decimal("0")
             reconciled = True
