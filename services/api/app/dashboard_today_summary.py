@@ -29,7 +29,6 @@ class TodayTradingSummary:
     losses: int
     breakeven: int
     open: int
-    pending: int
     settling: int
     realised_pnl: Decimal
     winning_pips: Decimal
@@ -257,27 +256,6 @@ class TodayTradingSummaryService:
                     "end_utc": end_utc,
                 },
             ).mappings().one()
-            pending = int(
-                session.execute(
-                    text(
-                        """
-                        SELECT COUNT(DISTINCT p.signal_id)::int
-                        FROM positions AS p
-                        WHERE p.user_id = :user_id
-                          AND p.status = 'pending'
-                          AND p.broker_order_id IS NOT NULL
-                          AND p.created_at >= :start_utc
-                          AND p.created_at < :end_utc
-                        """
-                    ),
-                    {
-                        "user_id": user_id,
-                        "start_utc": start_utc,
-                        "end_utc": end_utc,
-                    },
-                ).scalar_one()
-                or 0
-            )
             reconciliation_ready = bool(
                 session.execute(
                     text(
@@ -360,7 +338,6 @@ class TodayTradingSummaryService:
             losses=int(row["losses"] or 0),
             breakeven=int(row["breakeven"] or 0),
             open=int(row["open"] or 0),
-            pending=pending,
             settling=int(row["settling"] or 0),
             realised_pnl=Decimal(str(row["realised_pnl"] or 0)),
             winning_pips=Decimal(str(row["winning_pips"] or 0)),
