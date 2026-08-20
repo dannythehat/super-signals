@@ -13,9 +13,9 @@ from pydantic import BaseModel
 from app.acceptance_self_test import acceptance_mirror_owner_user_id
 from app.access_control import get_current_identity
 from app.admin_portfolio_day35 import Day35AdminPortfolioService, PeriodKey, SortKey
-from app.metaapi_read_gateway import MetaApiReadGateway
 from app.mt5_connection_service_day30 import Day30Mt5ConnectionService
 from app.mt5_runtime import require_mt5_service
+from app.paper_resilient_read_gateway import ResilientMetaApiReadGateway
 from app.performance_ledger_day33 import Day33LedgerError
 from app.performance_ledger_day33_v2 import Day33PerformanceLedgerServiceV2
 from app.performance_runtime import CanonicalPerformanceRuntimeService
@@ -155,7 +155,7 @@ def _service(request: Request) -> Day33PerformanceLedgerServiceV2:
     service = CanonicalPerformanceRuntimeService(
         session_factory=base._session_factory,
         cipher=base._cipher,
-        gateway=MetaApiReadGateway(),
+        gateway=ResilientMetaApiReadGateway(),
     )
     request.app.state.day33_performance_service = service
     return service
