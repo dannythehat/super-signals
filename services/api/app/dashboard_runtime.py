@@ -20,6 +20,7 @@ from __future__ import annotations
 
 from dataclasses import replace
 from datetime import UTC, datetime
+from decimal import Decimal
 from uuid import UUID
 
 from sqlalchemy import text
@@ -105,7 +106,7 @@ class CanonicalDashboardRuntimeService(Day32DashboardService):
                     symbol=str(row["symbol"] or ""),
                     side=str(row["side"] or ""),
                     volume=float(row["volume"]),
-                    planned_risk_percent=row["planned_risk_percent"],
+                    planned_risk_percent=Decimal(str(row["planned_risk_percent"])),
                     entry_price=float(row["entry_price"]),
                     current_price=None,
                     stop_loss=(float(row["stop_loss"]) if row["stop_loss"] is not None else None),
