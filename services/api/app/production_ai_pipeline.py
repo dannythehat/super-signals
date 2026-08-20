@@ -8,6 +8,11 @@ non-actionable instead of being re-read by an older restrictive parser.
 
 Recovery/idempotency helpers are owned explicitly here so production never depends on a
 removed patch or superseded pipeline generation for durable-decision lookup.
+
+GTMO has one observed provider-specific grammar exception: the standalone whole-message
+``Gold buy now`` / ``Gold sell now`` post is a precursor to the structured signal that
+follows. That exception is keyed only by the two known GTMO Telegram chat IDs. The exact
+same bare NOW wording remains an executable command for every other provider.
 """
 
 from __future__ import annotations
@@ -22,6 +27,9 @@ from app.ai_message_pipeline_canonical import (
 )
 from app.ai_message_supervisor import AiMessageDecision, AiSupervisorError
 from app.bare_gold_now_policy import PROFILE, bare_now_side
+
+_GTMO_PRECURSOR_CHAT_IDS = frozenset({-1001640332422, -1002068685216})
+_GTMO_PRECURSOR_REASON = "gtmo_precursor_wait_for_structured_signal"
 
 
 class ProductionAiMessagePipeline(CanonicalAiMessagePipeline):
@@ -60,6 +68,48 @@ class ProductionAiMessagePipeline(CanonicalAiMessagePipeline):
             ).scalar_one()
         )
 
+    def _is_gtmo_precursor_source(self, source_id) -> bool:
+        """Identify the logical GTMO provider by stable Telegram chat identity only."""
+        with self._session_factory() as session:
+            chat_id = session.execute(
+                text("SELECT chat_id FROM sources WHERE id=:source_id LIMIT 1"),
+                {"source_id": source_id},
+            ).scalar_one_or_none()
+        try:
+            return int(chat_id) in _GTMO_PRECURSOR_CHAT_IDS
+        except (TypeError, ValueError):
+            return False
+
+    @staticmethod
+    def _gtmo_precursor_decision(raw_text: str, side: str) -> AiMessageDecision:
+        """Record GTMO's bare NOW heads-up without creating broker intent."""
+        return AiMessageDecision(
+            decision="preparation",
+            action="ignore",
+            confidence=1.0,
+            reason=_GTMO_PRECURSOR_REASON,
+            extracted={
+                "symbol": "XAUUSD",
+                "side": side,
+                "order_type": "market",
+                "entry_low": None,
+                "entry_high": None,
+                "stop_loss": None,
+                "take_profits": [],
+                "double_lot": False,
+                "tp_open": False,
+                "update_type": None,
+                "update_target": None,
+                "update_value": None,
+                "provider_claimed_pips": None,
+            },
+            model="canonical-deterministic-source-policy-v1",
+            response_id=None,
+            latency_ms=0,
+            source="deterministic_source_policy",
+            raw_text_sha256=sha256((raw_text or "").encode("utf-8")).hexdigest(),
+        )
+
     def _decide(
         self,
         *,
@@ -77,6 +127,8 @@ class ProductionAiMessagePipeline(CanonicalAiMessagePipeline):
 
         side = bare_now_side(raw_text)
         if side is not None:
+            if self._is_gtmo_precursor_source(source_id):
+                return self._gtmo_precursor_decision(raw_text, side)
             return AiMessageDecision(
                 decision="new_trade",
                 action="execute",
