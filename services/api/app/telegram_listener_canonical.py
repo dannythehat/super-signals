@@ -1,12 +1,13 @@
 """Canonical production Telegram listener.
 
 One production path owns provider ingress, exact edit ordering, AI/canonical processing,
-recovery and broker dispatch. Raw Telegram evidence is committed first. Slow downstream
-work is FIFO per provider while different providers remain concurrent.
+fresh gap recovery and broker dispatch. Raw Telegram evidence is committed first. Slow
+downstream work is FIFO per provider while different providers remain concurrent.
 
-This class deliberately inherits only the reliable semantic/Telethon Day21 base. It does
-not import the old Day28 execution listener or zone guard. Broker dispatch, freshness
-recovery and pending reconciliation are owned here and wired to the canonical router.
+Recovery is deliberately forward-only. It may rescue a genuinely fresh Telegram message
+that push delivery missed, but it never replays historical trade or management decisions.
+A stored management revision that has already reached the broker router is terminal and
+is never offered again on subsequent recovery scans.
 """
 
 from __future__ import annotations
@@ -76,7 +77,7 @@ class _ProviderProcessingPool:
 
 
 class CanonicalProductionTelegramListenerManager(Day21TelegramListenerManager):
-    """Single live ingress/recovery/broker-dispatch implementation used by production."""
+    """Single live ingress/fresh-recovery/broker-dispatch implementation."""
 
     def __init__(
         self,
@@ -152,14 +153,10 @@ class CanonicalProductionTelegramListenerManager(Day21TelegramListenerManager):
         return inserted
 
     def _process_saved_original(self, captured: Any) -> Any:
-        """Supervise the raw row exactly once, then hand its durable decision to routing."""
         pipeline = getattr(self, "_ai_pipeline", None)
         result = None
         if pipeline is not None:
-            result = pipeline.process_original(
-                captured.source_id,
-                int(captured.telegram_message_id),
-            )
+            result = pipeline.process_original(captured.source_id, int(captured.telegram_message_id))
         self._dispatch_sync(
             source_id=captured.source_id,
             telegram_message_id=int(captured.telegram_message_id),
@@ -168,7 +165,6 @@ class CanonicalProductionTelegramListenerManager(Day21TelegramListenerManager):
         return result
 
     def _persist_edit(self, captured: Any) -> bool:
-        """Commit one append-only revision and process exactly that saved revision."""
         with self._revision_lock(captured.source_id, captured.telegram_message_id):
             inserted = Day13TelegramListenerManager._persist_edit(self, captured)
             if not inserted:
@@ -308,6 +304,25 @@ class CanonicalProductionTelegramListenerManager(Day21TelegramListenerManager):
         age = (reference.astimezone(UTC) - value_utc.astimezone(UTC)).total_seconds()
         return -_RECOVERY_CLOCK_SKEW_SECONDS <= age <= max_age
 
+    def _management_route_already_attempted(self, lifecycle_event_id: object) -> bool:
+        """Terminal recovery guard for the exact provider lifecycle event."""
+        with self._session_factory() as session:
+            return bool(
+                session.execute(
+                    text(
+                        """
+                        SELECT EXISTS(
+                            SELECT 1
+                            FROM audit_events
+                            WHERE event_type IN ('mt5.day28_route_success','mt5.day28_route_failure')
+                              AND payload->>'lifecycle_event_id'=:lifecycle_event_id
+                        )
+                        """
+                    ),
+                    {"lifecycle_event_id": str(lifecycle_event_id)},
+                ).scalar_one()
+            )
+
     async def _dispatch_recovered_if_required(
         self,
         *,
@@ -316,10 +331,13 @@ class CanonicalProductionTelegramListenerManager(Day21TelegramListenerManager):
         revision_index: int,
         occurred_at: datetime,
     ) -> None:
-        """Route durable actionable recovery; stale entries remain evidence only."""
+        """Recover only a fresh unattempted actionable decision; history is evidence only."""
         router = self._canonical_router
         if router is None:
             return
+        if not self._fresh_recovered_entry(occurred_at):
+            return
+
         stored = await asyncio.to_thread(
             router._load_stored_decision,
             source_id=source_id,
@@ -330,42 +348,27 @@ class CanonicalProductionTelegramListenerManager(Day21TelegramListenerManager):
             return
 
         is_management = stored.decision == "trade_update" and stored.action == "apply_update"
-        is_fresh_entry = (
-            stored.decision == "new_trade"
-            and stored.action == "execute"
-            and self._fresh_recovered_entry(occurred_at)
-        )
-        if not is_management and not is_fresh_entry:
-            logger.info(
-                "Recovered Telegram message retained as evidence only decision=%s action=%s",
-                stored.decision,
-                stored.action,
-                extra={
-                    "source_id": str(source_id),
-                    "telegram_message_id": telegram_message_id,
-                    "revision_index": revision_index,
-                },
-            )
+        is_entry = stored.decision == "new_trade" and stored.action == "execute"
+        if not is_management and not is_entry:
             return
 
         if is_management:
             resolver = getattr(router, "_resolve_lifecycle_event", None)
-            if resolver is not None:
-                lifecycle_event_id, signal_id = await asyncio.to_thread(
-                    resolver,
-                    stored.message_id,
-                    revision_index,
-                )
-                if lifecycle_event_id is None or signal_id is None:
-                    logger.info(
-                        "Recovered management retained as evidence: lifecycle target unresolved",
-                        extra={
-                            "source_id": str(source_id),
-                            "telegram_message_id": telegram_message_id,
-                            "revision_index": revision_index,
-                        },
-                    )
-                    return
+            if resolver is None:
+                return
+            lifecycle_event_id, signal_id = await asyncio.to_thread(
+                resolver,
+                stored.message_id,
+                revision_index,
+            )
+            if lifecycle_event_id is None or signal_id is None:
+                return
+            attempted = await asyncio.to_thread(
+                self._management_route_already_attempted,
+                lifecycle_event_id,
+            )
+            if attempted:
+                return
 
         await asyncio.to_thread(
             self._dispatch_sync,
@@ -375,28 +378,22 @@ class CanonicalProductionTelegramListenerManager(Day21TelegramListenerManager):
         )
 
     def _persist_recovered_original(self, captured: CapturedTelegramMessage) -> bool:
-        """Persist one history-row and supervise only when recovery truly discovered it."""
+        """Persist and supervise only when recovery truly discovers a missing row."""
         with self._revision_lock(captured.source_id, captured.telegram_message_id):
             inserted = TelegramListenerManager._persist_message(self, captured)
         if inserted:
             pipeline = getattr(self, "_ai_pipeline", None)
             if pipeline is not None:
-                pipeline.process_original(
-                    captured.source_id,
-                    int(captured.telegram_message_id),
-                )
+                pipeline.process_original(captured.source_id, int(captured.telegram_message_id))
         return inserted
 
     def _persist_recovered_edit(self, captured: CapturedTelegramEdit) -> tuple[bool, int]:
-        """Persist one history edit and resolve exactly that revision, even on replay."""
         with self._revision_lock(captured.source_id, captured.telegram_message_id):
             inserted = Day13TelegramListenerManager._persist_edit(self, captured)
             revision_index = self._exact_saved_revision_index(captured) or 0
         if inserted and revision_index > 0:
             pipeline = getattr(self, "_ai_pipeline", None)
-            exact_processor = (
-                getattr(pipeline, "_process_revision", None) if pipeline is not None else None
-            )
+            exact_processor = getattr(pipeline, "_process_revision", None) if pipeline is not None else None
             if callable(exact_processor):
                 exact_processor(
                     captured.source_id,
@@ -406,7 +403,7 @@ class CanonicalProductionTelegramListenerManager(Day21TelegramListenerManager):
         return inserted, revision_index
 
     async def _recover_source_gap(self, client: Any, source: Any) -> None:
-        """Recover one provider independently so a busy source cannot age out another."""
+        """Recover recent missed push delivery without replaying persisted history."""
         try:
             messages = await read_messages_with_entity_recovery(
                 client,
@@ -442,13 +439,16 @@ class CanonicalProductionTelegramListenerManager(Day21TelegramListenerManager):
                 media_type=type(media).__name__ if media is not None else None,
             )
 
-            await asyncio.to_thread(self._persist_recovered_original, captured)
-            await self._dispatch_recovered_if_required(
-                source_id=source.source_id,
-                telegram_message_id=int(message_id),
-                revision_index=0,
-                occurred_at=posted_at,
-            )
+            inserted_original = await asyncio.to_thread(self._persist_recovered_original, captured)
+            # Existing persisted rows are never replayed. A genuinely missing fresh row
+            # may be dispatched exactly once after recovery discovers it.
+            if inserted_original:
+                await self._dispatch_recovered_if_required(
+                    source_id=source.source_id,
+                    telegram_message_id=int(message_id),
+                    revision_index=0,
+                    occurred_at=posted_at,
+                )
 
             edit_date = getattr(message, "edit_date", None)
             if edit_date is None:
@@ -466,11 +466,11 @@ class CanonicalProductionTelegramListenerManager(Day21TelegramListenerManager):
                 has_media=media is not None,
                 media_type=type(media).__name__ if media is not None else None,
             )
-            _, revision_index = await asyncio.to_thread(
+            inserted_edit, revision_index = await asyncio.to_thread(
                 self._persist_recovered_edit,
                 captured_edit,
             )
-            if revision_index > 0:
+            if inserted_edit and revision_index > 0:
                 await self._dispatch_recovered_if_required(
                     source_id=source.source_id,
                     telegram_message_id=int(message_id),
@@ -479,7 +479,6 @@ class CanonicalProductionTelegramListenerManager(Day21TelegramListenerManager):
                 )
 
     async def _recover_live_gaps(self, client: Any, plan: ReaderListeningPlan) -> None:
-        """Repair missed push delivery and persisted-but-unrouted decisions quickly."""
         semaphore = asyncio.Semaphore(_RECOVERY_CONCURRENCY)
 
         async def bounded(source: Any) -> None:
