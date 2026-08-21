@@ -8,6 +8,8 @@ SL/TP NULL because its protection is execution-derived, not provider-supplied.
 Exact same-source trade geometry repeated within a very short provider burst is one
 logical signal, not two broker entries. This protects feeds which publish a concise signal
 and an analysis companion at the same time while preserving genuinely distinct entries.
+The duplicate window is symmetric around provider post time so a delayed Telegram edit
+cannot execute after an equivalent corrected repost that arrived a few seconds later.
 
 Recovery/idempotency helpers are explicit methods of this canonical ledger. Production
 therefore never depends on removed override modules for signal lookup or observations.
@@ -16,7 +18,7 @@ therefore never depends on removed override modules for signal lookup or observa
 from __future__ import annotations
 
 import json
-from datetime import timedelta
+from datetime import datetime, timedelta
 from decimal import Decimal, InvalidOperation
 from hashlib import sha256
 from typing import Any
@@ -34,6 +36,11 @@ from app.ai_canonical_signal import (
 from app.bare_gold_now_policy import PROFILE
 
 _DUPLICATE_BURST_SECONDS = 15
+
+
+def _duplicate_window(posted_at: datetime) -> tuple[datetime, datetime]:
+    span = timedelta(seconds=_DUPLICATE_BURST_SECONDS)
+    return posted_at - span, posted_at + span
 
 
 def _positive(value: Any) -> Decimal | None:
@@ -115,6 +122,7 @@ class CanonicalSignalLedger(AiCanonicalSignalService):
                 return AiSignalResult(False, False, None, "message_not_eligible")
             posted_at = row["source_posted_at"]
             if trade.entry_low is not None and trade.entry_high is not None:
+                burst_start, burst_end = _duplicate_window(posted_at)
                 recent = session.execute(
                     text(
                         """
@@ -124,7 +132,7 @@ class CanonicalSignalLedger(AiCanonicalSignalService):
                           AND source_message_id<>:message_id
                           AND parser_status='accepted'
                           AND source_posted_at>=:burst_start
-                          AND source_posted_at<=:posted_at
+                          AND source_posted_at<=:burst_end
                           AND symbol=:symbol
                           AND side=:side
                           AND order_type=:order_type
@@ -141,8 +149,8 @@ class CanonicalSignalLedger(AiCanonicalSignalService):
                     {
                         "source_id": row["source_id"],
                         "message_id": row["message_id"],
-                        "burst_start": posted_at - timedelta(seconds=_DUPLICATE_BURST_SECONDS),
-                        "posted_at": posted_at,
+                        "burst_start": burst_start,
+                        "burst_end": burst_end,
                         "symbol": trade.symbol,
                         "side": trade.side,
                         "order_type": trade.order_type,
@@ -281,4 +289,4 @@ class CanonicalSignalLedger(AiCanonicalSignalService):
         ).hexdigest()
 
 
-__all__ = ["CanonicalSignalLedger"]
+__all__ = ["CanonicalSignalLedger", "_duplicate_window"]
