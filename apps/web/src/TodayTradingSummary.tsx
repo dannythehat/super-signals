@@ -19,6 +19,7 @@ type TodaySummary = {
 type Props = {
   apiBaseUrl: string;
   currency: string;
+  timezoneName: string;
 };
 
 function money(value: number, currency: string): string {
@@ -45,14 +46,13 @@ function pnlClass(value: number): string {
   return value > 0 ? 'is-positive' : 'is-negative';
 }
 
-export function TodayTradingSummary({ apiBaseUrl, currency }: Props) {
+export function TodayTradingSummary({ apiBaseUrl, currency, timezoneName }: Props) {
   const [summary, setSummary] = useState<TodaySummary | null>(null);
   const [stale, setStale] = useState(false);
 
   const refresh = useCallback(async () => {
     try {
-      const timezone = Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC';
-      const query = new URLSearchParams({ timezone_name: timezone });
+      const query = new URLSearchParams({ timezone_name: timezoneName || 'UTC' });
       const response = await fetch(`${apiBaseUrl}/account/mt5/dashboard/today?${query.toString()}`, {
         credentials: 'include',
         headers: { Accept: 'application/json' },
@@ -65,7 +65,7 @@ export function TodayTradingSummary({ apiBaseUrl, currency }: Props) {
     } catch {
       setStale(true);
     }
-  }, [apiBaseUrl]);
+  }, [apiBaseUrl, timezoneName]);
 
   useEffect(() => {
     void refresh();
@@ -90,7 +90,7 @@ export function TodayTradingSummary({ apiBaseUrl, currency }: Props) {
   return <section className="today-trading-card" aria-label="Today's trading summary" aria-live="polite">
     <div className="today-trading-head">
       <div className="today-trading-primary"><span>Today</span><strong>{summary.trades} trade{summary.trades === 1 ? '' : 's'}</strong></div>
-      <div className="today-trading-headline"><span>Provider P/L</span><strong className={pnlClass(summary.realised_pnl)}>{money(summary.realised_pnl, currency)}</strong></div>
+      <div className="today-trading-headline"><span>Realised P/L</span><strong className={pnlClass(summary.realised_pnl)}>{money(summary.realised_pnl, currency)}</strong></div>
       <div className="today-trading-headline"><span>Win rate</span><strong>{winRate === null ? '—' : percent(winRate)}</strong></div>
     </div>
     <div className="today-trading-stats">
@@ -104,9 +104,7 @@ export function TodayTradingSummary({ apiBaseUrl, currency }: Props) {
     <small>
       {stale
         ? 'Live values are refreshing — last confirmed values shown'
-        : summary.pending === null
-          ? 'Provider performance excludes retired sources · Pending orders are refreshing from MT5'
-          : 'Provider performance excludes retired sources · Account balance above is live MT5 broker truth'}
+        : `Trading day uses your local timezone · ${summary.timezone}`}
     </small>
   </section>;
 }
