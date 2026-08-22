@@ -6,19 +6,24 @@ close/cancel and every local execution row is either absent or an unlinked error
 Broker-linked, compensated, pending, open, closed or otherwise ambiguous state is never
 retried here.
 
-This policy wraps the same canonical execution engine for Owner demo and eligible member
-LIVE accounts. It does not change sizing, risk, provider geometry or broker authority.
+The Owner demo uses the same canonical Super Signals paper balance shown in the app for
+risk sizing. Eligible member LIVE accounts continue to size from their own broker balance.
+The underlying execution engine remains shared.
 """
 
 from __future__ import annotations
 
 import asyncio
+from contextvars import ContextVar
+from decimal import Decimal
 from typing import Any
 from uuid import UUID
 
 from sqlalchemy import text
 
-from app.mt5_execution_day26 import Day26ExecutionError
+from app.mt5_execution_day26 import Day26ExecutionError, _SignalInput
+from app.paper_accounting import PaperAccountingService
+from app.risk_sizing_day24 import Day24RiskSizingResult
 from app.trading_execution_canonical import (
     CanonicalTradingExecutionService,
     MemberTradingExecutionService,
@@ -31,6 +36,10 @@ _TRANSIENT_READ_OR_ROUTE_ERRORS = {
 }
 _MAX_CAPTURE_ATTEMPTS = 4
 _RETRY_DELAY_SECONDS = 0.5
+_SIZING_USER_ID: ContextVar[UUID | None] = ContextVar(
+    "super_signals_sizing_user_id",
+    default=None,
+)
 
 
 class _CaptureRetryMixin:
@@ -42,37 +51,65 @@ class _CaptureRetryMixin:
         risk_percent,
         double_lot_approved: bool,
     ):
-        for attempt in range(1, _MAX_CAPTURE_ATTEMPTS + 1):
-            try:
-                return await super().execute_owner_demo_signal(
-                    owner_user_id=owner_user_id,
-                    signal_id=signal_id,
-                    risk_percent=risk_percent,
-                    double_lot_approved=double_lot_approved,
-                )
-            except Day26ExecutionError as exc:
-                if (
-                    exc.code not in _TRANSIENT_READ_OR_ROUTE_ERRORS
-                    or attempt >= _MAX_CAPTURE_ATTEMPTS
-                    or not self._prepare_clean_retry(owner_user_id, signal_id)
-                ):
-                    raise
-                self._audit(
-                    owner_user_id=owner_user_id,
-                    signal_id=signal_id,
-                    event_type="mt5.canonical_transient_execution_retry",
-                    payload={
-                        "failed_attempt": attempt,
-                        "next_attempt": attempt + 1,
-                        "error_code": exc.code,
-                        "broker_mutation_present": False,
-                        "automatic_retry": True,
-                        "capture_first": True,
-                    },
-                )
-                await asyncio.sleep(_RETRY_DELAY_SECONDS * attempt)
+        context_token = _SIZING_USER_ID.set(owner_user_id)
+        try:
+            for attempt in range(1, _MAX_CAPTURE_ATTEMPTS + 1):
+                try:
+                    return await super().execute_owner_demo_signal(
+                        owner_user_id=owner_user_id,
+                        signal_id=signal_id,
+                        risk_percent=risk_percent,
+                        double_lot_approved=double_lot_approved,
+                    )
+                except Day26ExecutionError as exc:
+                    if (
+                        exc.code not in _TRANSIENT_READ_OR_ROUTE_ERRORS
+                        or attempt >= _MAX_CAPTURE_ATTEMPTS
+                        or not self._prepare_clean_retry(owner_user_id, signal_id)
+                    ):
+                        raise
+                    self._audit(
+                        owner_user_id=owner_user_id,
+                        signal_id=signal_id,
+                        event_type="mt5.canonical_transient_execution_retry",
+                        payload={
+                            "failed_attempt": attempt,
+                            "next_attempt": attempt + 1,
+                            "error_code": exc.code,
+                            "broker_mutation_present": False,
+                            "automatic_retry": True,
+                            "capture_first": True,
+                        },
+                    )
+                    await asyncio.sleep(_RETRY_DELAY_SECONDS * attempt)
 
-        raise Day26ExecutionError("canonical_execution_retry_exhausted")
+            raise Day26ExecutionError("canonical_execution_retry_exhausted")
+        finally:
+            _SIZING_USER_ID.reset(context_token)
+
+    def _size_signal(
+        self,
+        *,
+        signal: _SignalInput,
+        execution_entry: Decimal,
+        balance: float,
+        price_loss_tick_value: float | None,
+        specification: dict[str, object],
+        risk_percent: Decimal | str | float,
+        double_lot_approved: bool,
+    ) -> Day24RiskSizingResult:
+        user_id = _SIZING_USER_ID.get()
+        if user_id is not None and PaperAccountingService.applies(user_id):
+            balance = float(PaperAccountingService(self._session_factory).balance(user_id))
+        return super()._size_signal(
+            signal=signal,
+            execution_entry=execution_entry,
+            balance=balance,
+            price_loss_tick_value=price_loss_tick_value,
+            specification=specification,
+            risk_percent=risk_percent,
+            double_lot_approved=double_lot_approved,
+        )
 
     def _prepare_clean_retry(self, user_id: UUID, signal_id: UUID) -> bool:
         """Delete only broker-free error debris after proving the signal remains active."""
