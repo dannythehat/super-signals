@@ -1,0 +1,240 @@
+.monthly-profit-redesign {
+  display: grid;
+  gap: 14px;
+}
+
+.monthly-profit-highlight {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 6px 14px;
+  align-items: end;
+  padding: 14px 15px;
+  border: 1px solid rgba(117, 233, 215, 0.13);
+  border-radius: 14px;
+  background: linear-gradient(135deg, rgba(117, 233, 215, 0.055), rgba(255, 255, 255, 0.015));
+}
+
+.monthly-profit-highlight-copy {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.monthly-profit-highlight-copy > span {
+  color: #f2f6f8;
+  font-size: 0.94rem;
+  font-weight: 850;
+  letter-spacing: -0.015em;
+}
+
+.monthly-profit-highlight-copy > small {
+  color: #718091;
+  font-size: 0.65rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.07em;
+}
+
+.monthly-profit-highlight > strong {
+  font-size: clamp(1.25rem, 5vw, 1.65rem);
+  font-weight: 900;
+  letter-spacing: -0.035em;
+  white-space: nowrap;
+}
+
+.monthly-profit-baseline {
+  grid-column: 1 / -1;
+  color: #637181;
+  font-size: 0.65rem;
+  line-height: 1.35;
+}
+
+.monthly-profit-highlight--empty {
+  border-color: rgba(255, 255, 255, 0.06);
+  background: rgba(255, 255, 255, 0.018);
+}
+
+.monthly-profit-subhead {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.monthly-profit-subhead > strong {
+  color: #dce4ea;
+  font-size: 0.82rem;
+}
+
+.monthly-profit-subhead > small {
+  color: #5f6c7c;
+  font-size: 0.63rem;
+  text-align: right;
+}
+
+.monthly-profit-chart--compact {
+  min-height: 0;
+  overflow: visible;
+  padding: 0;
+}
+
+.monthly-profit-chart--compact .monthly-profit-zero-line {
+  top: 52px;
+  right: 0;
+  left: 0;
+}
+
+.monthly-profit-bars--compact {
+  grid-template-columns: repeat(12, minmax(0, 1fr));
+  width: 100%;
+  gap: 0;
+}
+
+.monthly-profit-bars--compact .monthly-profit-month {
+  position: relative;
+  grid-template-rows: 96px auto 12px;
+  gap: 3px;
+  min-width: 0;
+  padding: 0 1px 4px;
+  border-radius: 8px;
+}
+
+.monthly-profit-bars--compact .monthly-profit-month--focus {
+  background: rgba(117, 233, 215, 0.045);
+}
+
+.monthly-profit-bars--compact .monthly-profit-bar-zone {
+  height: 96px;
+}
+
+.monthly-profit-bars--compact .monthly-profit-bar {
+  width: 8px;
+  min-height: 4px;
+}
+
+.monthly-profit-bars--compact .monthly-profit-bar--positive {
+  bottom: 44px;
+}
+
+.monthly-profit-bars--compact .monthly-profit-bar--negative {
+  top: 52px;
+}
+
+.monthly-profit-bars--compact .monthly-profit-bar--flat {
+  top: 50px;
+}
+
+.monthly-profit-bars--compact .monthly-profit-month > span {
+  overflow: visible;
+  color: #667384;
+  font-size: 0.54rem;
+  font-weight: 780;
+  line-height: 1;
+  text-align: center;
+}
+
+.monthly-profit-bars--compact .monthly-profit-month:not(:disabled) > span {
+  color: #9faab8;
+}
+
+.monthly-profit-bars--compact .monthly-profit-month--focus > span {
+  color: #d5f9f3;
+}
+
+.monthly-profit-bars--compact .monthly-profit-month > small {
+  color: #52606e;
+  font-size: 0.47rem;
+  line-height: 1;
+}
+
+.monthly-profit-bars--compact .monthly-profit-month--focus > small {
+  color: #72cbbc;
+}
+
+.monthly-profit-bars--compact .monthly-profit-month:disabled {
+  opacity: 1;
+}
+
+.monthly-profit-bars--compact .monthly-profit-month:disabled::after {
+  content: '';
+  position: absolute;
+  top: 50px;
+  left: 50%;
+  width: 3px;
+  height: 3px;
+  border-radius: 50%;
+  background: rgba(125, 137, 151, 0.22);
+  transform: translate(-50%, -50%);
+}
+
+.monthly-profit-footnote {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px 13px;
+  padding-top: 8px;
+  border-top: 1px solid rgba(255, 255, 255, 0.045);
+}
+
+.monthly-profit-footnote > span {
+  position: relative;
+  color: #626f7e;
+  font-size: 0.61rem;
+}
+
+.monthly-profit-footnote > span:not(:first-child)::before {
+  content: '·';
+  position: absolute;
+  left: -8px;
+  color: #394451;
+}
+
+@media (max-width: 640px) {
+  .monthly-profit-highlight {
+    padding: 13px;
+  }
+
+  .monthly-profit-highlight > strong {
+    font-size: 1.35rem;
+  }
+
+  .monthly-profit-subhead {
+    align-items: flex-start;
+  }
+
+  .monthly-profit-subhead > small {
+    max-width: 190px;
+  }
+
+  .monthly-profit-bars--compact {
+    grid-template-columns: repeat(12, minmax(0, 1fr));
+    width: 100%;
+  }
+
+  .monthly-profit-bars--compact .monthly-profit-month {
+    grid-template-rows: 90px auto 11px;
+  }
+
+  .monthly-profit-bars--compact .monthly-profit-bar-zone {
+    height: 90px;
+  }
+
+  .monthly-profit-chart--compact .monthly-profit-zero-line {
+    top: 49px;
+  }
+
+  .monthly-profit-bars--compact .monthly-profit-bar--positive {
+    bottom: 41px;
+  }
+
+  .monthly-profit-bars--compact .monthly-profit-bar--negative {
+    top: 49px;
+  }
+
+  .monthly-profit-bars--compact .monthly-profit-bar--flat {
+    top: 47px;
+  }
+
+  .monthly-profit-bars--compact .monthly-profit-month:disabled::after {
+    top: 47px;
+  }
+}
