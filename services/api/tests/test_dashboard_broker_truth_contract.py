@@ -25,7 +25,7 @@ def test_dashboard_accounting_keeps_live_broker_truth_and_demo_reset_isolation()
     assert "_post_epoch_realised_cash" not in runtime
     assert "free_margin=float(equity)" not in runtime
     assert "live account balance remains the actual broker balance" in runtime.lower()
-    assert "DEAL_TYPE_BALANCE" in accounting
+    assert "bd.entry_type='DEAL_ENTRY_OUT'" in accounting
     assert "capital movements" in accounting.lower()
     assert "displayed_balance" in accounting
 
