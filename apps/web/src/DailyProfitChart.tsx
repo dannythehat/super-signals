@@ -15,6 +15,10 @@ type Props = {
   timezoneName: string;
 };
 
+function lastDay(days: DailyProfitPoint[]): DailyProfitPoint | null {
+  return days.length > 0 ? days[days.length - 1] : null;
+}
+
 function dateFromCalendarDay(value: string): Date | null {
   const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value);
   if (!match) return null;
@@ -59,7 +63,7 @@ function pnlClass(value: number): string {
 }
 
 export function DailyProfitChart({ days, currency, timezoneName }: Props) {
-  const [selectedDay, setSelectedDay] = useState<string | null>(days.at(-1)?.day ?? null);
+  const [selectedDay, setSelectedDay] = useState<string | null>(lastDay(days)?.day ?? null);
 
   useEffect(() => {
     if (days.length === 0) {
@@ -67,12 +71,12 @@ export function DailyProfitChart({ days, currency, timezoneName }: Props) {
       return;
     }
     if (!selectedDay || !days.some((item) => item.day === selectedDay)) {
-      setSelectedDay(days.at(-1)?.day ?? null);
+      setSelectedDay(lastDay(days)?.day ?? null);
     }
   }, [days, selectedDay]);
 
   const selected = useMemo(
-    () => days.find((item) => item.day === selectedDay) ?? days.at(-1) ?? null,
+    () => days.find((item) => item.day === selectedDay) ?? lastDay(days),
     [days, selectedDay],
   );
   const maxMagnitude = useMemo(
