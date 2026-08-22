@@ -1,19 +1,14 @@
 """Canonical mobile-dashboard view for the active paper-testing run.
 
-The MT5 account card is broker truth. Balance, equity, margin and free margin must be the
-values returned by MetaAPI for the connected account and are never replaced by a virtual
-paper balance or by filtered provider performance.
-
-The paper-run epoch is only a reporting boundary for Super Signals trade history and
-performance. Revoked providers are outside that user-facing performance universe, while
-historical broker cash they already caused remains part of the real MT5 account balance.
-Those two accounting bases are deliberately kept separate instead of fabricating an
-account balance that appears to reconcile to filtered provider P/L.
+Open positions and executable broker state remain MetaAPI truth.  The Owner demo balance,
+however, is Super Signals paper-accounting truth: USD 1,000 plus cumulative realised
+trading P/L, with manual broker balance resets excluded.  Equity and free margin are
+shifted by the same paper-balance delta so the account card stays internally coherent.
 
 A transient MetaAPI read failure must never make an already broker-mapped Super Signals
 position disappear from the app. During a live-read outage we expose the durable local
 broker mapping with live price/P&L left unknown. Once broker reads recover, broker state
-immediately resumes authority and normal reconciliation applies.
+immediately resumes authority for positions/prices.
 """
 
 from __future__ import annotations
@@ -31,6 +26,7 @@ from app.dashboard_day32 import (
     Day32OpenPosition,
 )
 from app.dashboard_today_summary import TodayTradingSummaryService
+from app.paper_accounting import PaperAccountingService
 from app.paper_run_epoch import active_paper_epoch
 
 
@@ -41,7 +37,23 @@ def _utc(value: datetime) -> datetime:
 
 
 class CanonicalDashboardRuntimeService(Day32DashboardService):
-    """Day32 broker view with an explicit Owner paper-run visibility boundary."""
+    """Day32 broker view with canonical Owner paper accounting."""
+
+    async def read(self, user_id: UUID) -> Day32DashboardView:
+        view = await super().read(user_id)
+        if view.account is None or not PaperAccountingService.applies(user_id):
+            return view
+        paper_balance = float(PaperAccountingService(self._session_factory).balance(user_id))
+        delta = paper_balance - float(view.account.balance)
+        return replace(
+            view,
+            account=replace(
+                view.account,
+                balance=paper_balance,
+                equity=float(view.account.equity) + delta,
+                free_margin=float(view.account.free_margin) + delta,
+            ),
+        )
 
     def _eligible_signal_ids(self, user_id: UUID) -> set[UUID] | None:
         epoch = active_paper_epoch(user_id)
