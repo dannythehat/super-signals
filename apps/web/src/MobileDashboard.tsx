@@ -241,6 +241,8 @@ export function MobileDashboard({ apiBaseUrl, displayName, roleLabel, onOpenSett
   const doubleLotText = data.trading.allow_double_lot === null ? null : data.trading.allow_double_lot ? `Double-lot ON · ${data.trading.effective_double_lot_risk_percent}% effective` : 'Double-lot OFF';
   const memberKicker = roleLabel.toLowerCase().includes('user') ? 'Your account' : roleLabel;
   const isOwnerDemo = roleLabel.toLowerCase().includes('owner') && data.connection.account_environment === 'demo';
+  const currentMonthPnl = data.performance.find((period) => period.key === 'month')?.amount ?? null;
+  const allTimePnl = data.performance.find((period) => period.key === 'all')?.amount ?? null;
 
   return <section className="day32-dashboard" aria-labelledby="day32-home-title">
     <div className="day32-dashboard-head">
@@ -271,7 +273,15 @@ export function MobileDashboard({ apiBaseUrl, displayName, roleLabel, onOpenSett
       })}
     </div>
 
-    <DailyProfitChart days={data.daily_profit} currency={currency} timezoneName={data.performance_timezone || timezoneName} />
+    <DailyProfitChart
+      days={data.daily_profit}
+      currency={currency}
+      timezoneName={data.performance_timezone || timezoneName}
+      currentBalance={data.account?.balance ?? null}
+      currentMonthPnl={currentMonthPnl}
+      allTimePnl={allTimePnl}
+      ownerDemo={isOwnerDemo}
+    />
 
     <TradeTimeline apiBaseUrl={apiBaseUrl} currency={currency} />
 
