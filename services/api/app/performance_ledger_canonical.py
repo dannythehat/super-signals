@@ -3,7 +3,7 @@
 The dashboard and settlement watcher use one broker-truth model:
 * account snapshots come from MetaAPI account information;
 * the complete MT5 deal stream is synchronised, not only already-known positions;
-* broker financial facts/raw payload are immutable; missing local linkage metadata may be enriched only from one unambiguous mapped position;
+* broker_deals is append-only and duplicate broker deal IDs are never rewritten;
 * first sync backfills the available Super Signals evidence period, later syncs overlap
   five minutes from the newest stored deal;
 * completed XAUUSD pips are derived from broker entry/exit prices when the stored pips
@@ -40,51 +40,6 @@ def _as_utc(value: datetime) -> datetime:
     if value.tzinfo is None:
         return value.replace(tzinfo=UTC)
     return value.astimezone(UTC)
-
-
-def _unique_position_index(rows: list[Any], field: str) -> dict[str, Any]:
-    """Index only broker identifiers which resolve to exactly one local position."""
-    index: dict[str, Any] = {}
-    ambiguous: set[str] = set()
-    for row in rows:
-        value = str(row[field] or "").strip()
-        if not value or value in ambiguous:
-            continue
-        existing = index.get(value)
-        if existing is not None and str(existing["id"]) != str(row["id"]):
-            index.pop(value, None)
-            ambiguous.add(value)
-            continue
-        index[value] = row
-    return index
-
-
-def _resolve_mapped_position(
-    *,
-    broker_position_id: str | None,
-    broker_order_id: str | None,
-    broker_client_id: str | None,
-    by_broker_position: dict[str, Any],
-    by_broker_order: dict[str, Any],
-    by_broker_client: dict[str, Any],
-) -> Any | None:
-    """Return one local position only when all available mappings agree."""
-    matches: list[Any] = []
-    for value, index in (
-        (broker_position_id, by_broker_position),
-        (broker_order_id, by_broker_order),
-        (broker_client_id, by_broker_client),
-    ):
-        key = str(value or "").strip()
-        if not key:
-            continue
-        candidate = index.get(key)
-        if candidate is not None:
-            matches.append(candidate)
-    if not matches:
-        return None
-    ids = {str(row["id"]) for row in matches}
-    return matches[0] if len(ids) == 1 else None
 
 
 class CanonicalPerformanceLedgerService(Day33PerformanceLedgerServiceV2):
@@ -211,9 +166,11 @@ class CanonicalPerformanceLedgerService(Day33PerformanceLedgerServiceV2):
         payloads: list[dict[str, object]],
     ) -> int:
         mapped_rows = self._mapped_positions(user_id)
-        by_broker_position = _unique_position_index(mapped_rows, "broker_position_id")
-        by_broker_order = _unique_position_index(mapped_rows, "broker_order_id")
-        by_broker_client = _unique_position_index(mapped_rows, "broker_client_id")
+        by_broker_position = {
+            str(row["broker_position_id"]): row
+            for row in mapped_rows
+            if row["broker_position_id"]
+        }
         added = 0
         with self._session_factory() as session:
             for payload in payloads:
@@ -223,16 +180,7 @@ class CanonicalPerformanceLedgerService(Day33PerformanceLedgerServiceV2):
                     continue
                 occurred_at = _parse_time(payload.get("time"))
                 broker_position_id = str(payload.get("positionId") or "").strip() or None
-                broker_order_id = str(payload.get("orderId") or "").strip() or None
-                broker_client_id = str(payload.get("clientId") or "").strip() or None
-                row = _resolve_mapped_position(
-                    broker_position_id=broker_position_id,
-                    broker_order_id=broker_order_id,
-                    broker_client_id=broker_client_id,
-                    by_broker_position=by_broker_position,
-                    by_broker_order=by_broker_order,
-                    by_broker_client=by_broker_client,
-                )
+                row = by_broker_position.get(str(broker_position_id)) if broker_position_id else None
                 trader = (
                     trader_stream_for(
                         str(row["source_alias"] or ""),
@@ -268,8 +216,8 @@ class CanonicalPerformanceLedgerService(Day33PerformanceLedgerServiceV2):
                         "trader_stream": trader,
                         "broker_deal_id": broker_deal_id,
                         "broker_position_id": broker_position_id,
-                        "broker_order_id": broker_order_id,
-                        "broker_client_id": broker_client_id,
+                        "broker_order_id": str(payload.get("orderId") or "").strip() or None,
+                        "broker_client_id": str(payload.get("clientId") or "").strip() or None,
                         "deal_type": deal_type,
                         "entry_type": str(payload.get("entryType") or "").strip() or None,
                         "symbol": str(
@@ -292,79 +240,6 @@ class CanonicalPerformanceLedgerService(Day33PerformanceLedgerServiceV2):
                     added += 1
             session.commit()
         return added
-
-    def _repair_missing_deal_links(
-        self,
-        *,
-        user_id: UUID,
-        mt5_account_id: UUID,
-        mapped_rows: list[Any],
-    ) -> int:
-        """Enrich only missing local links for broker deals we can prove are ours."""
-        by_broker_position = _unique_position_index(mapped_rows, "broker_position_id")
-        by_broker_order = _unique_position_index(mapped_rows, "broker_order_id")
-        by_broker_client = _unique_position_index(mapped_rows, "broker_client_id")
-        repaired = 0
-        with self._session_factory() as session:
-            deals = session.execute(
-                text(
-                    """
-                    SELECT id,broker_position_id,broker_order_id,broker_client_id
-                    FROM broker_deals
-                    WHERE user_id=:user_id
-                      AND mt5_account_id=:mt5_account_id
-                      AND signal_id IS NULL
-                      AND COALESCE(broker_client_id,'') ~ '^SSX?_'
-                    ORDER BY occurred_at,id
-                    """
-                ),
-                {"user_id": user_id, "mt5_account_id": mt5_account_id},
-            ).mappings().all()
-            for deal in deals:
-                row = _resolve_mapped_position(
-                    broker_position_id=(
-                        str(deal["broker_position_id"]) if deal["broker_position_id"] else None
-                    ),
-                    broker_order_id=(
-                        str(deal["broker_order_id"]) if deal["broker_order_id"] else None
-                    ),
-                    broker_client_id=(
-                        str(deal["broker_client_id"]) if deal["broker_client_id"] else None
-                    ),
-                    by_broker_position=by_broker_position,
-                    by_broker_order=by_broker_order,
-                    by_broker_client=by_broker_client,
-                )
-                if row is None:
-                    continue
-                trader = trader_stream_for(
-                    str(row["source_alias"] or ""),
-                    str(row["original_text"] or ""),
-                )
-                updated = session.execute(
-                    text(
-                        """
-                        UPDATE broker_deals
-                        SET position_id=COALESCE(position_id,:position_id),
-                            signal_id=:signal_id,
-                            source_id=COALESCE(source_id,:source_id),
-                            trader_stream=COALESCE(trader_stream,:trader_stream)
-                        WHERE id=:deal_id AND signal_id IS NULL
-                        RETURNING id
-                        """
-                    ),
-                    {
-                        "deal_id": deal["id"],
-                        "position_id": row["id"],
-                        "signal_id": row["signal_id"],
-                        "source_id": row["source_id"],
-                        "trader_stream": trader,
-                    },
-                ).scalar_one_or_none()
-                if updated is not None:
-                    repaired += 1
-            session.commit()
-        return repaired
 
     async def sync_user(self, user_id: UUID) -> Day33SyncResult:
         account = self._account(user_id)
@@ -440,11 +315,6 @@ class CanonicalPerformanceLedgerService(Day33PerformanceLedgerServiceV2):
             )
 
         mapped_positions = self._mapped_positions(user_id)
-        self._repair_missing_deal_links(
-            user_id=user_id,
-            mt5_account_id=account["id"],
-            mapped_rows=mapped_positions,
-        )
         outcomes = self.rebuild_outcomes(user_id)
         summaries = self.rebuild_summaries(user_id)
         return Day33SyncResult(
