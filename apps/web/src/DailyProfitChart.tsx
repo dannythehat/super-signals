@@ -18,6 +18,7 @@ type Props = {
 type DisplayDay = {
   day: string;
   point: DailyProfitPoint | null;
+  weekend: boolean;
 };
 
 const DAILY_CHART_START_DAY = '2026-08-24';
@@ -38,6 +39,13 @@ function addCalendarDays(value: string, amount: number): string {
   if (!parsed) return value;
   parsed.setUTCDate(parsed.getUTCDate() + amount);
   return calendarDay(parsed);
+}
+
+function isWeekendDay(value: string): boolean {
+  const parsed = dateFromCalendarDay(value);
+  if (!parsed) return false;
+  const weekday = parsed.getUTCDay();
+  return weekday === 0 || weekday === 6;
 }
 
 function dayLabel(value: string, long = false): string {
@@ -86,7 +94,12 @@ function chartDays(days: DailyProfitPoint[]): DisplayDay[] {
   const values: DisplayDay[] = [];
   let cursor = DAILY_CHART_START_DAY;
   while (cursor <= endDay) {
-    values.push({ day: cursor, point: byDay.get(cursor) ?? null });
+    const weekend = isWeekendDay(cursor);
+    values.push({
+      day: cursor,
+      point: weekend ? null : byDay.get(cursor) ?? null,
+      weekend,
+    });
     cursor = addCalendarDays(cursor, 1);
   }
   return values;
@@ -135,25 +148,29 @@ export function DailyProfitChart({ days, currency, timezoneName }: Props) {
     <div className="daily-profit-chart" aria-label="Daily realised profit and loss chart">
       <div className="daily-profit-zero-line" aria-hidden="true" />
       <div className="daily-profit-bars" style={{ '--daily-count': displayDays.length } as CSSProperties}>
-        {displayDays.map(({ day, point }) => {
+        {displayDays.map(({ day, point, weekend }) => {
           const height = point
             ? Math.max(point.pnl === 0 ? 4 : 10, Math.round((Math.abs(point.pnl) / maxMagnitude) * 62))
             : 0;
           const style = { '--bar-height': `${height}px` } as CSSProperties;
           const tone = !point ? 'future' : point.pnl > 0 ? 'positive' : point.pnl < 0 ? 'negative' : 'flat';
+          const disabled = weekend || !point;
           return <button
-            className={`daily-profit-day ${point && day === selectedDay ? 'daily-profit-day--selected' : ''}`}
+            className={`daily-profit-day ${weekend ? 'daily-profit-day--weekend' : ''} ${point && day === selectedDay ? 'daily-profit-day--selected' : ''}`}
             type="button"
             key={day}
-            onClick={() => point && setSelectedDay(day)}
-            disabled={!point}
-            aria-label={point
-              ? `${dayLabel(day, true)}: ${money(point.pnl, currency, true)}, ${percent(point.return_percent)}`
-              : `${dayLabel(day, true)}: no result yet`}
-            aria-pressed={point ? day === selectedDay : undefined}
+            onClick={() => point && !weekend && setSelectedDay(day)}
+            disabled={disabled}
+            aria-label={weekend
+              ? `${dayLabel(day, true)}: non-trading day`
+              : point
+                ? `${dayLabel(day, true)}: ${money(point.pnl, currency, true)}, ${percent(point.return_percent)}`
+                : `${dayLabel(day, true)}: no result yet`}
+            aria-pressed={point && !weekend ? day === selectedDay : undefined}
           >
             <span className="daily-profit-bar-zone" aria-hidden="true">
-              {point && <i className={`daily-profit-bar daily-profit-bar--${tone}`} style={style} />}
+              {point && !weekend && <i className={`daily-profit-bar daily-profit-bar--${tone}`} style={style} />}
+              {weekend && <i className="daily-profit-weekend-mark" />}
             </span>
             <span className="daily-profit-day-label">{dayLabel(day)}</span>
           </button>;
@@ -162,8 +179,8 @@ export function DailyProfitChart({ days, currency, timezoneName }: Props) {
     </div>
 
     <div className="daily-profit-foot">
-      <span>{actualDays.length === 0 ? 'Your new profit chart starts Monday.' : 'Tap any completed day for its P/L and return.'}</span>
-      <small>Daily return uses that day’s opening balance.</small>
+      <span>{actualDays.length === 0 ? 'Your new profit chart starts Monday.' : 'Tap any completed trading day for its P/L and return.'}</span>
+      <small>Saturday & Sunday are non-trading days.</small>
     </div>
   </section>;
 }
