@@ -139,6 +139,10 @@
   opacity: 1;
 }
 
+.daily-profit-day--weekend {
+  background: rgba(139, 149, 163, 0.035);
+}
+
 .daily-profit-bar-zone {
   position: relative;
   display: block;
@@ -173,6 +177,16 @@
   background: #7e8997;
 }
 
+.daily-profit-weekend-mark {
+  position: absolute;
+  top: 30px;
+  bottom: 28px;
+  left: 50%;
+  width: 1px;
+  border-left: 1px dashed rgba(139, 149, 163, 0.16);
+  transform: translateX(-50%);
+}
+
 .daily-profit-day-label {
   color: #7f8a99;
   font-size: 0.67rem;
@@ -183,6 +197,10 @@
 
 .daily-profit-day:disabled .daily-profit-day-label {
   color: #566170;
+}
+
+.daily-profit-day--weekend .daily-profit-day-label {
+  color: #414b58;
 }
 
 .daily-profit-day--selected .daily-profit-day-label {
