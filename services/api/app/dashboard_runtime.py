@@ -1,9 +1,10 @@
-"""Canonical mobile-dashboard view for the active paper-testing run.
+"""Canonical mobile-dashboard view for paper and LIVE trading.
 
-Open positions and executable broker state remain MetaAPI truth.  The Owner demo balance,
-however, is Super Signals paper-accounting truth: USD 1,000 plus cumulative realised
-trading P/L, with manual broker balance resets excluded.  Equity and free margin are
-shifted by the same paper-balance delta so the account card stays internally coherent.
+Open positions and executable broker state remain MetaAPI truth. The Owner demo balance
+uses Super Signals accounting truth because manual broker resets would otherwise corrupt
+both display and 1%-per-leg sizing. LIVE account balance remains the actual broker balance.
+Performance accounting itself is shared across both modes and excludes capital movements
+from profit/loss.
 
 A transient MetaAPI read failure must never make an already broker-mapped Super Signals
 position disappear from the app. During a live-read outage we expose the durable local
@@ -26,8 +27,8 @@ from app.dashboard_day32 import (
     Day32OpenPosition,
 )
 from app.dashboard_today_summary import TodayTradingSummaryService
-from app.paper_accounting import PaperAccountingService
 from app.paper_run_epoch import active_paper_epoch
+from app.trading_accounting import CanonicalTradingAccountingService
 
 
 def _utc(value: datetime) -> datetime:
@@ -37,19 +38,27 @@ def _utc(value: datetime) -> datetime:
 
 
 class CanonicalDashboardRuntimeService(Day32DashboardService):
-    """Day32 broker view with canonical Owner paper accounting."""
+    """Day32 broker view with shared canonical trading accounting."""
 
     async def read(self, user_id: UUID) -> Day32DashboardView:
         view = await super().read(user_id)
-        if view.account is None or not PaperAccountingService.applies(user_id):
+        if view.account is None:
             return view
-        paper_balance = float(PaperAccountingService(self._session_factory).balance(user_id))
-        delta = paper_balance - float(view.account.balance)
+        accounting = CanonicalTradingAccountingService(self._session_factory)
+        display_balance = float(
+            accounting.displayed_balance(
+                user_id,
+                broker_balance=view.account.balance,
+            )
+        )
+        if display_balance == float(view.account.balance):
+            return view
+        delta = display_balance - float(view.account.balance)
         return replace(
             view,
             account=replace(
                 view.account,
-                balance=paper_balance,
+                balance=display_balance,
                 equity=float(view.account.equity) + delta,
                 free_margin=float(view.account.free_margin) + delta,
             ),
