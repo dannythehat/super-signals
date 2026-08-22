@@ -4,7 +4,7 @@
 
 .daily-profit-panel {
   display: grid;
-  gap: 18px;
+  gap: 16px;
   padding: clamp(18px, 4vw, 24px);
   border: 1px solid rgba(255, 255, 255, 0.075);
   border-radius: 21px;
@@ -51,34 +51,101 @@
   white-space: nowrap;
 }
 
+.daily-profit-months {
+  display: flex;
+  gap: 8px;
+  overflow-x: auto;
+  padding: 1px 0 3px;
+  scrollbar-width: none;
+}
+
+.daily-profit-months::-webkit-scrollbar {
+  display: none;
+}
+
+.daily-profit-months button {
+  flex: 0 0 auto;
+  padding: 8px 12px;
+  border: 1px solid rgba(255, 255, 255, 0.07);
+  border-radius: 999px;
+  color: #7f8b9b;
+  background: rgba(255, 255, 255, 0.025);
+  font-size: 0.7rem;
+  font-weight: 780;
+  white-space: nowrap;
+}
+
+.daily-profit-months button:active {
+  transform: scale(0.98);
+}
+
+.daily-profit-months .daily-profit-month--selected {
+  border-color: rgba(117, 233, 215, 0.24);
+  color: #c9f8f0;
+  background: rgba(117, 233, 215, 0.07);
+}
+
+.daily-profit-month-summary {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.daily-profit-month-summary > div {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+  padding: 10px 11px;
+  border: 1px solid rgba(255, 255, 255, 0.055);
+  border-radius: 11px;
+  background: rgba(255, 255, 255, 0.02);
+}
+
+.daily-profit-month-summary span {
+  color: #667384;
+  font-size: 0.61rem;
+  font-weight: 760;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.daily-profit-month-summary strong {
+  overflow: hidden;
+  color: #e8edf3;
+  font-size: 0.84rem;
+  letter-spacing: -0.01em;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .daily-profit-detail {
   display: grid;
   grid-template-columns: minmax(0, 1.45fr) auto auto auto;
   align-items: center;
   gap: 14px;
-  padding: 12px 14px;
+  padding: 11px 13px;
   border: 1px solid rgba(117, 233, 215, 0.13);
-  border-radius: 13px;
+  border-radius: 12px;
   background: rgba(117, 233, 215, 0.035);
 }
 
 .daily-profit-detail strong {
   overflow: hidden;
   color: #e9eef4;
-  font-size: 0.8rem;
+  font-size: 0.78rem;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
 .daily-profit-detail > span {
-  font-size: 0.9rem;
+  font-size: 0.88rem;
   font-weight: 850;
   white-space: nowrap;
 }
 
 .daily-profit-detail small {
   color: #8994a3;
-  font-size: 0.72rem;
+  font-size: 0.7rem;
   white-space: nowrap;
 }
 
@@ -104,9 +171,9 @@
   position: relative;
   z-index: 1;
   display: grid;
-  grid-template-columns: repeat(var(--daily-count), minmax(54px, 1fr));
-  width: max(100%, calc(var(--daily-count) * 58px));
-  gap: 4px;
+  grid-template-columns: repeat(var(--daily-count), minmax(42px, 1fr));
+  width: max(100%, calc(var(--daily-count) * 46px));
+  gap: 2px;
 }
 
 .daily-profit-day {
@@ -114,9 +181,9 @@
   grid-template-rows: 140px auto;
   gap: 8px;
   min-width: 0;
-  padding: 0 3px 4px;
+  padding: 0 2px 4px;
   border: 0;
-  border-radius: 10px;
+  border-radius: 9px;
   color: inherit;
   background: transparent;
   transition: background 140ms ease, transform 140ms ease;
@@ -152,7 +219,7 @@
 .daily-profit-bar {
   position: absolute;
   left: 50%;
-  width: 13px;
+  width: 11px;
   min-height: 4px;
   border-radius: 999px;
   transform: translateX(-50%);
@@ -189,7 +256,7 @@
 
 .daily-profit-day-label {
   color: #7f8a99;
-  font-size: 0.67rem;
+  font-size: 0.64rem;
   font-weight: 720;
   text-align: center;
   white-space: nowrap;
@@ -207,7 +274,8 @@
   color: #c8f7ef;
 }
 
-.daily-profit-day:focus-visible {
+.daily-profit-day:focus-visible,
+.daily-profit-months button:focus-visible {
   outline: 2px solid #75e9d7;
   outline-offset: 2px;
 }
@@ -223,17 +291,21 @@
 
 .daily-profit-foot span {
   color: #929dad;
-  font-size: 0.75rem;
+  font-size: 0.73rem;
 }
 
 .daily-profit-foot small {
   color: #626e7e;
-  font-size: 0.68rem;
+  font-size: 0.67rem;
   text-align: right;
 }
 
 @media (max-width: 760px) {
   .day32-performance-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .daily-profit-month-summary {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
@@ -248,8 +320,8 @@
 
 @media (max-width: 640px) {
   .daily-profit-panel {
-    gap: 15px;
-    padding: 18px 16px;
+    gap: 14px;
+    padding: 18px 15px;
   }
 
   .daily-profit-head {
@@ -261,8 +333,8 @@
   }
 
   .daily-profit-bars {
-    grid-template-columns: repeat(var(--daily-count), minmax(46px, 1fr));
-    width: max(100%, calc(var(--daily-count) * 49px));
+    grid-template-columns: repeat(var(--daily-count), 40px);
+    width: max(100%, calc(var(--daily-count) * 42px));
   }
 
   .daily-profit-detail {
