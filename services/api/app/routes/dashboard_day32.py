@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import asdict, replace
-from datetime import datetime
+from datetime import date, datetime
 from typing import Annotated, Any
 from uuid import UUID
 
@@ -28,6 +28,7 @@ from app.routes.performance_day33 import (
     _service as _performance_service,
     router as performance_day33_router,
 )
+from app.trading_accounting import CanonicalTradingAccountingService
 
 router = APIRouter(prefix="/dashboard", tags=["dashboard-day32"])
 router.include_router(performance_day33_router)
@@ -67,6 +68,13 @@ class PerformanceResponse(BaseModel):
     amount: float | None
     known_position_count: int
     provisional_until_day33: bool
+
+
+class DailyProfitResponse(BaseModel):
+    day: date
+    pnl: float
+    opening_balance: float
+    return_percent: float
 
 
 class OpenPositionResponse(BaseModel):
@@ -148,11 +156,13 @@ class DashboardResponse(BaseModel):
     latest_signal: LatestSignalResponse | None
     recent_completed: tuple[CompletedPositionResponse, ...]
     performance: tuple[PerformanceResponse, ...]
+    performance_timezone: str = "UTC"
+    daily_profit: tuple[DailyProfitResponse, ...] = ()
     win_loss: WinLossResponse
     activity: tuple[ActivityResponse, ...]
     reconciled_external_positions: int
     canonical_performance_ready: bool
-    performance_basis: str = "selected_provider_broker_ledger"
+    performance_basis: str = "canonical_user_trading_ledger"
     broker_trade_action_created: bool = False
 
 
@@ -197,14 +207,7 @@ async def _active_broker_order_ids(
     service: CanonicalDashboardRuntimeService,
     user_id: UUID,
 ) -> set[str] | None:
-    """Return current broker-active pending-entry tickets, or None when unavailable.
-
-    MetaApiReadGateway.read_orders already filters the terminal payload to the four
-    pending entry types Super Signals can place, broker-active states only, and positive
-    remaining volume. The dashboard deliberately performs no broker-history reads: deal
-    and order history reconciliation belongs to the canonical settlement worker, never
-    to a user-facing page request.
-    """
+    """Return current broker-active pending-entry tickets, or None when unavailable."""
     read_service = service._read_service
     row = read_service._load_row(user_id)
     if row is None:
@@ -293,6 +296,12 @@ async def account_dashboard_today(
         data_user_id,
         timezone_name=timezone_name,
     )
+    accounting_windows = CanonicalTradingAccountingService(
+        service._session_factory
+    ).windows(
+        data_user_id,
+        timezone_name=timezone_name,
+    )
     active_order_ids = await _active_broker_order_ids(service, data_user_id)
     pending = _broker_pending_trade_count(
         service,
@@ -302,7 +311,7 @@ async def account_dashboard_today(
     )
     _no_store(response)
     return TodayTradingSummaryResponse(
-        timezone=summary.timezone,
+        timezone=accounting_windows.timezone,
         session_started_at=summary.session_started_at,
         trades=summary.trades,
         wins=summary.wins,
@@ -311,7 +320,7 @@ async def account_dashboard_today(
         open=summary.open,
         pending=pending,
         settling=summary.settling,
-        realised_pnl=float(summary.realised_pnl),
+        realised_pnl=float(accounting_windows.today),
         winning_pips=float(summary.winning_pips),
         net_pips=float(summary.net_pips),
     )
@@ -322,6 +331,7 @@ async def account_dashboard(
     request: Request,
     response: Response,
     identity: Identity,
+    timezone_name: str = "UTC",
 ) -> DashboardResponse:
     service = _service(request)
     mirror_user_id = acceptance_mirror_owner_user_id(identity, service._session_factory)
@@ -335,23 +345,63 @@ async def account_dashboard(
             reconciled_external_positions=0,
         )
 
-    ledger = _performance_service(request)
-    ready = ledger.ledger_ready(data_user_id)
-    windows = {item.key: item for item in ledger.read_windows(data_user_id)} if ready else {}
-
-    period_labels = (("today", "Today"), ("7d", "7 days"), ("30d", "30 days"))
-    canonical_periods = tuple(
+    accounting = CanonicalTradingAccountingService(service._session_factory)
+    money_windows = accounting.windows(
+        data_user_id,
+        timezone_name=timezone_name,
+    )
+    canonical_periods = (
         PerformanceResponse(
-            key=key,
-            label=(windows[key].label if key in windows else label),
-            amount=(float(windows[key].cash_pnl) if key in windows else None),
-            known_position_count=(windows[key].closed_trades if key in windows else 0),
+            key="today",
+            label="Today",
+            amount=float(money_windows.today),
+            known_position_count=0,
             provisional_until_day33=False,
+        ),
+        PerformanceResponse(
+            key="week",
+            label="This week",
+            amount=float(money_windows.week),
+            known_position_count=0,
+            provisional_until_day33=False,
+        ),
+        PerformanceResponse(
+            key="month",
+            label="This month",
+            amount=float(money_windows.month),
+            known_position_count=0,
+            provisional_until_day33=False,
+        ),
+        PerformanceResponse(
+            key="all",
+            label="All time",
+            amount=float(money_windows.all_time),
+            known_position_count=0,
+            provisional_until_day33=False,
+        ),
+    )
+    daily_profit = (
+        tuple(
+            DailyProfitResponse(
+                day=item.day,
+                pnl=float(item.pnl),
+                opening_balance=float(item.opening_balance),
+                return_percent=float(item.return_percent),
+            )
+            for item in accounting.daily(
+                data_user_id,
+                broker_balance=view.account.balance,
+                timezone_name=timezone_name,
+            )
         )
-        for key, label in period_labels
+        if view.account is not None
+        else ()
     )
 
-    all_time = windows.get("all")
+    ledger = _performance_service(request)
+    ready = ledger.ledger_ready(data_user_id)
+    old_windows = {item.key: item for item in ledger.read_windows(data_user_id)} if ready else {}
+    all_time = old_windows.get("all")
     win_loss = (
         WinLossResponse(
             wins=all_time.wins,
@@ -383,8 +433,10 @@ async def account_dashboard(
         latest_signal=(LatestSignalResponse(**asdict(view.latest_signal)) if view.latest_signal is not None else None),
         recent_completed=tuple(CompletedPositionResponse(**asdict(item)) for item in view.recent_completed),
         performance=canonical_periods,
+        performance_timezone=money_windows.timezone,
+        daily_profit=daily_profit,
         win_loss=win_loss,
         activity=tuple(ActivityResponse(**asdict(item)) for item in view.activity),
         reconciled_external_positions=view.reconciled_external_positions,
-        canonical_performance_ready=ready,
+        canonical_performance_ready=True,
     )
