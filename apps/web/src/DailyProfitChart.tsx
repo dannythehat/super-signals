@@ -1,6 +1,7 @@
 import { CSSProperties, useEffect, useMemo, useState } from 'react';
 
 import './daily-profit-chart.css';
+import './monthly-profit-redesign.css';
 
 export type DailyProfitPoint = {
   day: string;
@@ -29,7 +30,6 @@ type DisplayDay = {
 
 type YearMonth = {
   key: string;
-  label: string;
   pnl: number | null;
   live: boolean;
   locked: boolean;
@@ -102,6 +102,12 @@ function monthLabel(value: string, long = false): string {
   return new Intl.DateTimeFormat(undefined, long
     ? { month: 'long', year: 'numeric', timeZone: 'UTC' }
     : { month: 'short', year: '2-digit', timeZone: 'UTC' }).format(parsed);
+}
+
+function monthOnlyLabel(value: string): string {
+  const parsed = dateFromCalendarDay(`${value}-01`);
+  if (!parsed || Number.isNaN(parsed.getTime())) return value;
+  return new Intl.DateTimeFormat(undefined, { month: 'short', timeZone: 'UTC' }).format(parsed);
 }
 
 function money(value: number | null, currency: string, signed = false): string {
@@ -195,7 +201,6 @@ function buildYearMonths(days: DailyProfitPoint[], currentMonthPnl: number | nul
     if (key === current && currentMonthPnl !== null) pnl = currentMonthPnl;
     return {
       key,
-      label: monthLabel(key),
       pnl,
       live: key === current && pnl !== null,
       locked: key < current && pnl !== null,
@@ -243,6 +248,10 @@ export function DailyProfitChart({
   );
   const monthlyMaxMagnitude = useMemo(
     () => Math.max(1, ...yearMonths.flatMap((item) => item.pnl === null ? [] : [Math.abs(item.pnl)])),
+    [yearMonths],
+  );
+  const focusMonth = useMemo(
+    () => yearMonths.find((item) => item.live) ?? [...yearMonths].reverse().find((item) => item.pnl !== null) ?? null,
     [yearMonths],
   );
 
@@ -350,45 +359,62 @@ export function DailyProfitChart({
       </div>
     </>}
 
-    {activeTab === 'monthly' && <>
-      <div className="monthly-profit-title-row">
-        <div><strong>Monthly P/L</strong><span>{REPORTING_YEAR}</span></div>
-        <small>Tap a month with data to see its daily breakdown</small>
+    {activeTab === 'monthly' && <div className="monthly-profit-redesign">
+      {focusMonth ? <div className="monthly-profit-highlight">
+        <div className="monthly-profit-highlight-copy">
+          <span>{monthLabel(focusMonth.key, true)}</span>
+          <small>{focusMonth.live ? 'Month to date' : focusMonth.locked ? 'Completed month' : 'Monthly result'}</small>
+        </div>
+        <strong className={pnlClass(focusMonth.pnl)}>{money(focusMonth.pnl, currency, true)}</strong>
+        <small className="monthly-profit-baseline">
+          {ownerDemo
+            ? 'Based on $1,000 starting capital · 8 Aug 2026'
+            : startingCapital !== null && performanceStart
+              ? `Based on ${money(startingCapital, currency)} starting capital · ${dateLabel(performanceStart)}`
+              : 'Based on your own Super Signals account'}
+        </small>
+      </div> : <div className="monthly-profit-highlight monthly-profit-highlight--empty">
+        <div className="monthly-profit-highlight-copy"><span>Monthly performance</span><small>No completed trading month yet</small></div>
+        <strong>—</strong>
+      </div>}
+
+      <div className="monthly-profit-subhead">
+        <strong>{REPORTING_YEAR}</strong>
+        <small>Tap a month with data for its daily breakdown</small>
       </div>
-      <div className="monthly-profit-chart" aria-label={`${REPORTING_YEAR} monthly profit and loss`}>
+
+      <div className="monthly-profit-chart monthly-profit-chart--compact" aria-label={`${REPORTING_YEAR} monthly profit and loss`}>
         <div className="monthly-profit-zero-line" aria-hidden="true" />
-        <div className="monthly-profit-bars">
+        <div className="monthly-profit-bars monthly-profit-bars--compact">
           {yearMonths.map((item) => {
-            const height = item.pnl === null ? 0 : Math.max(10, Math.round((Math.abs(item.pnl) / monthlyMaxMagnitude) * 72));
+            const height = item.pnl === null ? 0 : Math.max(7, Math.round((Math.abs(item.pnl) / monthlyMaxMagnitude) * 38));
             const style = { '--month-bar-height': `${height}px` } as CSSProperties;
             const tone = item.pnl === null ? 'empty' : item.pnl > 0 ? 'positive' : item.pnl < 0 ? 'negative' : 'flat';
+            const isFocus = focusMonth?.key === item.key;
             return <button
               type="button"
               key={item.key}
-              className={`monthly-profit-month monthly-profit-month--${tone}`}
+              className={`monthly-profit-month monthly-profit-month--${tone} ${isFocus ? 'monthly-profit-month--focus' : ''}`}
               disabled={item.pnl === null}
               onClick={() => item.pnl !== null && openMonth(item.key)}
               aria-label={item.pnl === null
                 ? `${monthLabel(item.key, true)}: no performance data`
-                : `${monthLabel(item.key, true)}: ${money(item.pnl, currency, true)}${item.live ? ', month to date' : item.locked ? ', locked' : ''}`}
+                : `${monthLabel(item.key, true)}: ${money(item.pnl, currency, true)}${item.live ? ', month to date' : item.locked ? ', completed month' : ''}`}
             >
               <span className="monthly-profit-bar-zone" aria-hidden="true">
                 {item.pnl !== null && <i className={`monthly-profit-bar monthly-profit-bar--${tone}`} style={style} />}
               </span>
-              <strong className={pnlClass(item.pnl)}>{item.pnl === null ? '—' : money(item.pnl, currency, true)}</strong>
-              <span>{item.label}</span>
-              {item.live && <small>MTD</small>}
-              {item.locked && <small>Locked</small>}
+              <span>{monthOnlyLabel(item.key)}</span>
+              <small>{item.live ? 'MTD' : item.locked ? 'Final' : ''}</small>
             </button>;
           })}
         </div>
       </div>
-      <p className="monthly-profit-note">
-        {ownerDemo
-          ? 'Performance based on $1,000 starting capital · 8 Aug 2026. August updates daily from Monday 24 Aug; earlier daily allocations are intentionally not reconstructed.'
-          : 'Monthly performance is based on your own account and updates from your Super Signals trading history. Completed months are locked.'}
-      </p>
-    </>}
+
+      <div className="monthly-profit-footnote">
+        <span>Green = profit</span><span>Red = loss</span><span>Completed months stay fixed</span>
+      </div>
+    </div>}
 
     {activeTab === 'stats' && <>
       <div className="profit-stats-grid">
