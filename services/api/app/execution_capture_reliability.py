@@ -6,9 +6,10 @@ close/cancel and every local execution row is either absent or an unlinked error
 Broker-linked, compensated, pending, open, closed or otherwise ambiguous state is never
 retried here.
 
-The Owner demo uses the same canonical Super Signals paper balance shown in the app for
-risk sizing. Eligible member LIVE accounts continue to size from their own broker balance.
-The underlying execution engine remains shared.
+Paper and LIVE share the same execution engine. The Owner demo substitutes its canonical
+Super Signals balance because manual demo resets are not trading P/L. LIVE accounts keep
+their actual broker balance. In both modes the number displayed as balance is therefore
+the same number supplied to the 1%-per-leg risk sizer.
 """
 
 from __future__ import annotations
@@ -22,8 +23,8 @@ from uuid import UUID
 from sqlalchemy import text
 
 from app.mt5_execution_day26 import Day26ExecutionError, _SignalInput
-from app.paper_accounting import PaperAccountingService
 from app.risk_sizing_day24 import Day24RiskSizingResult
+from app.trading_accounting import CanonicalTradingAccountingService
 from app.trading_execution_canonical import (
     CanonicalTradingExecutionService,
     MemberTradingExecutionService,
@@ -99,8 +100,14 @@ class _CaptureRetryMixin:
         double_lot_approved: bool,
     ) -> Day24RiskSizingResult:
         user_id = _SIZING_USER_ID.get()
-        if user_id is not None and PaperAccountingService.applies(user_id):
-            balance = float(PaperAccountingService(self._session_factory).balance(user_id))
+        if user_id is not None:
+            accounting = CanonicalTradingAccountingService(self._session_factory)
+            balance = float(
+                accounting.displayed_balance(
+                    user_id,
+                    broker_balance=balance,
+                )
+            )
         return super()._size_signal(
             signal=signal,
             execution_entry=execution_entry,
