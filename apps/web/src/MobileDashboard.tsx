@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 
+import { DailyProfitChart, type DailyProfitPoint } from './DailyProfitChart';
 import { ManualMt5ActivityDay36 } from './ManualMt5ActivityDay36';
 import { OwnerCloseAllButton, OwnerPositionCloseButton } from './OwnerInlineCloseControls';
 import { TodayTradingSummary } from './TodayTradingSummary';
@@ -94,6 +95,8 @@ type DashboardData = {
   latest_signal: LatestSignal | null;
   recent_completed: CompletedPosition[];
   performance: DashboardPerformance[];
+  performance_timezone: string;
+  daily_profit: DailyProfitPoint[];
   win_loss: WinLoss;
   activity: ActivityItem[];
   reconciled_external_positions: number;
@@ -162,16 +165,26 @@ function tradingCopy(data: DashboardData) {
   return { label: 'Automation not configured', tone: 'stopped' };
 }
 
+function detectedTimeZone(): string {
+  try {
+    return Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC';
+  } catch {
+    return 'UTC';
+  }
+}
+
 export function MobileDashboard({ apiBaseUrl, displayName, roleLabel, onOpenSettings }: Props) {
   const [data, setData] = useState<DashboardData | null>(null);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const timezoneName = useMemo(() => detectedTimeZone(), []);
 
   const refresh = useCallback(async (quiet = false) => {
     if (!quiet) setRefreshing(true);
     try {
-      const response = await fetch(`${apiBaseUrl}/account/mt5/dashboard`, {
+      const query = new URLSearchParams({ timezone_name: timezoneName });
+      const response = await fetch(`${apiBaseUrl}/account/mt5/dashboard?${query.toString()}`, {
         credentials: 'include',
         headers: { Accept: 'application/json' },
         cache: 'no-store',
@@ -185,7 +198,7 @@ export function MobileDashboard({ apiBaseUrl, displayName, roleLabel, onOpenSett
       setLoading(false);
       setRefreshing(false);
     }
-  }, [apiBaseUrl]);
+  }, [apiBaseUrl, timezoneName]);
 
   useEffect(() => {
     void refresh(true);
@@ -243,20 +256,22 @@ export function MobileDashboard({ apiBaseUrl, displayName, roleLabel, onOpenSett
       <span className="day32-account-kind">{accountEnvironment}</span>
     </div>
 
-    <section className="day32-balance-card" aria-label="MT5 account balance">
+    <section className="day32-balance-card" aria-label="Trading account balance">
       <div className="day32-balance-copy"><span>Balance</span><strong>{money(data.account?.balance, currency)}</strong><small>{data.connection.login_masked ? `${data.connection.login_masked} · ${data.connection.server ?? 'Vantage MT5'}` : 'Connect your Vantage MT5 account in Settings'}</small></div>
       <div className="day32-equity-copy"><span>Equity</span><strong>{money(data.account?.equity, currency)}</strong><small>Free margin {money(data.account?.free_margin, currency)}</small></div>
       <button className="day32-refresh" type="button" onClick={() => void refresh()} disabled={refreshing}>{refreshing ? 'Refreshing…' : 'Refresh'}</button>
     </section>
 
-    <TodayTradingSummary apiBaseUrl={apiBaseUrl} currency={currency} />
+    <TodayTradingSummary apiBaseUrl={apiBaseUrl} currency={currency} timezoneName={timezoneName} />
 
     <div className="day32-performance-grid" aria-label="Performance summary">
       {data.performance.map((period) => {
-        const hasPeriodValue = data.canonical_performance_ready && period.amount !== null;
-        return <article className="day32-performance-card" key={period.key}><span>{period.label}</span><strong className={pnlClass(hasPeriodValue ? period.amount : null)}>{hasPeriodValue ? money(period.amount, currency) : '—'}</strong><small>{!data.canonical_performance_ready ? 'Updating trade history' : period.known_position_count === 0 ? 'No completed trade yet' : `${period.known_position_count} completed position${period.known_position_count === 1 ? '' : 's'}`}</small></article>;
+        const hasPeriodValue = period.amount !== null;
+        return <article className="day32-performance-card" key={period.key}><span>{period.label}</span><strong className={pnlClass(hasPeriodValue ? period.amount : null)}>{hasPeriodValue ? money(period.amount, currency) : '—'}</strong><small>Realised trading P/L</small></article>;
       })}
     </div>
+
+    <DailyProfitChart days={data.daily_profit} currency={currency} timezoneName={data.performance_timezone || timezoneName} />
 
     <TradeTimeline apiBaseUrl={apiBaseUrl} currency={currency} />
 
@@ -289,6 +304,6 @@ export function MobileDashboard({ apiBaseUrl, displayName, roleLabel, onOpenSett
 
     <section className="day32-section" aria-labelledby="activity-title"><div className="day32-section-head"><div><span>Super Signals</span><h2 id="activity-title">Recent activity</h2></div></div>{data.activity.length === 0 ? <div className="day32-empty day32-empty--compact"><strong>No account activity to show yet</strong></div> : <ol className="day32-activity-list">{data.activity.map((item, index) => <li key={`${item.event_type}-${item.created_at}-${index}`}><i className={`day32-activity-dot day32-activity-dot--${item.tone}`} /><div><strong>{item.label}</strong><small>{shortTime(item.created_at)}</small></div></li>)}</ol>}</section>
 
-    <p className="day32-data-note">Your dashboard shows Super Signals trading activity only. Manual MT5 positions stay separate.</p>
+    <p className="day32-data-note">Your dashboard uses your detected timezone and shows your own Super Signals trading results. Capital movements are not counted as profit or loss.</p>
   </section>;
 }
