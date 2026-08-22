@@ -15,9 +15,13 @@ type Props = {
   timezoneName: string;
 };
 
-function lastDay(days: DailyProfitPoint[]): DailyProfitPoint | null {
-  return days.length > 0 ? days[days.length - 1] : null;
-}
+type DisplayDay = {
+  day: string;
+  point: DailyProfitPoint | null;
+};
+
+const DAILY_CHART_START_DAY = '2026-08-24';
+const FIRST_WEEK_LENGTH = 7;
 
 function dateFromCalendarDay(value: string): Date | null {
   const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value);
@@ -25,12 +29,23 @@ function dateFromCalendarDay(value: string): Date | null {
   return new Date(Date.UTC(Number(match[1]), Number(match[2]) - 1, Number(match[3])));
 }
 
+function calendarDay(value: Date): string {
+  return value.toISOString().slice(0, 10);
+}
+
+function addCalendarDays(value: string, amount: number): string {
+  const parsed = dateFromCalendarDay(value);
+  if (!parsed) return value;
+  parsed.setUTCDate(parsed.getUTCDate() + amount);
+  return calendarDay(parsed);
+}
+
 function dayLabel(value: string, long = false): string {
   const parsed = dateFromCalendarDay(value);
   if (!parsed || Number.isNaN(parsed.getTime())) return value;
   return new Intl.DateTimeFormat(undefined, long
-    ? { day: 'numeric', month: 'long', year: 'numeric', timeZone: 'UTC' }
-    : { day: 'numeric', month: 'short', timeZone: 'UTC' }).format(parsed);
+    ? { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric', timeZone: 'UTC' }
+    : { weekday: 'short', day: 'numeric', timeZone: 'UTC' }).format(parsed);
 }
 
 function money(value: number, currency: string, signed = false): string {
@@ -62,62 +77,93 @@ function pnlClass(value: number): string {
   return value > 0 ? 'is-positive' : 'is-negative';
 }
 
+function chartDays(days: DailyProfitPoint[]): DisplayDay[] {
+  const eligible = days.filter((item) => item.day >= DAILY_CHART_START_DAY);
+  const byDay = new Map(eligible.map((item) => [item.day, item]));
+  const firstWeekEnd = addCalendarDays(DAILY_CHART_START_DAY, FIRST_WEEK_LENGTH - 1);
+  const lastActual = eligible.length > 0 ? eligible[eligible.length - 1].day : DAILY_CHART_START_DAY;
+  const endDay = lastActual > firstWeekEnd ? lastActual : firstWeekEnd;
+  const values: DisplayDay[] = [];
+  let cursor = DAILY_CHART_START_DAY;
+  while (cursor <= endDay) {
+    values.push({ day: cursor, point: byDay.get(cursor) ?? null });
+    cursor = addCalendarDays(cursor, 1);
+  }
+  return values;
+}
+
 export function DailyProfitChart({ days, currency, timezoneName }: Props) {
-  const [selectedDay, setSelectedDay] = useState<string | null>(lastDay(days)?.day ?? null);
+  const displayDays = useMemo(() => chartDays(days), [days]);
+  const actualDays = useMemo(
+    () => displayDays.flatMap((item) => item.point ? [item.point] : []),
+    [displayDays],
+  );
+  const [selectedDay, setSelectedDay] = useState<string | null>(null);
 
   useEffect(() => {
-    if (days.length === 0) {
+    if (selectedDay && !actualDays.some((item) => item.day === selectedDay)) {
       setSelectedDay(null);
-      return;
     }
-    if (!selectedDay || !days.some((item) => item.day === selectedDay)) {
-      setSelectedDay(lastDay(days)?.day ?? null);
-    }
-  }, [days, selectedDay]);
+  }, [actualDays, selectedDay]);
 
   const selected = useMemo(
-    () => days.find((item) => item.day === selectedDay) ?? lastDay(days),
-    [days, selectedDay],
+    () => actualDays.find((item) => item.day === selectedDay) ?? null,
+    [actualDays, selectedDay],
   );
   const maxMagnitude = useMemo(
-    () => Math.max(1, ...days.map((item) => Math.abs(item.pnl))),
-    [days],
+    () => Math.max(1, ...actualDays.map((item) => Math.abs(item.pnl))),
+    [actualDays],
   );
 
   return <section className="daily-profit-panel" aria-labelledby="daily-profit-title">
     <div className="daily-profit-head">
-      <div><span>Profit history</span><h2 id="daily-profit-title">Daily profit / loss</h2></div>
+      <div>
+        <span>Profit history</span>
+        <h2 id="daily-profit-title">Daily P/L</h2>
+        <p>From Monday 24 August</p>
+      </div>
       <small>{timezoneName}</small>
     </div>
 
-    {selected ? <div className="daily-profit-selected" aria-live="polite">
-      <div><span>{dayLabel(selected.day, true)}</span><strong className={pnlClass(selected.pnl)}>{money(selected.pnl, currency, true)}</strong></div>
-      <div><span>Daily return</span><strong className={pnlClass(selected.return_percent)}>{percent(selected.return_percent)}</strong></div>
-      <div><span>Opening balance</span><strong>{money(selected.opening_balance, currency)}</strong></div>
-    </div> : <div className="daily-profit-empty">Daily profit history will appear after the first Super Signals trade.</div>}
+    {selected && <div className="daily-profit-detail" aria-live="polite">
+      <strong>{dayLabel(selected.day, true)}</strong>
+      <span className={pnlClass(selected.pnl)}>{money(selected.pnl, currency, true)}</span>
+      <span className={pnlClass(selected.return_percent)}>{percent(selected.return_percent)}</span>
+      <small>Opening {money(selected.opening_balance, currency)}</small>
+    </div>}
 
-    {days.length > 0 && <div className="daily-profit-scroll" aria-label="Daily realised profit and loss chart">
-      <div className="daily-profit-bars" style={{ '--daily-count': days.length } as CSSProperties}>
-        {days.map((item) => {
-          const height = Math.max(item.pnl === 0 ? 3 : 7, Math.round((Math.abs(item.pnl) / maxMagnitude) * 68));
+    <div className="daily-profit-chart" aria-label="Daily realised profit and loss chart">
+      <div className="daily-profit-zero-line" aria-hidden="true" />
+      <div className="daily-profit-bars" style={{ '--daily-count': displayDays.length } as CSSProperties}>
+        {displayDays.map(({ day, point }) => {
+          const height = point
+            ? Math.max(point.pnl === 0 ? 4 : 10, Math.round((Math.abs(point.pnl) / maxMagnitude) * 62))
+            : 0;
           const style = { '--bar-height': `${height}px` } as CSSProperties;
+          const tone = !point ? 'future' : point.pnl > 0 ? 'positive' : point.pnl < 0 ? 'negative' : 'flat';
           return <button
-            className={`daily-profit-day ${item.day === selected?.day ? 'daily-profit-day--selected' : ''}`}
+            className={`daily-profit-day ${point && day === selectedDay ? 'daily-profit-day--selected' : ''}`}
             type="button"
-            key={item.day}
-            onClick={() => setSelectedDay(item.day)}
-            aria-label={`${dayLabel(item.day, true)}: ${money(item.pnl, currency, true)}, ${percent(item.return_percent)}`}
-            aria-pressed={item.day === selected?.day}
+            key={day}
+            onClick={() => point && setSelectedDay(day)}
+            disabled={!point}
+            aria-label={point
+              ? `${dayLabel(day, true)}: ${money(point.pnl, currency, true)}, ${percent(point.return_percent)}`
+              : `${dayLabel(day, true)}: no result yet`}
+            aria-pressed={point ? day === selectedDay : undefined}
           >
             <span className="daily-profit-bar-zone" aria-hidden="true">
-              <i className="daily-profit-axis" />
-              <i className={`daily-profit-bar daily-profit-bar--${item.pnl > 0 ? 'positive' : item.pnl < 0 ? 'negative' : 'flat'}`} style={style} />
+              {point && <i className={`daily-profit-bar daily-profit-bar--${tone}`} style={style} />}
             </span>
-            <span className="daily-profit-day-label">{dayLabel(item.day)}</span>
+            <span className="daily-profit-day-label">{dayLabel(day)}</span>
           </button>;
         })}
       </div>
-    </div>}
-    <p className="daily-profit-note">Tap any day to see its realised P/L, return on that day's opening balance, and opening balance.</p>
+    </div>
+
+    <div className="daily-profit-foot">
+      <span>{actualDays.length === 0 ? 'Your new profit chart starts Monday.' : 'Tap any completed day for its P/L and return.'}</span>
+      <small>Daily return uses that day’s opening balance.</small>
+    </div>
   </section>;
 }
