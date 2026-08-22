@@ -11,6 +11,7 @@ outer distribution switch until explicitly enabled.
 
 from __future__ import annotations
 
+import asyncio
 from contextvars import ContextVar
 from datetime import UTC, datetime
 from decimal import Decimal, InvalidOperation
@@ -29,6 +30,7 @@ from app.paper_resilient_read_gateway import ResilientMetaApiReadGateway
 _PROVIDER_PRICE_TOLERANCE = Decimal("0.75")
 _RISK_FREE_FILL_TOLERANCE = Decimal("1.00")
 _RISK_FREE_PREFIX = "best_entry_risk_free_"
+_EXPLICIT_REJECTION_RETRY_DELAY_SECONDS = 1.0
 _MANAGEMENT_EVENT_CUTOFF: ContextVar[Any | None] = ContextVar(
     "super_signals_management_event_cutoff",
     default=None,
@@ -112,10 +114,25 @@ class CanonicalTradingManagementService(PaperCriticalManagementService):
             ).scalar_one_or_none()
         token = _MANAGEMENT_EVENT_CUTOFF.set(cutoff)
         try:
-            return await super().execute_owner_demo_event(
-                owner_user_id=owner_user_id,
-                lifecycle_event_id=lifecycle_event_id,
-            )
+            try:
+                return await super().execute_owner_demo_event(
+                    owner_user_id=owner_user_id,
+                    lifecycle_event_id=lifecycle_event_id,
+                )
+            except Day27ManagementError as exc:
+                # A broker trade rejection is an explicit non-acceptance, unlike a
+                # timeout/unreachable response where the mutation result is ambiguous.
+                # Re-read broker state through the normal management engine and retry
+                # exactly once; never turn ambiguous transport failures into duplicate
+                # broker mutations. This shared service is used by owner paper and
+                # future member LIVE management.
+                if exc.code != "metaapi_trade_rejected":
+                    raise
+                await asyncio.sleep(_EXPLICIT_REJECTION_RETRY_DELAY_SECONDS)
+                return await super().execute_owner_demo_event(
+                    owner_user_id=owner_user_id,
+                    lifecycle_event_id=lifecycle_event_id,
+                )
         finally:
             _MANAGEMENT_EVENT_CUTOFF.reset(token)
 
