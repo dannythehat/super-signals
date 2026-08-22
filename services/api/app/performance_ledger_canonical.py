@@ -528,3 +528,95 @@ class CanonicalPerformanceLedgerService(Day33PerformanceLedgerServiceV2):
             ):
                 item["net_pips"] = repair["repaired_pips"]
         return rows
+
+    def read_account_reconciliation(
+        self,
+        user_id: UUID,
+        *,
+        start_time: datetime,
+        end_time: datetime,
+    ) -> dict[str, Decimal | bool | None]:
+        with self._session_factory() as session:
+            first = session.execute(
+                text(
+                    """
+                    SELECT balance,captured_at
+                    FROM performance_account_snapshots
+                    WHERE user_id=:user_id
+                      AND captured_at>=:start_time
+                      AND captured_at<:end_time
+                    ORDER BY captured_at ASC
+                    LIMIT 1
+                    """
+                ),
+                {"user_id": user_id, "start_time": start_time, "end_time": end_time},
+            ).mappings().first()
+            last = session.execute(
+                text(
+                    """
+                    SELECT balance,captured_at
+                    FROM performance_account_snapshots
+                    WHERE user_id=:user_id
+                      AND captured_at>=:start_time
+                      AND captured_at<:end_time
+                    ORDER BY captured_at DESC
+                    LIMIT 1
+                    """
+                ),
+                {"user_id": user_id, "start_time": start_time, "end_time": end_time},
+            ).mappings().first()
+            if first is None or last is None or first["captured_at"] == last["captured_at"]:
+                return {
+                    "opening_balance": None,
+                    "closing_balance": None,
+                    "balance_change": None,
+                    "trading_cash": Decimal("0"),
+                    "non_trade_cash": Decimal("0"),
+                    "reconciliation_gap": None,
+                    "reconciled": False,
+                }
+            deal_row = session.execute(
+                text(
+                    """
+                    SELECT
+                        COALESCE(SUM(profit+commission+swap) FILTER (
+                            WHERE broker_position_id IS NOT NULL
+                               OR symbol IS NOT NULL
+                               OR UPPER(COALESCE(entry_type,'')) LIKE 'DEAL_ENTRY_%'
+                        ),0) AS trading_cash,
+                        COALESCE(SUM(profit+commission+swap) FILTER (
+                            WHERE broker_position_id IS NULL
+                              AND symbol IS NULL
+                              AND UPPER(COALESCE(entry_type,'')) NOT LIKE 'DEAL_ENTRY_%'
+                        ),0) AS non_trade_cash,
+                        COALESCE(SUM(profit+commission+swap),0) AS all_cash
+                    FROM broker_deals
+                    WHERE user_id=:user_id
+                      AND occurred_at>:first_at
+                      AND occurred_at<=:last_at
+                    """
+                ),
+                {
+                    "user_id": user_id,
+                    "first_at": first["captured_at"],
+                    "last_at": last["captured_at"],
+                },
+            ).mappings().one()
+        opening = _d(first["balance"])
+        closing = _d(last["balance"])
+        movement = closing - opening
+        trading = _d(deal_row["trading_cash"])
+        non_trade = _d(deal_row["non_trade_cash"])
+        gap = movement - _d(deal_row["all_cash"])
+        return {
+            "opening_balance": opening,
+            "closing_balance": closing,
+            "balance_change": movement,
+            "trading_cash": trading,
+            "non_trade_cash": non_trade,
+            "reconciliation_gap": gap,
+            "reconciled": abs(gap) <= Decimal("0.01"),
+        }
+
+
+__all__ = ["CanonicalPerformanceLedgerService"]
