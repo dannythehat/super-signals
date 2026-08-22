@@ -82,15 +82,34 @@ const dashboard = {
   latest_signal: null,
   recent_completed: [],
   performance: [
-    { key: 'today', label: 'Today', amount: null, known_position_count: 0, provisional_until_day33: false },
-    { key: '7d', label: '7 days', amount: null, known_position_count: 0, provisional_until_day33: false },
-    { key: '30d', label: '30 days', amount: null, known_position_count: 0, provisional_until_day33: false },
+    { key: 'today', label: 'Today', amount: 0, known_position_count: 0, provisional_until_day33: false },
+    { key: 'week', label: 'This week', amount: 0, known_position_count: 0, provisional_until_day33: false },
+    { key: 'month', label: 'This month', amount: 0, known_position_count: 0, provisional_until_day33: false },
+    { key: 'all', label: 'All time', amount: 0, known_position_count: 0, provisional_until_day33: false },
   ],
+  performance_timezone: 'UTC',
+  daily_profit: [],
   win_loss: { wins: 0, losses: 0, breakeven: 0, known_results: 0, win_rate_percent: null },
   activity: [],
   reconciled_external_positions: 0,
   canonical_performance_ready: true,
-  performance_basis: 'broker_ledger',
+  performance_basis: 'canonical_user_trading_ledger',
+  broker_trade_action_created: false,
+};
+
+const todaySummary = {
+  timezone: 'UTC',
+  session_started_at: '2026-08-22T00:00:00Z',
+  trades: 0,
+  wins: 0,
+  losses: 0,
+  breakeven: 0,
+  open: 0,
+  pending: 0,
+  settling: 0,
+  realised_pnl: 0,
+  winning_pips: 0,
+  net_pips: 0,
   broker_trade_action_created: false,
 };
 
@@ -129,7 +148,8 @@ function appFetchMock(options: MockOptions = {}) {
     if (url.endsWith('/admin/telegram/sources/shared')) return jsonResponse(200, sources);
     if (url.endsWith('/admin/telegram/accounts')) return jsonResponse(200, [{ id: 'reader-1', status: 'connected' }]);
     if (url.includes('/admin/telegram/sources/accounts/reader-1/available')) return jsonResponse(200, [{ selected: true, managed_by_this_reader: true }]);
-    if (url.endsWith('/account/mt5/dashboard')) return jsonResponse(200, dashboard);
+    if (url.includes('/account/mt5/dashboard/today?')) return jsonResponse(200, todaySummary);
+    if (url.endsWith('/account/mt5/dashboard') || url.includes('/account/mt5/dashboard?')) return jsonResponse(200, dashboard);
     if (url.endsWith('/account/mt5/dashboard/performance/sync')) return jsonResponse(200, { synced: true });
     if (url.includes('/account/mt5/dashboard/performance/timeline')) return jsonResponse(200, { trades: [], open_count: 0, pending_count: 0, provider_identity_visible: false, broker_trade_action_created: false });
     if (url.endsWith('/account/mt5/manual-actions')) return jsonResponse(200, { stop_loss_changes: 0, take_profit_changes: 0, manual_closes: 0, actions: [], broker_trade_action_created: false });
