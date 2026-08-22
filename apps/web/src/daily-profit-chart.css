@@ -51,6 +51,32 @@
   white-space: nowrap;
 }
 
+.profit-view-tabs {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 5px;
+  padding: 4px;
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  border-radius: 13px;
+  background: rgba(255, 255, 255, 0.02);
+}
+
+.profit-view-tabs button {
+  min-height: 40px;
+  border: 0;
+  border-radius: 9px;
+  color: #7c8796;
+  background: transparent;
+  font-size: 0.74rem;
+  font-weight: 800;
+  transition: color 140ms ease, background 140ms ease;
+}
+
+.profit-view-tabs .profit-view-tab--selected {
+  color: #d7fbf5;
+  background: rgba(117, 233, 215, 0.09);
+}
+
 .daily-profit-months {
   display: flex;
   gap: 8px;
@@ -75,7 +101,9 @@
   white-space: nowrap;
 }
 
-.daily-profit-months button:active {
+.daily-profit-months button:active,
+.profit-view-tabs button:active,
+.monthly-profit-month:not(:disabled):active {
   transform: scale(0.98);
 }
 
@@ -83,39 +111,6 @@
   border-color: rgba(117, 233, 215, 0.24);
   color: #c9f8f0;
   background: rgba(117, 233, 215, 0.07);
-}
-
-.daily-profit-month-summary {
-  display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
-  gap: 8px;
-}
-
-.daily-profit-month-summary > div {
-  display: grid;
-  gap: 3px;
-  min-width: 0;
-  padding: 10px 11px;
-  border: 1px solid rgba(255, 255, 255, 0.055);
-  border-radius: 11px;
-  background: rgba(255, 255, 255, 0.02);
-}
-
-.daily-profit-month-summary span {
-  color: #667384;
-  font-size: 0.61rem;
-  font-weight: 760;
-  letter-spacing: 0.04em;
-  text-transform: uppercase;
-}
-
-.daily-profit-month-summary strong {
-  overflow: hidden;
-  color: #e8edf3;
-  font-size: 0.84rem;
-  letter-spacing: -0.01em;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 
 .daily-profit-detail {
@@ -274,12 +269,6 @@
   color: #c8f7ef;
 }
 
-.daily-profit-day:focus-visible,
-.daily-profit-months button:focus-visible {
-  outline: 2px solid #75e9d7;
-  outline-offset: 2px;
-}
-
 .daily-profit-foot {
   display: flex;
   align-items: center;
@@ -300,12 +289,198 @@
   text-align: right;
 }
 
+.monthly-profit-title-row {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 14px;
+}
+
+.monthly-profit-title-row > div {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+
+.monthly-profit-title-row strong {
+  color: #ecf1f6;
+  font-size: 0.9rem;
+}
+
+.monthly-profit-title-row span,
+.monthly-profit-title-row small {
+  color: #657181;
+  font-size: 0.68rem;
+}
+
+.monthly-profit-chart {
+  position: relative;
+  overflow-x: auto;
+  padding-top: 8px;
+  scrollbar-width: thin;
+}
+
+.monthly-profit-zero-line {
+  position: absolute;
+  top: 94px;
+  right: 0;
+  left: 0;
+  height: 1px;
+  background: rgba(255, 255, 255, 0.075);
+  pointer-events: none;
+}
+
+.monthly-profit-bars {
+  position: relative;
+  z-index: 1;
+  display: grid;
+  grid-template-columns: repeat(12, minmax(58px, 1fr));
+  width: max(100%, 760px);
+  gap: 3px;
+}
+
+.monthly-profit-month {
+  display: grid;
+  grid-template-rows: 180px auto auto auto;
+  gap: 3px;
+  min-width: 0;
+  padding: 0 3px 8px;
+  border: 0;
+  border-radius: 10px;
+  color: inherit;
+  background: transparent;
+}
+
+.monthly-profit-month:not(:disabled) {
+  cursor: pointer;
+}
+
+.monthly-profit-month:disabled {
+  opacity: 1;
+  cursor: default;
+}
+
+.monthly-profit-bar-zone {
+  position: relative;
+  display: block;
+  height: 180px;
+}
+
+.monthly-profit-bar {
+  position: absolute;
+  left: 50%;
+  width: 17px;
+  min-height: 5px;
+  border-radius: 999px;
+  transform: translateX(-50%);
+}
+
+.monthly-profit-bar--positive {
+  bottom: 86px;
+  height: var(--month-bar-height);
+  background: #72f2b8;
+}
+
+.monthly-profit-bar--negative {
+  top: 94px;
+  height: var(--month-bar-height);
+  background: #ff8f91;
+}
+
+.monthly-profit-bar--flat {
+  top: 92px;
+  height: 4px;
+  background: #7e8997;
+}
+
+.monthly-profit-month > strong {
+  overflow: hidden;
+  min-height: 1em;
+  font-size: 0.66rem;
+  text-align: center;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.monthly-profit-month > span {
+  color: #7b8797;
+  font-size: 0.67rem;
+  font-weight: 780;
+  text-align: center;
+  white-space: nowrap;
+}
+
+.monthly-profit-month > small {
+  color: #52606f;
+  font-size: 0.56rem;
+  font-weight: 780;
+  text-align: center;
+  text-transform: uppercase;
+}
+
+.monthly-profit-month--empty > span,
+.monthly-profit-month--empty > strong {
+  color: #3f4956;
+}
+
+.monthly-profit-note {
+  margin: 0;
+  padding-top: 10px;
+  border-top: 1px solid rgba(255, 255, 255, 0.05);
+  color: #697585;
+  font-size: 0.69rem;
+  line-height: 1.5;
+}
+
+.profit-stats-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.profit-stats-grid article {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+  padding: 12px;
+  border: 1px solid rgba(255, 255, 255, 0.055);
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.02);
+}
+
+.profit-stats-grid span {
+  color: #667384;
+  font-size: 0.61rem;
+  font-weight: 780;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.profit-stats-grid strong {
+  overflow: hidden;
+  color: #edf2f6;
+  font-size: clamp(0.95rem, 2vw, 1.15rem);
+  letter-spacing: -0.02em;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.profit-stats-grid small {
+  color: #5f6b7b;
+  font-size: 0.63rem;
+  line-height: 1.35;
+}
+
+.daily-profit-day:focus-visible,
+.daily-profit-months button:focus-visible,
+.profit-view-tabs button:focus-visible,
+.monthly-profit-month:focus-visible {
+  outline: 2px solid #75e9d7;
+  outline-offset: 2px;
+}
+
 @media (max-width: 760px) {
   .day32-performance-grid {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
-
-  .daily-profit-month-summary {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
@@ -315,6 +490,10 @@
 
   .daily-profit-detail small {
     grid-column: 1 / -1;
+  }
+
+  .profit-stats-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 }
 
@@ -350,7 +529,8 @@
     grid-column: 1 / -1;
   }
 
-  .daily-profit-foot {
+  .daily-profit-foot,
+  .monthly-profit-title-row {
     align-items: flex-start;
     flex-direction: column;
     gap: 4px;
@@ -358,5 +538,10 @@
 
   .daily-profit-foot small {
     text-align: left;
+  }
+
+  .monthly-profit-bars {
+    grid-template-columns: repeat(12, 54px);
+    width: 684px;
   }
 }
