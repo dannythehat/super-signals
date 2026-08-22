@@ -1,0 +1,188 @@
+.daily-profit-panel {
+  display: grid;
+  gap: 16px;
+  padding: clamp(18px, 4vw, 24px);
+  border: 1px solid rgba(255, 255, 255, 0.075);
+  border-radius: 21px;
+  background: rgba(7, 13, 23, 0.79);
+}
+
+.daily-profit-head {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.daily-profit-head > div {
+  display: grid;
+  gap: 3px;
+}
+
+.daily-profit-head span {
+  color: #75e9d7;
+  font-size: 0.71rem;
+  font-weight: 800;
+  letter-spacing: 0.11em;
+  text-transform: uppercase;
+}
+
+.daily-profit-head h2 {
+  margin: 0;
+  color: #f7f9fb;
+  font-size: clamp(1.2rem, 4vw, 1.55rem);
+  letter-spacing: -0.025em;
+}
+
+.daily-profit-head small,
+.daily-profit-note {
+  color: #778393;
+  font-size: 0.72rem;
+}
+
+.daily-profit-selected {
+  display: grid;
+  grid-template-columns: minmax(0, 1.2fr) minmax(120px, 0.7fr) minmax(140px, 0.8fr);
+  gap: 10px;
+}
+
+.daily-profit-selected > div {
+  display: grid;
+  gap: 5px;
+  min-width: 0;
+  padding: 13px 14px;
+  border: 1px solid rgba(255, 255, 255, 0.065);
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.025);
+}
+
+.daily-profit-selected span {
+  overflow: hidden;
+  color: #748092;
+  font-size: 0.68rem;
+  font-weight: 750;
+  text-overflow: ellipsis;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.daily-profit-selected strong {
+  color: #f4f7f9;
+  font-size: clamp(1rem, 4vw, 1.42rem);
+  letter-spacing: -0.02em;
+}
+
+.daily-profit-empty {
+  padding: 18px;
+  border: 1px dashed rgba(255, 255, 255, 0.09);
+  border-radius: 14px;
+  color: #7e8999;
+  font-size: 0.8rem;
+}
+
+.daily-profit-scroll {
+  overflow-x: auto;
+  padding: 4px 0 2px;
+  scrollbar-width: thin;
+}
+
+.daily-profit-bars {
+  display: grid;
+  grid-template-columns: repeat(var(--daily-count), 56px);
+  width: max-content;
+  min-width: 100%;
+  gap: 5px;
+}
+
+.daily-profit-day {
+  display: grid;
+  grid-template-rows: 148px auto;
+  gap: 7px;
+  min-width: 0;
+  padding: 0 4px 8px;
+  border: 1px solid transparent;
+  border-radius: 12px;
+  color: inherit;
+  background: transparent;
+}
+
+.daily-profit-day--selected {
+  border-color: rgba(117, 233, 215, 0.22);
+  background: rgba(117, 233, 215, 0.045);
+}
+
+.daily-profit-bar-zone {
+  position: relative;
+  display: block;
+  height: 148px;
+}
+
+.daily-profit-axis {
+  position: absolute;
+  top: 50%;
+  right: 0;
+  left: 0;
+  height: 1px;
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.daily-profit-bar {
+  position: absolute;
+  left: 50%;
+  width: 18px;
+  min-height: 3px;
+  border-radius: 7px;
+  transform: translateX(-50%);
+}
+
+.daily-profit-bar--positive {
+  bottom: 50%;
+  height: var(--bar-height);
+  background: #72f2b8;
+}
+
+.daily-profit-bar--negative {
+  top: 50%;
+  height: var(--bar-height);
+  background: #ff9090;
+}
+
+.daily-profit-bar--flat {
+  top: calc(50% - 2px);
+  height: 4px;
+  background: #8b95a3;
+}
+
+.daily-profit-day-label {
+  color: #808b9b;
+  font-size: 0.66rem;
+  font-weight: 700;
+  text-align: center;
+  white-space: nowrap;
+}
+
+.daily-profit-day:focus-visible {
+  outline: 2px solid #75e9d7;
+  outline-offset: 2px;
+}
+
+.daily-profit-note {
+  margin: 0;
+  line-height: 1.45;
+}
+
+@media (max-width: 640px) {
+  .daily-profit-selected {
+    grid-template-columns: 1fr 1fr;
+  }
+
+  .daily-profit-selected > div:first-child {
+    grid-column: 1 / -1;
+  }
+
+  .daily-profit-head {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 5px;
+  }
+}
