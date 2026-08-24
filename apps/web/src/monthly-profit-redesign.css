@@ -35,10 +35,23 @@
   letter-spacing: 0.07em;
 }
 
-.monthly-profit-highlight > strong {
+.monthly-profit-highlight-result {
+  display: grid;
+  justify-items: end;
+  gap: 2px;
+}
+
+.monthly-profit-highlight-result > strong {
   font-size: clamp(1.25rem, 5vw, 1.65rem);
   font-weight: 900;
   letter-spacing: -0.035em;
+  white-space: nowrap;
+}
+
+.monthly-profit-highlight-result > span {
+  font-size: 0.72rem;
+  font-weight: 850;
+  letter-spacing: 0.035em;
   white-space: nowrap;
 }
 
@@ -193,7 +206,7 @@
     padding: 13px;
   }
 
-  .monthly-profit-highlight > strong {
+  .monthly-profit-highlight-result > strong {
     font-size: 1.35rem;
   }
 
