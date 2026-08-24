@@ -202,14 +202,17 @@ export function MobileDashboard({ apiBaseUrl, displayName, roleLabel, onOpenSett
 
   useEffect(() => {
     void refresh(true);
-    const interval = window.setInterval(() => void refresh(true), 30000);
+    const interval = window.setInterval(() => void refresh(true), 15_000);
     const onFocus = () => void refresh(true);
+    const onVisibility = () => { if (document.visibilityState === 'visible') void refresh(true); };
     const onLedgerSynced = () => void refresh(true);
     window.addEventListener('focus', onFocus);
+    document.addEventListener('visibilitychange', onVisibility);
     window.addEventListener('super-signals-ledger-synced', onLedgerSynced);
     return () => {
       window.clearInterval(interval);
       window.removeEventListener('focus', onFocus);
+      document.removeEventListener('visibilitychange', onVisibility);
       window.removeEventListener('super-signals-ledger-synced', onLedgerSynced);
     };
   }, [refresh]);
