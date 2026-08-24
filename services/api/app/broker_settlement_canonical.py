@@ -136,7 +136,7 @@ class CanonicalBrokerSettlementManager(Day34BrokerSettlementManager):
         for plan in self._protection_plans():
             signal_id = UUID(str(plan["signal_id"]))
             try:
-                if bool(plan["tp2_hit"]):
+                if bool(plan["tp1_hit"]) and bool(plan["tp2_hit"]):
                     await self._cancel_pending_for_signal(
                         signal_id=signal_id,
                         token=token,
@@ -194,6 +194,14 @@ class CanonicalBrokerSettlementManager(Day34BrokerSettlementManager):
                     SELECT
                         s.id AS signal_id,
                         MAX(p.take_profit) FILTER (WHERE p.tp_index=2) AS tp2_price,
+                        BOOL_OR(
+                            p.tp_index=1
+                            AND p.status='closed'
+                            AND p.pnl_amount>0
+                            AND p.take_profit IS NOT NULL
+                            AND p.exit_price IS NOT NULL
+                            AND ABS(p.exit_price-p.take_profit)<=:tolerance
+                        ) AS tp1_hit,
                         BOOL_OR(
                             p.tp_index=2
                             AND p.status='closed'

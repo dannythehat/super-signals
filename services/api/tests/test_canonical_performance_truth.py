@@ -54,6 +54,7 @@ def test_flat_account_still_reconciles_broker_history() -> None:
 
 def test_broker_confirmed_tp2_automatically_protects_remaining_trade() -> None:
     source = getsource(CanonicalBrokerSettlementManager._apply_profit_protection_ladder)
+    assert 'bool(plan["tp1_hit"]) and bool(plan["tp2_hit"])' in source
     assert "_cancel_pending_for_signal" in source
     assert 'minimum_tp_index=3' in source
     assert 'target="entry"' in source
