@@ -347,3 +347,102 @@ def test_chatter_and_preparation_never_execute(decision: str) -> None:
         raw_text="Gold is around 4395 and looks strong",
     )
     assert result.action == "ignore"
+
+
+@pytest.mark.parametrize(
+    ("raw", "side", "entry_low", "entry_high", "stop_loss", "take_profits"),
+    [
+        (
+            "🟢BUY XAUUSD\nENTRY: 4618\nSecond entry: 4614\nSL: 4601\n"
+            "TP1: 4623\nTP2: 4629\nTP3: 4635\nTP4: open",
+            "BUY", "4614", "4618", "4601", ["4623", "4629", "4635"],
+        ),
+        (
+            "🔴SELL XAUUSD\nENTRY: 4653\nSecond entry: 4657\nSL: 4670\n"
+            "TP1: 4647\nTP2: 4642\nTP3: 4636\nTP4: open",
+            "SELL", "4653", "4657", "4670", ["4647", "4642", "4636"],
+        ),
+    ],
+)
+def test_complete_tig_edit_cannot_be_downgraded_to_trade_update(
+    raw: str,
+    side: str,
+    entry_low: str,
+    entry_high: str,
+    stop_loss: str,
+    take_profits: list[str],
+) -> None:
+    result = apply_v1_message_policy(
+        _decision(
+            decision="trade_update",
+            action="ignore",
+            side=side,
+            entry_low=entry_low,
+            entry_high=entry_high,
+            stop_loss=stop_loss,
+            take_profits=take_profits,
+        ),
+        raw_text=raw,
+        is_edit=True,
+        original_has_signal=False,
+    )
+    assert result.decision == "new_trade"
+    assert result.action == "execute"
+    assert result.reason == "v1_complete_layered_signal_from_structured_edit"
+
+
+def test_complete_matthew_pending_layers_cannot_be_downgraded_to_non_actionable() -> None:
+    raw = (
+        "BUY LIMITS GOLD @ 4052/4047 AREA\n"
+        "TP 4054\nTP 4057\nTP 4061\nTP OPEN\nSL 4046\nHIGH RISK TRADE"
+    )
+    result = apply_v1_message_policy(
+        _decision(
+            decision="non_actionable",
+            action="skip",
+            order_type="pending",
+            entry_low="4047",
+            entry_high="4052",
+            stop_loss="4046",
+            take_profits=["4054", "4057", "4061"],
+        ),
+        raw_text=raw,
+    )
+    assert result.decision == "new_trade"
+    assert result.action == "execute"
+    assert result.reason == "v1_complete_layered_signal"
+    assert result.extracted["double_lot"] is False
+    assert len(result.extracted["entry_plan"]) == 6
+
+
+def test_matthew_preparation_remains_non_executable() -> None:
+    result = apply_v1_message_policy(
+        _decision(
+            decision="preparation",
+            action="ignore",
+            side=None,
+            entry_low=None,
+            entry_high=None,
+            stop_loss=None,
+            take_profits=[],
+        ),
+        raw_text="PREPARE FOR BUY LIMITS",
+    )
+    assert result.decision == "preparation"
+    assert result.action == "ignore"
+
+
+def test_incomplete_update_is_not_promoted() -> None:
+    result = apply_v1_message_policy(
+        _decision(
+            decision="trade_update",
+            action="ignore",
+            entry_low="4618",
+            entry_high="4618",
+            stop_loss=None,
+            take_profits=[],
+        ),
+        raw_text="BUY GOLD NOW 4618",
+    )
+    assert result.decision == "trade_update"
+    assert result.action == "ignore"
