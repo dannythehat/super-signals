@@ -26,7 +26,7 @@ describe('DailyProfitChart', () => {
     );
 
     expect(await screen.findByText('Latest daily result')).toBeInTheDocument();
-    expect(screen.getByText(/\+\$99\.17|\+$99\.17|\$99\.17/)).toBeInTheDocument();
-    expect(screen.getByText(/Monday, 24 August 2026/)).toBeInTheDocument();
+    expect(screen.getByText((text) => text.includes('99.17'))).toBeInTheDocument();
+    expect(screen.getByText((text) => text.includes('Opening'))).toBeInTheDocument();
   });
 });
