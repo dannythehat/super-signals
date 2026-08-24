@@ -201,13 +201,16 @@ class _ExecutionHarness(MemberTradingExecutionService):
     def _assert_signal_still_current(self, owner_user_id, signal):
         return None
 
-    def _create_planned_positions(self, *, owner_user_id, signal, sizing, execution_entry):
+    def _create_planned_positions(
+        self, *, owner_user_id, signal, sizings, execution_entry
+    ):
         return tuple(
             _PlannedPosition(
                 UUID(int=index),
                 index,
                 tp,
                 f"SS_{owner_user_id.hex[:8]}_{index}",
+                sizings[index],
             )
             for index, tp in enumerate(signal.take_profits, 1)
         )
@@ -231,7 +234,7 @@ class _ExecutionHarness(MemberTradingExecutionService):
                 item.local_position_id,
                 item.tp_index,
                 item.take_profit,
-                sizing.volume,
+                (item.sizing or sizing).volume,
                 item.client_id,
                 order_ids[item.client_id],
                 f"broker-{owner_user_id.hex[:4]}-{item.tp_index}",
@@ -288,7 +291,11 @@ def test_one_signal_sizes_each_user_independently_without_local_funds_veto(
     assert result.skipped_count == 0
     assert by_user[U1].volume_per_position == (Decimal("0.05"),) * 3
     assert by_user[U2].volume_per_position == (Decimal("0.8"),) * 3
-    assert by_user[U3].volume_per_position == (Decimal("0.1"),) * 3
+    assert by_user[U3].volume_per_position == (
+        Decimal("0.2"),
+        Decimal("0.1"),
+        Decimal("0.05"),
+    )
     assert by_user[U3].error_code is None
     assert len(execution.trade.calls) == 9
     assert {call["account_id"] for call in execution.trade.calls} == {
