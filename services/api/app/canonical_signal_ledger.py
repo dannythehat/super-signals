@@ -18,6 +18,7 @@ therefore never depends on removed override modules for signal lookup or observa
 from __future__ import annotations
 
 import json
+import re
 from datetime import datetime, timedelta
 from decimal import Decimal, InvalidOperation
 from hashlib import sha256
@@ -35,7 +36,56 @@ from app.ai_canonical_signal import (
 )
 from app.bare_gold_now_policy import PROFILE
 
-_DUPLICATE_BURST_SECONDS = 15
+_DUPLICATE_BURST_SECONDS = 60
+_ENTRY_DUPLICATE_TOLERANCE = Decimal("2")
+_STOP_DUPLICATE_TOLERANCE = Decimal("10")
+_TARGET_DUPLICATE_TOLERANCE = Decimal("2")
+_EXPLICIT_ADDITIONAL_TRADE = re.compile(
+    r"\b(?:ANOTHER|ADDITIONAL|SECOND|EXTRA)\s+(?:NEW\s+)?TRADE\b"
+    r"|\b(?:RE[ -]?ENTRY|ADD(?:ING)?\s+(?:ANOTHER|AN|A)\s+(?:TRADE|POSITION|ENTRY))\b",
+    re.IGNORECASE,
+)
+
+
+def _explicit_additional_trade(raw_text: str) -> bool:
+    return _EXPLICIT_ADDITIONAL_TRADE.search(raw_text or "") is not None
+
+
+def _decimal_tuple(values: Any) -> tuple[Decimal, ...]:
+    if not isinstance(values, (list, tuple)):
+        return ()
+    parsed: list[Decimal] = []
+    for value in values:
+        try:
+            parsed.append(Decimal(str(value)))
+        except (InvalidOperation, TypeError, ValueError):
+            return ()
+    return tuple(parsed)
+
+
+def _semantic_duplicate(trade: _ParsedTrade, candidate: Any) -> bool:
+    """Match a provider correction/repost without swallowing a distinct setup."""
+    candidate_low = _positive(candidate["entry_low"])
+    candidate_high = _positive(candidate["entry_high"])
+    candidate_stop = _positive(candidate["stop_loss"])
+    if (
+        trade.entry_low is None or trade.entry_high is None or trade.stop_loss is None
+        or candidate_low is None or candidate_high is None or candidate_stop is None
+    ):
+        return False
+    trade_mid = (trade.entry_low + trade.entry_high) / Decimal("2")
+    candidate_mid = (candidate_low + candidate_high) / Decimal("2")
+    if abs(trade_mid - candidate_mid) > _ENTRY_DUPLICATE_TOLERANCE:
+        return False
+    if abs(trade.stop_loss - candidate_stop) > _STOP_DUPLICATE_TOLERANCE:
+        return False
+    candidate_targets = _decimal_tuple(candidate["take_profits"])
+    if len(candidate_targets) != len(trade.take_profits) or not candidate_targets:
+        return False
+    return all(
+        abs(left - right) <= _TARGET_DUPLICATE_TOLERANCE
+        for left, right in zip(trade.take_profits, candidate_targets)
+    )
 
 
 def _duplicate_window(posted_at: datetime) -> tuple[datetime, datetime]:
@@ -121,12 +171,17 @@ class CanonicalSignalLedger(AiCanonicalSignalService):
             if row is None:
                 return AiSignalResult(False, False, None, "message_not_eligible")
             posted_at = row["source_posted_at"]
-            if trade.entry_low is not None and trade.entry_high is not None:
+            if (
+                trade.entry_low is not None
+                and trade.entry_high is not None
+                and not _explicit_additional_trade(str(row["original_text"] or ""))
+            ):
                 burst_start, burst_end = _duplicate_window(posted_at)
-                recent = session.execute(
+                candidates = session.execute(
                     text(
                         """
-                        SELECT id
+                        SELECT id,entry_low,entry_high,stop_loss,take_profits,
+                               has_open_runner,risk_multiplier
                         FROM signals
                         WHERE source_id=:source_id
                           AND source_message_id<>:message_id
@@ -136,14 +191,9 @@ class CanonicalSignalLedger(AiCanonicalSignalService):
                           AND symbol=:symbol
                           AND side=:side
                           AND order_type=:order_type
-                          AND entry_low=:entry_low
-                          AND entry_high=:entry_high
-                          AND stop_loss=:stop_loss
-                          AND take_profits=CAST(:take_profits AS jsonb)
                           AND has_open_runner=:has_open_runner
                           AND risk_multiplier=:risk_multiplier
                         ORDER BY source_posted_at DESC, created_at DESC
-                        LIMIT 1
                         """
                     ),
                     {
@@ -154,14 +204,14 @@ class CanonicalSignalLedger(AiCanonicalSignalService):
                         "symbol": trade.symbol,
                         "side": trade.side,
                         "order_type": trade.order_type,
-                        "entry_low": trade.entry_low,
-                        "entry_high": trade.entry_high,
-                        "stop_loss": trade.stop_loss,
-                        "take_profits": json.dumps([_token(value) for value in trade.take_profits]),
                         "has_open_runner": trade.has_open_runner,
                         "risk_multiplier": trade.size_multiplier,
                     },
-                ).scalar_one_or_none()
+                ).mappings().all()
+                recent = next(
+                    (candidate["id"] for candidate in candidates if _semantic_duplicate(trade, candidate)),
+                    None,
+                )
                 if recent is not None:
                     fingerprint = self._fingerprint(row, trade, revision_index)
                     self._observe(
@@ -177,7 +227,7 @@ class CanonicalSignalLedger(AiCanonicalSignalService):
                         False,
                         True,
                         UUID(str(recent)),
-                        "recent_same_source_trade",
+                        "recent_semantically_equivalent_source_trade",
                     )
 
         return super().process(
@@ -289,4 +339,4 @@ class CanonicalSignalLedger(AiCanonicalSignalService):
         ).hexdigest()
 
 
-__all__ = ["CanonicalSignalLedger", "_duplicate_window"]
+__all__ = ["CanonicalSignalLedger", "_duplicate_window", "_explicit_additional_trade", "_semantic_duplicate"]
