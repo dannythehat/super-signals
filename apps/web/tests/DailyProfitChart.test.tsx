@@ -1,4 +1,4 @@
-import { render, screen } from '@testing-library/react';
+import { fireEvent, render, screen } from '@testing-library/react';
 import { describe, expect, it } from 'vitest';
 
 import { DailyProfitChart } from '../src/DailyProfitChart';
@@ -28,5 +28,8 @@ describe('DailyProfitChart', () => {
     expect(await screen.findByText('Latest daily result')).toBeInTheDocument();
     expect(screen.getByText((text) => text.includes('99.17'))).toBeInTheDocument();
     expect(screen.getByText((text) => text.includes('Opening'))).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Monthly' }));
+    expect(screen.getByText((text) => text.includes('9.92%') && text.includes('MTD'))).toBeInTheDocument();
   });
 });
