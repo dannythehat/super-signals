@@ -59,7 +59,7 @@ _XAUUSD_SOURCE_PROFILES = {
     "tdc_xauusd",
     "tig_xauusd",
     "sureshot_xauusd",
-    "matthew_xauusd_shadow",
+    "matthew_xauusd",
 }
 
 
