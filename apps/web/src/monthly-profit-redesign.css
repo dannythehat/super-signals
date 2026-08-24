@@ -121,8 +121,50 @@
 }
 
 .monthly-profit-bars--compact .monthly-profit-bar {
-  width: 8px;
+  width: 14px;
   min-height: 4px;
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  border-radius: 7px 7px 3px 3px;
+}
+
+.monthly-profit-bars--compact .monthly-profit-bar--positive {
+  background: linear-gradient(180deg, #8affca 0%, #41dba0 100%);
+  box-shadow: 0 0 22px rgba(74, 230, 170, 0.25);
+}
+
+.monthly-profit-bars--compact .monthly-profit-bar--negative {
+  background: linear-gradient(180deg, #ff9a9f 0%, #ef626c 100%);
+  box-shadow: 0 0 22px rgba(255, 111, 121, 0.2);
+}
+
+.monthly-profit-bar-value {
+  position: absolute;
+  left: 50%;
+  z-index: 2;
+  padding: 2px 4px;
+  border-radius: 5px;
+  font-size: 0.49rem;
+  font-weight: 850;
+  line-height: 1;
+  white-space: nowrap;
+  transform: translateX(-50%);
+}
+
+.monthly-profit-bar-value--positive {
+  bottom: calc(49px + var(--month-bar-height));
+  color: #8affca;
+  background: rgba(5, 18, 17, 0.9);
+}
+
+.monthly-profit-bar-value--negative {
+  top: calc(57px + var(--month-bar-height));
+  color: #ff9a9f;
+  background: rgba(24, 8, 13, 0.92);
+}
+
+.monthly-profit-bar-value--flat {
+  top: 38px;
+  color: #a9b3bf;
 }
 
 .monthly-profit-bars--compact .monthly-profit-bar--positive {
