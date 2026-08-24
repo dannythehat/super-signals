@@ -23,6 +23,7 @@ from sqlalchemy import text
 from app.ai_message_pipeline import AiPipelineResult
 from app.ai_message_supervisor import AiMessageDecision
 from app.ai_source_aware_pipeline import SourceAwareAiMessagePipeline
+from app.provider_language_profiles import execution_profile_id
 from app.v1_message_policy import apply_v1_message_policy
 
 _LITERAL_PENDING = re.compile(
@@ -38,10 +39,6 @@ _PRESENT_TENSE_NUMERIC_ENTRY = re.compile(
     re.IGNORECASE | re.MULTILINE,
 )
 _TGC_SELL_TYPO = re.compile(r"\b(?:SELING|SELLIMG)\b", re.IGNORECASE)
-_SOURCE_PROFILES = {
-    "the gold club - tgc": "tgc_xauusd",
-    "tdc v2 💎 (new)": "tdc_xauusd",
-}
 _EDIT_FRESHNESS = timedelta(minutes=5)
 
 
@@ -112,7 +109,7 @@ class CanonicalAiMessagePipeline(SourceAwareAiMessagePipeline):
                 ),
                 {"source_id": source_id},
             ).scalar_one_or_none()
-        return _SOURCE_PROFILES.get(str(source_name or "").strip().lower())
+        return execution_profile_id(str(source_name) if source_name else None)
 
     @staticmethod
     def _apply_profile(decision: AiMessageDecision, profile: str | None) -> AiMessageDecision:
