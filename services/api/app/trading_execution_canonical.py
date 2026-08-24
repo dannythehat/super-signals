@@ -403,18 +403,15 @@ class CanonicalTradingExecutionService(PaperExecutionPriorityService):
         owner_user_id: UUID,
         signal: _SignalInput,
         entries: tuple[CriticalEntry, ...],
-        sizings: dict[int, Day24RiskSizingResult],
+        allocations: tuple[AtomicLayerAllocation, ...],
+        sizings: dict[tuple[int, int], Day24RiskSizingResult],
         market_entry: Decimal,
     ) -> tuple[_Planned, ...]:
-        targets: list[Decimal | None] = list(signal.take_profits)
-        if signal.has_open_runner:
-            targets.append(None)
-        allocations = self._allocation_pairs(entries, tuple(targets))
         planned: list[_Planned] = []
         with self._session_factory() as session:
             for allocation in allocations:
                 entry = allocation.entry
-                sizing = sizings[entry.entry_index]
+                sizing = sizings[(entry.entry_index, allocation.tp_index)]
                 local_id = uuid4()
                 client_id = f"SS_{local_id.hex[:12]}_E{entry.entry_index}T{allocation.tp_index}"
                 local_entry = market_entry if entry.order_type == "market" else entry.price

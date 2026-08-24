@@ -147,6 +147,19 @@ class _PlannedPosition:
     tp_index: int
     take_profit: Decimal | None
     client_id: str
+    sizing: Day24RiskSizingResult | None = None
+
+
+def target_risk_percent(selected_risk: Decimal | str | float, tp_index: int) -> Decimal:
+    """Return the recommended per-target profile unless the user chose an override."""
+    selected = Decimal(str(selected_risk))
+    if selected != Decimal("1"):
+        return selected
+    if tp_index == 1:
+        return Decimal("2")
+    if tp_index == 2:
+        return Decimal("1")
+    return Decimal("0.5")
 
 
 class Day26Mt5ExecutionService:
@@ -211,15 +224,20 @@ class Day26Mt5ExecutionService:
             initial_state=live_state,
         )
 
-        sizing = self._size_signal(
-            signal=signal,
-            execution_entry=execution_entry,
-            balance=live_state.account.balance,
-            price_loss_tick_value=live_state.price.loss_tick_value,
-            specification=specification,
-            risk_percent=risk_percent,
-            double_lot_approved=double_lot_approved,
-        )
+        targets = list(signal.take_profits) + ([None] if signal.has_open_runner else [])
+        target_sizings = {
+            tp_index: self._size_signal(
+                signal=signal,
+                execution_entry=execution_entry,
+                balance=live_state.account.balance,
+                price_loss_tick_value=live_state.price.loss_tick_value,
+                specification=specification,
+                risk_percent=target_risk_percent(risk_percent, tp_index),
+                double_lot_approved=double_lot_approved,
+            )
+            for tp_index, _ in enumerate(targets, start=1)
+        }
+        sizing = target_sizings[1]
 
         preflight = Day25TradePreflightService(margin_gateway=self._margin_gateway)
         day25_result = await preflight.evaluate(
@@ -243,7 +261,7 @@ class Day26Mt5ExecutionService:
         planned = self._create_planned_positions(
             owner_user_id=owner_user_id,
             signal=signal,
-            sizing=sizing,
+            sizings=target_sizings,
             execution_entry=execution_entry,
         )
 
@@ -256,7 +274,7 @@ class Day26Mt5ExecutionService:
                     region=live_state.region,
                     side=signal.side,
                     symbol=signal.symbol,
-                    volume=float(sizing.volume),
+                    volume=float((item.sizing or sizing).volume),
                     stop_loss=float(signal.stop_loss),
                     take_profit=(
                         float(item.take_profit)
@@ -640,7 +658,7 @@ class Day26Mt5ExecutionService:
         *,
         owner_user_id: UUID,
         signal: _SignalInput,
-        sizing: Day24RiskSizingResult,
+        sizings: dict[int, Day24RiskSizingResult],
         execution_entry: Decimal,
     ) -> tuple[_PlannedPosition, ...]:
         targets: list[Decimal | None] = list(signal.take_profits)
@@ -650,6 +668,7 @@ class Day26Mt5ExecutionService:
         planned: list[_PlannedPosition] = []
         with self._session_factory() as session:
             for tp_index, take_profit in enumerate(targets, start=1):
+                sizing = sizings[tp_index]
                 local_id = uuid4()
                 client_id = f"SS_{local_id.hex[:12]}_{tp_index}"
                 session.execute(
@@ -685,6 +704,7 @@ class Day26Mt5ExecutionService:
                         tp_index=tp_index,
                         take_profit=take_profit,
                         client_id=client_id,
+                        sizing=sizing,
                     )
                 )
             session.commit()
@@ -729,7 +749,7 @@ class Day26Mt5ExecutionService:
                 broker=broker,
                 signal=signal,
                 take_profit=item.take_profit,
-                volume=sizing.volume,
+                volume=(item.sizing or sizing).volume,
             )
             broker_position_id = str(broker.get("id") or "").strip()
             if not broker_position_id:
@@ -770,7 +790,7 @@ class Day26Mt5ExecutionService:
                     local_position_id=item.local_position_id,
                     tp_index=item.tp_index,
                     take_profit=item.take_profit,
-                    volume=sizing.volume,
+                    volume=(item.sizing or sizing).volume,
                     client_id=item.client_id,
                     broker_order_id=broker_order_id,
                     broker_position_id=broker_position_id,

@@ -34,6 +34,7 @@ from app.mt5_execution_day26 import (
     Day26Mt5ExecutionService,
     _AccountInput,
     _SignalInput,
+    target_risk_percent,
 )
 from app.mt5_execution_day26_atomic import AtomicDay26Mt5ExecutionService
 from app.mt5_read_service_day23 import Day23Mt5ReadService, Day23ReadError
@@ -334,8 +335,13 @@ class PaperCriticalExecutionService(AtomicDay26Mt5ExecutionService):
             raise Day26ExecutionError(exc.code) from exc
 
         self._validate_entry_structure(entries, signal.side)
-        sizings: dict[int, Day24RiskSizingResult] = {}
-        for entry in entries:
+        targets: list[Decimal | None] = list(signal.take_profits)
+        if signal.has_open_runner:
+            targets.append(None)
+        allocations = self._allocation_pairs(entries, tuple(targets))
+        sizings: dict[tuple[int, int], Day24RiskSizingResult] = {}
+        for allocation in allocations:
+            entry = allocation.entry
             sizing_entry = current if entry.order_type == "market" else entry.price
             synthetic = _SignalInput(
                 signal_id=signal.signal_id,
@@ -350,13 +356,13 @@ class PaperCriticalExecutionService(AtomicDay26Mt5ExecutionService):
                 source_revision_index=signal.source_revision_index,
                 source_posted_at=signal.source_posted_at,
             )
-            sizings[entry.entry_index] = self._size_signal(
+            sizings[(entry.entry_index, allocation.tp_index)] = self._size_signal(
                 signal=synthetic,
                 execution_entry=sizing_entry,
                 balance=state.account.balance,
                 price_loss_tick_value=state.price.loss_tick_value,
                 specification=specification,
-                risk_percent=risk_percent,
+                risk_percent=target_risk_percent(risk_percent, allocation.tp_index),
                 double_lot_approved=double_lot_approved,
             )
 
@@ -367,6 +373,7 @@ class PaperCriticalExecutionService(AtomicDay26Mt5ExecutionService):
             owner_user_id=owner_user_id,
             signal=signal,
             entries=entries,
+            allocations=allocations,
             sizings=sizings,
             market_entry=current,
         )
@@ -436,7 +443,10 @@ class PaperCriticalExecutionService(AtomicDay26Mt5ExecutionService):
             submitted=submitted,
             current_market_entry=current,
         )
-        first_sizing = sizings[entries[0].entry_index]
+        first_allocation = allocations[0]
+        first_sizing = sizings[
+            (first_allocation.entry.entry_index, first_allocation.tp_index)
+        ]
         self._audit(
             owner_user_id=owner_user_id,
             signal_id=signal.signal_id,
@@ -537,18 +547,15 @@ class PaperCriticalExecutionService(AtomicDay26Mt5ExecutionService):
         owner_user_id: UUID,
         signal: _SignalInput,
         entries: tuple[CriticalEntry, ...],
-        sizings: dict[int, Day24RiskSizingResult],
+        allocations: tuple[AtomicLayerAllocation, ...],
+        sizings: dict[tuple[int, int], Day24RiskSizingResult],
         market_entry: Decimal,
     ) -> tuple[_Planned, ...]:
-        targets: list[Decimal | None] = list(signal.take_profits)
-        if signal.has_open_runner:
-            targets.append(None)
-        allocations = self._allocation_pairs(entries, tuple(targets))
         planned: list[_Planned] = []
         with self._session_factory() as session:
             for allocation in allocations:
                 entry = allocation.entry
-                sizing = sizings[entry.entry_index]
+                sizing = sizings[(entry.entry_index, allocation.tp_index)]
                 local_id = uuid4()
                 client_id = f"SS_{local_id.hex[:12]}_E{entry.entry_index}T{allocation.tp_index}"
                 local_entry = market_entry if entry.order_type == "market" else entry.price

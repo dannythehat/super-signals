@@ -15,11 +15,26 @@ from app.mt5_execution_day26 import (
     _AccountInput,
     _PlannedPosition,
     _SignalInput,
+    target_risk_percent,
 )
 from app.mt5_read_service_day23 import Day23AccountState, Day23LiveState, Day23PriceState
 
 OWNER = UUID("ea604df2-f8ee-47d1-bc51-f0078dbf160d")
 SIGNAL = UUID("3e7ec830-9a9a-42df-b908-b331863ff6a4")
+
+
+def test_recommended_default_uses_target_specific_risk_profile() -> None:
+    assert target_risk_percent("1", 1) == Decimal("2")
+    assert target_risk_percent("1", 2) == Decimal("1")
+    assert target_risk_percent("1", 3) == Decimal("0.5")
+    assert target_risk_percent("1", 4) == Decimal("0.5")
+    assert target_risk_percent("1", 8) == Decimal("0.5")
+
+
+def test_explicit_user_risk_override_remains_uniform() -> None:
+    assert [target_risk_percent("1.5", index) for index in range(1, 5)] == [
+        Decimal("1.5")
+    ] * 4
 
 
 def _live_state(*, bid: float = 4000.0, ask: float = 4000.0) -> Day23LiveState:
