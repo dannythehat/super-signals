@@ -29,7 +29,12 @@ from sqlalchemy import text
 from app.critical_entry_policy import CriticalEntry, parse_critical_entries
 from app.metaapi_gateway import MetaApiGatewayError
 from app.metaapi_pending_gateway import MetaApiPendingOrderGateway, MetaApiPendingOrderRequest
-from app.mt5_execution_day26 import Day26ExecutionError, _AccountInput, _SignalInput
+from app.mt5_execution_day26 import (
+    Day26ExecutionError,
+    Day26Mt5ExecutionService,
+    _AccountInput,
+    _SignalInput,
+)
 from app.mt5_execution_day26_atomic import AtomicDay26Mt5ExecutionService
 from app.mt5_read_service_day23 import Day23Mt5ReadService, Day23ReadError
 from app.risk_sizing_day24 import Day24RiskSizingResult
@@ -186,13 +191,52 @@ class PaperCriticalExecutionService(AtomicDay26Mt5ExecutionService):
             source_revision_index=int(row["source_revision_index"]),
             source_posted_at=posted_at,
         )
-        if not self._directionally_valid(
+        # Validate the immutable stored signal geometry directly against the
+        # accepted Day 26 rule. Do not use dynamic subclass dispatch here: this
+        # critical path is shared by market zones, layers and pending entries, and a
+        # subclass override must never falsely veto an otherwise literal valid signal.
+        directionally_valid = Day26Mt5ExecutionService._directionally_valid(
             side=side,
             entry_low=low,
             entry_high=high,
             stop_loss=stop,
             take_profits=tps,
-        ):
+        )
+        if not directionally_valid:
+            with self._session_factory() as session:
+                session.execute(
+                    text(
+                        """
+                        INSERT INTO audit_events (
+                            event_type,entity_type,entity_id,payload,created_at
+                        ) VALUES (
+                            'mt5.directional_validation_failure',
+                            'signal',
+                            :signal_id,
+                            jsonb_build_object(
+                                'side',:side,
+                                'entry_low',:entry_low,
+                                'entry_high',:entry_high,
+                                'stop_loss',:stop_loss,
+                                'take_profits',CAST(:take_profits AS jsonb),
+                                'validator','day26_immutable_geometry_v1'
+                            ),
+                            now()
+                        )
+                        """
+                    ),
+                    {
+                        "signal_id": signal_id,
+                        "side": side,
+                        "entry_low": str(low),
+                        "entry_high": str(high),
+                        "stop_loss": str(stop),
+                        "take_profits": (
+                            "[" + ",".join(f'"{value}"' for value in tps) + "]"
+                        ),
+                    },
+                )
+                session.commit()
             raise Day26ExecutionError("strict_directional_validation_failed")
         return _CriticalSignal(
             base=base,
