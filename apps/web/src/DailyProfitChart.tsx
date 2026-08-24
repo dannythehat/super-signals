@@ -235,7 +235,13 @@ export function DailyProfitChart({
   );
 
   useEffect(() => {
-    if (selectedDay && !actualDays.some((item) => item.day === selectedDay)) setSelectedDay(null);
+    if (actualDays.length === 0) {
+      if (selectedDay !== null) setSelectedDay(null);
+      return;
+    }
+    if (!selectedDay || !actualDays.some((item) => item.day === selectedDay)) {
+      setSelectedDay(actualDays[actualDays.length - 1].day);
+    }
   }, [actualDays, selectedDay]);
 
   const selected = useMemo(
@@ -314,10 +320,10 @@ export function DailyProfitChart({
       </nav>}
 
       {selected && <div className="daily-profit-detail" aria-live="polite">
-        <strong>{dayLabel(selected.day, true)}</strong>
+        <strong>{selected.day === actualDays[actualDays.length - 1]?.day ? 'Latest daily result' : dayLabel(selected.day, true)}</strong>
         <span className={pnlClass(selected.pnl)}>{money(selected.pnl, currency, true)}</span>
         <span className={pnlClass(selected.return_percent)}>{percent(selected.return_percent)}</span>
-        <small>Opening {money(selected.opening_balance, currency)}</small>
+        <small>{dayLabel(selected.day, true)} · Opening {money(selected.opening_balance, currency)}</small>
       </div>}
 
       <div className="daily-profit-chart" aria-label="Daily realised profit and loss chart">
@@ -354,7 +360,7 @@ export function DailyProfitChart({
       </div>
 
       <div className="daily-profit-foot">
-        <span>{actualDays.length === 0 ? 'Daily tracking starts Monday 24 August.' : 'Tap any completed trading day for its P/L and return.'}</span>
+        <span>{actualDays.length === 0 ? 'Daily tracking starts Monday 24 August.' : 'The latest daily P/L is shown above. Tap another completed day to inspect it.'}</span>
         <small>Saturday & Sunday are non-trading days.</small>
       </div>
     </>}
