@@ -102,7 +102,7 @@ function monthLabel(value: string, long = false): string {
   if (!parsed || Number.isNaN(parsed.getTime())) return value;
   return new Intl.DateTimeFormat(undefined, long
     ? { month: 'long', year: 'numeric', timeZone: 'UTC' }
-    : { month: 'short', year: '2-digit', timeZone: 'UTC' }).format(parsed);
+    : { month: 'long', year: 'numeric', timeZone: 'UTC' }).format(parsed);
 }
 
 function monthOnlyLabel(value: string): string {
