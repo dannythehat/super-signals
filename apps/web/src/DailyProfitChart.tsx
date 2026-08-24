@@ -31,6 +31,7 @@ type DisplayDay = {
 type YearMonth = {
   key: string;
   pnl: number | null;
+  returnPercent: number | null;
   live: boolean;
   locked: boolean;
 };
@@ -191,7 +192,11 @@ function aggregatePostLaunchMonths(days: DailyProfitPoint[]): Map<string, number
   return totals;
 }
 
-function buildYearMonths(days: DailyProfitPoint[], currentMonthPnl: number | null): YearMonth[] {
+function buildYearMonths(
+  days: DailyProfitPoint[],
+  currentMonthPnl: number | null,
+  ownerDemo: boolean,
+): YearMonth[] {
   const totals = aggregatePostLaunchMonths(days);
   const current = currentYearMonth();
   return Array.from({ length: 12 }, (_, index) => {
@@ -199,9 +204,19 @@ function buildYearMonths(days: DailyProfitPoint[], currentMonthPnl: number | nul
     const key = `${REPORTING_YEAR}-${String(month).padStart(2, '0')}`;
     let pnl = totals.has(key) ? totals.get(key) ?? null : null;
     if (key === current && currentMonthPnl !== null) pnl = currentMonthPnl;
+    const firstMonthDay = days
+      .filter((item) => monthKey(item.day) === key && !isWeekendDay(item.day))
+      .sort((left, right) => left.day.localeCompare(right.day))[0] ?? null;
+    const openingCapital = ownerDemo && key === '2026-08'
+      ? OWNER_DEMO_STARTING_CAPITAL
+      : firstMonthDay?.opening_balance ?? null;
+    const returnPercent = pnl !== null && openingCapital !== null && openingCapital > 0
+      ? (pnl / openingCapital) * 100
+      : null;
     return {
       key,
       pnl,
+      returnPercent,
       live: key === current && pnl !== null,
       locked: key < current && pnl !== null,
     };
@@ -221,7 +236,10 @@ export function DailyProfitChart({
   const months = useMemo(() => availableMonths(days), [days]);
   const [selectedMonth, setSelectedMonth] = useState<string | null>(months.length > 0 ? months[months.length - 1] : null);
   const [selectedDay, setSelectedDay] = useState<string | null>(null);
-  const yearMonths = useMemo(() => buildYearMonths(days, currentMonthPnl), [days, currentMonthPnl]);
+  const yearMonths = useMemo(
+    () => buildYearMonths(days, currentMonthPnl, ownerDemo),
+    [days, currentMonthPnl, ownerDemo],
+  );
 
   useEffect(() => {
     if (months.length === 0) return;
@@ -371,7 +389,12 @@ export function DailyProfitChart({
           <span>{monthLabel(focusMonth.key, true)}</span>
           <small>{focusMonth.live ? 'Month to date' : focusMonth.locked ? 'Completed month' : 'Monthly result'}</small>
         </div>
-        <strong className={pnlClass(focusMonth.pnl)}>{money(focusMonth.pnl, currency, true)}</strong>
+        <div className="monthly-profit-highlight-result">
+          <strong className={pnlClass(focusMonth.pnl)}>{money(focusMonth.pnl, currency, true)}</strong>
+          <span className={pnlClass(focusMonth.returnPercent)}>
+            {percent(focusMonth.returnPercent)} {focusMonth.live ? 'MTD' : ''}
+          </span>
+        </div>
         <small className="monthly-profit-baseline">
           {ownerDemo
             ? 'Based on $1,000 starting capital · 8 Aug 2026'
