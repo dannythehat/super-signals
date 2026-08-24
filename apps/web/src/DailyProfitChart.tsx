@@ -127,6 +127,21 @@ function money(value: number | null, currency: string, signed = false): string {
   }
 }
 
+function compactMoney(value: number, currency: string): string {
+  try {
+    return new Intl.NumberFormat(undefined, {
+      style: 'currency',
+      currency: currency || 'USD',
+      notation: 'compact',
+      maximumFractionDigits: Math.abs(value) < 100 ? 0 : 1,
+      signDisplay: 'exceptZero',
+    }).format(value);
+  } catch {
+    const sign = value > 0 ? '+' : '';
+    return `${sign}${value.toFixed(0)}`;
+  }
+}
+
 function percent(value: number | null): string {
   if (value === null || !Number.isFinite(value)) return '—';
   const formatted = new Intl.NumberFormat(undefined, {
@@ -368,10 +383,18 @@ export function DailyProfitChart({
               aria-pressed={point && !weekend ? day === selectedDay : undefined}
             >
               <span className="daily-profit-bar-zone" aria-hidden="true">
-                {point && !weekend && <i className={`daily-profit-bar daily-profit-bar--${tone}`} style={style} />}
+                {point && !weekend && <>
+                  <span className={`daily-profit-bar-value daily-profit-bar-value--${tone}`}>
+                    {compactMoney(point.pnl, currency)}
+                  </span>
+                  <i className={`daily-profit-bar daily-profit-bar--${tone}`} style={style} />
+                </>}
                 {weekend && <i className="daily-profit-weekend-mark" />}
               </span>
               <span className="daily-profit-day-label">{dayLabel(day)}</span>
+              {point && !weekend && <small className={`daily-profit-day-return daily-profit-day-return--${tone}`}>
+                {percent(point.return_percent)}
+              </small>}
             </button>;
           })}
         </div>
@@ -431,7 +454,12 @@ export function DailyProfitChart({
                 : `${monthLabel(item.key, true)}: ${money(item.pnl, currency, true)}${item.live ? ', month to date' : item.locked ? ', completed month' : ''}`}
             >
               <span className="monthly-profit-bar-zone" aria-hidden="true">
-                {item.pnl !== null && <i className={`monthly-profit-bar monthly-profit-bar--${tone}`} style={style} />}
+                {item.pnl !== null && <>
+                  {isFocus && <span className={`monthly-profit-bar-value monthly-profit-bar-value--${tone}`}>
+                    {compactMoney(item.pnl, currency)}
+                  </span>}
+                  <i className={`monthly-profit-bar monthly-profit-bar--${tone}`} style={style} />
+                </>}
               </span>
               <span>{monthOnlyLabel(item.key)}</span>
               <small>{item.live ? 'MTD' : item.locked ? 'Final' : ''}</small>
@@ -441,7 +469,7 @@ export function DailyProfitChart({
       </div>
 
       <div className="monthly-profit-footnote">
-        <span>Green = profit</span><span>Red = loss</span><span>Completed months stay fixed</span>
+        <span>Exact P/L shown</span><span>Green = profit</span><span>Red = loss</span><span>Completed months stay fixed</span>
       </div>
     </div>}
 
