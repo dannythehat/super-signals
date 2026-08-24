@@ -71,10 +71,13 @@ export function TodayTradingSummary({ apiBaseUrl, currency, timezoneName }: Prop
     void refresh();
     const readInterval = window.setInterval(() => void refresh(), 15_000);
     const onFocus = () => void refresh();
+    const onVisibility = () => { if (document.visibilityState === 'visible') void refresh(); };
     window.addEventListener('focus', onFocus);
+    document.addEventListener('visibilitychange', onVisibility);
     return () => {
       window.clearInterval(readInterval);
       window.removeEventListener('focus', onFocus);
+      document.removeEventListener('visibilitychange', onVisibility);
     };
   }, [refresh]);
 
