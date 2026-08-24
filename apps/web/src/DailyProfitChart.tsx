@@ -384,7 +384,7 @@ export function DailyProfitChart({
             >
               <span className="daily-profit-bar-zone" aria-hidden="true">
                 {point && !weekend && <>
-                  <span className={`daily-profit-bar-value daily-profit-bar-value--${tone}`}>
+                  <span className={`daily-profit-bar-value daily-profit-bar-value--${tone}`} style={style}>
                     {compactMoney(point.pnl, currency)}
                   </span>
                   <i className={`daily-profit-bar daily-profit-bar--${tone}`} style={style} />
@@ -455,7 +455,7 @@ export function DailyProfitChart({
             >
               <span className="monthly-profit-bar-zone" aria-hidden="true">
                 {item.pnl !== null && <>
-                  {isFocus && <span className={`monthly-profit-bar-value monthly-profit-bar-value--${tone}`}>
+                  {isFocus && <span className={`monthly-profit-bar-value monthly-profit-bar-value--${tone}`} style={style}>
                     {compactMoney(item.pnl, currency)}
                   </span>}
                   <i className={`monthly-profit-bar monthly-profit-bar--${tone}`} style={style} />
