@@ -171,6 +171,38 @@ def _directionally_valid(
     )
 
 
+def _complete_trade_evidence(decision: AiMessageDecision, raw_text: str) -> bool:
+    """True only when the current message itself contains a complete trade candidate.
+
+    This is a classification correction, not an execution bypass. The normal policy
+    below still verifies every extracted number is literal, validates direction, and
+    requires explicit instrument, side, entry, SL and TP.
+    """
+    text = raw_text or ""
+    extracted = decision.extracted or {}
+    has_buy = _BUY.search(text) is not None
+    has_sell = _SELL.search(text) is not None
+    side = str(extracted.get("side") or "").strip().upper()
+    entry_low = _decimal(extracted.get("entry_low"))
+    entry_high = _decimal(extracted.get("entry_high"))
+    stop_loss = _decimal(extracted.get("stop_loss"))
+    take_profits = tuple(
+        value
+        for value in (_decimal(item) for item in (extracted.get("take_profits") or []))
+        if value is not None
+    )
+    return (
+        _INSTRUMENT.search(text) is not None
+        and has_buy != has_sell
+        and side in {"BUY", "SELL"}
+        and ((side == "BUY" and has_buy) or (side == "SELL" and has_sell))
+        and entry_low is not None
+        and entry_high is not None
+        and stop_loss is not None
+        and bool(take_profits)
+    )
+
+
 def apply_v1_message_policy(
     decision: AiMessageDecision,
     *,
@@ -185,6 +217,17 @@ def apply_v1_message_policy(
     # revision, because provider typo/fill-in edits must not poison a valid final setup.
     del previous_text
     text = raw_text or ""
+
+    # Provider-completed edits and full layered setups must not be lost merely because
+    # the probabilistic classifier called them an update/preparation. This only routes
+    # the candidate through the strict deterministic new-trade gates below.
+    if decision.decision != "new_trade" and _complete_trade_evidence(decision, text):
+        decision = replace(
+            decision,
+            decision="new_trade",
+            action="skip",
+            reason="complete_trade_structure_override",
+        )
 
     if decision.decision == "new_trade":
         exact_bare_side = bare_now_side(text)
