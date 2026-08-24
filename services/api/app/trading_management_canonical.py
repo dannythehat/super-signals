@@ -76,16 +76,51 @@ def _broker_position_is_profitable(payload: dict[str, object]) -> bool:
 class CanonicalTradingManagementService(PaperCriticalManagementService):
     """Canonical management target selection, event-time safety and add-entry handling."""
 
+    def _load_event(self, event_id: UUID) -> Any | None:
+        """Load the provider text with the lifecycle event for deterministic semantics."""
+        with self._session_factory() as session:
+            return session.execute(
+                text(
+                    """
+                    SELECT e.id,e.signal_id,e.event_type,e.aggregate_result,m.raw_text AS source_text
+                    FROM signal_lifecycle_events e
+                    JOIN messages m ON m.id=e.source_message_id
+                    WHERE e.id=:event_id AND e.origin='provider_update'
+                    LIMIT 1
+                    """
+                ),
+                {"event_id": event_id},
+            ).mappings().first()
+
     @staticmethod
     def _actions(event: Any) -> tuple[dict[str, Any], ...]:
-        """Run protective stop changes before exposure-reduction actions.
+        """Resolve alternatives, then run protective changes before reductions.
 
-        Provider messages can legitimately combine CLOSE HALF with MOVE SL TO ENTRY.
-        A minimum-lot position cannot be halved, but that broker-volume limitation must
-        never prevent the independent protective stop change from reaching MT5.
-        Stable sorting preserves provider order within each priority class.
+        CLOSE NOW + breakeven IF YOU WISH TO HOLD describes two alternatives. Automatic
+        execution follows the explicit close; it must not attempt the optional hold path.
+        Genuine compound instructions such as CLOSE HALF + MOVE SL TO ENTRY retain both
+        actions, with protection first so a minimum-lot partial cannot block the stop.
         """
         actions = PaperCriticalManagementService._actions(event)
+        source_text = str(event.get("source_text") or "").casefold()
+        optional_hold = (
+            "close" in source_text
+            and "breakeven" in source_text
+            and (
+                "if you wish to hold" in source_text
+                or "if you want to hold" in source_text
+                or "if you choose to hold" in source_text
+            )
+        )
+        if optional_hold:
+            close_actions = tuple(
+                action
+                for action in actions
+                if str(action.get("type") or "") == "close"
+            )
+            if close_actions:
+                return close_actions
+
         protective = {"move_to_break_even", "edit_stop_loss"}
         return tuple(
             sorted(
