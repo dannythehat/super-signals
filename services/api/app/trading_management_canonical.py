@@ -76,6 +76,26 @@ def _broker_position_is_profitable(payload: dict[str, object]) -> bool:
 class CanonicalTradingManagementService(PaperCriticalManagementService):
     """Canonical management target selection, event-time safety and add-entry handling."""
 
+    @staticmethod
+    def _actions(event: Any) -> tuple[dict[str, Any], ...]:
+        """Run protective stop changes before exposure-reduction actions.
+
+        Provider messages can legitimately combine CLOSE HALF with MOVE SL TO ENTRY.
+        A minimum-lot position cannot be halved, but that broker-volume limitation must
+        never prevent the independent protective stop change from reaching MT5.
+        Stable sorting preserves provider order within each priority class.
+        """
+        actions = PaperCriticalManagementService._actions(event)
+        protective = {"move_to_break_even", "edit_stop_loss"}
+        return tuple(
+            sorted(
+                actions,
+                key=lambda action: (
+                    0 if str(action.get("type") or "") in protective else 1
+                ),
+            )
+        )
+
     async def execute_owner_demo_event(
         self,
         *,
