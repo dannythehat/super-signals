@@ -52,6 +52,32 @@ def test_flat_account_still_reconciles_broker_history() -> None:
     assert "flat_account_truth_sync_complete" in source
 
 
+def test_broker_confirmed_tp2_automatically_protects_remaining_trade() -> None:
+    source = getsource(CanonicalBrokerSettlementManager._apply_profit_protection_ladder)
+    assert "_cancel_pending_for_signal" in source
+    assert 'minimum_tp_index=3' in source
+    assert 'target="entry"' in source
+
+
+def test_broker_confirmed_tp3_locks_runner_at_tp2() -> None:
+    source = getsource(CanonicalBrokerSettlementManager._apply_profit_protection_ladder)
+    assert 'minimum_tp_index=4' in source
+    assert 'target=Decimal(str(plan["tp2_price"]))' in source
+
+
+def test_automatic_profit_protection_never_loosens_existing_stop() -> None:
+    source = getsource(CanonicalBrokerSettlementManager._protect_open_for_signal)
+    assert '"BUY" in side and desired > current' in source
+    assert '"SELL" in side and desired < current' in source
+    assert "if not tightens" in source
+
+
+def test_missing_pending_order_is_not_falsely_marked_cancelled_during_fill_race() -> None:
+    source = getsource(CanonicalBrokerSettlementManager._cancel_pending_for_signal)
+    assert "if order_id not in broker_orders" in source
+    assert "continue" in source
+
+
 def test_owner_paper_origin_is_immutable_and_not_environment_resettable(monkeypatch) -> None:
     owner = UUID("11111111-1111-4111-8111-111111111111")
     monkeypatch.setenv("SUPER_SIGNALS_DAY28_OWNER_ID", str(owner))

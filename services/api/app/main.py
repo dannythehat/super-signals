@@ -22,6 +22,7 @@ from app.day34_live_acceptance import run_day34_live_acceptance_safely
 from app.db import get_session_factory
 from app.metaapi_gateway import MetaApiProvisioningGateway
 from app.metaapi_read_gateway import MetaApiReadGateway
+from app.metaapi_trade_gateway import MetaApiTradeGateway
 from app.mt5_connection_manager import Mt5ConnectionManager
 from app.mt5_connection_service import Mt5ConnectionError, Mt5DemoConnectionService
 from app.mt5_connection_service_day30 import Day30Mt5ConnectionService
@@ -194,6 +195,9 @@ async def _lifespan(application: FastAPI) -> AsyncIterator[None]:
                         performance_service=day33_performance_service,
                         reference_user_id=day34_reference_user_id,
                         poll_seconds=poll_seconds,
+                        cipher=broker_cipher,
+                        read_gateway=MetaApiReadGateway(),
+                        trade_gateway=MetaApiTradeGateway(),
                     )
                     application.state.day34_settlement_manager = day34_settlement_manager
                 except (ValueError, TypeError):
