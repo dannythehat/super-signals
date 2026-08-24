@@ -17,6 +17,8 @@ from typing import Any
 
 import httpx
 
+from app.provider_language_profiles import provider_profile
+
 
 AI_DECISION_SCHEMA: dict[str, Any] = {
     "type": "object",
@@ -128,37 +130,19 @@ Examples of semantic intent:
 - 'TP1 HIT', 'SL HIT', 'close 3 layers', 'set breakeven', 'out at entry' are trade_update
   when context/reply evidence identifies them as lifecycle messages.
 
-SUPER SIGNALS V1 EXECUTION BOUNDARY
-Use action=execute ONLY when explicit execution evidence contains all of the following:
-1. XAUUSD/GOLD side BUY or SELL
-2. one single exact market entry price
-3. one explicit numeric stop loss
-4. one or more explicit numeric take-profit prices
-5. no second/discrete entry, no entry range, no pending/limit order, and no open-ended target
+CURRENT EXECUTION CAPABILITIES
+A complete literal XAUUSD/GOLD setup may be executed when it has an explicit side,
+entry evidence, numeric stop loss and at least one numeric take profit. Supported
+structures include exact market entries, entry zones, explicit second/layered entries,
+literal BUY/SELL LIMIT or STOP orders, and numeric targets plus an open runner.
+Extract every literal boundary and numeric target. A complete structured edit is still
+the same Telegram instruction and must be classified new_trade when no trade was
+previously created; canonical idempotency prevents duplicate execution.
 
-If a genuine trade instruction is outside that exact V1 boundary, understand and
-extract what is explicit, keep decision=new_trade, but use action=skip. Use one of
-these stable reasons when applicable:
-- unsupported_multiple_entries: two or more separately stated entry prices, including
-  wording such as 'ENTRY ... Second entry ...'
-- unsupported_entry_range: a range/area/slash pair such as 4392-4388 or 4396/4391
-- unsupported_pending_order: BUY LIMIT, SELL LIMIT, BUY STOP, SELL STOP or equivalent
-- unsupported_open_target: TP OPEN, RUNNER, leave open, or another non-numeric target
-- provider_instruction_incomplete: genuine entry instruction but required explicit
-  execution values are absent from telegram_message/direct reply evidence
-
-When several unsupported structures occur together, prefer the most mechanically
-fundamental reason in this order: unsupported_multiple_entries,
-unsupported_pending_order, unsupported_entry_range, unsupported_open_target.
-
-Examples of execution scope:
-- 'BUY GOLD @ 4371 / TP 4375 / TP 4380 / SL 4360' => exact market trade and may execute.
-- 'BUY GOLD @ 4396/4391 ...' => new_trade + skip, unsupported_entry_range.
-- 'ENTRY: 4385 / Second entry: 4380 ...' => new_trade + skip,
-  unsupported_multiple_entries.
-- 'BUY LIMITS GOLD ...' => new_trade + skip, unsupported_pending_order.
-- A message containing otherwise numeric TPs plus 'TP OPEN' => new_trade + skip,
-  unsupported_open_target. Preserve only explicit numeric targets in take_profits.
+Use new_trade + skip only when required current-message evidence is genuinely missing,
+contradictory or unsafe. Do not label a complete entry structure trade_update merely
+because is_edit=true. The deterministic policy independently verifies every number,
+direction, order structure and duplicate before execution.
 
 Treat GOLD as XAUUSD when the provider/context clearly refers to gold. For an explicit
 numeric range, set entry_low to the lower number and entry_high to the higher number.
@@ -176,11 +160,11 @@ A bare '+100 pips' may be a result_report when the provider sequence clearly lin
 otherwise do not invent which trade or TP it belongs to.
 
 When is_edit=true, the Telegram message is a revision of the same provider message,
-not a second trade. Compare previous_text with telegram_message. If the edit changes
-an existing signal instruction, classify it as trade_update/action=apply_update and
-return the full explicit revised trade fields plus the most specific update_type you
-can identify. If there is no actionable instruction change, ignore or skip it. Never
-turn an edit into a duplicate new trade.
+not a second Telegram post. Compare previous_text with telegram_message. If an
+incomplete trigger was edited into a complete setup, classify the current revision as
+new_trade and return all literal fields; canonical message idempotency activates it
+once. If an already-created/executed signal is being changed, classify an explicit
+management change as trade_update. If there is no actionable change, ignore or skip.
 
 Use action=ignore for chatter or preparation. Use action=skip for incomplete,
 unsupported or truly unclear instructions. Return only the requested structured object."""
@@ -421,6 +405,7 @@ class OpenAiMessageSupervisor:
         prompt = {
             "source_name": source_name,
             "source_status": source_status,
+            "provider_language_profile": provider_profile(source_name),
             "recent_source_messages": recent_source_messages or [],
             "telegram_message": raw_text,
             "reply_context": reply_context,
