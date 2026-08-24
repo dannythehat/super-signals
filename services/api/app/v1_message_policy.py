@@ -54,7 +54,13 @@ _RESULT_ONLY = re.compile(
     re.IGNORECASE,
 )
 
-_XAUUSD_SOURCE_PROFILES = {"tgc_xauusd", "tdc_xauusd"}
+_XAUUSD_SOURCE_PROFILES = {
+    "tgc_xauusd",
+    "tdc_xauusd",
+    "tig_xauusd",
+    "sureshot_xauusd",
+    "matthew_xauusd_shadow",
+}
 
 
 def _decimal(value: Any) -> Decimal | None:
