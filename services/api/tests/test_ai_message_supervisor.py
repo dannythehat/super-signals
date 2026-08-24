@@ -93,12 +93,13 @@ def test_supervisor_uses_strict_structured_output_and_no_storage(monkeypatch) ->
     assert request["text"]["format"]["schema"] == AI_DECISION_SCHEMA
     assert "SOURCE-AWARE INTERPRETATION" in request["instructions"]
     assert "DECISION AND ACTION ARE DIFFERENT QUESTIONS" in request["instructions"]
-    assert "unsupported_multiple_entries" in request["instructions"]
-    assert "unsupported_entry_range" in request["instructions"]
-    assert "unsupported_pending_order" in request["instructions"]
-    assert "unsupported_open_target" in request["instructions"]
+    assert "CURRENT EXECUTION CAPABILITIES" in request["instructions"]
+    assert "explicit second/layered entries" in request["instructions"]
+    assert "literal BUY/SELL LIMIT or STOP orders" in request["instructions"]
+    assert "complete structured edit" in request["instructions"]
     prompt = json.loads(request["input"])
     assert prompt["source_name"] == "Example Gold Provider"
+    assert prompt["provider_language_profile"] is None
     assert prompt["recent_source_messages"][0]["telegram_message_id"] == 10
     assert captured["timeout"] == 12
 
