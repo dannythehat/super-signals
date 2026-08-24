@@ -173,7 +173,7 @@
 
 .daily-profit-day {
   display: grid;
-  grid-template-rows: 140px auto;
+  grid-template-rows: 140px auto auto;
   gap: 8px;
   min-width: 0;
   padding: 0 2px 4px;
@@ -214,29 +214,78 @@
 .daily-profit-bar {
   position: absolute;
   left: 50%;
-  width: 11px;
+  width: 16px;
   min-height: 4px;
-  border-radius: 999px;
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  border-radius: 7px 7px 3px 3px;
   transform: translateX(-50%);
-  box-shadow: 0 0 18px rgba(255, 255, 255, 0.025);
+  box-shadow: 0 0 18px rgba(255, 255, 255, 0.04);
 }
 
 .daily-profit-bar--positive {
   bottom: 66px;
   height: var(--bar-height);
-  background: #72f2b8;
+  background: linear-gradient(180deg, #8affca 0%, #41dba0 100%);
+  box-shadow: 0 0 20px rgba(74, 230, 170, 0.24);
 }
 
 .daily-profit-bar--negative {
   top: 74px;
   height: var(--bar-height);
-  background: #ff8f91;
+  background: linear-gradient(180deg, #ff9a9f 0%, #ef626c 100%);
+  box-shadow: 0 0 20px rgba(255, 111, 121, 0.2);
 }
 
 .daily-profit-bar--flat {
   top: 72px;
   height: 4px;
   background: #7e8997;
+}
+
+.daily-profit-bar-value {
+  position: absolute;
+  left: 50%;
+  z-index: 2;
+  padding: 2px 4px;
+  border-radius: 5px;
+  font-size: 0.51rem;
+  font-weight: 850;
+  line-height: 1;
+  white-space: nowrap;
+  transform: translateX(-50%);
+}
+
+.daily-profit-bar-value--positive {
+  bottom: calc(72px + var(--bar-height));
+  color: #8affca;
+  background: rgba(5, 18, 17, 0.88);
+}
+
+.daily-profit-bar-value--negative {
+  top: calc(80px + var(--bar-height));
+  color: #ff9a9f;
+  background: rgba(24, 8, 13, 0.9);
+}
+
+.daily-profit-bar-value--flat {
+  top: 59px;
+  color: #a9b3bf;
+}
+
+.daily-profit-day-return {
+  color: #697687;
+  font-size: 0.52rem;
+  font-weight: 760;
+  text-align: center;
+  white-space: nowrap;
+}
+
+.daily-profit-day-return--positive {
+  color: #58cfa4;
+}
+
+.daily-profit-day-return--negative {
+  color: #e77b83;
 }
 
 .daily-profit-weekend-mark {
