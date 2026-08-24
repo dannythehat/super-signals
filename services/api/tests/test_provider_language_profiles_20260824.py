@@ -20,11 +20,11 @@ def test_every_active_provider_has_a_versioned_language_profile() -> None:
         assert profile["management_style"]
 
 
-def test_matthew_is_explicitly_shadow_and_high_risk_never_changes_risk() -> None:
+def test_matthew_is_paper_enabled_and_high_risk_never_changes_risk() -> None:
     profile = provider_profile("Matthew trades")
     assert profile is not None
-    assert profile["id"] == "matthew_xauusd_shadow"
-    assert "shadow/testing only" in profile["safety"]
+    assert profile["id"] == "matthew_xauusd"
+    assert "paper-enabled only" in profile["safety"]
     assert "never changes configured risk" in profile["safety"]
 
 
