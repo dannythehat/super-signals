@@ -561,8 +561,28 @@
   }
 
   .daily-profit-bars {
-    grid-template-columns: repeat(var(--daily-count), 40px);
-    width: max(100%, calc(var(--daily-count) * 42px));
+    grid-template-columns: repeat(var(--daily-count), minmax(52px, 1fr));
+    width: max(100%, calc(var(--daily-count) * 54px));
+    gap: 3px;
+  }
+
+  .daily-profit-day {
+    padding-inline: 4px;
+  }
+
+  .daily-profit-bar-value {
+    max-width: 50px;
+    overflow: hidden;
+    font-size: 0.48rem;
+    text-overflow: ellipsis;
+  }
+
+  .daily-profit-day-label {
+    font-size: 0.58rem;
+  }
+
+  .daily-profit-day-return {
+    font-size: 0.5rem;
   }
 
   .daily-profit-detail {
