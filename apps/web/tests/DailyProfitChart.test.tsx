@@ -28,6 +28,8 @@ describe('DailyProfitChart', () => {
     expect(await screen.findByText('Latest daily result')).toBeInTheDocument();
     expect(screen.getAllByText((text) => text.includes('99.17')).length).toBeGreaterThan(0);
     expect(screen.getByText((text) => text.includes('Opening'))).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'August 2026' })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Aug 26' })).not.toBeInTheDocument();
 
     fireEvent.click(screen.getByRole('button', { name: 'Monthly' }));
     expect(screen.getByText((text) => text.includes('9.92%') && text.includes('MTD'))).toBeInTheDocument();
