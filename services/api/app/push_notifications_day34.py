@@ -25,6 +25,8 @@ from sqlalchemy.orm import Session, sessionmaker
 logger = logging.getLogger(__name__)
 _MAX_ATTEMPTS = 5
 _STALE_SENDING_SECONDS = 120
+_PUSH_TTL_SECONDS = 24 * 60 * 60
+_PUSH_HEADERS = {"Urgency": "high"}
 
 
 @dataclass(frozen=True, slots=True)
@@ -319,7 +321,8 @@ class Day34PushNotificationManager:
                 data=data,
                 vapid_private_key=self._vapid_private_key,
                 vapid_claims={"sub": self._vapid_subject},
-                ttl=300,
+                ttl=_PUSH_TTL_SECONDS,
+                headers=_PUSH_HEADERS,
                 timeout=10,
             )
         except WebPushException as exc:
