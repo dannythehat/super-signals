@@ -69,12 +69,12 @@ PROVIDER_PROFILES: dict[str, dict[str, Any]] = {
         "management_style": "explicit management commands only",
     },
     "matthew trades": {
-        "id": "matthew_xauusd_shadow",
+        "id": "matthew_xauusd",
         "instrument": "XAUUSD",
         "entry_style": "PREPARE is inert; BUY/SELL LIMITS GOLD @ A/B AREA is a pending grid; BUY/SELL GOLD @ A/B is market first plus layered limits",
         "edit_style": "full current setup is authoritative",
         "management_style": "close N layers, leave best entry running, price-specific layer closes, risk-free/breakeven and extended runner targets",
-        "safety": "shadow/testing only; HIGH RISK is descriptive and never changes configured risk",
+        "safety": "paper-enabled only; HIGH RISK is descriptive and never changes configured risk",
     },
 }
 
