@@ -51,23 +51,24 @@ class CanonicalDashboardRuntimeService(Day32DashboardService):
                 broker_balance=view.account.balance,
             )
         )
-        broker_balance = float(view.account.balance)
-        delta = display_balance - broker_balance
-        display_equity = (
-            float(view.account.equity) + delta
-            if view.open_positions
-            else display_balance
+        visible_floating_pnl = sum(
+            float(position.profit)
+            for position in view.open_positions
+            if position.profit is not None
         )
+        display_equity = display_balance + visible_floating_pnl
+        display_free_margin = display_equity - float(view.account.margin)
         return replace(
             view,
             account=replace(
                 view.account,
                 balance=display_balance,
-                # Only a currently active, app-mapped broker position may create
-                # floating P/L. Settling/closed/unmapped broker remnants must
-                # never leave Equity different from Balance when Open is zero.
+                # Equity is canonical realised Balance plus precisely the
+                # floating P/L of the active positions visible in this view.
+                # Raw broker equity may contain credit or settling remnants and
+                # must not contradict the position list shown to the user.
                 equity=display_equity,
-                free_margin=float(view.account.free_margin) + delta,
+                free_margin=display_free_margin,
             ),
         )
 
