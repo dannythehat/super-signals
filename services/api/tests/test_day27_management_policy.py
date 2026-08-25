@@ -43,27 +43,24 @@ def test_breakeven_result_is_not_instruction() -> None:
     assert result.reason == "provider_result_only"
 
 
-def test_optional_protective_wording_resolves_to_the_cautious_action() -> None:
-    """Owner rule, 14 Aug 2026: ambiguity about protecting an open trade takes the
-    cautious option rather than doing nothing. Moving the stop to breakeven removes
-    the downside while leaving a winner running."""
-    result = extract_day27_management_actions("Trade in +40 pips profit. Make the trade risk-free if you want")
-    assert result.actions == ({"type": "move_to_break_even", "target": "all", "value": None},)
-    # "Make the trade risk-free" is itself an explicit instruction, merely softened by
-    # "if you want", so it is now classified as explicit rather than inferred. The
-    # resulting broker action is identical either way.
-    assert result.reason in {
-        "explicit_instruction_within_optional_message",
-        "optional_protective_resolved_to_breakeven",
-    }
+def test_optional_protective_wording_does_not_mutate_broker_position() -> None:
+    """Optional provider wording is not authority to move a stop immediately.
+
+    The owner's automatic rule protects the runner only after TP1 and TP2 are
+    broker-confirmed; a provider's "if you want" must not bypass that milestone.
+    """
+    result = extract_day27_management_actions(
+        "Trade in +40 pips profit. Make the trade risk-free if you want"
+    )
+    assert result.actions == ()
+    assert result.reason == "optional_management_instruction"
 
 
-def test_choice_between_banking_and_be_takes_the_protective_branch() -> None:
-    """"Bank the blue or go to BE" offers a choice between closing for profit and
-    protecting. The cautious branch is breakeven: it never cuts a winner short."""
+def test_choice_between_banking_and_be_does_not_guess_a_branch() -> None:
+    """A provider choice is not converted into a compulsory broker mutation."""
     result = extract_day27_management_actions("Bank the blue or go to BE")
-    assert result.actions == ({"type": "move_to_break_even", "target": "all", "value": None},)
-    assert result.reason == "optional_protective_resolved_to_breakeven"
+    assert result.actions == ()
+    assert result.reason == "optional_management_instruction"
 
 
 def test_optional_entry_wording_is_still_never_executable() -> None:
@@ -192,6 +189,14 @@ def test_explicit_stop_survives_optional_wording_in_same_message() -> None:
     assert {"type": "edit_stop_loss", "target": "all", "value": "4314"} in result.actions
     # The explicit price must not be downgraded to a generic breakeven.
     assert not any(a["type"] == "move_to_break_even" for a in result.actions)
+
+
+def test_live_tig_optional_risk_free_message_is_non_actionable() -> None:
+    result = extract_day27_management_actions(
+        "Trade is running 🏃 +30pips💸💸\n\nMake trade risk free if you want🤝"
+    )
+    assert result.actions == ()
+    assert result.reason == "optional_management_instruction"
 
 
 def test_optional_wording_still_cannot_close_a_trade() -> None:
