@@ -10,7 +10,7 @@ def test_every_active_provider_has_a_versioned_language_profile() -> None:
         "United Kings™ Signals! 👑",
         "SureShot GOLD",
         "PipXpert - Forex Signals",
-        "Matthew trades",
+        "AJD TRADES",
     ]
     for name in names:
         profile = provider_profile(name)
@@ -20,13 +20,21 @@ def test_every_active_provider_has_a_versioned_language_profile() -> None:
         assert profile["management_style"]
 
 
-def test_matthew_is_paper_enabled_and_high_risk_never_changes_risk() -> None:
-    profile = provider_profile("Matthew trades")
+def test_ajd_is_paper_enabled_and_high_risk_never_changes_risk() -> None:
+    profile = provider_profile("AJD TRADES")
     assert profile is not None
-    assert profile["id"] == "matthew_xauusd"
+    assert profile["id"] == "ajd_xauusd"
     assert "paper-enabled only" in profile["safety"]
     assert "never changes configured risk" in profile["safety"]
 
 
 def test_profile_lookup_is_case_and_whitespace_insensitive() -> None:
     assert execution_profile_id("  SURESHOT GOLD  ") == "sureshot_xauusd"
+
+
+
+def test_ajd_public_results_and_promotions_are_explicitly_inert() -> None:
+    profile = provider_profile("AJD TRADES")
+    assert profile is not None
+    assert "promotions" in profile["non_trade_style"]
+    assert "literal broker instruction" in profile["non_trade_style"]

@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from typing import Any
 
-PROFILE_VERSION = "2026-08-24.1"
+PROFILE_VERSION = "2026-08-25.1"
 
 PROVIDER_PROFILES: dict[str, dict[str, Any]] = {
     "the gold club - tgc": {
@@ -68,12 +68,13 @@ PROVIDER_PROFILES: dict[str, dict[str, Any]] = {
         "edit_style": "current revision is authoritative",
         "management_style": "explicit management commands only",
     },
-    "matthew trades": {
-        "id": "matthew_xauusd",
+    "ajd trades": {
+        "id": "ajd_xauusd",
         "instrument": "XAUUSD",
         "entry_style": "PREPARE is inert; BUY/SELL LIMITS GOLD @ A/B AREA is a pending grid; BUY/SELL GOLD @ A/B is market first plus layered limits",
         "edit_style": "full current setup is authoritative",
         "management_style": "close N layers, leave best entry running, price-specific layer closes, risk-free/breakeven and extended runner targets",
+        "non_trade_style": "public-channel promotions, result recaps, TP-hit claims and profit screenshots are inert without a literal broker instruction",
         "safety": "paper-enabled only; HIGH RISK is descriptive and never changes configured risk",
     },
 }
