@@ -222,3 +222,17 @@ def test_tig_book_wording_takes_partials() -> None:
     for text in ("Book partial 🤑", "Book some profits team", "Book mores 🤑"):
         result = extract_day27_management_actions(text)
         assert {"type": "close", "target": "TP1", "value": None} in result.actions, text
+
+
+def test_remove_pending_order_wording_cancels_broker_orders() -> None:
+    """Observed FXTradingVision wording must be management, never a malformed new trade."""
+    for text in (
+        "REMOVE GOLD SELL LIMIT.\n\nLess volume.\n\nNo need to take risk here.",
+        "Remove XAUUSD buy limit",
+        "Remove pending orders",
+        "Remove gold sell stop",
+    ):
+        result = extract_day27_management_actions(text)
+        assert result.actions == (
+            {"type": "cancel_pending", "target": "all", "value": None},
+        ), text

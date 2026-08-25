@@ -81,6 +81,11 @@ _CLOSE_FIRST_ENTRY = re.compile(
     re.IGNORECASE,
 )
 _CANCEL = re.compile(r"\bCANCEL(?:LED|ED|ING)?\b", re.IGNORECASE)
+_REMOVE_PENDING = re.compile(
+    r"\bREMOVE(?:D|ING)?\b.{0,60}"
+    r"(?:\b(?:BUY|SELL)\s+(?:LIMIT|STOP)\b|\bPENDING(?:\s+ORDERS?)?\b)",
+    re.IGNORECASE | re.DOTALL,
+)
 _OPEN_EXTRA = re.compile(
     r"(?im)^\s*OPEN\s+EXTRA\s+(?:GOLD|XAUUSD)\s+(BUYS?|SELLS?)\b"
 )
@@ -243,7 +248,7 @@ def _extract_actions(text: str) -> list[dict[str, str | None]]:
         if tp_actions:
             actions = tp_actions + actions
 
-    if _CANCEL.search(text):
+    if _CANCEL.search(text) or _REMOVE_PENDING.search(text):
         actions.append({"type": "cancel_pending", "target": "all", "value": None})
 
     add = _OPEN_EXTRA.search(text)
