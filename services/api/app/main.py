@@ -14,6 +14,8 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
+from sqlalchemy import text
+
 from app.broker_settlement_canonical import CanonicalBrokerSettlementManager
 from app.config import get_settings
 from app.day26_code_acceptance import run_day26_code_acceptance_probe
