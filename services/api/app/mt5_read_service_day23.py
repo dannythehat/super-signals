@@ -40,6 +40,10 @@ class Day23AccountState:
     margin_level: float | None
     leverage: float | None
     trade_allowed: bool
+    # MetaAPI reports broker credit separately from cash balance, while equity and
+    # free margin already include it. Super Signals uses the effective account
+    # balance (cash + credit) everywhere so the dashboard and risk engine agree.
+    credit: float = 0.0
 
 
 @dataclass(frozen=True, slots=True)
@@ -260,15 +264,18 @@ class Day23Mt5ReadService:
 
     @classmethod
     def _account_state(cls, payload: dict[str, object]) -> Day23AccountState:
+        cash_balance = cls._required_float(payload.get("balance"))
+        credit = cls._optional_float(payload.get("credit")) or 0.0
         return Day23AccountState(
             currency=str(payload.get("currency") or ""),
-            balance=cls._required_float(payload.get("balance")),
+            balance=cash_balance + credit,
             equity=cls._required_float(payload.get("equity")),
             margin=cls._required_float(payload.get("margin")),
             free_margin=cls._required_float(payload.get("freeMargin")),
             margin_level=cls._optional_float(payload.get("marginLevel")),
             leverage=cls._optional_float(payload.get("leverage")),
             trade_allowed=bool(payload.get("tradeAllowed", False)),
+            credit=credit,
         )
 
     @classmethod
@@ -326,6 +333,7 @@ class Day23Mt5ReadService:
                         "region": state.region,
                         "currency": state.account.currency,
                         "balance": state.account.balance,
+                        "credit": state.account.credit,
                         "equity": state.account.equity,
                         "margin": state.account.margin,
                         "free_margin": state.account.free_margin,
