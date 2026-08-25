@@ -267,24 +267,20 @@ def extract_day27_management_actions(raw_text: str) -> Day27ManagementPolicyResu
     actions = _dedupe(_extract_actions(text))
 
     if optional:
-        # Explicit numeric/protective instructions survive optional wording. A decisive
-        # whole-trade close survives only when it was literally commanded now and is
-        # not an OR protective choice. Profit-qualified close retains its qualification.
-        explicit = [
+        # Optional wording is not broker authority. Preserve only an explicit numeric
+        # stop because the provider supplied an exact mutation; never turn softened
+        # protective language ("if you want", "consider", "your choice") into a
+        # compulsory breakeven or close. Automatic breakeven is handled separately
+        # only after the configured TP milestones are broker-confirmed.
+        explicit_numeric_stops = [
             action
             for action in actions
-            if action.get("type") != "close"
-            or action.get("target") == "profitable_only"
-            or _decisive_close(text)
+            if action.get("type") == "edit_stop_loss" and action.get("value") is not None
         ]
-        if explicit:
+        if explicit_numeric_stops:
             return Day27ManagementPolicyResult(
-                _dedupe(explicit), "explicit_instruction_within_optional_message"
-            )
-        if _OPTIONAL_PROTECTIVE.search(text) and not _OPTIONAL_ENTRY.search(text):
-            return Day27ManagementPolicyResult(
-                ({"type": "move_to_break_even", "target": "all", "value": None},),
-                "optional_protective_resolved_to_breakeven",
+                _dedupe(explicit_numeric_stops),
+                "explicit_numeric_stop_within_optional_message",
             )
         return Day27ManagementPolicyResult((), "optional_management_instruction")
 
