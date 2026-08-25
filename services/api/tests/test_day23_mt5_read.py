@@ -58,6 +58,24 @@ def _synthetic_jwt(payload: dict[str, object]) -> str:
     return f"{encoded({'alg': 'none'})}.{encoded(payload)}.signature"
 
 
+def test_account_balance_includes_broker_credit_used_by_equity_and_risk_sizing() -> None:
+    account = _service()._account_state(
+        {
+            "currency": "USD",
+            "balance": 1287.97,
+            "credit": 150.48,
+            "equity": 1438.45,
+            "margin": 0,
+            "freeMargin": 1438.45,
+            "tradeAllowed": True,
+        }
+    )
+
+    assert account.credit == 150.48
+    assert account.balance == pytest.approx(1438.45)
+    assert account.equity == pytest.approx(1438.45)
+
+
 def test_day23_read_gateway_exposes_reads_only_even_as_history_reads_expand() -> None:
     public_names = {name for name in dir(MetaApiReadGateway) if not name.startswith("_")}
     required_reads = {
