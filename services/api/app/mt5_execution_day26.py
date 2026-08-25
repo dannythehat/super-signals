@@ -225,12 +225,14 @@ class Day26Mt5ExecutionService:
             initial_state=live_state,
         )
 
-        risk_balance = CanonicalTradingAccountingService(
-            self._session_factory
-        ).displayed_balance(
-            owner_user_id,
-            broker_balance=live_state.account.balance,
-        )
+        risk_balance = live_state.account.balance
+        if self._session_factory is not None:
+            risk_balance = CanonicalTradingAccountingService(
+                self._session_factory
+            ).displayed_balance(
+                owner_user_id,
+                broker_balance=live_state.account.balance,
+            )
         targets = list(signal.take_profits) + ([None] if signal.has_open_runner else [])
         target_sizings = {
             tp_index: self._size_signal(
