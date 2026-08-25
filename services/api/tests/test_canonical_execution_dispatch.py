@@ -103,6 +103,9 @@ class RouterHarness(CanonicalExecutionDispatcher):
     def _position_count(self, signal_id):
         return self.execution.completed.get(signal_id, 0)
 
+    def _active_exposure_count(self, signal_id):
+        return self._position_count(signal_id)
+
     def _prior_new_trade_route(self, signal_id):
         return self.route_record
 
