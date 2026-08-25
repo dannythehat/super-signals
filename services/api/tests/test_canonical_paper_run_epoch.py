@@ -216,8 +216,8 @@ async def test_dashboard_owner_demo_uses_canonical_trading_balance(
 
     assert result.account is not None
     assert result.account.balance == 1324.29
-    assert result.account.equity == pytest.approx(1322.29)
-    assert result.account.free_margin == pytest.approx(1222.29)
+    assert result.account.equity == pytest.approx(1321.79)
+    assert result.account.free_margin == pytest.approx(1221.79)
     assert result.account.margin == 100.0
     assert result.open_profit == -2.5
 
