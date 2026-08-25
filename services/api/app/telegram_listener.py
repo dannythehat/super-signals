@@ -1,7 +1,7 @@
 """Continuous Telegram listener for exact selected Super Signals sources.
 
 Day 12 deliberately stops at ingestion. New messages from selected sources in
-TESTING or LIVE state are written to the internal Message log. PAUSED/revoked
+TESTING, SHADOW or LIVE state are written to the internal Message log. PAUSED/revoked
 sources and every unselected chat are ignored. No parsing, signal creation or
 trade execution happens here.
 """
@@ -25,7 +25,7 @@ from telethon.sessions import StringSession
 from app.models import Message, Source
 from app.telegram_crypto import TelegramSessionCipher
 
-LISTENABLE_SOURCE_STATES = {"testing", "live"}
+LISTENABLE_SOURCE_STATES = {"testing", "shadow", "live"}
 
 
 @dataclass(frozen=True, slots=True)
@@ -138,7 +138,7 @@ class TelegramListenerManager:
                       ON sra.source_id = s.id
                     JOIN telegram_accounts AS ta
                       ON ta.id = sra.telegram_account_id
-                    WHERE s.status IN ('testing', 'live')
+                    WHERE s.status IN ('testing', 'shadow', 'live')
                     ORDER BY
                         s.created_at ASC,
                         s.id ASC,

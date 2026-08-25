@@ -1,7 +1,7 @@
 import { useState } from 'react';
 
 type Notice = { tone: 'error' | 'success'; message: string } | null;
-type SourceState = 'testing' | 'live' | 'paused';
+type SourceState = 'testing' | 'shadow' | 'live' | 'paused';
 
 interface TelegramAccount {
   id: string;
@@ -25,6 +25,12 @@ interface SharedTelegramSource {
   chat_id: number;
   title: string;
   status: string;
+  shadow_total: number;
+  shadow_open: number;
+  shadow_closed: number;
+  shadow_wins: number;
+  shadow_losses: number;
+  shadow_return_percent: string;
 }
 
 interface SourceStatusChange {
@@ -300,7 +306,7 @@ export function TelegramSourceSelector({
           <span className="status-label">Shared signal sources</span>
           <h2 id="telegram-source-selector-title">Telegram groups &amp; channels</h2>
           <p>
-            Shared sources can now be marked Testing, Live or Paused. Every state change is audited.
+            Use Shadow for unknown providers: signals are simulated separately and never affect the main paper portfolio. Every state change is audited.
           </p>
         </div>
         {!expanded && (
@@ -320,8 +326,8 @@ export function TelegramSourceSelector({
 
           <div className="foundation-note">
             <span className="pulse" aria-hidden="true" />
-            Day 11 source states are operational controls only. Setting a source to LIVE does not
-            enable MT5 execution or live trading. Telegram sessions remain private to their owner.
+            Shadow sources are read and simulated in an isolated ledger. They never open MT5 positions,
+            notify members or alter the app's daily and weekly figures. Telegram sessions remain private.
           </div>
 
           {ownerAlerts !== null && (
@@ -368,9 +374,17 @@ export function TelegramSourceSelector({
                       </span>
                       <h3>{source.title}</h3>
                       <small>Visible to all authorised Super Signals admins</small>
+                      {source.status === 'shadow' && (
+                        <small>
+                          Shadow: {source.shadow_closed} closed · {source.shadow_wins}W/{source.shadow_losses}L ·{' '}
+                          {Number(source.shadow_return_percent) >= 0 ? '+' : ''}
+                          {Number(source.shadow_return_percent).toFixed(2)}%
+                          {source.shadow_open > 0 ? ` · ${source.shadow_open} open` : ''}
+                        </small>
+                      )}
                     </div>
                     <div className="source-state-controls" aria-label={`Change ${source.title} state`}>
-                      {(['testing', 'live', 'paused'] as SourceState[]).map((state) => (
+                      {(['shadow', 'testing', 'live', 'paused'] as SourceState[]).map((state) => (
                         <button
                           className={`source-state-button source-state-button--${state}`}
                           type="button"

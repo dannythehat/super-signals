@@ -185,7 +185,7 @@ class Source(TimestampMixin, Base):
             name="uq_sources_account_chat",
         ),
         CheckConstraint(
-            "status IN ('testing', 'paused', 'live', 'revoked')",
+            "status IN ('testing', 'shadow', 'paused', 'live', 'revoked')",
             name="ck_sources_status",
         ),
     )

@@ -36,6 +36,7 @@ from app.mt5_recovery import (
 from app.performance_runtime import CanonicalPerformanceRuntimeService as CanonicalPerformanceLedgerService
 from app.production_listener import build_production_listener_manager
 from app.publisher_config import get_publisher_settings
+from app.shadow_trading import ShadowTradeManager
 from app.push_notifications_day34 import Day34PushNotificationManager
 from app.routes.access import router as access_router
 from app.routes.admin_accounts import router as admin_accounts_router
@@ -161,6 +162,7 @@ async def _lifespan(application: FastAPI) -> AsyncIterator[None]:
     mt5_connection_manager: Mt5ConnectionManager | None = None
     mt5_bootstrap_task: asyncio.Task[None] | None = None
     day34_settlement_manager: CanonicalBrokerSettlementManager | None = None
+    shadow_trade_manager: ShadowTradeManager | None = None
     day34_live_acceptance_task: asyncio.Task[None] | None = None
     if broker_keys:
         broker_cipher = MetaApiTokenCipher(broker_keys)
@@ -202,6 +204,14 @@ async def _lifespan(application: FastAPI) -> AsyncIterator[None]:
                     application.state.day34_settlement_manager = day34_settlement_manager
                 except (ValueError, TypeError):
                     logger.error("Day 34 settlement watch disabled: poll interval is invalid")
+
+        if day34_reference_user_id is not None:
+            shadow_trade_manager = ShadowTradeManager(
+                session_factory=session_factory, cipher=broker_cipher,
+                gateway=MetaApiReadGateway(), owner_user_id=day34_reference_user_id,
+                poll_seconds=int(os.getenv("SUPER_SIGNALS_SHADOW_POLL_SECONDS", "15") or "15"),
+            )
+            application.state.shadow_trade_manager = shadow_trade_manager
 
         allow_mt5_manager = True
         diagnostic_probe = os.getenv("SUPER_SIGNALS_DAY22_DIAGNOSTIC_PROBE", "").strip() == "1"
@@ -321,6 +331,8 @@ async def _lifespan(application: FastAPI) -> AsyncIterator[None]:
 
     if day34_settlement_manager is not None:
         await day34_settlement_manager.start()
+    if shadow_trade_manager is not None:
+        await shadow_trade_manager.start()
     if push_manager is not None:
         await push_manager.start()
     await publisher.start()
@@ -346,6 +358,8 @@ async def _lifespan(application: FastAPI) -> AsyncIterator[None]:
         await publisher.stop()
         if push_manager is not None:
             await push_manager.stop()
+        if shadow_trade_manager is not None:
+            await shadow_trade_manager.stop()
         if day34_settlement_manager is not None:
             await day34_settlement_manager.stop()
         if listener is not None:

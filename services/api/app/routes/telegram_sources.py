@@ -58,6 +58,12 @@ class SharedTelegramSourceResponse(BaseModel):
     chat_id: int
     title: str
     status: str
+    shadow_total: int = 0
+    shadow_open: int = 0
+    shadow_closed: int = 0
+    shadow_wins: int = 0
+    shadow_losses: int = 0
+    shadow_return_percent: str = "0"
 
 
 class TelegramSourceRemovalResponse(BaseModel):
@@ -67,7 +73,7 @@ class TelegramSourceRemovalResponse(BaseModel):
 
 
 class SourceStatusChangeRequest(BaseModel):
-    status: Literal["testing", "live", "paused"]
+    status: Literal["testing", "shadow", "live", "paused"]
 
 
 class SourceStatusChangeResponse(BaseModel):
@@ -129,6 +135,12 @@ def _shared_response(item: SharedTelegramSourceView) -> SharedTelegramSourceResp
         chat_id=item.chat_id,
         title=item.title,
         status=item.status,
+        shadow_total=item.shadow_total,
+        shadow_open=item.shadow_open,
+        shadow_closed=item.shadow_closed,
+        shadow_wins=item.shadow_wins,
+        shadow_losses=item.shadow_losses,
+        shadow_return_percent=item.shadow_return_percent,
     )
 
 

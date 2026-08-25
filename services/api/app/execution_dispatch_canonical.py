@@ -2,7 +2,7 @@
 
 Production no longer composes day-numbered router generations or a duplicate static
 source allow-list. A durable decision is eligible only when its source row is currently
-``testing`` or ``live`` in PostgreSQL. The Owner paper reference account and ordinary
+``testing``, ``shadow`` or ``live`` in PostgreSQL. The Owner paper reference account and ordinary
 member accounts are attempted independently; member LIVE mutation remains controlled by
 the distribution switch outside the trading-policy engine.
 
@@ -30,6 +30,7 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from app.member_routing_canonical import MemberDistributionService, MemberManagementService
 from app.models import AuditEvent
+from app.shadow_trading import ShadowTradeService
 from app.mt5_execution_day26 import Day26ExecutionError
 from app.mt5_management_day27 import Day27ManagementError
 
@@ -64,6 +65,7 @@ class StoredDecision:
     decision: str
     action: str
     reason: str
+    source_status: str = "testing"
 
 
 class CanonicalExecutionDispatcher:
@@ -92,6 +94,7 @@ class CanonicalExecutionDispatcher:
         self._member_management = member_management
         self._risk_percent = risk
         self._double_lot_approved = bool(double_lot_approved)
+        self._shadow = ShadowTradeService(session_factory)
         self._locks: dict[str, asyncio.Lock] = {}
 
     async def dispatch_stored_decision(
@@ -120,6 +123,9 @@ class CanonicalExecutionDispatcher:
                 error_code="stored_decision_missing",
                 reason="source_not_testing_or_live_or_decision_missing",
             )
+
+        if stored.source_status == "shadow":
+            return self._dispatch_shadow(stored, revision_index)
 
         if stored.decision == "new_trade" and stored.action == "execute":
             logger.info(
@@ -152,6 +158,33 @@ class CanonicalExecutionDispatcher:
             decision=stored.decision,
             action=stored.action,
             reason=stored.reason,
+        )
+
+    def _dispatch_shadow(
+        self,
+        stored: StoredDecision,
+        revision_index: int,
+    ) -> CanonicalRouteResult:
+        """Persist isolated virtual state without invoking broker/member services."""
+        if stored.decision == "new_trade" and stored.action == "execute":
+            signal_id = self._resolve_signal_id(stored.message_id, revision_index)
+            recorded = signal_id is not None and self._shadow.record_signal(signal_id)
+            return CanonicalRouteResult(
+                outcome="shadowed" if recorded else "ignored",
+                decision=stored.decision, action=stored.action, signal_id=signal_id,
+                reason="shadow_signal_recorded" if recorded else "shadow_signal_not_eligible",
+            )
+        if stored.decision == "trade_update" and stored.action == "apply_update":
+            event_id, signal_id = self._resolve_lifecycle_event(stored.message_id, revision_index)
+            recorded = event_id is not None and self._shadow.record_management(event_id)
+            return CanonicalRouteResult(
+                outcome="shadowed" if recorded else "ignored",
+                decision=stored.decision, action=stored.action, signal_id=signal_id,
+                lifecycle_event_id=event_id,
+                reason="shadow_management_recorded" if recorded else "shadow_management_not_applicable",
+            )
+        return CanonicalRouteResult(
+            outcome="ignored", decision=stored.decision, action=stored.action, reason=stored.reason
         )
 
     async def _dispatch_new_trade(
@@ -497,7 +530,7 @@ class CanonicalExecutionDispatcher:
             row = session.execute(
                 text(
                     """
-                    SELECT m.id AS message_id, d.decision, d.action, d.reason
+                    SELECT m.id AS message_id, d.decision, d.action, d.reason, s.status AS source_status
                     FROM messages AS m
                     JOIN sources AS s ON s.id=m.source_id
                     JOIN ai_message_decisions AS d
@@ -506,7 +539,7 @@ class CanonicalExecutionDispatcher:
                     WHERE m.source_id=:source_id
                       AND m.telegram_message_id=:telegram_message_id
                       AND m.deleted_at IS NULL
-                      AND s.status IN ('testing','live')
+                      AND s.status IN ('testing','shadow','live')
                     LIMIT 1
                     """
                 ),
@@ -523,6 +556,7 @@ class CanonicalExecutionDispatcher:
             decision=str(row["decision"] or ""),
             action=str(row["action"] or ""),
             reason=str(row["reason"] or ""),
+            source_status=str(row["source_status"] or ""),
         )
 
     def _resolve_signal_id(self, message_id: UUID, revision_index: int) -> UUID | None:

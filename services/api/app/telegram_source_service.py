@@ -22,7 +22,7 @@ from app.telegram_source_gateway import (
     TelethonTelegramSourceGateway,
 )
 
-SOURCE_OPERATING_STATES = {"testing", "live", "paused"}
+SOURCE_OPERATING_STATES = {"testing", "shadow", "live", "paused"}
 
 
 class TelegramSourceConfigurationError(RuntimeError):
@@ -50,6 +50,12 @@ class SharedTelegramSourceView:
     chat_id: int
     title: str
     status: str
+    shadow_total: int
+    shadow_open: int
+    shadow_closed: int
+    shadow_wins: int
+    shadow_losses: int
+    shadow_return_percent: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -127,15 +133,36 @@ class TelegramSourceService:
             .where(Source.status != "revoked")
             .order_by(Source.created_at.asc())
         ).all()
-        return [
-            SharedTelegramSourceView(
-                source_id=source.id,
-                chat_id=source.chat_id,
-                title=source.chat_title or source.source_alias,
-                status=source.status,
-            )
-            for source in rows
-        ]
+        metrics = {
+            UUID(str(row["source_id"])): row
+            for row in session.execute(
+                text(
+                    """
+                    SELECT source_id, count(*) AS total,
+                           count(*) FILTER (WHERE status='open') AS open_count,
+                           count(*) FILTER (WHERE status='closed') AS closed_count,
+                           count(*) FILTER (WHERE status='closed' AND pnl_percent>0) AS wins,
+                           count(*) FILTER (WHERE status='closed' AND pnl_percent<0) AS losses,
+                           COALESCE(sum(pnl_percent) FILTER (WHERE status='closed'),0) AS return_percent
+                    FROM shadow_trades GROUP BY source_id
+                    """
+                )
+            ).mappings()
+        }
+        result: list[SharedTelegramSourceView] = []
+        for source in rows:
+            metric = metrics.get(source.id, {})
+            result.append(SharedTelegramSourceView(
+                source_id=source.id, chat_id=source.chat_id,
+                title=source.chat_title or source.source_alias, status=source.status,
+                shadow_total=int(metric.get("total") or 0),
+                shadow_open=int(metric.get("open_count") or 0),
+                shadow_closed=int(metric.get("closed_count") or 0),
+                shadow_wins=int(metric.get("wins") or 0),
+                shadow_losses=int(metric.get("losses") or 0),
+                shadow_return_percent=str(metric.get("return_percent") or "0"),
+            ))
+        return result
 
     def change_source_status(
         self,
@@ -147,7 +174,7 @@ class TelegramSourceService:
     ) -> SourceStatusChangeView:
         normalized_status = new_status.strip().lower()
         if normalized_status not in SOURCE_OPERATING_STATES:
-            raise ValueError("Source status must be Testing, Live or Paused.")
+            raise ValueError("Source status must be Testing, Shadow, Live or Paused.")
 
         source = session.get(Source, source_id)
         if source is None or source.status == "revoked":
