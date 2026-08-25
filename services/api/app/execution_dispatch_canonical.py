@@ -383,7 +383,7 @@ class CanonicalExecutionDispatcher:
 
         lock = self._locks.setdefault(f"event:{lifecycle_event_id}", asyncio.Lock())
         async with lock:
-            owner_has_positions = self._position_count(signal_id) > 0
+            owner_has_positions = self._active_exposure_count(signal_id) > 0
             owner_result = None
             owner_error: str | None = None
             if owner_has_positions:
@@ -622,6 +622,26 @@ class CanonicalExecutionDispatcher:
                             AND broker_position_id IS NOT NULL
                             AND COALESCE(close_reason,'') NOT ILIKE '%rollback%'
                         )
+                      )
+                    """
+                ),
+                {"signal_id": signal_id, "user_id": self._owner_user_id},
+            ).scalar_one()
+        return int(value)
+
+    def _active_exposure_count(self, signal_id: UUID) -> int:
+        """Count only broker-backed positions/orders which can still be managed."""
+        with self._session_factory() as session:
+            value = session.execute(
+                text(
+                    """
+                    SELECT COUNT(*)
+                    FROM positions
+                    WHERE signal_id=:signal_id
+                      AND user_id=:user_id
+                      AND (
+                        (status='pending' AND broker_order_id IS NOT NULL)
+                        OR (status='open' AND broker_position_id IS NOT NULL)
                       )
                     """
                 ),

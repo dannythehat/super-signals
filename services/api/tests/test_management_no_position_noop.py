@@ -39,13 +39,18 @@ class _RouterHarness(CanonicalExecutionDispatcher):
             succeeded=member_succeeded,
         )
         self._locks = {}
+        self.active_count = 0
+        self.historical_position_count = 0
         self.audits: list[tuple[str, dict[str, object]]] = []
 
     def _resolve_lifecycle_event(self, message_id, revision_index):
         return EVENT, SIGNAL
 
     def _position_count(self, signal_id):
-        return 0
+        return self.historical_position_count
+
+    def _active_exposure_count(self, signal_id):
+        return self.active_count
 
     def _audit_success(self, **kwargs):
         self.audits.append(("success", kwargs))
@@ -87,3 +92,15 @@ def test_real_management_target_with_no_success_still_blocks() -> None:
     assert result.outcome == "blocked"
     assert result.error_code == "no_user_management_succeeded"
     assert any(kind == "failure" for kind, _ in router.audits)
+
+
+def test_closed_historical_position_does_not_fake_management_success() -> None:
+    router = _RouterHarness(member_target_count=0)
+    router.historical_position_count = 1
+    router.active_count = 0
+    result = asyncio.run(router._dispatch_management(
+        StoredDecision(uuid4(), "trade_update", "apply_update", "explicit_management"), 0
+    ))
+    assert result.outcome == "ignored"
+    assert result.reason == "management_not_applicable_no_positions"
+    assert result.broker_actions_sent == 0
