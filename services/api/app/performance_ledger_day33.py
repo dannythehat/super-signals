@@ -510,10 +510,12 @@ class Day33PerformanceLedgerService:
         captured_at: datetime,
     ) -> None:
         balance = payload.get("balance")
+        credit = payload.get("credit") or 0
         equity = payload.get("equity")
         currency = str(payload.get("currency") or "USD")
         if balance is None or equity is None:
             return
+        effective_balance = _d(balance) + _d(credit)
         with self._session_factory() as session:
             session.execute(
                 text(
@@ -528,7 +530,7 @@ class Day33PerformanceLedgerService:
                     "user_id": user_id,
                     "mt5_account_id": mt5_account_id,
                     "currency": currency,
-                    "balance": _d(balance),
+                    "balance": effective_balance,
                     "equity": _d(equity),
                     "captured_at": captured_at,
                 },
