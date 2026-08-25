@@ -1,20 +1,18 @@
 """FastAPI application entry point."""
 
 import asyncio
-import json
 import logging
 import os
 import sys
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import AsyncIterator
-from uuid import UUID, uuid4
+from uuid import UUID
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
-from sqlalchemy import text
 
 from app.broker_settlement_canonical import CanonicalBrokerSettlementManager
 from app.config import get_settings
@@ -70,7 +68,6 @@ from app.routes.user_mt5_accounts import router as user_mt5_accounts_router
 from app.telegram_crypto import TelegramSessionCipher
 from app.telegram_listener import TelegramListenerManager
 from app.telegram_publisher_canonical import CanonicalTelegramPublisherManager
-from app.trading_management_canonical import CanonicalTradingManagementService
 
 logger = logging.getLogger(__name__)
 
@@ -127,108 +124,6 @@ async def _run_day22_mt5_bootstrap(service: Mt5DemoConnectionService) -> None:
         view.status,
         view.remote_state,
         view.remote_connection_status,
-    )
-
-
-async def _recover_missed_fxtradingvision_cancel(
-    *,
-    session_factory,
-    cipher: MetaApiTokenCipher,
-    owner_user_id: UUID,
-) -> None:
-    """One-time idempotent recovery for the explicit 25 Aug missed pending cancellation.
-
-    The provider cancelled before entry. Pending orders must be removed; any leg that
-    activated only because the cancellation was skipped must be closed immediately.
-    """
-    message_id = UUID("edcad48e-74e4-441c-8d5d-5d501225b658")
-    signal_id = UUID("d341da5b-2022-4f1f-b493-bc00ec9330b2")
-    event_key = f"recovered-explicit-pending-cancel:{message_id}:0"
-    with session_factory() as session:
-        candidate = session.execute(
-            text(
-                """
-                SELECT m.posted_at
-                FROM messages m
-                WHERE m.id=:message_id
-                  AND EXISTS (
-                      SELECT 1 FROM positions p
-                      WHERE p.signal_id=:signal_id
-                        AND p.user_id=:owner_user_id
-                        AND p.status IN ('pending','open')
-                  )
-                LIMIT 1
-                """
-            ),
-            {
-                "message_id": message_id,
-                "signal_id": signal_id,
-                "owner_user_id": owner_user_id,
-            },
-        ).mappings().first()
-        if candidate is None:
-            return
-        aggregate = {
-            "revised_instruction": {
-                "management_actions": [
-                    {"type": "cancel_pending", "target": "all", "value": None},
-                    {"type": "close", "target": "all", "value": None},
-                ],
-                "update_type": "cancel_pending",
-                "update_target": "all",
-                "update_value": None,
-            },
-            "recovery_reason": "explicit_remove_sell_limit_was_skipped",
-            "original_decision_preserved": True,
-        }
-        event_id = uuid4()
-        session.execute(
-            text(
-                """
-                INSERT INTO signal_lifecycle_events(
-                    id,signal_id,source_message_id,source_revision_index,event_type,
-                    event_key,origin,rendered_text,pips,aggregate_result,occurred_at
-                ) VALUES (
-                    :id,:signal_id,:message_id,0,'cancel_pending',:event_key,
-                    'provider_update','Pending order cancellation received.',
-                    NULL,CAST(:aggregate AS jsonb),:occurred_at
-                )
-                ON CONFLICT (event_key) DO NOTHING
-                """
-            ),
-            {
-                "id": event_id,
-                "signal_id": signal_id,
-                "message_id": message_id,
-                "event_key": event_key,
-                "aggregate": json.dumps(aggregate, separators=(",", ":")),
-                "occurred_at": candidate["posted_at"],
-            },
-        )
-        persisted_event_id = session.execute(
-            text("SELECT id FROM signal_lifecycle_events WHERE event_key=:event_key"),
-            {"event_key": event_key},
-        ).scalar_one()
-        session.commit()
-
-    service = CanonicalTradingManagementService(
-        session_factory=session_factory,
-        cipher=cipher,
-        read_gateway=MetaApiReadGateway(),
-        trade_gateway=MetaApiTradeGateway(),
-    )
-    try:
-        result = await service.execute_owner_demo_event(
-            owner_user_id=owner_user_id,
-            lifecycle_event_id=UUID(str(persisted_event_id)),
-        )
-    except Exception:
-        logger.exception("Missed FXTradingVision pending cancellation recovery failed")
-        return
-    logger.warning(
-        "Recovered missed FXTradingVision cancellation orders_cancelled=%s positions_closed=%s",
-        result.orders_cancelled,
-        result.positions_closed,
     )
 
 
@@ -380,13 +275,6 @@ async def _lifespan(application: FastAPI) -> AsyncIterator[None]:
             session_factory=session_factory,
             cipher=broker_cipher,
         )
-
-        if day34_reference_user_id is not None:
-            await _recover_missed_fxtradingvision_cancel(
-                session_factory=session_factory,
-                cipher=broker_cipher,
-                owner_user_id=day34_reference_user_id,
-            )
 
     push_manager: Day34PushNotificationManager | None = None
     vapid_private_key = os.getenv("SUPER_SIGNALS_WEB_PUSH_VAPID_PRIVATE_KEY", "").strip()
