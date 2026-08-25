@@ -240,7 +240,9 @@ class Day32DashboardService:
             account=Day32Account(
                 currency=live.account.currency,
                 balance=live.account.balance,
-                # With no broker positions, balance is the authoritative realised cash value.\n                # Some terminal snapshots can retain a transient equity delta after settlement;\n                # do not show customers two account totals when there is no floating exposure.\n                equity=(live.account.equity if broker_positions else live.account.balance),
+                # Equity differs from the effective balance only while broker
+                # positions carry floating profit or loss.
+                equity=(live.account.equity if broker_positions else live.account.balance),
                 margin=live.account.margin,
                 free_margin=live.account.free_margin,
                 trade_allowed=live.account.trade_allowed,
