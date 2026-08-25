@@ -51,15 +51,22 @@ class CanonicalDashboardRuntimeService(Day32DashboardService):
                 broker_balance=view.account.balance,
             )
         )
-        if display_balance == float(view.account.balance):
-            return view
-        delta = display_balance - float(view.account.balance)
+        broker_balance = float(view.account.balance)
+        delta = display_balance - broker_balance
+        display_equity = (
+            float(view.account.equity) + delta
+            if view.open_positions
+            else display_balance
+        )
         return replace(
             view,
             account=replace(
                 view.account,
                 balance=display_balance,
-                equity=float(view.account.equity) + delta,
+                # Only a currently active, app-mapped broker position may create
+                # floating P/L. Settling/closed/unmapped broker remnants must
+                # never leave Equity different from Balance when Open is zero.
+                equity=display_equity,
                 free_margin=float(view.account.free_margin) + delta,
             ),
         )
