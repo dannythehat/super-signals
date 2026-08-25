@@ -33,6 +33,7 @@ from app.mt5_read_service_day23 import (
     Day23Mt5ReadService,
     Day23ReadError,
 )
+from app.paper_run_epoch import active_paper_epoch
 from app.risk_sizing_day24 import (
     BrokerVolumeRules,
     Day24RiskSizer,
@@ -226,7 +227,7 @@ class Day26Mt5ExecutionService:
         )
 
         risk_balance = live_state.account.balance
-        if self._session_factory is not None:
+        if self._session_factory is not None and active_paper_epoch(owner_user_id) is not None:
             risk_balance = CanonicalTradingAccountingService(
                 self._session_factory
             ).displayed_balance(
