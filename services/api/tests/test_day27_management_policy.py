@@ -56,11 +56,11 @@ def test_optional_protective_wording_does_not_mutate_broker_position() -> None:
     assert result.reason == "optional_management_instruction"
 
 
-def test_choice_between_banking_and_be_does_not_guess_a_branch() -> None:
-    """A provider choice is not converted into a compulsory broker mutation."""
+def test_choice_between_banking_and_be_takes_the_protective_branch() -> None:
+    """A literal close-or-BE choice retains the established protective branch."""
     result = extract_day27_management_actions("Bank the blue or go to BE")
-    assert result.actions == ()
-    assert result.reason == "optional_management_instruction"
+    assert result.actions == ({"type": "move_to_break_even", "target": "all", "value": None},)
+    assert result.reason == "optional_protective_resolved_to_breakeven"
 
 
 def test_optional_entry_wording_is_still_never_executable() -> None:
