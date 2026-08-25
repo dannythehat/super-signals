@@ -40,6 +40,7 @@ from app.risk_sizing_day24 import (
     Day24RiskSizingResult,
 )
 from app.trade_preflight_day25 import Day25TradePreflightService
+from app.trading_accounting import CanonicalTradingAccountingService
 
 logger = logging.getLogger(__name__)
 
@@ -224,12 +225,18 @@ class Day26Mt5ExecutionService:
             initial_state=live_state,
         )
 
+        risk_balance = CanonicalTradingAccountingService(
+            self._session_factory
+        ).displayed_balance(
+            owner_user_id,
+            broker_balance=live_state.account.balance,
+        )
         targets = list(signal.take_profits) + ([None] if signal.has_open_runner else [])
         target_sizings = {
             tp_index: self._size_signal(
                 signal=signal,
                 execution_entry=execution_entry,
-                balance=live_state.account.balance,
+                balance=risk_balance,
                 price_loss_tick_value=live_state.price.loss_tick_value,
                 specification=specification,
                 risk_percent=target_risk_percent(risk_percent, tp_index),

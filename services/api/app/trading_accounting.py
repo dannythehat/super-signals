@@ -31,7 +31,7 @@ from app.paper_run_epoch import active_paper_epoch
 DEFAULT_TRADING_TIMEZONE = "UTC"
 OWNER_DEMO_ACCOUNTING_ZONE = ZoneInfo("Europe/Sofia")
 OWNER_DEMO_BASELINE_BALANCE = Decimal("1000.00")
-OWNER_DEMO_CARRY_IN_PNL = Decimal("219.04")
+OWNER_DEMO_CARRY_IN_PNL = Decimal("215.52")
 OWNER_DEMO_SERIES_STARTED_AT = datetime(
     2026, 8, 17, 0, 0, 0, tzinfo=OWNER_DEMO_ACCOUNTING_ZONE
 ).astimezone(UTC)
