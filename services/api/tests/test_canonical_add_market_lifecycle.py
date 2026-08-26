@@ -30,4 +30,4 @@ def test_existing_lifecycle_rendering_is_unchanged() -> None:
         {"update_type": "move_to_break_even", "update_target": "all"},
     )
     assert event_type == "break_even"
-    assert "Stop loss moved to entry" in rendered
+    assert "trade remains open with break-even protection" in rendered

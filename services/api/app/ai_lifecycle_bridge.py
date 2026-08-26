@@ -281,7 +281,7 @@ class AiLifecycleBridge:
         if update_type == "close_half":
             return "partial_close", "TRADE UPDATE\nPartial close instructed."
         if update_type == "move_to_break_even":
-            return "break_even", "TRADE UPDATE\nStop loss moved to entry on remaining positions."
+            return "break_even", "TRADE UPDATE\nSL moved to entry — trade remains open with break-even protection."
         if update_type == "edit_stop_loss":
             suffix = f" to {value}" if value is not None else ""
             return "stop_change", f"TRADE UPDATE\nStop loss change instructed{suffix}."

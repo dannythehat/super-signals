@@ -81,7 +81,7 @@ def render_provider_update(
         lines.append("Pending order cancellation instructed.")
         event_type = "cancel"
     elif "break_even" in rules:
-        lines.append("Stop loss moved to entry on the remaining positions.")
+        lines.append("SL moved to entry — trade remains open with break-even protection.")
         event_type = "break_even"
     elif "move_stop" in rules:
         stop_value = _STOP_VALUE.search(raw_text or "")
@@ -123,7 +123,7 @@ def render_provider_update(
         return None
 
     if "break_even" in rules and event_type != "break_even":
-        lines.append("Stop loss moved to entry on the remaining positions.")
+        lines.append("SL moved to entry — trade remains open with break-even protection.")
     elif "move_stop" in rules and event_type not in {"stop_change", "break_even"}:
         stop_value = _STOP_VALUE.search(raw_text or "")
         lines.append(

@@ -12,7 +12,7 @@ def test_target_hit_and_break_even_render_as_one_clean_update() -> None:
     assert result.text == (
         "TRADE UPDATE\n"
         "TP1 reached.\n"
-        "Stop loss moved to entry on the remaining positions."
+        "SL moved to entry — trade remains open with break-even protection."
     )
     assert "PRIVATE PROVIDER" not in result.text
 
@@ -60,6 +60,15 @@ def test_stop_hit_is_clean_and_provider_free() -> None:
 
 def test_unsupported_update_does_not_publish_arbitrary_text() -> None:
     assert render_provider_update("random update text", ["reply_management"]) is None
+
+
+def test_ai_break_even_wording_keeps_trade_open() -> None:
+    event_type, rendered = AiLifecycleBridge._render("move_to_break_even", {})
+    assert event_type == "break_even"
+    assert rendered == (
+        "TRADE UPDATE\n"
+        "SL moved to entry — trade remains open with break-even protection."
+    )
 
 
 def test_ai_close_wording_distinguishes_it_from_break_even() -> None:
