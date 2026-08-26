@@ -1,4 +1,4 @@
-const CACHE_NAME = 'super-signals-static-v4';
+const CACHE_NAME = 'smart-signals-static-v5';
 const STATIC_ASSETS = ['/manifest.webmanifest', '/smart-signals-app-icon.png', '/super-signals-logo.png'];
 const PRIVATE_PREFIXES = ['/api/', '/auth/', '/account/', '/admin/', '/owner/', '/notifications'];
 const CACHEABLE_DESTINATIONS = new Set(['image', 'font']);
