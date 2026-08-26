@@ -35,7 +35,7 @@ def test_unsupported_partial_close_is_not_overstated_as_executed_percentage() ->
     )
     assert result is not None
     assert result.event_type == "close_instruction"
-    assert result.text == "TRADE UPDATE\nA separate instruction was received to close the remaining positions."
+    assert result.text == "TRADE UPDATE\nA separate close request was received.\nThis is not a broker closure confirmation."
     assert "50%" not in result.text
     assert "secret source wording" not in result.text
 
@@ -44,7 +44,7 @@ def test_plain_close_is_instruction_not_fabricated_final_execution() -> None:
     result = render_provider_update("CLOSE NOW", ["close_trade"])
     assert result is not None
     assert result.event_type == "close_instruction"
-    assert result.text == "TRADE UPDATE\nA separate instruction was received to close the remaining positions."
+    assert result.text == "TRADE UPDATE\nA separate close request was received.\nThis is not a broker closure confirmation."
 
 
 def test_stop_hit_is_clean_and_provider_free() -> None:
@@ -63,9 +63,9 @@ def test_unsupported_update_does_not_publish_arbitrary_text() -> None:
 
 
 def test_ai_close_wording_distinguishes_it_from_break_even() -> None:
-    event_type, rendered = AiLifecycleBridge._render("close", {})
+    event_type, rendered = AiLifecycleBridge._render("close", {"update_target": "TP1"})
     assert event_type == "close_instruction"
     assert rendered == (
         "TRADE UPDATE\n"
-        "A separate instruction was received to close the remaining positions."
+        "Separate close request received for TP1.\nThis is not a broker closure confirmation."
     )

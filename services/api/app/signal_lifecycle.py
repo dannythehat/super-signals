@@ -108,7 +108,13 @@ def render_provider_update(
             )
             event_type = "partial_close"
         else:
-            lines.append("A separate instruction was received to close the remaining positions.")
+            target = _TP_NUMBER.search(raw_text or "")
+            lines.append(
+                f"Separate close request received for TP{target.group(1)}."
+                if target is not None
+                else "A separate close request was received."
+            )
+            lines.append("This is not a broker closure confirmation.")
             event_type = "close_instruction"
     elif "hold_existing_trade" in rules:
         lines.append("Trade remains active.")

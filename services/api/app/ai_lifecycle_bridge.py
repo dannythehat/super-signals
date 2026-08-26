@@ -264,7 +264,20 @@ class AiLifecycleBridge:
         if update_type == "tp_hit":
             return "take_profit_hit", f"TRADE UPDATE\n{target or 'Take-profit target'} reached."
         if update_type == "close":
-            return "close_instruction", "TRADE UPDATE\nA separate instruction was received to close the remaining positions."
+            target_label = str(target or "").strip()
+            normalised_target = target_label.lower()
+            if normalised_target == "partial_tp1":
+                detail = "Separate partial-close request received for TP1."
+            elif target_label.upper().startswith("TP") and target_label[2:].isdigit():
+                detail = f"Separate close request received for {target_label.upper()}."
+            elif normalised_target in {"all", "remaining"}:
+                detail = "Separate close request received for all remaining positions."
+            else:
+                detail = "A separate close request was received."
+            return (
+                "close_instruction",
+                f"TRADE UPDATE\n{detail}\nThis is not a broker closure confirmation.",
+            )
         if update_type == "close_half":
             return "partial_close", "TRADE UPDATE\nPartial close instructed."
         if update_type == "move_to_break_even":
