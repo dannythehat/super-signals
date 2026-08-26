@@ -264,7 +264,7 @@ class AiLifecycleBridge:
         if update_type == "tp_hit":
             return "take_profit_hit", f"TRADE UPDATE\n{target or 'Take-profit target'} reached."
         if update_type == "close":
-            return "close_instruction", "TRADE UPDATE\nClose instruction received."
+            return "close_instruction", "TRADE UPDATE\nA separate instruction was received to close the remaining positions."
         if update_type == "close_half":
             return "partial_close", "TRADE UPDATE\nPartial close instructed."
         if update_type == "move_to_break_even":
