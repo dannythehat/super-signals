@@ -39,6 +39,10 @@ from app.performance_ledger_day33 import (
     _money,
     _pct,
 )
+from app.reporting_overrides import (
+    OUTCOME_NOT_OVERRIDDEN_SQL,
+    override_cash_for_window,
+)
 
 _DEFAULT_TIMEZONE = "Europe/Sofia"
 _DECIDED = {"won", "lost", "breakeven"}
@@ -154,7 +158,11 @@ class CanonicalPerformanceRuntimeService(CanonicalPerformanceLedgerService):
         since: datetime | None,
         now: datetime,
     ) -> Day33PerformanceWindow:
-        clauses = ["o.user_id=:user_id", "src.status<>'revoked'"]
+        clauses = [
+            "o.user_id=:user_id",
+            "src.status<>'revoked'",
+            OUTCOME_NOT_OVERRIDDEN_SQL,
+        ]
         params: dict[str, Any] = {"user_id": user_id, "window_end": now}
         run_start = self._run_start(user_id)
         if run_start is not None:
@@ -168,6 +176,10 @@ class CanonicalPerformanceRuntimeService(CanonicalPerformanceLedgerService):
             )
             params["since"] = since
         clauses.append("COALESCE(o.closed_at,o.opened_at,o.derived_at)<:window_end")
+
+        override_start = since or datetime(1970, 1, 1, tzinfo=UTC)
+        if run_start is not None:
+            override_start = self._later(override_start, run_start)
 
         with self._session_factory() as session:
             rows = session.execute(
@@ -210,10 +222,16 @@ class CanonicalPerformanceRuntimeService(CanonicalPerformanceLedgerService):
                 ),
                 params,
             ).mappings().all()
+            reviewed_cash = override_cash_for_window(
+                session,
+                user_id,
+                start=override_start,
+                end=now,
+            )
 
         wins = losses = breakeven = 0
         open_trades = 0
-        realised_cash = Decimal("0")
+        realised_cash = reviewed_cash
         model_cash = Decimal("0")
         realised_pips = Decimal("0")
         pips_available = False

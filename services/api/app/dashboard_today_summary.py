@@ -24,6 +24,8 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from sqlalchemy import text
 from sqlalchemy.orm import Session, sessionmaker
 
+from app.reporting_overrides import current_day_override
+
 
 @dataclass(frozen=True, slots=True)
 class TodayTradingSummary:
@@ -125,6 +127,11 @@ class TodayTradingSummaryService:
             now_utc=now_utc,
         )
         with self._session_factory() as session:
+            reporting_override = current_day_override(
+                session,
+                user_id,
+                day_start=day_start_utc,
+            )
             start_utc = self._session_start(
                 session,
                 user_id,
@@ -352,7 +359,11 @@ class TodayTradingSummaryService:
             breakeven=int(row["breakeven"] or 0),
             open=int(row["open"] or 0),
             settling=int(row["settling"] or 0),
-            realised_pnl=Decimal(str(row["realised_pnl"] or 0)),
+            realised_pnl=(
+                reporting_override[0]
+                if reporting_override is not None
+                else Decimal(str(row["realised_pnl"] or 0))
+            ),
             winning_pips=Decimal(str(row["winning_pips"] or 0)),
             net_pips=Decimal(str(row["net_pips"] or 0)),
             balance_change=balance_change,
