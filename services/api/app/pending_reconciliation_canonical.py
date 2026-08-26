@@ -163,6 +163,16 @@ class AccountPendingReconciler:
             for item in broker_positions
             if str(item.get("clientId") or "").strip()
         }
+        by_order = {
+            str(item.get("orderId") or "").strip(): item
+            for item in broker_positions
+            if str(item.get("orderId") or "").strip()
+        }
+        by_position = {
+            str(item.get("id") or "").strip(): item
+            for item in broker_positions
+            if str(item.get("id") or "").strip()
+        }
         active_order_ids = {
             str(item.get("id") or "").strip()
             for item in broker_orders
@@ -174,7 +184,10 @@ class AccountPendingReconciler:
         unresolved = 0
         terminalized = 0
         for row in rows:
-            broker = by_client.get(str(row["broker_client_id"] or ""))
+            order_id = str(row["broker_order_id"] or "").strip()
+            broker = by_client.get(str(row["broker_client_id"] or "")) or by_order.get(
+                order_id
+            )
             if broker is not None:
                 try:
                     position_id, open_price = self._validate_fill(row, broker)
@@ -186,7 +199,6 @@ class AccountPendingReconciler:
                 mapped += 1
                 continue
 
-            order_id = str(row["broker_order_id"] or "").strip()
             if order_id in active_order_ids:
                 still_pending += 1
                 continue
@@ -222,6 +234,23 @@ class AccountPendingReconciler:
                 continue
 
             if state in _FILLED_STATES:
+                # MetaAPI does not always propagate the pending-order clientId to the
+                # resulting position. History supplies the exact positionId, so use it
+                # to recover the active broker position before declaring the fill
+                # invisible. Geometry and volume are still validated below.
+                history_position_id = str(terminal.get("positionId") or "").strip()
+                broker = by_position.get(history_position_id) if history_position_id else None
+                if broker is not None:
+                    try:
+                        position_id, open_price = self._validate_fill(row, broker)
+                    except ValueError as exc:
+                        unresolved += 1
+                        self._audit_unresolved(row, str(exc))
+                        continue
+                    self._persist_fill(row["id"], position_id, open_price)
+                    mapped += 1
+                    continue
+
                 # History proves that this ticket is no longer pending. If the resulting
                 # position is absent from the current snapshot, do not fabricate whether
                 # it remains open or is already closed; mark it for account/deal settlement.
