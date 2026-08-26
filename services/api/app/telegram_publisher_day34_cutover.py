@@ -125,7 +125,7 @@ class Day34CutoverTelegramPublisherManager(Day34TelegramPublisherManager):
 
         lines.append("")
         for row in rows:
-            identity = public_trade_identity(row["signal_id"])
+            identity = public_trade_identity(row["signal_id"], row["member_trade_number"])
             symbol = str(row["symbol"] or "").upper()
             side = str(row["side"] or "").upper()
             open_indices = [int(value) for value in (row["open_tp_indices"] or [])]

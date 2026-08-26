@@ -64,8 +64,6 @@ def _render_root(row: Any) -> str:
         take_profits = list(row["broker_take_profits"] or [])
 
     lines = [
-        "SUPER SIGNALS",
-        "",
         f"{symbol} {side}",
         f"Entry: {entry_text}",
         f"Stop Loss: {_decimal_text(stop_loss)}",
@@ -100,6 +98,7 @@ class CanonicalTelegramPublisherManager(Day34CutoverTelegramPublisherManager):
         """Seed only current member events; stale history remains audit-only."""
         fresh_after = datetime.now(UTC) - _MEMBER_EVENT_FRESHNESS
         with self._session_factory() as session:
+            self._assign_member_trade_numbers(session, fresh_after=fresh_after)
             placement_for_pub = self._placement_exists_sql("pub.signal_id")
             placement_for_sig = self._placement_exists_sql("sig.id")
             placement_for_ev = self._placement_exists_sql("ev.signal_id")
@@ -225,6 +224,95 @@ class CanonicalTelegramPublisherManager(Day34CutoverTelegramPublisherManager):
         self._sync_live_board_safely()
 
     @staticmethod
+    def _assign_member_trade_numbers(session: Any, *, fresh_after: datetime) -> None:
+        """Assign the lowest free active slot and keep it for the trade lifecycle."""
+
+        session.execute(
+            text("SELECT pg_advisory_xact_lock(hashtext('super-signals-member-trade-numbers'))")
+        )
+        active_sql = """
+            EXISTS (
+                SELECT 1
+                FROM positions AS p
+                LEFT JOIN performance_trade_outcomes AS o ON o.position_id=p.id
+                WHERE p.signal_id=sig.id
+                  AND (
+                      o.status='pending'
+                      OR (
+                          COALESCE(o.status,'open')
+                              NOT IN ('won','lost','breakeven','closed_unknown')
+                          AND (
+                              (p.status='open' AND p.broker_position_id IS NOT NULL)
+                              OR (
+                                  p.status IN ('planned','pending')
+                                  AND COALESCE(p.broker_order_id,p.broker_position_id)
+                                      IS NOT NULL
+                              )
+                          )
+                      )
+                  )
+            )
+        """
+        used = {
+            int(value)
+            for value in session.execute(
+                text(
+                    f"""
+                    SELECT DISTINCT sig.member_trade_number
+                    FROM signals AS sig
+                    WHERE sig.member_trade_number IS NOT NULL
+                      AND {active_sql}
+                    """
+                )
+            ).scalars()
+            if value is not None
+        }
+        candidates = session.execute(
+            text(
+                f"""
+                SELECT sig.id
+                FROM signals AS sig
+                WHERE sig.member_trade_number IS NULL
+                  AND (
+                      sig.created_at>=:fresh_after
+                      OR {active_sql}
+                  )
+                  AND EXISTS (
+                      SELECT 1
+                      FROM audit_events AS placed
+                      WHERE placed.entity_type='signal'
+                        AND placed.entity_id=sig.id
+                        AND (
+                            placed.event_type='mt5.day26_execution_success'
+                            OR (
+                                placed.event_type='{_PLACEMENT_EVENT}'
+                                AND placed.payload->>'outcome'='executed'
+                            )
+                        )
+                  )
+                ORDER BY sig.created_at,sig.id
+                FOR UPDATE
+                """
+            ),
+            {"fresh_after": fresh_after},
+        ).scalars().all()
+        for signal_id in candidates:
+            number = 1
+            while number in used:
+                number += 1
+            session.execute(
+                text(
+                    """
+                    UPDATE signals
+                    SET member_trade_number=:number,updated_at=now()
+                    WHERE id=:signal_id AND member_trade_number IS NULL
+                    """
+                ),
+                {"signal_id": signal_id, "number": number},
+            )
+            used.add(number)
+
+    @staticmethod
     def _seed_fresh_in_app_notifications(session: Any, *, fresh_after: datetime) -> None:
         session.execute(
             text(
@@ -236,13 +324,14 @@ class CanonicalTelegramPublisherManager(Day34CutoverTelegramPublisherManager):
                 SELECT
                     'signal-open:' || sig.id::text,
                     sig.id,NULL,NULL,'shared','trade_open',
-                    'SS-' || upper(left(replace(sig.id::text,'-',''),10)) || ' · ' ||
-                        COALESCE(sig.symbol,'') || ' ' || COALESCE(sig.side,'') || ' opened',
-                    'Trade placed and confirmed at the broker.',
+                    'NEW TRADE PLACED — TRADE ' || sig.member_trade_number::text,
+                    COALESCE(sig.symbol,'') || ' ' || COALESCE(sig.side,'') ||
+                        ' placed and confirmed at the broker.',
                     jsonb_build_object(
                         'broker_confirmed',true,
                         'canonical_route',true,
-                        'public_trade_reference','SS-' || upper(left(replace(sig.id::text,'-',''),10)),
+                        'public_trade_reference','TRADE ' || sig.member_trade_number::text,
+                        'canonical_signal_reference','SS-' || upper(left(replace(sig.id::text,'-',''),10)),
                         'provider_identity_exposed',false,
                         'trade_action_created',false
                     )
@@ -272,23 +361,25 @@ class CanonicalTelegramPublisherManager(Day34CutoverTelegramPublisherManager):
                     ev.signal_id,ev.id,NULL,'shared',
                     CASE WHEN ev.event_type LIKE 'broker_result_%'
                          THEN 'trade_result' ELSE 'trade_update' END,
-                    'SS-' || upper(left(replace(ev.signal_id::text,'-',''),10)) || ' · ' ||
+                    'TRADE ' || sig.member_trade_number::text || ' · ' ||
                     CASE
-                        WHEN ev.event_type='broker_result_win' THEN 'Trade won'
-                        WHEN ev.event_type='broker_result_loss' THEN 'Trade lost'
-                        WHEN ev.event_type='broker_result_breakeven' THEN 'Trade closed at break even'
-                        WHEN ev.event_type='broker_result_closed' THEN 'Trade closed'
-                        ELSE 'Trade update'
+                        WHEN ev.event_type='broker_result_win' THEN 'CLOSED — WIN'
+                        WHEN ev.event_type='broker_result_loss' THEN 'CLOSED — LOSS'
+                        WHEN ev.event_type='broker_result_breakeven' THEN 'CLOSED — BREAK EVEN'
+                        WHEN ev.event_type='broker_result_closed' THEN 'CLOSED'
+                        ELSE 'UPDATE'
                     END,
-                    'SS-' || upper(left(replace(ev.signal_id::text,'-',''),10)) || ' · ' || ev.rendered_text,
+                    'TRADE ' || sig.member_trade_number::text || ' · ' || ev.rendered_text,
                     jsonb_build_object(
                         'origin',ev.origin,
                         'broker_result',ev.event_type LIKE 'broker_result_%',
-                        'public_trade_reference','SS-' || upper(left(replace(ev.signal_id::text,'-',''),10)),
+                        'public_trade_reference','TRADE ' || sig.member_trade_number::text,
+                        'canonical_signal_reference','SS-' || upper(left(replace(ev.signal_id::text,'-',''),10)),
                         'provider_identity_exposed',false,
                         'trade_action_created',false
                     )
                 FROM signal_lifecycle_events AS ev
+                JOIN signals AS sig ON sig.id=ev.signal_id
                 WHERE ev.occurred_at>=:fresh_after
                   AND ev.created_at>=:fresh_after
                   AND EXISTS (
@@ -337,7 +428,7 @@ class CanonicalTelegramPublisherManager(Day34CutoverTelegramPublisherManager):
                 text(
                     f"""
                     SELECT
-                        pub.id AS publication_id,pub.signal_id,
+                        pub.id AS publication_id,pub.signal_id,sig.member_trade_number,
                         sig.symbol,sig.side,sig.entry_low,sig.entry_high,sig.stop_loss,
                         sig.take_profits,sig.has_open_runner,sig.risk_multiplier,
                         (SELECT MIN(p.entry_price) FROM positions p
@@ -363,7 +454,8 @@ class CanonicalTelegramPublisherManager(Day34CutoverTelegramPublisherManager):
             if row is None:
                 session.rollback()
                 return None
-            rendered = prefix_public_trade_identity(row["signal_id"], _render_root(row))
+            identity = public_trade_identity(row["signal_id"], row["member_trade_number"])
+            rendered = f"🚨 NEW TRADE PLACED — {identity.label}\n\n{_render_root(row)}"
             session.execute(
                 text(
                     """
@@ -396,11 +488,12 @@ class CanonicalTelegramPublisherManager(Day34CutoverTelegramPublisherManager):
                 text(
                     """
                     SELECT
-                        pub.id AS publication_id,pub.signal_id,
+                        pub.id AS publication_id,pub.signal_id,sig.member_trade_number,
                         ev.rendered_text,
                         root.telegram_message_id AS reply_to_message_id
                     FROM telegram_publications AS pub
                     JOIN signal_lifecycle_events AS ev ON ev.id=pub.lifecycle_event_id
+                    JOIN signals AS sig ON sig.id=pub.signal_id
                     JOIN telegram_publications AS root
                       ON root.signal_id=pub.signal_id
                      AND root.publication_kind='signal_created'
@@ -424,6 +517,7 @@ class CanonicalTelegramPublisherManager(Day34CutoverTelegramPublisherManager):
             rendered = prefix_public_trade_identity(
                 row["signal_id"],
                 str(row["rendered_text"] or "Trade update."),
+                row["member_trade_number"],
             )
             reply_id = int(row["reply_to_message_id"])
             session.execute(

@@ -296,6 +296,7 @@ class Signal(TimestampMixin, Base):
         Numeric(8, 4), nullable=False, server_default="1"
     )
     original_text: Mapped[str] = mapped_column(Text, nullable=False)
+    member_trade_number: Mapped[int | None] = mapped_column(SmallInteger)
 
     source_message: Mapped[Message] = relationship(back_populates="signal")
     positions: Mapped[list[Position]] = relationship(

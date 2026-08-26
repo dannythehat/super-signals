@@ -665,9 +665,9 @@ async def run_day34_live_acceptance(
     if "$500 example at Recommended 1%:" not in rendered_result:
         raise RuntimeError("day34_live_acceptance_model500_missing")
     if not (
-        rendered_result.startswith("🎆 WIN —")
-        or rendered_result.startswith("❌ LOSS —")
-        or rendered_result.startswith("➖ BREAK EVEN —")
+        rendered_result.startswith("🎉🎉 TRADE CLOSED — WIN")
+        or rendered_result.startswith("❌ TRADE CLOSED — LOSS")
+        or rendered_result.startswith("➖ TRADE CLOSED — BREAK EVEN")
     ):
         raise RuntimeError("day34_live_acceptance_plain_english_result_missing")
 

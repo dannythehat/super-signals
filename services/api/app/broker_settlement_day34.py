@@ -377,21 +377,34 @@ class Day34BrokerSettlementManager:
                     icon = "➖"
 
                 symbol = str(row["symbol"] or "").upper()
+                side = str(row["side"] or "").upper()
                 heading = (
-                    f"{icon} WIN — {symbol}"
+                    "🎉🎉 TRADE CLOSED — WIN 🎉🎉"
                     if outcome == "win"
-                    else f"{icon} LOSS — {symbol}"
+                    else "❌ TRADE CLOSED — LOSS"
                     if outcome == "loss"
-                    else f"{icon} BREAK EVEN — {symbol}"
+                    else "➖ TRADE CLOSED — BREAK EVEN"
                     if outcome == "breakeven"
-                    else f"{icon} CLOSED — {symbol}"
+                    else "✅ TRADE CLOSED"
                 )
-                lines = [heading]
+                lines = [heading, f"{symbol} {side}".strip()]
                 if row["net_pips"] is not None:
-                    lines.append(self._signed(row["net_pips"], suffix=" pips"))
-                if model_pnl is not None:
+                    result_label = (
+                        "PROFIT" if outcome == "win"
+                        else "LOSS" if outcome == "loss"
+                        else "RESULT"
+                    )
                     lines.append(
-                        "$500 example at Recommended 1%: "
+                        f"{result_label}: {self._signed(row['net_pips'], suffix=' pips')}"
+                    )
+                if model_pnl is not None:
+                    example_label = (
+                        "EXAMPLE PROFIT" if outcome == "win"
+                        else "EXAMPLE LOSS" if outcome == "loss"
+                        else "$500 EXAMPLE"
+                    )
+                    lines.append(
+                        f"{example_label} at Recommended 1%: "
                         + self._signed(model_pnl, prefix="$", money=True)
                     )
                 rendered = "\n".join(lines)

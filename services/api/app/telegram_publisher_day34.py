@@ -508,6 +508,7 @@ class Day34TelegramPublisherManager(Day20TelegramPublisherManager):
                         WITH leg_state AS (
                             SELECT
                                 s.id AS signal_id,
+                                s.member_trade_number,
                                 COALESCE(s.symbol,'') AS symbol,
                                 COALESCE(s.side,'') AS side,
                                 p.tp_index,
@@ -530,6 +531,7 @@ class Day34TelegramPublisherManager(Day20TelegramPublisherManager):
                         )
                         SELECT
                             signal_id,
+                            MAX(member_trade_number) AS member_trade_number,
                             MAX(symbol) AS symbol,
                             MAX(side) AS side,
                             ARRAY_AGG(DISTINCT tp_index ORDER BY tp_index)
@@ -539,7 +541,7 @@ class Day34TelegramPublisherManager(Day20TelegramPublisherManager):
                         FROM leg_state
                         GROUP BY signal_id
                         HAVING BOOL_OR(effective_status='open') OR BOOL_OR(effective_status='pending')
-                        ORDER BY signal_id
+                        ORDER BY member_trade_number NULLS LAST,signal_id
                         """
                     )
                 ).mappings().all()
