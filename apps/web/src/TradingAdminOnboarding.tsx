@@ -33,7 +33,7 @@ async function readJson<T>(response: Response): Promise<T> {
     const detail =
       typeof body === 'object' && body !== null && 'detail' in body
         ? (body as { detail: unknown }).detail
-        : 'Super Signals could not complete the request.';
+        : 'Smart Signals could not complete the request.';
     const message =
       typeof detail === 'object' && detail !== null && 'message' in detail
         ? String((detail as { message: unknown }).message)
@@ -156,7 +156,7 @@ export function TradingAdminOnboarding({
       await loadSetup();
       setNotice({
         tone: 'success',
-        message: `${added} ${added === 1 ? 'group' : 'groups'} added. Super Signals can now read new messages from them in TESTING mode. Live trading is still disabled.`,
+        message: `${added} ${added === 1 ? 'group' : 'groups'} added. Smart Signals can now read new messages from them in TESTING mode. Live trading is still disabled.`,
       });
     } catch (error) {
       setNotice({
@@ -199,7 +199,7 @@ export function TradingAdminOnboarding({
           <span>3</span>
           <div>
             <strong>Done</strong>
-            <small>Super Signals keeps the reader connection for you.</small>
+            <small>Smart Signals keeps the reader connection for you.</small>
           </div>
         </div>
       </div>
@@ -221,7 +221,7 @@ export function TradingAdminOnboarding({
             <h2>Connect your Telegram account</h2>
             <p>
               Enter your phone number. Telegram will send you a code. If your Telegram account uses
-              a two-step password, enter it when asked. Super Signals stores only the encrypted
+              a two-step password, enter it when asked. Smart Signals stores only the encrypted
               Telegram session — not your code or password.
             </p>
           </div>
@@ -248,7 +248,7 @@ export function TradingAdminOnboarding({
             <span className="status-label">Step 2</span>
             <h2>Choose the groups you supply</h2>
             <p>
-              Tick every Telegram group or channel you want Super Signals to read. You can choose
+              Tick every Telegram group or channel you want Smart Signals to read. You can choose
               several and add them in one go. Newly added groups automatically enter TESTING mode,
               which reads new messages but cannot place trades.
             </p>
@@ -287,7 +287,7 @@ export function TradingAdminOnboarding({
                     <strong>{source.title}</strong>
                     <small>
                       {source.selected
-                        ? 'Already shared in Super Signals — add your reader as backup access'
+                        ? 'Already shared in Smart Signals — add your reader as backup access'
                         : source.kind === 'channel'
                           ? 'Telegram channel'
                           : 'Telegram group'}
@@ -317,11 +317,11 @@ export function TradingAdminOnboarding({
             <div className="onboarding-finish">
               <strong>That’s all you need to do.</strong>
               <p>
-                Leave Telegram connected. Super Signals now has authorised reader access to the
+                Leave Telegram connected. Smart Signals now has authorised reader access to the
                 groups above and can capture their new messages while they are in TESTING or LIVE.
               </p>
               <button className="button" type="button" onClick={onComplete} disabled={busy}>
-                Done — open Super Signals
+                Done — open Smart Signals
               </button>
             </div>
           )}

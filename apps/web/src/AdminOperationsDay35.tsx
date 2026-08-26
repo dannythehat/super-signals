@@ -142,7 +142,7 @@ export function AdminOperationsDay35({ apiBaseUrl }: Props) {
   }, [data, filter, search]);
 
   return <section className="day35-operations" aria-labelledby="day35-operations-title">
-    <div className="workspace-page-header"><div><p className="eyebrow">Day 35 · Operations</p><h1 id="day35-operations-title">Trades &amp; failures</h1><p className="intro">Follow canonical Super Signals trades by permanent public identity and inspect current operational failures without opening database tables or broker tooling.</p></div><span className="workspace-role-pill">READ ONLY</span></div>
+    <div className="workspace-page-header"><div><p className="eyebrow">Day 35 · Operations</p><h1 id="day35-operations-title">Trades &amp; failures</h1><p className="intro">Follow canonical Smart Signals trades by permanent public identity and inspect current operational failures without opening database tables or broker tooling.</p></div><span className="workspace-role-pill">READ ONLY</span></div>
 
     <div className="day35-operations-tabs" role="tablist" aria-label="Operations view"><button type="button" className={tab === 'trades' ? 'is-selected' : ''} onClick={() => setTab('trades')}>Trades <b>{data?.trades.length ?? 0}</b></button><button type="button" className={tab === 'failures' ? 'is-selected' : ''} onClick={() => setTab('failures')}>Current failures <b>{data?.current_failure_count ?? 0}</b></button><button type="button" className={tab === 'history' ? 'is-selected' : ''} onClick={() => setTab('history')}>Failure history <b>{data?.recent_failure_history.length ?? 0}</b></button></div>
 

@@ -212,7 +212,7 @@ export function TradeTimeline({ apiBaseUrl, currency }: Props) {
 
   return <section className="day33-timeline" aria-labelledby="day33-timeline-title">
     <div className="day33-timeline-head">
-      <div><span>Your trades</span><h2 id="day33-timeline-title">Trade history</h2><p>Open, pending and completed Super Signals trades in one place.</p></div>
+      <div><span>Your trades</span><h2 id="day33-timeline-title">Trade history</h2><p>Open, pending and completed Smart Signals trades in one place.</p></div>
       <button type="button" className="day33-refresh" onClick={() => void refresh()} disabled={refreshing}>{refreshing ? 'Refreshing…' : 'Refresh'}</button>
     </div>
 
@@ -236,7 +236,7 @@ export function TradeTimeline({ apiBaseUrl, currency }: Props) {
       {traders.length > 0 && <label><span>Trader</span><select value={traderFilter} onChange={(event) => setTraderFilter(event.target.value)}><option value="all">All traders</option>{traders.map((trader) => <option key={trader} value={trader}>{trader}</option>)}</select></label>}
     </div>}
 
-    {visibleTrades.length === 0 ? <div className="day33-empty"><strong>No trades yet</strong><span>Your Super Signals trades will appear here.</span></div> : <div className="day33-trade-list">{visibleTrades.map((trade) => {
+    {visibleTrades.length === 0 ? <div className="day33-empty"><strong>No trades yet</strong><span>Your Smart Signals trades will appear here.</span></div> : <div className="day33-trade-list">{visibleTrades.map((trade) => {
       const identity = publicTradeIdentity(trade.signal_id);
       return <article className={`day33-trade-card day33-status--${trade.status_color}`} key={trade.signal_id}>
         <div className="day33-trade-reference" aria-label={`Trade ${identity.reference}`}><span aria-hidden="true">{identity.marker}</span><strong>{identity.reference}</strong><small>Trade ID</small></div>

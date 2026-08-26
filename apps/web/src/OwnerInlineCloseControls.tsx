@@ -73,7 +73,7 @@ export function OwnerCloseAllButton({ apiBaseUrl, openCount }: CloseAllProps) {
   const [error, setError] = useState<string | null>(null);
 
   const closeAll = async () => {
-    if (!window.confirm(`Close ALL ${openCount} open Super Signals positions now at the broker's current market price?`)) return;
+    if (!window.confirm(`Close ALL ${openCount} open Smart Signals positions now at the broker's current market price?`)) return;
     setClosing(true);
     setError(null);
     try {
@@ -91,7 +91,7 @@ export function OwnerCloseAllButton({ apiBaseUrl, openCount }: CloseAllProps) {
 
   return <div className="owner-close-all">
     <button type="button" disabled={closing} onClick={() => void closeAll()}>{closing ? 'Closing all…' : `Close all ${openCount} open positions now`}</button>
-    <small>Owner Admin · Demo only · closes mapped Super Signals positions at market</small>
+    <small>Owner Admin · Demo only · closes mapped Smart Signals positions at market</small>
     {error && <small className="owner-inline-close__error" role="alert">{error}</small>}
   </div>;
 }

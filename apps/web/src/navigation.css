@@ -376,7 +376,7 @@
 }
 
 .workspace-panel-page
-  .telegram-account-list[aria-label='Shared Super Signals sources']
+  .telegram-account-list[aria-label='Shared Smart Signals sources']
   .telegram-account {
   border-color: rgba(73, 218, 152, 0.16);
   background: rgba(73, 218, 152, 0.035);

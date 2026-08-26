@@ -57,7 +57,7 @@ type LiveState = {
 function connectionHelp(connection: Connection | null): string | null {
   if (!connection?.last_error_code) return null;
   const messages: Record<string, string> = {
-    metaapi_permission_denied: 'The broker connection needs attention. Super Signals cannot currently access the required broker functions.',
+    metaapi_permission_denied: 'The broker connection needs attention. Smart Signals cannot currently access the required broker functions.',
     metaapi_e_auth: 'Vantage rejected the MT5 credentials. Re-enter the MT5 login, trading password and exact server name.',
     broker_credential_decryption_failed: 'The saved broker connection needs administrator recovery.',
     metaapi_timeout: 'The broker connection did not answer in time. Try Refresh connection again shortly.',
@@ -187,7 +187,7 @@ export function Mt5DemoConnectionPanel({ apiBaseUrl }: { apiBaseUrl: string }) {
     <div className="overview-hero">
       <p className="eyebrow">Paper trading</p>
       <h1 id="paper-trading-title">Vantage demo account</h1>
-      <p className="intro">This is the Super Signals paper-trading account. It uses virtual funds only. Your broker connection is managed securely in the background.</p>
+      <p className="intro">This is the Smart Signals paper-trading account. It uses virtual funds only. Your broker connection is managed securely in the background.</p>
     </div>
 
     <div className="overview-grid">

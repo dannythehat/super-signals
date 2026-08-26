@@ -112,7 +112,7 @@ export function UserMt5ConnectionPanel({ apiBaseUrl }: Props) {
 
     {!connected && <div className="settings-vantage-start">
       <strong>Need a Vantage account?</strong>
-      <p>Create your Vantage account using the Super Signals referral link. Vantage opens in your browser, leaving Super Signals available to return to.</p>
+      <p>Create your Vantage account using the Smart Signals referral link. Vantage opens in your browser, leaving Smart Signals available to return to.</p>
       <a className="button button--quiet" href={VANTAGE_AFFILIATE_URL} target="_blank" rel="noopener noreferrer" onClick={openVantageExternally}>Create a Vantage account ↗</a>
     </div>}
 
@@ -123,7 +123,7 @@ export function UserMt5ConnectionPanel({ apiBaseUrl }: Props) {
           <div><span>Server</span><strong>{status.approved_server ?? 'Vantage MT5'}</strong></div>
           <div><span>Status</span><strong>Connected</strong></div>
         </div>
-        <p className="settings-help">Your approved Vantage MT5 account is connected to Super Signals.</p>
+        <p className="settings-help">Your approved Vantage MT5 account is connected to Smart Signals.</p>
       </>}
 
       {!connected && !status.approved && !waiting && <>

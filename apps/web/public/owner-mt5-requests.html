@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover" />
-  <title>MT5 approvals · Super Signals</title>
+  <title>MT5 approvals · Smart Signals</title>
   <style>
     :root{color-scheme:dark;font-family:Inter,ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;background:#05080d;color:#f7f8fb}
     *{box-sizing:border-box}body{margin:0;min-height:100vh;background:radial-gradient(circle at top,#17202c 0,#080c12 45%,#030508 100%)}
@@ -13,19 +13,19 @@
 </head>
 <body>
 <main>
-  <div class="brand"><img src="/super-signals-logo.png" alt="Super Signals"><div><strong>Super Signals</strong><span>Owner account controls</span></div></div>
+  <div class="brand"><img src="/super-signals-logo.png" alt="Smart Signals"><div><strong>Smart Signals</strong><span>Owner account controls</span></div></div>
   <p class="eyebrow">Member setup</p>
   <h1>MT5 approval requests</h1>
   <p class="intro">Review the account number and exact Vantage server submitted by each member. Their trading password is never shown here.</p>
   <div id="status" class="status">Loading pending requests…</div>
   <div id="list" class="list"></div>
-  <div class="footer">Approval confirms only the submitted Vantage MT5 account number and server. For normal external members, Vantage referral eligibility must already have been verified before the Super Signals invitation was issued.</div>
+  <div class="footer">Approval confirms only the submitted Vantage MT5 account number and server. For normal external members, Vantage referral eligibility must already have been verified before the Smart Signals invitation was issued.</div>
 </main>
 <script>
 const statusEl=document.getElementById('status'), listEl=document.getElementById('list');
 async function readJson(response){const body=await response.json();if(!response.ok){const d=body&&body.detail;throw new Error((d&&d.message)||'Request failed.')}return body}
 function esc(value){return String(value??'').replace(/[&<>'"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[c]))}
-async function load(){statusEl.className='status';statusEl.textContent='Loading pending requests…';listEl.innerHTML='';try{const rows=await readJson(await fetch('/owner/mt5/approvals/requests',{credentials:'include',headers:{Accept:'application/json'},cache:'no-store'}));if(!rows.length){statusEl.textContent='No pending MT5 approvals.';listEl.innerHTML='<div class="empty">Nothing is waiting for your approval.</div>';return}statusEl.textContent=`${rows.length} pending request${rows.length===1?'':'s'}`;for(const row of rows){const card=document.createElement('article');card.className='card';card.innerHTML=`<h2>${esc(row.display_name||'Member')}</h2><div class="email">${esc(row.email)}</div><div class="facts"><div class="fact"><span>MT5 account</span><strong>${esc(row.login_masked)}</strong></div><div class="fact"><span>Vantage server</span><strong>${esc(row.server)}</strong></div></div><div class="actions"><button class="primary" type="button">Approve MT5 account</button></div><div class="notice" aria-live="polite"></div>`;const button=card.querySelector('button'),notice=card.querySelector('.notice');button.addEventListener('click',async()=>{button.disabled=true;notice.className='notice';notice.textContent='Approving…';try{await readJson(await fetch(`/owner/mt5/approvals/requests/${encodeURIComponent(row.user_id)}/approve`,{method:'POST',credentials:'include',headers:{Accept:'application/json'}}));notice.textContent='Approved.';setTimeout(load,500)}catch(error){notice.className='notice error';notice.textContent=error.message;button.disabled=false}});listEl.appendChild(card)}}catch(error){statusEl.className='status error';statusEl.textContent=error.message;listEl.innerHTML='<div class="empty">Sign in as the Super Signals Owner, then refresh this page.</div>'}}
+async function load(){statusEl.className='status';statusEl.textContent='Loading pending requests…';listEl.innerHTML='';try{const rows=await readJson(await fetch('/owner/mt5/approvals/requests',{credentials:'include',headers:{Accept:'application/json'},cache:'no-store'}));if(!rows.length){statusEl.textContent='No pending MT5 approvals.';listEl.innerHTML='<div class="empty">Nothing is waiting for your approval.</div>';return}statusEl.textContent=`${rows.length} pending request${rows.length===1?'':'s'}`;for(const row of rows){const card=document.createElement('article');card.className='card';card.innerHTML=`<h2>${esc(row.display_name||'Member')}</h2><div class="email">${esc(row.email)}</div><div class="facts"><div class="fact"><span>MT5 account</span><strong>${esc(row.login_masked)}</strong></div><div class="fact"><span>Vantage server</span><strong>${esc(row.server)}</strong></div></div><div class="actions"><button class="primary" type="button">Approve MT5 account</button></div><div class="notice" aria-live="polite"></div>`;const button=card.querySelector('button'),notice=card.querySelector('.notice');button.addEventListener('click',async()=>{button.disabled=true;notice.className='notice';notice.textContent='Approving…';try{await readJson(await fetch(`/owner/mt5/approvals/requests/${encodeURIComponent(row.user_id)}/approve`,{method:'POST',credentials:'include',headers:{Accept:'application/json'}}));notice.textContent='Approved.';setTimeout(load,500)}catch(error){notice.className='notice error';notice.textContent=error.message;button.disabled=false}});listEl.appendChild(card)}}catch(error){statusEl.className='status error';statusEl.textContent=error.message;listEl.innerHTML='<div class="empty">Sign in as the Smart Signals Owner, then refresh this page.</div>'}}
 load();
 </script>
 </body>

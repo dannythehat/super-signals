@@ -1,7 +1,7 @@
 {
-  "name": "Super Signals",
-  "short_name": "Super Signals",
-  "description": "Private mobile trading account for Super Signals.",
+  "name": "Smart Signals",
+  "short_name": "Smart Signals",
+  "description": "Private mobile trading account for Smart Signals.",
   "start_url": "/",
   "scope": "/",
   "display": "standalone",
@@ -10,9 +10,9 @@
   "orientation": "portrait-primary",
   "icons": [
     {
-      "src": "/app-icon.svg",
-      "sizes": "any",
-      "type": "image/svg+xml",
+      "src": "/smart-signals-app-icon.png",
+      "sizes": "512x512",
+      "type": "image/png",
       "purpose": "any maskable"
     }
   ]

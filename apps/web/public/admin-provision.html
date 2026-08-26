@@ -4,14 +4,14 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <meta name="robots" content="noindex,nofollow" />
-  <title>Super Signals — Add Trading Admin</title>
+  <title>Smart Signals — Add Trading Admin</title>
   <style>
     *{box-sizing:border-box}body{margin:0;min-height:100vh;background:radial-gradient(circle at 50% 0,#073433 0,#02151d 32%,#020710 70%);color:#f4f7fb;font-family:Inter,ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;padding:28px 18px}.shell{width:min(620px,100%);margin:0 auto}.logo{display:block;width:min(360px,80vw);height:auto;margin:0 auto 24px}.card{background:rgba(6,17,29,.94);border:1px solid rgba(255,255,255,.1);border-radius:28px;padding:28px;box-shadow:0 30px 80px rgba(0,0,0,.35)}.eyebrow{color:#58e3cf;font-size:.82rem;letter-spacing:.22em;font-weight:800;text-transform:uppercase}.card h1{font-size:clamp(2rem,8vw,3.3rem);line-height:1.02;margin:12px 0 16px}.intro{color:#aab4c3;line-height:1.6;margin:0 0 22px}.form{display:grid;gap:17px}.form label{display:grid;gap:8px;font-weight:700}.form input,.linkbox{width:100%;border:1px solid rgba(255,255,255,.14);background:#0c1621;color:#fff;border-radius:15px;padding:15px 16px;font:inherit}.button{border:0;border-radius:15px;padding:15px 18px;font:inherit;font-weight:900;background:linear-gradient(110deg,#26ded2,#7cff48);color:#03120e;cursor:pointer}.button.secondary{background:#111c28;color:#f5f7fa;border:1px solid rgba(255,255,255,.13)}.button:disabled{opacity:.55}.notice{margin:16px 0;padding:14px 16px;border-radius:14px;line-height:1.45}.notice.ok{background:rgba(66,219,151,.11);border:1px solid rgba(66,219,151,.25);color:#bff5dc}.notice.err{background:rgba(255,106,124,.1);border:1px solid rgba(255,106,124,.25);color:#ffc1c9}.notice.info{background:rgba(71,194,255,.09);border:1px solid rgba(71,194,255,.22);color:#cceeff}.result{display:none;margin-top:22px;padding-top:22px;border-top:1px solid rgba(255,255,255,.09)}.result.show{display:grid;gap:12px}.result small{color:#8e9bab;line-height:1.5}.back{display:inline-block;margin-top:16px;color:#95a5b7;text-decoration:none}.owner-login{display:none;margin:18px 0 22px;padding:18px;border:1px solid rgba(88,227,207,.2);border-radius:18px;background:rgba(88,227,207,.045)}.owner-login.show{display:block}.owner-login h2{font-size:1.15rem;margin:0 0 8px}.owner-login p{color:#aab4c3;line-height:1.5;margin:0 0 14px}.owner-login .form{gap:13px}
   </style>
 </head>
 <body>
   <main class="shell">
-    <img class="logo" src="/super-signals-logo.png" alt="Super Signals" />
+    <img class="logo" src="/super-signals-logo.png" alt="Smart Signals" />
     <section class="card">
       <div class="eyebrow">Owner only</div>
       <h1>Add a Trading Admin</h1>
@@ -19,7 +19,7 @@
       <div id="notice"></div>
       <section id="ownerLogin" class="owner-login" aria-labelledby="owner-login-title">
         <h2 id="owner-login-title">Owner sign-in required</h2>
-        <p>This browser does not currently have your Super Signals Owner session. Sign in here once and the administrator details will stay in place.</p>
+        <p>This browser does not currently have your Smart Signals Owner session. Sign in here once and the administrator details will stay in place.</p>
         <form id="loginForm" class="form">
           <label>Your Owner email<input id="ownerEmail" name="email" type="email" autocomplete="username" required /></label>
           <label>Your password<input id="ownerPassword" name="password" type="password" autocomplete="current-password" required /></label>
@@ -36,7 +36,7 @@
         <button id="copy" class="button secondary" type="button">Copy setup link</button>
         <small>This link stays valid until the Trading Admin creates their password or you deliberately issue a replacement link.</small>
       </div>
-      <a class="back" href="/">← Back to Super Signals</a>
+      <a class="back" href="/">← Back to Smart Signals</a>
     </section>
   </main>
   <script>

@@ -231,7 +231,7 @@ export function MobileDashboard({ apiBaseUrl, displayName, roleLabel, onOpenSett
 
   if (!data) {
     return <section className="day32-dashboard day32-dashboard--error" aria-live="polite">
-      <span className="status-label">Super Signals home</span>
+      <span className="status-label">Smart Signals home</span>
       <h1>Account view unavailable</h1>
       <p>{error ?? 'The secure account service could not be reached.'}</p>
       <button className="button" type="button" onClick={() => void refresh()} disabled={refreshing}>{refreshing ? 'Refreshing…' : 'Try again'}</button>
@@ -249,7 +249,7 @@ export function MobileDashboard({ apiBaseUrl, displayName, roleLabel, onOpenSett
 
   return <section className="day32-dashboard" aria-labelledby="day32-home-title">
     <div className="day32-dashboard-head">
-      <div><span className="day32-kicker">{memberKicker}</span><h1 id="day32-home-title">Hi, {displayName}</h1><p>Your Super Signals account, trading state and latest activity.</p></div>
+      <div><span className="day32-kicker">{memberKicker}</span><h1 id="day32-home-title">Hi, {displayName}</h1><p>Your Smart Signals account, trading state and latest activity.</p></div>
       <button className="day32-settings-button" type="button" onClick={onOpenSettings} aria-label="Open Settings">⚙</button>
     </div>
 
@@ -295,7 +295,7 @@ export function MobileDashboard({ apiBaseUrl, displayName, roleLabel, onOpenSett
 
     <section className="day32-section" aria-labelledby="open-positions-title">
       <div className="day32-section-head"><div><span>Live account</span><h2 id="open-positions-title">Open positions</h2></div><strong className={`day32-open-profit ${pnlClass(data.open_profit)}`}>{money(data.open_profit, currency)}</strong></div>
-      {data.open_positions.length === 0 ? <div className="day32-empty"><strong>No active Super Signals positions</strong><span>Trades placed by Super Signals will appear here when they are open.</span></div> : <>
+      {data.open_positions.length === 0 ? <div className="day32-empty"><strong>No active Smart Signals positions</strong><span>Trades placed by Smart Signals will appear here when they are open.</span></div> : <>
         <div className="day32-position-list">{data.open_positions.map((position) => <article className="day32-position-card" key={position.position_id}>
           <div className="day32-position-title"><div><span className={`day32-side day32-side--${position.side.toLowerCase()}`}>{position.side}</span><strong>{position.symbol}</strong><small>TP{position.tp_index} · {position.volume} lots</small></div><strong className={pnlClass(position.profit)}>{money(position.profit, currency)}</strong></div>
           <dl><div><dt>Entry</dt><dd>{price(position.entry_price)}</dd></div><div><dt>Now</dt><dd>{price(position.current_price)}</dd></div><div><dt>SL</dt><dd>{price(position.stop_loss)}</dd></div><div><dt>TP</dt><dd>{price(position.take_profit)}</dd></div></dl>
@@ -306,17 +306,17 @@ export function MobileDashboard({ apiBaseUrl, displayName, roleLabel, onOpenSett
     </section>
 
     <div className="day32-two-column">
-      <section className="day32-section" aria-labelledby="latest-signal-title"><div className="day32-section-head"><div><span>Most recent</span><h2 id="latest-signal-title">Latest trade</h2></div></div>{data.latest_signal ? <article className="day32-latest-signal"><div><span className={`day32-side day32-side--${data.latest_signal.side.toLowerCase()}`}>{data.latest_signal.side}</span><strong>{data.latest_signal.symbol}</strong></div><p>{data.latest_signal.status === 'active' ? `${data.latest_signal.open_positions} of ${data.latest_signal.position_count} positions active` : data.latest_signal.status === 'closed' ? 'Trade completed' : 'Processing'}</p><small>{shortTime(data.latest_signal.created_at)}</small></article> : <div className="day32-empty day32-empty--compact"><strong>No trade yet</strong><span>Your latest Super Signals trade will appear here.</span></div>}</section>
+      <section className="day32-section" aria-labelledby="latest-signal-title"><div className="day32-section-head"><div><span>Most recent</span><h2 id="latest-signal-title">Latest trade</h2></div></div>{data.latest_signal ? <article className="day32-latest-signal"><div><span className={`day32-side day32-side--${data.latest_signal.side.toLowerCase()}`}>{data.latest_signal.side}</span><strong>{data.latest_signal.symbol}</strong></div><p>{data.latest_signal.status === 'active' ? `${data.latest_signal.open_positions} of ${data.latest_signal.position_count} positions active` : data.latest_signal.status === 'closed' ? 'Trade completed' : 'Processing'}</p><small>{shortTime(data.latest_signal.created_at)}</small></article> : <div className="day32-empty day32-empty--compact"><strong>No trade yet</strong><span>Your latest Smart Signals trade will appear here.</span></div>}</section>
 
-      <section className="day32-section" aria-labelledby="snapshot-title"><div className="day32-section-head"><div><span>Results</span><h2 id="snapshot-title">Win / loss snapshot</h2></div></div><div className="day32-winloss"><div><strong>{data.canonical_performance_ready ? data.win_loss.wins : '—'}</strong><span>Wins</span></div><div><strong>{data.canonical_performance_ready ? data.win_loss.losses : '—'}</strong><span>Losses</span></div><div><strong>{!data.canonical_performance_ready ? '—' : data.win_loss.win_rate_percent === null ? '0%' : `${data.win_loss.win_rate_percent}%`}</strong><span>Win rate</span></div></div>{!data.canonical_performance_ready && <small className="day32-ledger-note">Trade history is updating. Super Signals will not show an estimated result.</small>}</section>
+      <section className="day32-section" aria-labelledby="snapshot-title"><div className="day32-section-head"><div><span>Results</span><h2 id="snapshot-title">Win / loss snapshot</h2></div></div><div className="day32-winloss"><div><strong>{data.canonical_performance_ready ? data.win_loss.wins : '—'}</strong><span>Wins</span></div><div><strong>{data.canonical_performance_ready ? data.win_loss.losses : '—'}</strong><span>Losses</span></div><div><strong>{!data.canonical_performance_ready ? '—' : data.win_loss.win_rate_percent === null ? '0%' : `${data.win_loss.win_rate_percent}%`}</strong><span>Win rate</span></div></div>{!data.canonical_performance_ready && <small className="day32-ledger-note">Trade history is updating. Smart Signals will not show an estimated result.</small>}</section>
     </div>
 
-    <section className="day32-section" aria-labelledby="recent-trades-title"><div className="day32-section-head"><div><span>Account history</span><h2 id="recent-trades-title">Recent completed positions</h2></div></div>{data.recent_completed.length === 0 ? <div className="day32-empty day32-empty--compact"><strong>No completed Super Signals positions yet</strong></div> : <div className="day32-completed-list">{data.recent_completed.map((item) => <article key={item.position_id}><div><span className={`day32-side day32-side--${item.side.toLowerCase()}`}>{item.side}</span><strong>{item.symbol}</strong><small>TP{item.tp_index} · {shortTime(item.closed_at)}</small></div><strong className={pnlClass(item.pnl_amount)}>{item.pnl_amount === null ? 'Closed' : money(item.pnl_amount, currency)}</strong></article>)}</div>}</section>
+    <section className="day32-section" aria-labelledby="recent-trades-title"><div className="day32-section-head"><div><span>Account history</span><h2 id="recent-trades-title">Recent completed positions</h2></div></div>{data.recent_completed.length === 0 ? <div className="day32-empty day32-empty--compact"><strong>No completed Smart Signals positions yet</strong></div> : <div className="day32-completed-list">{data.recent_completed.map((item) => <article key={item.position_id}><div><span className={`day32-side day32-side--${item.side.toLowerCase()}`}>{item.side}</span><strong>{item.symbol}</strong><small>TP{item.tp_index} · {shortTime(item.closed_at)}</small></div><strong className={pnlClass(item.pnl_amount)}>{item.pnl_amount === null ? 'Closed' : money(item.pnl_amount, currency)}</strong></article>)}</div>}</section>
 
     <ManualMt5ActivityDay36 apiBaseUrl={apiBaseUrl} />
 
-    <section className="day32-section" aria-labelledby="activity-title"><div className="day32-section-head"><div><span>Super Signals</span><h2 id="activity-title">Recent activity</h2></div></div>{data.activity.length === 0 ? <div className="day32-empty day32-empty--compact"><strong>No account activity to show yet</strong></div> : <ol className="day32-activity-list">{data.activity.map((item, index) => <li key={`${item.event_type}-${item.created_at}-${index}`}><i className={`day32-activity-dot day32-activity-dot--${item.tone}`} /><div><strong>{item.label}</strong><small>{shortTime(item.created_at)}</small></div></li>)}</ol>}</section>
+    <section className="day32-section" aria-labelledby="activity-title"><div className="day32-section-head"><div><span>Smart Signals</span><h2 id="activity-title">Recent activity</h2></div></div>{data.activity.length === 0 ? <div className="day32-empty day32-empty--compact"><strong>No account activity to show yet</strong></div> : <ol className="day32-activity-list">{data.activity.map((item, index) => <li key={`${item.event_type}-${item.created_at}-${index}`}><i className={`day32-activity-dot day32-activity-dot--${item.tone}`} /><div><strong>{item.label}</strong><small>{shortTime(item.created_at)}</small></div></li>)}</ol>}</section>
 
-    <p className="day32-data-note">Your dashboard uses your detected timezone and shows your own Super Signals trading results. Capital movements are not counted as profit or loss.</p>
+    <p className="day32-data-note">Your dashboard uses your detected timezone and shows your own Smart Signals trading results. Capital movements are not counted as profit or loss.</p>
   </section>;
 }

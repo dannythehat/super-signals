@@ -258,7 +258,7 @@ export function AdminControlCentreDay35({
 
       {ownerView && <section className="day35-danger-zone" aria-labelledby="day35-danger-zone-title">
         <div className="day35-section-heading"><div><p className="eyebrow">Safety &amp; access</p><h2 id="day35-danger-zone-title">Confirmed member controls</h2></div><span>Owner only</span></div>
-        <p className="day35-danger-zone-copy">Opening member controls does nothing by itself. Revoking a member requires the exact typed phrase, stops that member's automation first, closes only mapped Super Signals positions, and records immutable Owner audit evidence.</p>
+        <p className="day35-danger-zone-copy">Opening member controls does nothing by itself. Revoking a member requires the exact typed phrase, stops that member's automation first, closes only mapped Smart Signals positions, and records immutable Owner audit evidence.</p>
         <div className="day35-danger-zone-actions">
           <button type="button" className={safetyPanel === 'members' ? 'is-open' : ''} onClick={() => setSafetyPanel(safetyPanel === 'members' ? 'none' : 'members')}><span>Member access</span><strong>Review users &amp; revoke</strong><small>Owner only · mapped positions only</small></button>
         </div>

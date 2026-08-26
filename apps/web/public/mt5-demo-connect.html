@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <meta name="robots" content="noindex,nofollow" />
-  <title>Connect Vantage MT5 Demo · Super Signals</title>
+  <title>Connect Vantage MT5 Demo · Smart Signals</title>
   <style>
     :root { color-scheme: dark; font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; background:#080a0d; color:#f4f6f8; }
     * { box-sizing:border-box; }
@@ -51,17 +51,17 @@
 <body>
 <main>
   <div class="top">
-    <a class="brand" href="/"><img src="/super-signals-logo.png" alt="Super Signals" /><span><strong>Super Signals</strong><small>Owner connection test</small></span></a>
+    <a class="brand" href="/"><img src="/super-signals-logo.png" alt="Smart Signals" /><span><strong>Smart Signals</strong><small>Owner connection test</small></span></a>
     <a class="back" href="/">← Dashboard</a>
   </div>
 
   <section class="card" aria-labelledby="title">
     <p class="eyebrow">Day 22 · connection only</p>
     <h1 id="title">Connect Vantage MT5 demo</h1>
-    <p class="intro">This proves that Super Signals can securely recognise your Vantage demo account and reconnect after the backend restarts. This Day 22 screen cannot place trades.</p>
+    <p class="intro">This proves that Smart Signals can securely recognise your Vantage demo account and reconnect after the backend restarts. This Day 22 screen cannot place trades.</p>
 
     <div class="safety">
-      <strong>Your Vantage trading password is never saved by Super Signals.</strong>
+      <strong>Your Vantage trading password is never saved by Smart Signals.</strong>
       <span>It is used only for the connection request. Nothing on this page is written to browser storage.</span>
     </div>
 
@@ -83,7 +83,7 @@
       <label>
         Vantage MT5 trading password
         <input id="password" name="password" type="password" autocomplete="off" required />
-        <small>This is the MT5 password in your Vantage account email, not your Vantage website password. It is used for the connection request and then discarded by Super Signals.</small>
+        <small>This is the MT5 password in your Vantage account email, not your Vantage website password. It is used for the connection request and then discarded by Smart Signals.</small>
       </label>
       <button id="submit" type="submit">Connect demo account</button>
     </form>
@@ -141,9 +141,9 @@
       const message = detail && typeof detail === 'object' && detail.message
         ? detail.message
         : response.status === 401
-          ? 'Please sign in to the Super Signals dashboard first.'
+          ? 'Please sign in to the Smart Signals dashboard first.'
           : response.status === 503
-            ? 'Super Signals broker connection is still being configured. Please try again shortly.'
+            ? 'Smart Signals broker connection is still being configured. Please try again shortly.'
             : 'The MT5 demo account could not be connected. Check the account number, password and exact server name.';
       throw new Error(message);
     }
@@ -185,7 +185,7 @@
       const result = await readJson(response);
       form.reset();
       renderConnection(result);
-      if (result.status === 'connected') showStatus('good', 'Connected. Super Signals can now recognise this Vantage MT5 demo account.');
+      if (result.status === 'connected') showStatus('good', 'Connected. Smart Signals can now recognise this Vantage MT5 demo account.');
       else showStatus('wait', `The account was accepted and reports ${result.status}. Use Refresh connection status shortly.`);
     } catch (error) {
       document.getElementById('password').value = '';

@@ -39,17 +39,17 @@ async function ensureServiceWorker(): Promise<ServiceWorkerRegistration> {
   const registration = await withTimeout(
     navigator.serviceWorker.register('/sw.js', { scope: '/' }),
     10000,
-    'The notification service could not start in this browser. Open Super Signals directly in Chrome and try again.',
+    'The notification service could not start in this browser. Open Smart Signals directly in Chrome and try again.',
   );
   await withTimeout(
     registration.update(),
     10000,
-    'The notification service could not update in this browser. Open Super Signals directly in Chrome and try again.',
+    'The notification service could not update in this browser. Open Smart Signals directly in Chrome and try again.',
   );
   return withTimeout(
     navigator.serviceWorker.ready,
     10000,
-    'The notification service did not become ready. Open Super Signals directly in Chrome and try again.',
+    'The notification service did not become ready. Open Smart Signals directly in Chrome and try again.',
   );
 }
 
@@ -128,7 +128,7 @@ export function PushNotificationsDay34({ apiBaseUrl }: PushNotificationsDay34Pro
       const permission = await withTimeout(
         Notification.requestPermission(),
         15000,
-        'Your browser did not open the notification permission prompt. Open Super Signals directly in Chrome and try again.',
+        'Your browser did not open the notification permission prompt. Open Smart Signals directly in Chrome and try again.',
       );
       if (permission !== 'granted') {
         setState(permission === 'denied' ? 'blocked' : 'off');
@@ -151,7 +151,7 @@ export function PushNotificationsDay34({ apiBaseUrl }: PushNotificationsDay34Pro
             applicationServerKey: urlBase64ToUint8Array(publicKey),
           }),
           20000,
-          'This browser could not create a push subscription. Open Super Signals directly in Chrome and try again.',
+          'This browser could not create a push subscription. Open Smart Signals directly in Chrome and try again.',
         );
       }
 
@@ -164,7 +164,7 @@ export function PushNotificationsDay34({ apiBaseUrl }: PushNotificationsDay34Pro
           body: JSON.stringify(subscription.toJSON()),
         }),
         15000,
-        'Super Signals could not save this device notification subscription.',
+        'Smart Signals could not save this device notification subscription.',
       );
       await readJson<{ enabled: boolean }>(response);
       setState('on');
@@ -235,7 +235,7 @@ export function PushNotificationsDay34({ apiBaseUrl }: PushNotificationsDay34Pro
       <span className="status-label">Device notifications · {statusLabel}</span>
       <h2 id="trade-alerts-heading">Trade alerts</h2>
       <p>
-        Get plain-English Super Signals updates on this device when a trade opens, changes or closes.
+        Get plain-English Smart Signals updates on this device when a trade opens, changes or closes.
         Private balances and account details are never included in push alerts.
       </p>
       {busy && phase && <p className="form-note" role="status">{busyLabel}</p>}

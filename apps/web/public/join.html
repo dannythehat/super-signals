@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
   <meta name="robots" content="noindex,nofollow" />
   <meta name="referrer" content="no-referrer" />
-  <title>Join Super Signals</title>
+  <title>Join Smart Signals</title>
   <style>
     :root { color-scheme: dark; font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; background:#020812; color:#f6f8fb; }
     * { box-sizing:border-box; }
@@ -37,10 +37,10 @@
 <body>
 <main>
   <section class="card" aria-labelledby="join-title">
-    <img class="logo" src="/super-signals-logo.png" alt="Super Signals" />
+    <img class="logo" src="/super-signals-logo.png" alt="Smart Signals" />
     <p class="eyebrow">Private invitation</p>
     <h1 id="join-title">Create your account</h1>
-    <p class="intro">Your invitation is personal to the approved email below. Create your Super Signals password, then sign in on this device.</p>
+    <p class="intro">Your invitation is personal to the approved email below. Create your Smart Signals password, then sign in on this device.</p>
 
     <div id="notice" class="notice hidden" role="status"></div>
     <div id="inviteSummary" class="invite">
@@ -60,10 +60,10 @@
       <label>Confirm password
         <input name="confirm_password" type="password" autocomplete="new-password" minlength="12" maxlength="128" required />
       </label>
-      <button id="submitButton" type="submit">Create my Super Signals account</button>
+      <button id="submitButton" type="submit">Create my Smart Signals account</button>
     </form>
     <div id="successActions" class="hidden">
-      <a class="button" href="/">Sign in to Super Signals</a>
+      <a class="button" href="/">Sign in to Smart Signals</a>
     </div>
     <p class="fine">The access key can only be used once. Never send broker passwords, MT5 passwords or other account secrets by email or Telegram.</p>
   </section>
@@ -94,7 +94,7 @@
   } else {
     approvedEmail.textContent = 'Invitation details missing';
     form.classList.add('hidden');
-    showNotice('Open the personal Super Signals invitation link from your email. The link contains the one-time invitation details needed to create your account.', 'error');
+    showNotice('Open the personal Smart Signals invitation link from your email. The link contains the one-time invitation details needed to create your account.', 'error');
   }
 
   form.addEventListener('submit', async (event) => {
@@ -129,17 +129,17 @@
         headers: { Accept: 'application/json' },
       });
       if (!logoutResponse.ok && logoutResponse.status !== 401) {
-        throw new Error('Your account was created, but this device could not clear the previous Super Signals session. Close this browser tab and open Super Signals again before signing in.');
+        throw new Error('Your account was created, but this device could not clear the previous Smart Signals session. Close this browser tab and open Smart Signals again before signing in.');
       }
 
       keyInput.value = '';
       form.classList.add('hidden');
       successActions.classList.remove('hidden');
-      showNotice(`Account created for ${email}. This device has been signed out of any previous Super Signals account. Sign in with your new password.`, 'success');
+      showNotice(`Account created for ${email}. This device has been signed out of any previous Smart Signals account. Sign in with your new password.`, 'success');
     } catch (error) {
       showNotice(error instanceof Error ? error.message : 'Account creation failed.', 'error');
       submitButton.disabled = false;
-      submitButton.textContent = 'Create my Super Signals account';
+      submitButton.textContent = 'Create my Smart Signals account';
     }
   });
 })();

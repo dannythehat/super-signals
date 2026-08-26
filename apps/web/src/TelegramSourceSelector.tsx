@@ -358,14 +358,14 @@ export function TelegramSourceSelector({
           {busyAction === 'accounts' && <p className="muted-copy">Loading Telegram readers…</p>}
 
           <div>
-            <span className="status-label">Shared across Super Signals</span>
+            <span className="status-label">Shared across Smart Signals</span>
             <h3>Added signal sources</h3>
             {!sharedCatalogueAvailable ? (
               <p className="muted-copy">The shared source catalogue is not available.</p>
             ) : sharedSources.length === 0 ? (
               <p className="muted-copy">No shared Telegram signal sources have been added yet.</p>
             ) : (
-              <div className="telegram-account-list" aria-label="Shared Super Signals sources">
+              <div className="telegram-account-list" aria-label="Shared Smart Signals sources">
                 {sharedSources.map((source) => (
                   <article className="telegram-account source-state-card" key={source.source_id}>
                     <div className="source-state-card__copy">
@@ -373,7 +373,7 @@ export function TelegramSourceSelector({
                         SHARED · {source.status.toUpperCase()}
                       </span>
                       <h3>{source.title}</h3>
-                      <small>Visible to all authorised Super Signals admins</small>
+                      <small>Visible to all authorised Smart Signals admins</small>
                       {source.status === 'shadow' && (
                         <small>
                           Shadow: {source.shadow_closed} closed · {source.shadow_wins}W/{source.shadow_losses}L ·{' '}

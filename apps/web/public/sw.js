@@ -1,5 +1,5 @@
 const CACHE_NAME = 'super-signals-static-v4';
-const STATIC_ASSETS = ['/manifest.webmanifest', '/app-icon.svg', '/super-signals-logo.png'];
+const STATIC_ASSETS = ['/manifest.webmanifest', '/smart-signals-app-icon.png', '/super-signals-logo.png'];
 const PRIVATE_PREFIXES = ['/api/', '/auth/', '/account/', '/admin/', '/owner/', '/notifications'];
 const CACHEABLE_DESTINATIONS = new Set(['image', 'font']);
 
@@ -56,7 +56,7 @@ self.addEventListener('push', (event) => {
 
   const notificationId = typeof payload.notification_id === 'string' ? payload.notification_id : null;
   const title =
-    typeof payload.title === 'string' && payload.title.trim() ? payload.title.trim() : 'Super Signals';
+    typeof payload.title === 'string' && payload.title.trim() ? payload.title.trim() : 'Smart Signals';
   const body = typeof payload.body === 'string' ? payload.body : 'Trade update available.';
   const rawUrl = typeof payload.url === 'string' ? payload.url : '/';
   const safeUrl = rawUrl.startsWith('/') ? rawUrl : '/';
@@ -64,8 +64,8 @@ self.addEventListener('push', (event) => {
   event.waitUntil(
     self.registration.showNotification(title, {
       body,
-      icon: '/app-icon.svg',
-      badge: '/app-icon.svg',
+      icon: '/smart-signals-app-icon.png',
+      badge: '/smart-signals-app-icon.png',
       tag: notificationId ? `super-signals:${notificationId}` : 'super-signals:update',
       renotify: false,
       data: {

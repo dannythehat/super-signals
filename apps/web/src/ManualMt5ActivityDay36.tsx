@@ -74,7 +74,7 @@ export function ManualMt5ActivityDay36({ apiBaseUrl }: Props) {
       <div><span>Vantage MT5</span><h2 id="manual-mt5-title">Changes made directly in MT5</h2></div>
     </div>
     {data.actions.length === 0
-      ? <div className="day32-empty day32-empty--compact"><strong>No outside-app changes detected</strong><span>If you change a Super Signals position directly in MT5, it will be reflected here without Super Signals reversing it.</span></div>
+      ? <div className="day32-empty day32-empty--compact"><strong>No outside-app changes detected</strong><span>If you change a Smart Signals position directly in MT5, it will be reflected here without Smart Signals reversing it.</span></div>
       : <ol className="day32-activity-list">{data.actions.map((item) => <li key={item.audit_id}>
           <i className="day32-activity-dot day32-activity-dot--neutral" />
           <div><strong>{item.label}</strong><span>{item.detail}</span><small>{shortTime(item.occurred_at)}</small></div>

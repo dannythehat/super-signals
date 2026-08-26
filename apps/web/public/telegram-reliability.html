@@ -4,14 +4,14 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <meta name="robots" content="noindex,nofollow" />
-  <title>Super Signals — Telegram Reliability</title>
+  <title>Smart Signals — Telegram Reliability</title>
   <style>
     *{box-sizing:border-box}body{margin:0;min-height:100vh;background:radial-gradient(circle at 50% 0,#073433 0,#02151d 32%,#020710 70%);color:#f4f7fb;font-family:Inter,ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;padding:24px 16px}.shell{width:min(760px,100%);margin:0 auto}.logo{display:block;width:min(320px,76vw);height:auto;margin:0 auto 22px}.card{background:rgba(6,17,29,.94);border:1px solid rgba(255,255,255,.1);border-radius:24px;padding:24px;box-shadow:0 30px 80px rgba(0,0,0,.35)}.eyebrow{color:#58e3cf;font-size:.78rem;letter-spacing:.2em;font-weight:800;text-transform:uppercase}h1{font-size:clamp(1.8rem,7vw,3rem);margin:10px 0 12px}.intro,.muted{color:#aab4c3;line-height:1.55}.list{display:grid;gap:12px;margin-top:22px}.source{display:grid;gap:8px;padding:16px;border:1px solid rgba(255,255,255,.09);border-radius:16px;background:#09131e}.top{display:flex;gap:10px;justify-content:space-between;align-items:flex-start;flex-wrap:wrap}.badges{display:flex;gap:8px;flex-wrap:wrap}.badge{display:inline-flex;border-radius:999px;padding:6px 9px;font-size:.72rem;font-weight:900;letter-spacing:.08em}.connected{background:rgba(67,219,151,.14);color:#aaf2d1}.disconnected{background:rgba(255,102,119,.14);color:#ffc1ca}.state{background:rgba(83,195,255,.12);color:#c8edff}.notice{padding:14px;border-radius:14px;background:rgba(255,106,124,.1);border:1px solid rgba(255,106,124,.25);color:#ffc1c9}.actions{display:flex;gap:10px;flex-wrap:wrap;margin-top:20px}.button{display:inline-block;text-decoration:none;border:1px solid rgba(255,255,255,.13);border-radius:13px;padding:12px 15px;color:#f4f7fb;background:#111c28;font-weight:800}.button.primary{background:linear-gradient(110deg,#26ded2,#7cff48);color:#03120e;border:0}
   </style>
 </head>
 <body>
   <main class="shell">
-    <img class="logo" src="/super-signals-logo.png" alt="Super Signals" />
+    <img class="logo" src="/super-signals-logo.png" alt="Smart Signals" />
     <section class="card">
       <div class="eyebrow">Day 14 acceptance</div>
       <h1>Telegram reliability</h1>
@@ -20,14 +20,14 @@
       <div id="list" class="list"><p class="muted">Loading source reliability…</p></div>
       <div class="actions">
         <button id="refresh" class="button primary" type="button">Refresh</button>
-        <a class="button" href="/">Back to Super Signals</a>
+        <a class="button" href="/">Back to Smart Signals</a>
       </div>
     </section>
   </main>
   <script>
     const list=document.getElementById('list');const notice=document.getElementById('notice');
     function esc(value){return String(value).replace(/[&<>"']/g,(c)=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))}
-    async function load(){notice.innerHTML='';list.innerHTML='<p class="muted">Loading source reliability…</p>';try{const response=await fetch('/admin/telegram/reliability/sources',{credentials:'include',headers:{Accept:'application/json'}});if(response.status===401){throw new Error('Sign in to Super Signals first, then reopen this page.')}const body=await response.json();if(!response.ok){const detail=body&&body.detail;throw new Error((detail&&detail.message)||'Reliability status could not be loaded.')}if(!Array.isArray(body)||body.length===0){list.innerHTML='<p class="muted">No shared Telegram sources have been added yet.</p>';return}list.innerHTML=body.map((item)=>`<article class="source"><div class="top"><strong>${esc(item.title)}</strong><div class="badges"><span class="badge state">${esc(String(item.status).toUpperCase())}</span><span class="badge ${item.connection_status==='connected'?'connected':'disconnected'}">${esc(String(item.connection_status).toUpperCase())}</span></div></div><small class="muted">Connected private readers: ${Number(item.connected_reader_count)||0}</small></article>`).join('')}catch(error){list.innerHTML='';notice.innerHTML=`<div class="notice">${esc(error instanceof Error?error.message:'Reliability status could not be loaded.')}</div>`}}
+    async function load(){notice.innerHTML='';list.innerHTML='<p class="muted">Loading source reliability…</p>';try{const response=await fetch('/admin/telegram/reliability/sources',{credentials:'include',headers:{Accept:'application/json'}});if(response.status===401){throw new Error('Sign in to Smart Signals first, then reopen this page.')}const body=await response.json();if(!response.ok){const detail=body&&body.detail;throw new Error((detail&&detail.message)||'Reliability status could not be loaded.')}if(!Array.isArray(body)||body.length===0){list.innerHTML='<p class="muted">No shared Telegram sources have been added yet.</p>';return}list.innerHTML=body.map((item)=>`<article class="source"><div class="top"><strong>${esc(item.title)}</strong><div class="badges"><span class="badge state">${esc(String(item.status).toUpperCase())}</span><span class="badge ${item.connection_status==='connected'?'connected':'disconnected'}">${esc(String(item.connection_status).toUpperCase())}</span></div></div><small class="muted">Connected private readers: ${Number(item.connected_reader_count)||0}</small></article>`).join('')}catch(error){list.innerHTML='';notice.innerHTML=`<div class="notice">${esc(error instanceof Error?error.message:'Reliability status could not be loaded.')}</div>`}}
     document.getElementById('refresh').addEventListener('click',()=>void load());void load();
   </script>
 </body>
