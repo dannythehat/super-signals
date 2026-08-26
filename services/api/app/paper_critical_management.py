@@ -120,6 +120,11 @@ class PaperCriticalManagementService(Day27Mt5ManagementService):
                     and item.broker_position_id is not None
                     and item.broker_position_id in broker_positions
                 )
+                pending_positions = tuple(
+                    item
+                    for item in local_positions
+                    if item.status == "pending" and item.broker_order_id is not None
+                )
 
                 action_type = str(action.get("type") or "")
                 target = str(action.get("target") or "all")
@@ -155,6 +160,38 @@ class PaperCriticalManagementService(Day27Mt5ManagementService):
                         counters["broker_actions_sent"] += 1
                         counters["positions_closed"] += 1
                         self._mark_provider_closed(item.id)
+
+                    # A provider full-close must also cancel the exact unfilled
+                    # layers for the same target. Otherwise the trade can reopen
+                    # later with its old SL after users were told it was closed.
+                    selected_pending = self._select_layer_positions(
+                        pending_positions,
+                        target,
+                        side=side,
+                    )
+                    if selected_pending:
+                        broker_orders = await self._broker_orders(
+                            token=token,
+                            account_id=account.account_id,
+                            region=region,
+                        )
+                        for item in selected_pending:
+                            assert item.broker_order_id is not None
+                            if item.broker_order_id not in broker_orders:
+                                continue
+                            await self._trade.cancel_order(
+                                token=token,
+                                account_id=account.account_id,
+                                region=region,
+                                order_id=item.broker_order_id,
+                            )
+                            counters["broker_actions_sent"] += 1
+                            counters["orders_cancelled"] += 1
+                            self._mark_pending_cancelled(
+                                signal_id,
+                                owner_user_id,
+                                item.broker_order_id,
+                            )
                     continue
 
                 if action_type in {"move_to_break_even", "edit_stop_loss"}:
@@ -187,6 +224,41 @@ class PaperCriticalManagementService(Day27Mt5ManagementService):
                         counters["broker_actions_sent"] += 1
                         counters["positions_modified"] += 1
                         self._update_local_stop(item.id, desired_sl)
+
+                    if action_type == "move_to_break_even":
+                        # An unfilled order cannot be made risk-free at its own
+                        # entry without risking broker rejection or an unsafe
+                        # fill-to-modify race. Cancel the exact targeted pending
+                        # tickets so the provider trade cannot create fresh risk
+                        # after the risk-free instruction.
+                        selected_pending = self._select_layer_positions(
+                            pending_positions,
+                            target,
+                            side=side,
+                        )
+                        if selected_pending:
+                            broker_orders = await self._broker_orders(
+                                token=token,
+                                account_id=account.account_id,
+                                region=region,
+                            )
+                            for item in selected_pending:
+                                assert item.broker_order_id is not None
+                                if item.broker_order_id not in broker_orders:
+                                    continue
+                                await self._trade.cancel_order(
+                                    token=token,
+                                    account_id=account.account_id,
+                                    region=region,
+                                    order_id=item.broker_order_id,
+                                )
+                                counters["broker_actions_sent"] += 1
+                                counters["orders_cancelled"] += 1
+                                self._mark_pending_cancelled(
+                                    signal_id,
+                                    owner_user_id,
+                                    item.broker_order_id,
+                                )
                     continue
 
                 if action_type == "edit_take_profit":

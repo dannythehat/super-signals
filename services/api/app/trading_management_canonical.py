@@ -484,6 +484,17 @@ class CanonicalTradingManagementService(PaperCriticalManagementService):
 
     @staticmethod
     def _needs_critical_management(actions: tuple[dict[str, Any], ...]) -> bool:
+        # Risk-free instructions must see broker-held pending layers as well as
+        # currently open positions. A full close has the same requirement: an
+        # unfilled layer must never survive and reopen a provider trade later.
+        for action in actions:
+            action_type = str(action.get("type") or "").strip().lower()
+            target = str(action.get("target") or "all").strip().lower()
+            if action_type == "move_to_break_even":
+                return True
+            if action_type == "close" and target in {"", "all", "remaining", "rest"}:
+                return True
+
         tokens = (
             "entry_",
             "layer",
