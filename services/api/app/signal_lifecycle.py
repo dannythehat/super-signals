@@ -108,7 +108,7 @@ def render_provider_update(
             )
             event_type = "partial_close"
         else:
-            lines.append("Close instruction received.")
+            lines.append("A separate instruction was received to close the remaining positions.")
             event_type = "close_instruction"
     elif "hold_existing_trade" in rules:
         lines.append("Trade remains active.")
