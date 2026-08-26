@@ -14,6 +14,7 @@ def test_override_excludes_only_reporting_outcomes_not_broker_evidence() -> None
     assert "performance_trade_outcomes" not in OUTCOME_NOT_OVERRIDDEN_SQL
     assert "broker_deals" not in OUTCOME_NOT_OVERRIDDEN_SQL
     assert "closed_at" in OUTCOME_NOT_OVERRIDDEN_SQL
+    assert "cutoff_at" in OUTCOME_NOT_OVERRIDDEN_SQL
 
 
 def test_today_summary_uses_reviewed_cash_override() -> None:
@@ -74,8 +75,12 @@ def test_current_day_override_returns_amount_and_reason() -> None:
     from uuid import UUID
 
     result = current_day_override(
-        _Session(_MappingResult({"realised_cash_pnl": "35.00", "reason": "incident"})),  # type: ignore[arg-type]
+        _Session(_MappingResult({"realised_cash_pnl": "35.00", "reason": "incident", "cutoff_at": datetime(2026, 8, 26, 14, 46, tzinfo=UTC)})),  # type: ignore[arg-type]
         UUID("ea604df2-f8ee-47d1-bc51-f0078dbf160d"),
         day_start=datetime(2026, 8, 25, 21, tzinfo=UTC),
     )
-    assert result == (Decimal("35.00"), "incident")
+    assert result == (
+        Decimal("35.00"),
+        "incident",
+        datetime(2026, 8, 26, 14, 46, tzinfo=UTC),
+    )

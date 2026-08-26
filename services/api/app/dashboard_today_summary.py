@@ -267,6 +267,32 @@ class TodayTradingSummaryService:
                     "end_utc": end_utc,
                 },
             ).mappings().one()
+            post_cutover_cash = Decimal("0")
+            if reporting_override is not None:
+                post_cutover_cash = Decimal(
+                    str(
+                        session.execute(
+                            text(
+                                """
+                                SELECT COALESCE(SUM(o.cash_pnl), 0)
+                                FROM performance_trade_outcomes AS o
+                                JOIN sources AS src ON src.id=o.source_id
+                                WHERE o.user_id=:user_id
+                                  AND src.status<>'revoked'
+                                  AND o.status IN ('won','lost','breakeven')
+                                  AND o.closed_at>=:cutoff_at
+                                  AND o.closed_at<:end_utc
+                                """
+                            ),
+                            {
+                                "user_id": user_id,
+                                "cutoff_at": reporting_override[2],
+                                "end_utc": end_utc,
+                            },
+                        ).scalar_one()
+                        or 0
+                    )
+                )
             history_backfilled = bool(
                 session.execute(
                     text(
@@ -360,7 +386,7 @@ class TodayTradingSummaryService:
             open=int(row["open"] or 0),
             settling=int(row["settling"] or 0),
             realised_pnl=(
-                reporting_override[0]
+                reporting_override[0] + post_cutover_cash
                 if reporting_override is not None
                 else Decimal(str(row["realised_pnl"] or 0))
             ),

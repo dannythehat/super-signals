@@ -22,6 +22,7 @@ NOT EXISTS (
     FROM performance_reporting_overrides AS reporting_override
     WHERE reporting_override.user_id=o.user_id
       AND o.closed_at IS NOT NULL
+      AND o.closed_at < reporting_override.cutoff_at
       AND (o.closed_at AT TIME ZONE reporting_override.timezone)::date
           = reporting_override.reporting_date
 )
@@ -56,12 +57,12 @@ def current_day_override(
     user_id: UUID,
     *,
     day_start: datetime,
-) -> tuple[Decimal, str] | None:
+) -> tuple[Decimal, str, datetime] | None:
     """Return the override matching the supplied local-day UTC boundary."""
     row = session.execute(
         text(
             """
-            SELECT realised_cash_pnl, reason
+            SELECT realised_cash_pnl, reason, cutoff_at
             FROM performance_reporting_overrides
             WHERE user_id=:user_id
               AND reporting_date=(:day_start AT TIME ZONE timezone)::date
@@ -72,7 +73,8 @@ def current_day_override(
     ).mappings().first()
     if row is None:
         return None
-    return Decimal(str(row["realised_cash_pnl"])), str(row["reason"])
+    cutoff_at = row["cutoff_at"]
+    return Decimal(str(row["realised_cash_pnl"])), str(row["reason"]), cutoff_at
 
 
 __all__ = [
