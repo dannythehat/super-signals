@@ -31,7 +31,7 @@ describe('Owner inline manual close controls', () => {
     render(<OwnerCloseAllButton apiBaseUrl="" openCount={4} />);
     fireEvent.click(screen.getByRole('button', { name: 'Close all 4 open positions now' }));
 
-    expect(confirm).toHaveBeenCalledWith('Close ALL 4 open Super Signals positions now at the broker\'s current market price?');
+    expect(confirm).toHaveBeenCalledWith('Close ALL 4 open Smart Signals positions now at the broker\'s current market price?');
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
