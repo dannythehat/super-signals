@@ -13,10 +13,15 @@ Some providers use a bare BUY/SELL GOLD post as a heads-up before sending the re
 structured signal. For those explicitly known provider chat IDs, a bare precursor is
 recorded as preparation only and can never create broker intent. The later detailed
 entry/SL/TP signal remains fully executable. Other providers retain their own grammar.
+
+For providers with an owner-locked risk profile, promotional ``double lot`` wording is
+not allowed to multiply the configured allocation. The provider-specific profile is the
+absolute risk policy.
 """
 
 from __future__ import annotations
 
+from dataclasses import replace
 from hashlib import sha256
 import re
 
@@ -31,6 +36,7 @@ from app.bare_gold_now_policy import PROFILE, bare_now_side
 
 # Canonical GTMO, GTMO mirror (kept paused), and FXTradingVision.
 _PRECURSOR_CHAT_IDS = frozenset({-1001640332422, -1002068685216, -1001651583302})
+_LOCKED_RISK_CHAT_IDS = frozenset({-1001640332422, -1002068685216, -1001651583302})
 _PRECURSOR_REASON = "provider_precursor_wait_for_structured_signal"
 _OPEN_GOLD_SIDE = re.compile(r"\b(BUY|BUYS|SELL|SELLS)\b", re.IGNORECASE)
 
@@ -71,17 +77,25 @@ class ProductionAiMessagePipeline(CanonicalAiMessagePipeline):
             ).scalar_one()
         )
 
-    def _is_precursor_source(self, source_id) -> bool:
-        """Identify provider grammars known to announce before a structured signal."""
+    def _source_chat_id(self, source_id) -> int | None:
         with self._session_factory() as session:
             chat_id = session.execute(
                 text("SELECT chat_id FROM sources WHERE id=:source_id LIMIT 1"),
                 {"source_id": source_id},
             ).scalar_one_or_none()
         try:
-            return int(chat_id) in _PRECURSOR_CHAT_IDS
+            return int(chat_id)
         except (TypeError, ValueError):
-            return False
+            return None
+
+    def _is_precursor_source(self, source_id) -> bool:
+        """Identify provider grammars known to announce before a structured signal."""
+        chat_id = self._source_chat_id(source_id)
+        return chat_id in _PRECURSOR_CHAT_IDS if chat_id is not None else False
+
+    def _has_locked_risk_profile(self, source_id) -> bool:
+        chat_id = self._source_chat_id(source_id)
+        return chat_id in _LOCKED_RISK_CHAT_IDS if chat_id is not None else False
 
     @staticmethod
     def _precursor_side(raw_text: str) -> str | None:
@@ -140,6 +154,19 @@ class ProductionAiMessagePipeline(CanonicalAiMessagePipeline):
             source="deterministic_source_policy",
             raw_text_sha256=sha256((raw_text or "").encode("utf-8")).hexdigest(),
         )
+
+    def _enforce_locked_risk_semantics(
+        self,
+        source_id,
+        decision: AiMessageDecision,
+    ) -> AiMessageDecision:
+        if decision.decision != "new_trade" or not self._has_locked_risk_profile(source_id):
+            return decision
+        extracted = dict(decision.extracted or {})
+        if extracted.get("double_lot") is False:
+            return decision
+        extracted["double_lot"] = False
+        return replace(decision, extracted=extracted)
 
     def _decide(
         self,
@@ -236,6 +263,7 @@ class ProductionAiMessagePipeline(CanonicalAiMessagePipeline):
             )
 
         semantic = self._apply_profile(semantic, profile)
+        semantic = self._enforce_locked_risk_semantics(source_id, semantic)
         return self._literal_order_type_precedence(semantic, raw_text)
 
 
