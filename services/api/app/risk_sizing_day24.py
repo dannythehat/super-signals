@@ -19,6 +19,7 @@ _ALLOWED_BASE_RISK_PERCENTS = (
     Decimal("1"),
     Decimal("1.5"),
     Decimal("2"),
+    Decimal("3"),
     Decimal("4"),
 )
 _DOUBLE_LOT_MULTIPLIER = Decimal("2")

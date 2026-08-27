@@ -38,6 +38,9 @@ class _SessionFactory:
 
 
 class _CompleteSignalSupervisor:
+    def __init__(self, *, double_lot: bool = False):
+        self._double_lot = double_lot
+
     def decide_with_active_context(self, **_kwargs):
         return AiMessageDecision(
             decision="new_trade",
@@ -52,7 +55,7 @@ class _CompleteSignalSupervisor:
                 "entry_high": "4356",
                 "stop_loss": "4346",
                 "take_profits": ["4358", "4360", "4362", "4364"],
-                "double_lot": False,
+                "double_lot": self._double_lot,
                 "update_type": None,
                 "update_target": None,
                 "update_value": None,
@@ -71,7 +74,7 @@ class _CompleteSignalPipeline(ProductionAiMessagePipeline):
         return None
 
     def _source_context(self, *, source_id, telegram_message_id):
-        return "GTMO VIP 🤴🏽", []
+        return "Known provider", []
 
     def _active_trade_context(self, *, source_id):
         return []
@@ -81,6 +84,13 @@ def _pipeline(chat_id: int) -> ProductionAiMessagePipeline:
     pipeline = object.__new__(ProductionAiMessagePipeline)
     pipeline._session_factory = _SessionFactory(chat_id)
     pipeline._supervisor = None
+    return pipeline
+
+
+def _complete_pipeline(chat_id: int, *, double_lot: bool = False) -> ProductionAiMessagePipeline:
+    pipeline = object.__new__(_CompleteSignalPipeline)
+    pipeline._session_factory = _SessionFactory(chat_id)
+    pipeline._supervisor = _CompleteSignalSupervisor(double_lot=double_lot)
     return pipeline
 
 
@@ -100,7 +110,7 @@ def test_plain_gtmo_bare_buy_now_is_precursor_not_trade() -> None:
     result = _decide(_pipeline(-1001640332422), "Gold buy now")
     assert result.decision == "preparation"
     assert result.action == "ignore"
-    assert result.reason == "gtmo_precursor_wait_for_structured_signal"
+    assert result.reason == "provider_precursor_wait_for_structured_signal"
     assert result.extracted["side"] == "BUY"
     assert "execution_profile" not in result.extracted
 
@@ -109,7 +119,22 @@ def test_stylized_gtmo_mirror_has_same_precursor_grammar_if_reenabled() -> None:
     result = _decide(_pipeline(-1002068685216), "Gold sell now")
     assert result.decision == "preparation"
     assert result.action == "ignore"
-    assert result.reason == "gtmo_precursor_wait_for_structured_signal"
+    assert result.reason == "provider_precursor_wait_for_structured_signal"
+    assert result.extracted["side"] == "SELL"
+
+
+def test_fx_open_gold_buys_is_precursor_not_trade() -> None:
+    result = _decide(_pipeline(-1001651583302), "OPEN GOLD BUYS NOW")
+    assert result.decision == "preparation"
+    assert result.action == "ignore"
+    assert result.reason == "provider_precursor_wait_for_structured_signal"
+    assert result.extracted["side"] == "BUY"
+
+
+def test_fx_open_new_gold_sells_here_is_precursor_not_trade() -> None:
+    result = _decide(_pipeline(-1001651583302), "OPEN NEW GOLD SELLS HERE.")
+    assert result.decision == "preparation"
+    assert result.action == "ignore"
     assert result.extracted["side"] == "SELL"
 
 
@@ -122,17 +147,45 @@ def test_identical_bare_now_from_other_provider_still_executes() -> None:
 
 
 def test_full_gtmo_signal_is_not_swallowed_by_precursor_policy() -> None:
-    pipeline = object.__new__(_CompleteSignalPipeline)
-    pipeline._session_factory = _SessionFactory(-1001640332422)
-    pipeline._supervisor = _CompleteSignalSupervisor()
     raw = (
         "Gold buy now 4356 - 4352\n\n"
         "SL: 4346\n\n"
         "TP: 4358\nTP: 4360\nTP: 4362\nTP: 4364\nTP: open"
     )
-    result = _decide(pipeline, raw)
+    result = _decide(_complete_pipeline(-1001640332422), raw)
     assert result.decision == "new_trade"
     assert result.action == "execute"
     assert result.extracted["entry_low"] == "4352"
     assert result.extracted["entry_high"] == "4356"
     assert result.extracted["stop_loss"] == "4346"
+
+
+def test_full_fx_signal_is_not_swallowed_by_precursor_policy() -> None:
+    raw = (
+        "NEW TRADE IDEA\n\nXAUUSD BUY 4356\n\n"
+        "TP 1 4358\nTP 2 4360\nTP 3 4364\n\nSL @ 4346"
+    )
+    result = _decide(_complete_pipeline(-1001651583302), raw)
+    assert result.decision == "new_trade"
+    assert result.action == "execute"
+    assert result.extracted["stop_loss"] == "4346"
+
+
+def test_locked_fx_risk_ignores_double_lot_wording() -> None:
+    raw = (
+        "NEW TRADE IDEA\n\nXAUUSD BUY 4356\n\n"
+        "TP 1 4358\nTP 2 4360\nTP 3 4364\n\nSL @ 4346\nDOUBLE LOTSIZE"
+    )
+    result = _decide(_complete_pipeline(-1001651583302, double_lot=True), raw)
+    assert result.decision == "new_trade"
+    assert result.action == "execute"
+    assert result.extracted["double_lot"] is False
+
+
+def test_locked_gtmo_risk_ignores_double_lot_wording() -> None:
+    raw = (
+        "Gold buy now 4356 - 4352\nSL: 4346\n"
+        "TP: 4358\nTP: 4360\nTP: 4362\nTP: 4364\nTP: open\nDOUBLE LOT"
+    )
+    result = _decide(_complete_pipeline(-1001640332422, double_lot=True), raw)
+    assert result.extracted["double_lot"] is False
