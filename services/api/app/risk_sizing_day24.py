@@ -19,9 +19,9 @@ _ALLOWED_BASE_RISK_PERCENTS = (
     Decimal("1"),
     Decimal("1.5"),
     Decimal("2"),
-    Decimal("3"),
     Decimal("4"),
 )
+_ALLOWED_PROFILE_RISK_PERCENTS = _ALLOWED_BASE_RISK_PERCENTS + (Decimal("3"),)
 _DOUBLE_LOT_MULTIPLIER = Decimal("2")
 _ONE_HUNDRED = Decimal("100")
 _ZERO = Decimal("0")
@@ -113,6 +113,7 @@ class Day24RiskSizer:
         volume_rules: BrokerVolumeRules,
         signal_requests_double_lot: bool = False,
         double_lot_approved: bool = False,
+        _allow_profile_risk: bool = False,
     ) -> Day24RiskSizingResult:
         balance_value = _decimal(balance)
         base_risk = _decimal(risk_percent)
@@ -130,6 +131,7 @@ class Day24RiskSizer:
             tick_value=tick_value_value,
             take_profit_count=take_profit_count,
             volume_rules=volume_rules,
+            allow_profile_risk=_allow_profile_risk,
         )
 
         double_lot_applied = signal_requests_double_lot and double_lot_approved
@@ -215,6 +217,7 @@ class Day24RiskSizer:
                 tick_value=tick_value,
                 take_profit_count=1,
                 volume_rules=volume_rules,
+                _allow_profile_risk=True,
             )
             for risk in risk_percents
         )
@@ -284,10 +287,12 @@ class Day24RiskSizer:
         tick_value: Decimal,
         take_profit_count: int,
         volume_rules: BrokerVolumeRules,
+        allow_profile_risk: bool,
     ) -> None:
         if balance <= _ZERO:
             raise Day24RiskSizingError("balance_invalid")
-        if base_risk not in _ALLOWED_BASE_RISK_PERCENTS:
+        allowed = _ALLOWED_PROFILE_RISK_PERCENTS if allow_profile_risk else _ALLOWED_BASE_RISK_PERCENTS
+        if base_risk not in allowed:
             raise Day24RiskSizingError("risk_percent_invalid")
         if entry <= _ZERO or stop <= _ZERO or entry == stop:
             raise Day24RiskSizingError("signal_entry_stop_invalid")
