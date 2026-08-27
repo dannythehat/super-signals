@@ -1,6 +1,6 @@
 """Allow approved provider-specific 5% position risk.
 
-Revision ID: 0036_allow_provider_five_percent_positions
+Revision ID: 0036_provider_risk_5pct
 Revises: 0035_enable_core_paper_providers
 Create Date: 2026-08-27
 
@@ -14,7 +14,7 @@ from collections.abc import Sequence
 
 from alembic import op
 
-revision: str = "0036_allow_provider_five_percent_positions"
+revision: str = "0036_provider_risk_5pct"
 down_revision: str | None = "0035_enable_core_paper_providers"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
