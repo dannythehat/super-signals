@@ -8,7 +8,11 @@ from app.provider_risk_policy import (
     provider_side_enabled,
     provider_tp_limit,
 )
-from app.risk_sizing_day24 import BrokerVolumeRules, Day24RiskSizer
+from app.risk_sizing_day24 import (
+    BrokerVolumeRules,
+    Day24RiskSizer,
+    Day24RiskSizingError,
+)
 
 
 def test_fxtradingvision_buy_policy_is_exact_4_4_2() -> None:
@@ -27,8 +31,22 @@ def test_fxtradingvision_buy_policy_is_exact_4_4_2() -> None:
 ])
 def test_owner_disabled_provider_sells_fail_closed(source: str) -> None:
     assert not provider_side_enabled(source_name=source, side="SELL")
-    with pytest.raises(ValueError, match="provider_sell_disabled"):
-        provider_risk_profile(source_name=source, side="SELL", position_count=3)
+    profile = provider_risk_profile(source_name=source, side="SELL", position_count=3)
+    assert profile == (Decimal("0"), Decimal("0"), Decimal("0"))
+
+    with pytest.raises(Day24RiskSizingError, match="risk_percent_invalid"):
+        Day24RiskSizer.size(
+            balance=Decimal("1500"),
+            risk_percent=profile[0],
+            signal_entry_price=Decimal("100"),
+            signal_stop_loss=Decimal("90"),
+            tick_size=Decimal("1"),
+            tick_value=Decimal("1"),
+            take_profit_count=1,
+            volume_rules=BrokerVolumeRules.from_values(
+                minimum="0.01", maximum="100", step="0.01"
+            ),
+        )
 
 
 def test_other_provider_sell_keeps_standard_policy() -> None:
