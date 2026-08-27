@@ -9,15 +9,16 @@ non-actionable instead of being re-read by an older restrictive parser.
 Recovery/idempotency helpers are owned explicitly here so production never depends on a
 removed patch or superseded pipeline generation for durable-decision lookup.
 
-GTMO has one observed provider-specific grammar exception: the standalone whole-message
-``Gold buy now`` / ``Gold sell now`` post is a precursor to the structured signal that
-follows. That exception is keyed only by the two known GTMO Telegram chat IDs. The exact
-same bare NOW wording remains an executable command for every other provider.
+Some providers use a bare BUY/SELL GOLD post as a heads-up before sending the real
+structured signal. For those explicitly known provider chat IDs, a bare precursor is
+recorded as preparation only and can never create broker intent. The later detailed
+entry/SL/TP signal remains fully executable. Other providers retain their own grammar.
 """
 
 from __future__ import annotations
 
 from hashlib import sha256
+import re
 
 from sqlalchemy import text
 
@@ -28,8 +29,10 @@ from app.ai_message_pipeline_canonical import (
 from app.ai_message_supervisor import AiMessageDecision, AiSupervisorError
 from app.bare_gold_now_policy import PROFILE, bare_now_side
 
-_GTMO_PRECURSOR_CHAT_IDS = frozenset({-1001640332422, -1002068685216})
-_GTMO_PRECURSOR_REASON = "gtmo_precursor_wait_for_structured_signal"
+# Canonical GTMO, GTMO mirror (kept paused), and FXTradingVision.
+_PRECURSOR_CHAT_IDS = frozenset({-1001640332422, -1002068685216, -1001651583302})
+_PRECURSOR_REASON = "provider_precursor_wait_for_structured_signal"
+_OPEN_GOLD_SIDE = re.compile(r"\b(BUY|BUYS|SELL|SELLS)\b", re.IGNORECASE)
 
 
 class ProductionAiMessagePipeline(CanonicalAiMessagePipeline):
@@ -68,26 +71,54 @@ class ProductionAiMessagePipeline(CanonicalAiMessagePipeline):
             ).scalar_one()
         )
 
-    def _is_gtmo_precursor_source(self, source_id) -> bool:
-        """Identify the logical GTMO provider by stable Telegram chat identity only."""
+    def _is_precursor_source(self, source_id) -> bool:
+        """Identify provider grammars known to announce before a structured signal."""
         with self._session_factory() as session:
             chat_id = session.execute(
                 text("SELECT chat_id FROM sources WHERE id=:source_id LIMIT 1"),
                 {"source_id": source_id},
             ).scalar_one_or_none()
         try:
-            return int(chat_id) in _GTMO_PRECURSOR_CHAT_IDS
+            return int(chat_id) in _PRECURSOR_CHAT_IDS
         except (TypeError, ValueError):
             return False
 
     @staticmethod
-    def _gtmo_precursor_decision(raw_text: str, side: str) -> AiMessageDecision:
-        """Record GTMO's bare NOW heads-up without creating broker intent."""
+    def _precursor_side(raw_text: str) -> str | None:
+        """Return BUY/SELL only for a bare heads-up lacking trade geometry."""
+        text_value = " ".join((raw_text or "").strip().split())
+        if not text_value:
+            return None
+
+        # A real structured signal must never be swallowed by this protection.
+        upper = text_value.upper()
+        if any(character.isdigit() for character in upper):
+            return None
+        if re.search(r"\b(?:SL|TP|ENTRY|STOP\s*LOSS|TAKE\s*PROFIT)\b", upper):
+            return None
+
+        exact_now = bare_now_side(raw_text)
+        if exact_now is not None:
+            return exact_now
+
+        # FXTradingVision commonly says e.g. OPEN GOLD BUYS / OPEN GOLD SELLS NOW
+        # before posting NEW TRADE IDEA with the entry, stop and targets.
+        if not upper.startswith("OPEN") or "GOLD" not in upper:
+            return None
+        match = _OPEN_GOLD_SIDE.search(upper)
+        if match is None:
+            return None
+        token = match.group(1).upper()
+        return "BUY" if token.startswith("BUY") else "SELL"
+
+    @staticmethod
+    def _precursor_decision(raw_text: str, side: str) -> AiMessageDecision:
+        """Record a provider heads-up without creating signal/broker intent."""
         return AiMessageDecision(
             decision="preparation",
             action="ignore",
             confidence=1.0,
-            reason=_GTMO_PRECURSOR_REASON,
+            reason=_PRECURSOR_REASON,
             extracted={
                 "symbol": "XAUUSD",
                 "side": side,
@@ -103,7 +134,7 @@ class ProductionAiMessagePipeline(CanonicalAiMessagePipeline):
                 "update_value": None,
                 "provider_claimed_pips": None,
             },
-            model="canonical-deterministic-source-policy-v1",
+            model="canonical-deterministic-source-policy-v2",
             response_id=None,
             latency_ms=0,
             source="deterministic_source_policy",
@@ -125,10 +156,12 @@ class ProductionAiMessagePipeline(CanonicalAiMessagePipeline):
         if management is not None:
             return management
 
+        precursor_side = self._precursor_side(raw_text)
+        if precursor_side is not None and self._is_precursor_source(source_id):
+            return self._precursor_decision(raw_text, precursor_side)
+
         side = bare_now_side(raw_text)
         if side is not None:
-            if self._is_gtmo_precursor_source(source_id):
-                return self._gtmo_precursor_decision(raw_text, side)
             return AiMessageDecision(
                 decision="new_trade",
                 action="execute",
