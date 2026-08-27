@@ -40,6 +40,7 @@ from app.risk_sizing_day24 import (
     Day24RiskSizingError,
     Day24RiskSizingResult,
 )
+from app.provider_risk_policy import provider_risk_profile, provider_tp_limit
 from app.trade_preflight_day25 import Day25TradePreflightService
 from app.trading_accounting import CanonicalTradingAccountingService
 
@@ -235,6 +236,11 @@ class Day26Mt5ExecutionService:
                 broker_balance=live_state.account.balance,
             )
         targets = list(signal.take_profits) + ([None] if signal.has_open_runner else [])
+        risk_profile = provider_risk_profile(
+            source_name=self._source_name(signal.signal_id),
+            side=signal.side,
+            position_count=len(targets),
+        )
         target_sizings = {
             tp_index: self._size_signal(
                 signal=signal,
@@ -242,7 +248,11 @@ class Day26Mt5ExecutionService:
                 balance=risk_balance,
                 price_loss_tick_value=live_state.price.loss_tick_value,
                 specification=specification,
-                risk_percent=target_risk_percent(risk_percent, tp_index),
+                risk_percent=(
+                    risk_profile[tp_index - 1]
+                    if risk_profile is not None
+                    else target_risk_percent(risk_percent, tp_index)
+                ),
                 double_lot_approved=double_lot_approved,
             )
             for tp_index, _ in enumerate(targets, start=1)
@@ -441,12 +451,16 @@ class Day26Mt5ExecutionService:
             signal_row = session.execute(
                 text(
                     """
-                    SELECT id, symbol, side, order_type, entry_low, entry_high,
-                           stop_loss, take_profits, has_open_runner, parser_status,
-                           risk_multiplier, source_revision_index, source_posted_at
-                    FROM signals
-                    WHERE id = :signal_id
-                    FOR UPDATE
+                    SELECT sig.id, sig.symbol, sig.side, sig.order_type,
+                           sig.entry_low, sig.entry_high, sig.stop_loss,
+                           sig.take_profits, sig.has_open_runner, sig.parser_status,
+                           sig.risk_multiplier, sig.source_revision_index,
+                           sig.source_posted_at,
+                           COALESCE(src.source_alias, src.chat_title, '') AS source_name
+                    FROM signals sig
+                    LEFT JOIN sources src ON src.id = sig.source_id
+                    WHERE sig.id = :signal_id
+                    FOR UPDATE OF sig
                     """
                 ),
                 {"signal_id": signal_id},
@@ -527,6 +541,12 @@ class Day26Mt5ExecutionService:
         )
         take_profits = self._take_profits(signal_row["take_profits"])
         has_open_runner = bool(signal_row["has_open_runner"])
+        tp_limit = provider_tp_limit(
+            source_name=str(signal_row["source_name"] or ""), side=side
+        )
+        if tp_limit is not None:
+            take_profits = take_profits[:tp_limit]
+            has_open_runner = False
         if not self._directionally_valid(
             side=side,
             entry_low=entry_low,
@@ -662,6 +682,22 @@ class Day26Mt5ExecutionService:
             )
         except Day24RiskSizingError as exc:
             raise Day26ExecutionError(exc.code) from exc
+
+    def _source_name(self, signal_id: UUID) -> str:
+        with self._session_factory() as session:
+            value = session.execute(
+                text(
+                    """
+                    SELECT COALESCE(src.source_alias, src.chat_title, '')
+                    FROM signals sig
+                    LEFT JOIN sources src ON src.id = sig.source_id
+                    WHERE sig.id = :signal_id
+                    LIMIT 1
+                    """
+                ),
+                {"signal_id": signal_id},
+            ).scalar_one_or_none()
+        return str(value or "")
 
     def _create_planned_positions(
         self,
