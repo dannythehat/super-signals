@@ -10,6 +10,7 @@ from __future__ import annotations
 from decimal import Decimal
 
 _FX_BUY_PROFILE = (Decimal("4"), Decimal("4"), Decimal("2"))
+_DISABLED_PROFILE_RISK = Decimal("0")
 
 
 def _key(value: str) -> str:
@@ -49,10 +50,18 @@ def provider_risk_profile(
     side: str,
     position_count: int,
 ) -> tuple[Decimal, ...] | None:
+    if position_count < 1:
+        raise ValueError("provider_position_count_invalid")
+
+    # The execution engine already converts an invalid risk percentage into the
+    # canonical Day26ExecutionError before any broker mutation. Returning a zero-risk
+    # sentinel profile therefore blocks both owner-paper and member execution through
+    # the normal fail-closed path instead of leaking a generic policy exception.
     if not provider_side_enabled(source_name=source_name, side=side):
-        raise ValueError("provider_sell_disabled")
+        return (_DISABLED_PROFILE_RISK,) * position_count
+
     if not is_fxtradingvision_buy(source_name=source_name, side=side):
         return None
-    if position_count < 1 or position_count > len(_FX_BUY_PROFILE):
+    if position_count > len(_FX_BUY_PROFILE):
         raise ValueError("fxtradingvision_buy_position_count_invalid")
     return _FX_BUY_PROFILE[:position_count]
