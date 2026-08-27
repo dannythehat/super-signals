@@ -1,16 +1,31 @@
 """Approved provider-specific execution/risk policy.
 
 Owner-approved provider rules are exact and fail closed before broker submission.
-FXTradingVision and GTMO BUY allocations are explicit. SELL is disabled for both.
+FXTradingVision, GTMO and TIG allocations are explicit. FX/GTMO SELL is disabled;
+TIG trades only the approved TP subset for each direction.
 """
 
 from __future__ import annotations
 
 from decimal import Decimal
 
-_FX_BUY_PROFILE = (Decimal("4"), Decimal("4"), Decimal("2"))
-_GTMO_BUY_HEAD = (Decimal("4"), Decimal("3"), Decimal("2"))
-_GTMO_ADDITIONAL_LEG_RISK = Decimal("0.5")
+from app.risk_sizing_day24 import ApprovedProviderRisk
+
+
+def _approved(value: str) -> ApprovedProviderRisk:
+    return ApprovedProviderRisk(value)
+
+
+_FX_BUY_PROFILE = (_approved("4"), _approved("4"), _approved("2"))
+_GTMO_BUY_HEAD = (_approved("4"), _approved("3"), _approved("2"))
+_GTMO_ADDITIONAL_LEG_RISK = _approved("0.5")
+_TIG_BUY_PROFILE = (
+    _approved("4"),
+    _approved("3"),
+    _approved("2"),
+    _approved("1"),
+)
+_TIG_SELL_PROFILE = (_approved("5"), _approved("5"))
 _DISABLED_PROFILE_RISK = Decimal("0")
 
 
@@ -26,12 +41,24 @@ def _is_gtmo(*, source_name: str) -> bool:
     return _key(source_name).startswith("gtmo")
 
 
+def _is_tig(*, source_name: str) -> bool:
+    return _key(source_name).startswith("tigsasiatrades")
+
+
 def is_fxtradingvision_buy(*, source_name: str, side: str) -> bool:
     return _is_fxtradingvision(source_name=source_name) and side.strip().upper() == "BUY"
 
 
 def is_gtmo_buy(*, source_name: str, side: str) -> bool:
     return _is_gtmo(source_name=source_name) and side.strip().upper() == "BUY"
+
+
+def is_tig_buy(*, source_name: str, side: str) -> bool:
+    return _is_tig(source_name=source_name) and side.strip().upper() == "BUY"
+
+
+def is_tig_sell(*, source_name: str, side: str) -> bool:
+    return _is_tig(source_name=source_name) and side.strip().upper() == "SELL"
 
 
 def provider_side_enabled(*, source_name: str, side: str) -> bool:
@@ -46,9 +73,15 @@ def provider_side_enabled(*, source_name: str, side: str) -> bool:
 
 
 def provider_tp_limit(*, source_name: str, side: str) -> int | None:
-    # FX BUY is intentionally limited to TP1-TP3. GTMO keeps every provider-supplied
-    # additional numeric target/runner; those additional legs receive 0.5% each.
-    return 3 if is_fxtradingvision_buy(source_name=source_name, side=side) else None
+    # Explicit limits remove all later numeric targets and any open runner before
+    # sizing/broker submission. GTMO keeps every supplied additional target/runner.
+    if is_fxtradingvision_buy(source_name=source_name, side=side):
+        return 3
+    if is_tig_buy(source_name=source_name, side=side):
+        return 4
+    if is_tig_sell(source_name=source_name, side=side):
+        return 2
+    return None
 
 
 def _gtmo_profile(position_count: int) -> tuple[Decimal, ...]:
@@ -80,5 +113,15 @@ def provider_risk_profile(
 
     if is_gtmo_buy(source_name=source_name, side=side):
         return _gtmo_profile(position_count)
+
+    if is_tig_buy(source_name=source_name, side=side):
+        if position_count > len(_TIG_BUY_PROFILE):
+            raise ValueError("tig_buy_position_count_invalid")
+        return _TIG_BUY_PROFILE[:position_count]
+
+    if is_tig_sell(source_name=source_name, side=side):
+        if position_count > len(_TIG_SELL_PROFILE):
+            raise ValueError("tig_sell_position_count_invalid")
+        return _TIG_SELL_PROFILE[:position_count]
 
     return None
