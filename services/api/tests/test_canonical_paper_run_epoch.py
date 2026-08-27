@@ -62,9 +62,9 @@ def test_paper_run_origin_is_fixed_to_accepted_clean_start(monkeypatch: pytest.M
 
     epoch = active_paper_epoch(OWNER)
     assert epoch is not None
-    assert epoch.started_at == datetime(2026, 8, 19, 8, 12, tzinfo=UTC)
+    assert epoch.started_at == datetime(2026, 8, 27, 8, 30, tzinfo=UTC)
     assert epoch.started_at == PAPER_RUN_STARTED_AT
-    assert epoch.baseline_balance == Decimal("1000")
+    assert epoch.baseline_balance == Decimal("1500")
     assert epoch.baseline_balance == PAPER_RUN_BASELINE_BALANCE
     assert active_paper_epoch(OTHER) is None
 
@@ -98,7 +98,7 @@ def test_origin_day_all_windows_accumulate_from_same_permanent_start(
 ) -> None:
     monkeypatch.setenv("SUPER_SIGNALS_DAY28_OWNER_ID", str(OWNER))
     service = _PerformanceHarness()
-    now = datetime(2026, 8, 19, 18, 0, tzinfo=UTC)
+    now = datetime(2026, 8, 27, 18, 0, tzinfo=UTC)
 
     windows = service.read_windows(OWNER, now=now)
 
@@ -118,7 +118,7 @@ def test_origin_day_all_windows_accumulate_from_same_permanent_start(
 def test_future_windows_can_never_reach_before_paper_origin(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("SUPER_SIGNALS_DAY28_OWNER_ID", str(OWNER))
     service = _PerformanceHarness()
-    now = datetime(2026, 8, 26, 12, 0, tzinfo=UTC)
+    now = datetime(2026, 9, 3, 12, 0, tzinfo=UTC)
 
     service.read_windows(OWNER, now=now)
 
@@ -236,7 +236,7 @@ def test_today_session_starts_at_permanent_epoch_on_origin_day(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setenv("SUPER_SIGNALS_DAY28_OWNER_ID", str(OWNER))
-    day_start = datetime(2026, 8, 18, 21, 0, tzinfo=UTC)
+    day_start = datetime(2026, 8, 26, 21, 0, tzinfo=UTC)
     day_end = day_start + timedelta(days=1)
 
     monkeypatch.setattr(
