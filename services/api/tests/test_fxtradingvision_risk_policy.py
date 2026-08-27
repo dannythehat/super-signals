@@ -5,6 +5,7 @@ import pytest
 from app.provider_risk_policy import (
     is_fxtradingvision_buy,
     provider_risk_profile,
+    provider_side_enabled,
     provider_tp_limit,
 )
 from app.risk_sizing_day24 import BrokerVolumeRules, Day24RiskSizer
@@ -13,19 +14,27 @@ from app.risk_sizing_day24 import BrokerVolumeRules, Day24RiskSizer
 def test_fxtradingvision_buy_policy_is_exact_4_4_2() -> None:
     source = "FXTradingVision l Forex & Crypto Signals 🚀"
     assert is_fxtradingvision_buy(source_name=source, side="BUY")
+    assert provider_side_enabled(source_name=source, side="BUY")
     assert provider_tp_limit(source_name=source, side="BUY") == 3
     assert provider_risk_profile(
         source_name=source, side="BUY", position_count=3
     ) == (Decimal("4"), Decimal("4"), Decimal("2"))
 
 
-def test_fx_policy_does_not_touch_sell_or_other_providers() -> None:
-    source = "FXTradingVision l Forex & Crypto Signals 🚀"
+@pytest.mark.parametrize("source", [
+    "FXTradingVision l Forex & Crypto Signals 🚀",
+    "GTMO VIP",
+])
+def test_owner_disabled_provider_sells_fail_closed(source: str) -> None:
+    assert not provider_side_enabled(source_name=source, side="SELL")
+    with pytest.raises(ValueError, match="provider_sell_disabled"):
+        provider_risk_profile(source_name=source, side="SELL", position_count=3)
+
+
+def test_other_provider_sell_keeps_standard_policy() -> None:
+    assert provider_side_enabled(source_name="Another Provider", side="SELL")
     assert provider_risk_profile(
-        source_name=source, side="SELL", position_count=3
-    ) is None
-    assert provider_risk_profile(
-        source_name="GTMO VIP", side="BUY", position_count=3
+        source_name="Another Provider", side="SELL", position_count=3
     ) is None
 
 
