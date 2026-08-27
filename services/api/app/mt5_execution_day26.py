@@ -39,6 +39,11 @@ from app.risk_sizing_day24 import (
     Day24RiskSizingError,
     Day24RiskSizingResult,
 )
+from app.provider_risk_policy import (
+    is_fxtradingvision_buy,
+    provider_risk_profile,
+    provider_tp_limit,
+)
 from app.trade_preflight_day25 import Day25TradePreflightService
 
 logger = logging.getLogger(__name__)
@@ -256,7 +261,7 @@ class Day26Mt5ExecutionService:
                     region=live_state.region,
                     side=signal.side,
                     symbol=signal.symbol,
-                    volume=float(sizing.volume),
+                    volume=float(self._leg_sizing(sizing, item.tp_index).volume),
                     stop_loss=float(signal.stop_loss),
                     take_profit=(
                         float(item.take_profit)
@@ -413,12 +418,16 @@ class Day26Mt5ExecutionService:
             signal_row = session.execute(
                 text(
                     """
-                    SELECT id, symbol, side, order_type, entry_low, entry_high,
-                           stop_loss, take_profits, has_open_runner, parser_status,
-                           risk_multiplier, source_revision_index, source_posted_at
-                    FROM signals
-                    WHERE id = :signal_id
-                    FOR UPDATE
+                    SELECT sig.id, sig.symbol, sig.side, sig.order_type,
+                           sig.entry_low, sig.entry_high, sig.stop_loss,
+                           sig.take_profits, sig.has_open_runner, sig.parser_status,
+                           sig.risk_multiplier, sig.source_revision_index,
+                           sig.source_posted_at,
+                           COALESCE(src.source_alias, src.chat_title, '') AS source_name
+                    FROM signals sig
+                    LEFT JOIN sources src ON src.id = sig.source_id
+                    WHERE sig.id = :signal_id
+                    FOR UPDATE OF sig
                     """
                 ),
                 {"signal_id": signal_id},
@@ -499,6 +508,11 @@ class Day26Mt5ExecutionService:
         )
         take_profits = self._take_profits(signal_row["take_profits"])
         has_open_runner = bool(signal_row["has_open_runner"])
+        source_name = str(signal_row["source_name"] or "")
+        tp_limit = provider_tp_limit(source_name=source_name, side=side)
+        if tp_limit is not None:
+            take_profits = take_profits[:tp_limit]
+            has_open_runner = False
         if not self._directionally_valid(
             side=side,
             entry_low=entry_low,
@@ -620,6 +634,21 @@ class Day26Mt5ExecutionService:
                 maximum=specification.get("maxVolume"),
                 step=specification.get("volumeStep"),
             )
+            profile = provider_risk_profile(
+                source_name=self._source_name(signal.signal_id),
+                side=signal.side,
+                position_count=signal.position_count,
+            )
+            if profile is not None:
+                return Day24RiskSizer.size_profile(
+                    balance=balance,
+                    risk_percents=profile,
+                    signal_entry_price=execution_entry,
+                    signal_stop_loss=signal.stop_loss,
+                    tick_size=specification.get("tickSize"),
+                    tick_value=price_loss_tick_value,
+                    volume_rules=rules,
+                )
             return Day24RiskSizer.size(
                 balance=balance,
                 risk_percent=risk_percent,
@@ -634,6 +663,29 @@ class Day26Mt5ExecutionService:
             )
         except Day24RiskSizingError as exc:
             raise Day26ExecutionError(exc.code) from exc
+
+    def _source_name(self, signal_id: UUID) -> str:
+        with self._session_factory() as session:
+            value = session.execute(
+                text(
+                    """
+                    SELECT COALESCE(src.source_alias, src.chat_title, '')
+                    FROM signals sig
+                    LEFT JOIN sources src ON src.id = sig.source_id
+                    WHERE sig.id = :signal_id
+                    LIMIT 1
+                    """
+                ),
+                {"signal_id": signal_id},
+            ).scalar_one_or_none()
+        return str(value or "")
+
+    @staticmethod
+    def _leg_sizing(sizing: Day24RiskSizingResult, tp_index: int):
+        try:
+            return sizing.positions[tp_index - 1]
+        except IndexError as exc:
+            raise Day26ExecutionError("risk_profile_position_missing") from exc
 
     def _create_planned_positions(
         self,
@@ -652,6 +704,7 @@ class Day26Mt5ExecutionService:
             for tp_index, take_profit in enumerate(targets, start=1):
                 local_id = uuid4()
                 client_id = f"SS_{local_id.hex[:12]}_{tp_index}"
+                leg_sizing = self._leg_sizing(sizing, tp_index)
                 session.execute(
                     text(
                         """
@@ -672,8 +725,10 @@ class Day26Mt5ExecutionService:
                         "user_id": owner_user_id,
                         "tp_index": tp_index,
                         "take_profit": take_profit,
-                        "risk_percent": sizing.effective_risk_percent,
-                        "volume": sizing.volume,
+                        "risk_percent": (
+                            leg_sizing.risk_budget * Decimal("100") / sizing.balance
+                        ),
+                        "volume": leg_sizing.volume,
                         "stop_loss": signal.stop_loss,
                         "client_id": client_id,
                         "entry_price": execution_entry,
@@ -729,7 +784,7 @@ class Day26Mt5ExecutionService:
                 broker=broker,
                 signal=signal,
                 take_profit=item.take_profit,
-                volume=sizing.volume,
+                volume=self._leg_sizing(sizing, item.tp_index).volume,
             )
             broker_position_id = str(broker.get("id") or "").strip()
             if not broker_position_id:
@@ -770,7 +825,7 @@ class Day26Mt5ExecutionService:
                     local_position_id=item.local_position_id,
                     tp_index=item.tp_index,
                     take_profit=item.take_profit,
-                    volume=sizing.volume,
+                    volume=self._leg_sizing(sizing, item.tp_index).volume,
                     client_id=item.client_id,
                     broker_order_id=broker_order_id,
                     broker_position_id=broker_position_id,
