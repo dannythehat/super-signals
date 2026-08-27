@@ -684,6 +684,8 @@ class Day26Mt5ExecutionService:
             raise Day26ExecutionError(exc.code) from exc
 
     def _source_name(self, signal_id: UUID) -> str:
+        if self._session_factory is None:
+            return ""
         with self._session_factory() as session:
             value = session.execute(
                 text(
