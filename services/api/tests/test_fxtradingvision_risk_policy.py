@@ -129,3 +129,19 @@ def test_gtmo_five_leg_profile_accepts_three_percent_and_totals_ten_percent() ->
     assert result.total_risk_budget == Decimal("150.0")
     assert result.position_count == 5
     assert not result.double_lot_applied
+
+
+def test_three_percent_is_provider_profile_only_not_general_user_risk() -> None:
+    with pytest.raises(Day24RiskSizingError, match="risk_percent_invalid"):
+        Day24RiskSizer.size(
+            balance=Decimal("1500"),
+            risk_percent=Decimal("3"),
+            signal_entry_price=Decimal("100"),
+            signal_stop_loss=Decimal("90"),
+            tick_size=Decimal("1"),
+            tick_value=Decimal("1"),
+            take_profit_count=1,
+            volume_rules=BrokerVolumeRules.from_values(
+                minimum="0.01", maximum="100", step="0.01"
+            ),
+        )
