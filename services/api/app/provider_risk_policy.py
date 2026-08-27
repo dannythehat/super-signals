@@ -1,8 +1,7 @@
-"""Approved provider-specific risk profiles.
+"""Approved provider-specific execution/risk policy.
 
-These rules are deliberately exact: provider, direction and TP index must all match.
-Provider directions explicitly disabled by the owner fail closed before broker order
-submission. Everything else continues through the ordinary member-selected risk policy.
+Owner-approved provider rules are exact and fail closed before broker submission.
+FXTradingVision and GTMO BUY allocations are explicit. SELL is disabled for both.
 """
 
 from __future__ import annotations
@@ -10,6 +9,8 @@ from __future__ import annotations
 from decimal import Decimal
 
 _FX_BUY_PROFILE = (Decimal("4"), Decimal("4"), Decimal("2"))
+_GTMO_BUY_HEAD = (Decimal("4"), Decimal("3"), Decimal("2"))
+_GTMO_ADDITIONAL_LEG_RISK = Decimal("0.5")
 _DISABLED_PROFILE_RISK = Decimal("0")
 
 
@@ -29,6 +30,10 @@ def is_fxtradingvision_buy(*, source_name: str, side: str) -> bool:
     return _is_fxtradingvision(source_name=source_name) and side.strip().upper() == "BUY"
 
 
+def is_gtmo_buy(*, source_name: str, side: str) -> bool:
+    return _is_gtmo(source_name=source_name) and side.strip().upper() == "BUY"
+
+
 def provider_side_enabled(*, source_name: str, side: str) -> bool:
     """Return False only for owner-approved disabled provider directions."""
     normalized_side = side.strip().upper()
@@ -41,7 +46,17 @@ def provider_side_enabled(*, source_name: str, side: str) -> bool:
 
 
 def provider_tp_limit(*, source_name: str, side: str) -> int | None:
+    # FX BUY is intentionally limited to TP1-TP3. GTMO keeps every provider-supplied
+    # additional numeric target/runner; those additional legs receive 0.5% each.
     return 3 if is_fxtradingvision_buy(source_name=source_name, side=side) else None
+
+
+def _gtmo_profile(position_count: int) -> tuple[Decimal, ...]:
+    if position_count < 1:
+        raise ValueError("provider_position_count_invalid")
+    head = _GTMO_BUY_HEAD[:position_count]
+    extra_count = max(0, position_count - len(_GTMO_BUY_HEAD))
+    return head + ((_GTMO_ADDITIONAL_LEG_RISK,) * extra_count)
 
 
 def provider_risk_profile(
@@ -53,15 +68,17 @@ def provider_risk_profile(
     if position_count < 1:
         raise ValueError("provider_position_count_invalid")
 
-    # The execution engine already converts an invalid risk percentage into the
-    # canonical Day26ExecutionError before any broker mutation. Returning a zero-risk
-    # sentinel profile therefore blocks both owner-paper and member execution through
-    # the normal fail-closed path instead of leaking a generic policy exception.
+    # The execution engine converts zero risk into its canonical risk sizing failure
+    # before broker mutation. This is the fail-closed SELL switch for approved providers.
     if not provider_side_enabled(source_name=source_name, side=side):
         return (_DISABLED_PROFILE_RISK,) * position_count
 
-    if not is_fxtradingvision_buy(source_name=source_name, side=side):
-        return None
-    if position_count > len(_FX_BUY_PROFILE):
-        raise ValueError("fxtradingvision_buy_position_count_invalid")
-    return _FX_BUY_PROFILE[:position_count]
+    if is_fxtradingvision_buy(source_name=source_name, side=side):
+        if position_count > len(_FX_BUY_PROFILE):
+            raise ValueError("fxtradingvision_buy_position_count_invalid")
+        return _FX_BUY_PROFILE[:position_count]
+
+    if is_gtmo_buy(source_name=source_name, side=side):
+        return _gtmo_profile(position_count)
+
+    return None
