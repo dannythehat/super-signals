@@ -21,10 +21,23 @@ _ALLOWED_BASE_RISK_PERCENTS = (
     Decimal("2"),
     Decimal("4"),
 )
-_ALLOWED_PROFILE_RISK_PERCENTS = _ALLOWED_BASE_RISK_PERCENTS + (Decimal("3"),)
+_ALLOWED_PROFILE_RISK_PERCENTS = _ALLOWED_BASE_RISK_PERCENTS + (
+    Decimal("3"),
+    Decimal("5"),
+)
 _DOUBLE_LOT_MULTIPLIER = Decimal("2")
 _ONE_HUNDRED = Decimal("100")
 _ZERO = Decimal("0")
+
+
+class ApprovedProviderRisk(Decimal):
+    """Marker Decimal for an owner-approved provider-specific risk allocation.
+
+    The numeric value behaves exactly like Decimal. The marker lets the ordinary
+    execution path distinguish a locked provider profile from a user-selectable risk
+    value without widening the user's general risk options. Locked provider risk is
+    also absolute: provider wording such as DOUBLE LOT cannot multiply it.
+    """
 
 
 class Day24RiskSizingError(ValueError):
@@ -122,6 +135,7 @@ class Day24RiskSizer:
         tick_size_value = _decimal(tick_size)
         tick_value_value = _decimal(tick_value)
 
+        provider_profile_risk = isinstance(base_risk, ApprovedProviderRisk)
         cls._validate_inputs(
             balance=balance_value,
             base_risk=base_risk,
@@ -131,10 +145,16 @@ class Day24RiskSizer:
             tick_value=tick_value_value,
             take_profit_count=take_profit_count,
             volume_rules=volume_rules,
-            allow_profile_risk=_allow_profile_risk,
+            allow_profile_risk=_allow_profile_risk or provider_profile_risk,
         )
 
-        double_lot_applied = signal_requests_double_lot and double_lot_approved
+        # Locked provider allocations are absolute. Promotional/source wording such
+        # as DOUBLE LOT must never multiply an owner-approved provider profile.
+        double_lot_applied = (
+            signal_requests_double_lot
+            and double_lot_approved
+            and not provider_profile_risk
+        )
         multiplier = _DOUBLE_LOT_MULTIPLIER if double_lot_applied else Decimal("1")
         effective_risk = base_risk * multiplier
         risk_budget = balance_value * effective_risk / _ONE_HUNDRED
@@ -291,7 +311,11 @@ class Day24RiskSizer:
     ) -> None:
         if balance <= _ZERO:
             raise Day24RiskSizingError("balance_invalid")
-        allowed = _ALLOWED_PROFILE_RISK_PERCENTS if allow_profile_risk else _ALLOWED_BASE_RISK_PERCENTS
+        allowed = (
+            _ALLOWED_PROFILE_RISK_PERCENTS
+            if allow_profile_risk
+            else _ALLOWED_BASE_RISK_PERCENTS
+        )
         if base_risk not in allowed:
             raise Day24RiskSizingError("risk_percent_invalid")
         if entry <= _ZERO or stop <= _ZERO or entry == stop:
