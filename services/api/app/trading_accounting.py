@@ -8,11 +8,11 @@ timezone, while immutable broker-deal timestamps remain stored in UTC. A daily r
 that day's realised Super Signals P/L divided by the account balance at the start of that
 local calendar day.
 
-The Owner demo has one historical carry-forward because its broker balance was manually
-reset during acceptance testing. Its synthetic balance is USD 1,000 plus cumulative
-realised Super Signals P/L and that exact same number is used for 1%-per-leg sizing. LIVE
-accounts use their actual broker balance; deposits/withdrawals affect capital but never
-performance.
+The Owner demo uses the active paper epoch as its synthetic capital origin. For the
+current clean run that is USD 1,500 from 27 August 2026 11:30 Europe/Sofia, with no
+historical carry-in. That exact synthetic balance is also used for percentage risk sizing.
+LIVE accounts use their actual broker balance; deposits/withdrawals affect capital but
+never performance.
 """
 
 from __future__ import annotations
@@ -26,15 +26,17 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from sqlalchemy import text
 from sqlalchemy.orm import Session, sessionmaker
 
-from app.paper_run_epoch import active_paper_epoch
+from app.paper_run_epoch import (
+    PAPER_RUN_BASELINE_BALANCE,
+    PAPER_RUN_STARTED_AT,
+    active_paper_epoch,
+)
 
 DEFAULT_TRADING_TIMEZONE = "UTC"
 OWNER_DEMO_ACCOUNTING_ZONE = ZoneInfo("Europe/Sofia")
-OWNER_DEMO_BASELINE_BALANCE = Decimal("1000.00")
-OWNER_DEMO_CARRY_IN_PNL = Decimal("215.52")
-OWNER_DEMO_SERIES_STARTED_AT = datetime(
-    2026, 8, 17, 0, 0, 0, tzinfo=OWNER_DEMO_ACCOUNTING_ZONE
-).astimezone(UTC)
+OWNER_DEMO_BASELINE_BALANCE = PAPER_RUN_BASELINE_BALANCE
+OWNER_DEMO_CARRY_IN_PNL = Decimal("0.00")
+OWNER_DEMO_SERIES_STARTED_AT = PAPER_RUN_STARTED_AT
 
 
 def _money(value: Decimal) -> Decimal:

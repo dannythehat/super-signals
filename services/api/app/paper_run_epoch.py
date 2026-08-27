@@ -1,7 +1,7 @@
 """Immutable active paper-run origin for the Owner reference account.
 
-The accepted paper test began once, on 19 August 2026 at 11:12 Europe/Sofia
-(08:12 UTC), from a virtual balance of USD 1,000. That origin is product truth, not a
+The current clean paper test begins on 27 August 2026 at 11:30 Europe/Sofia
+(08:30 UTC), from a virtual balance of USD 1,500. This origin is product truth, not a
 runtime reset control. Deploys, restarts, environment changes and future dates must
 never move it or erase post-origin performance.
 
@@ -20,8 +20,8 @@ from datetime import UTC, datetime
 from decimal import Decimal
 from uuid import UUID
 
-PAPER_RUN_STARTED_AT = datetime(2026, 8, 19, 8, 12, tzinfo=UTC)
-PAPER_RUN_BASELINE_BALANCE = Decimal("1000")
+PAPER_RUN_STARTED_AT = datetime(2026, 8, 27, 8, 30, tzinfo=UTC)
+PAPER_RUN_BASELINE_BALANCE = Decimal("1500")
 
 
 @dataclass(frozen=True, slots=True)
