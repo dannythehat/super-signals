@@ -427,7 +427,7 @@ class Day26Mt5ExecutionService:
                     FROM signals sig
                     LEFT JOIN sources src ON src.id = sig.source_id
                     WHERE sig.id = :signal_id
-                    FOR UPDATE
+                    FOR UPDATE OF sig
                     """
                 ),
                 {"signal_id": signal_id},
