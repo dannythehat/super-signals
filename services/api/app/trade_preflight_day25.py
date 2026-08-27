@@ -67,7 +67,7 @@ class Day25TradePreflightService:
         symbol = live_state.price.symbol.strip().upper()
         signal_entry = sizing.signal_entry_price
         free_margin = self._decimal(live_state.account.free_margin)
-        total_volume = sizing.volume * Decimal(sizing.position_count)
+        total_volume = sum((item.volume for item in sizing.positions), Decimal("0"))
         if total_volume <= 0:
             raise ValueError("total_volume_invalid")
 
