@@ -19,7 +19,7 @@ Trading-policy invariants:
 from __future__ import annotations
 
 import asyncio
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from decimal import Decimal
 from uuid import UUID, uuid4
@@ -504,7 +504,25 @@ class PaperCriticalExecutionService(AtomicDay26Mt5ExecutionService):
         with self._session_factory() as session:
             for allocation in allocations:
                 entry = allocation.entry
-                sizing = sizings[entry.entry_index]
+                base_sizing = sizings[entry.entry_index]
+                try:
+                    leg = base_sizing.positions[allocation.tp_index - 1]
+                except IndexError as exc:
+                    raise Day26ExecutionError("risk_profile_position_missing") from exc
+                sizing = replace(
+                    base_sizing,
+                    effective_risk_percent=(
+                        leg.risk_budget * Decimal("100") / base_sizing.balance
+                    ),
+                    raw_volume=leg.volume,
+                    volume=leg.volume,
+                    risk_budget_per_position=leg.risk_budget,
+                    actual_risk_per_position=leg.actual_risk,
+                    position_count=1,
+                    total_risk_budget=leg.risk_budget,
+                    total_actual_risk=leg.actual_risk,
+                    positions=(leg,),
+                )
                 local_id = uuid4()
                 client_id = f"SS_{local_id.hex[:12]}_E{entry.entry_index}T{allocation.tp_index}"
                 local_entry = market_entry if entry.order_type == "market" else entry.price
