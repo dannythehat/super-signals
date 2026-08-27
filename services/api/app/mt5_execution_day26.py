@@ -687,7 +687,7 @@ class Day26Mt5ExecutionService:
         if self._session_factory is None:
             return ""
         with self._session_factory() as session:
-            value = session.execute(
+            result = session.execute(
                 text(
                     """
                     SELECT COALESCE(src.source_alias, src.chat_title, '')
@@ -698,7 +698,11 @@ class Day26Mt5ExecutionService:
                     """
                 ),
                 {"signal_id": signal_id},
-            ).scalar_one_or_none()
+            )
+            scalar_one_or_none = getattr(result, "scalar_one_or_none", None)
+            if scalar_one_or_none is None:
+                return ""
+            value = scalar_one_or_none()
         return str(value or "")
 
     def _create_planned_positions(
