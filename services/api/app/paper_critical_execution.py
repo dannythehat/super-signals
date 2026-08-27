@@ -39,6 +39,7 @@ from app.mt5_execution_day26 import (
 from app.mt5_execution_day26_atomic import AtomicDay26Mt5ExecutionService
 from app.mt5_read_service_day23 import Day23Mt5ReadService, Day23ReadError
 from app.risk_sizing_day24 import Day24RiskSizingResult
+from app.provider_risk_policy import provider_risk_profile, provider_tp_limit
 
 _VERIFY_ATTEMPTS = 3
 _VERIFY_DELAY_SECONDS = 0.25
@@ -149,12 +150,15 @@ class PaperCriticalExecutionService(AtomicDay26Mt5ExecutionService):
             row = session.execute(
                 text(
                     """
-                    SELECT id,symbol,side,order_type,entry_low,entry_high,
-                           stop_loss,take_profits,has_open_runner,parser_status,
-                           risk_multiplier,source_revision_index,source_posted_at,
-                           original_text
-                    FROM signals
-                    WHERE id=:signal_id
+                    SELECT sig.id,sig.symbol,sig.side,sig.order_type,
+                           sig.entry_low,sig.entry_high,sig.stop_loss,
+                           sig.take_profits,sig.has_open_runner,sig.parser_status,
+                           sig.risk_multiplier,sig.source_revision_index,
+                           sig.source_posted_at,sig.original_text,
+                           COALESCE(src.source_alias,src.chat_title,'') AS source_name
+                    FROM signals sig
+                    LEFT JOIN sources src ON src.id=sig.source_id
+                    WHERE sig.id=:signal_id
                     LIMIT 1
                     """
                 ),
@@ -174,6 +178,13 @@ class PaperCriticalExecutionService(AtomicDay26Mt5ExecutionService):
         high = self._required_decimal(row["entry_high"], "signal_entry_invalid")
         stop = self._required_decimal(row["stop_loss"], "signal_stop_loss_invalid")
         tps = self._take_profits(row["take_profits"])
+        has_open_runner = bool(row["has_open_runner"])
+        tp_limit = provider_tp_limit(
+            source_name=str(row["source_name"] or ""), side=side
+        )
+        if tp_limit is not None:
+            tps = tps[:tp_limit]
+            has_open_runner = False
         posted_at = row["source_posted_at"]
         if not isinstance(posted_at, datetime):
             raise Day26ExecutionError("signal_posted_at_invalid")
@@ -185,7 +196,7 @@ class PaperCriticalExecutionService(AtomicDay26Mt5ExecutionService):
             entry_high=high,
             stop_loss=stop,
             take_profits=tps,
-            has_open_runner=bool(row["has_open_runner"]),
+            has_open_runner=has_open_runner,
             signal_requests_double_lot=self._required_decimal(
                 row["risk_multiplier"], "signal_risk_multiplier_invalid"
             ) > Decimal("1"),
@@ -339,6 +350,11 @@ class PaperCriticalExecutionService(AtomicDay26Mt5ExecutionService):
         if signal.has_open_runner:
             targets.append(None)
         allocations = self._allocation_pairs(entries, tuple(targets))
+        risk_profile = provider_risk_profile(
+            source_name=self._source_name(signal.signal_id),
+            side=signal.side,
+            position_count=len(targets),
+        )
         sizings: dict[tuple[int, int], Day24RiskSizingResult] = {}
         for allocation in allocations:
             entry = allocation.entry
@@ -362,7 +378,11 @@ class PaperCriticalExecutionService(AtomicDay26Mt5ExecutionService):
                 balance=state.account.balance,
                 price_loss_tick_value=state.price.loss_tick_value,
                 specification=specification,
-                risk_percent=target_risk_percent(risk_percent, allocation.tp_index),
+                risk_percent=(
+                    risk_profile[allocation.tp_index - 1]
+                    if risk_profile is not None
+                    else target_risk_percent(risk_percent, allocation.tp_index)
+                ),
                 double_lot_approved=double_lot_approved,
             )
 

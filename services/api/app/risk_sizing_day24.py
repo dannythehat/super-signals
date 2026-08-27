@@ -19,6 +19,7 @@ _ALLOWED_BASE_RISK_PERCENTS = (
     Decimal("1"),
     Decimal("1.5"),
     Decimal("2"),
+    Decimal("4"),
 )
 _DOUBLE_LOT_MULTIPLIER = Decimal("2")
 _ONE_HUNDRED = Decimal("100")
@@ -185,6 +186,67 @@ class Day24RiskSizer:
             position_count=position_count,
             total_risk_budget=risk_budget * Decimal(position_count),
             total_actual_risk=actual_risk * Decimal(position_count),
+            positions=positions,
+        )
+
+    @classmethod
+    def size_profile(
+        cls,
+        *,
+        balance: DecimalInput,
+        risk_percents: tuple[DecimalInput, ...],
+        signal_entry_price: DecimalInput,
+        signal_stop_loss: DecimalInput,
+        tick_size: DecimalInput,
+        tick_value: DecimalInput,
+        volume_rules: BrokerVolumeRules,
+    ) -> Day24RiskSizingResult:
+        """Size atomic TP legs independently for an explicit approved profile."""
+        if not risk_percents:
+            raise Day24RiskSizingError("risk_profile_invalid")
+        sized = tuple(
+            cls.size(
+                balance=balance,
+                risk_percent=risk,
+                signal_entry_price=signal_entry_price,
+                signal_stop_loss=signal_stop_loss,
+                tick_size=tick_size,
+                tick_value=tick_value,
+                take_profit_count=1,
+                volume_rules=volume_rules,
+            )
+            for risk in risk_percents
+        )
+        positions = tuple(
+            Day24PositionSize(
+                take_profit_number=index,
+                volume=item.volume,
+                risk_budget=item.risk_budget_per_position,
+                actual_risk=item.actual_risk_per_position,
+            )
+            for index, item in enumerate(sized, start=1)
+        )
+        first = sized[0]
+        return Day24RiskSizingResult(
+            balance=first.balance,
+            base_risk_percent=first.base_risk_percent,
+            effective_risk_percent=max(item.effective_risk_percent for item in sized),
+            signal_requests_double_lot=False,
+            double_lot_approved=False,
+            double_lot_applied=False,
+            signal_entry_price=first.signal_entry_price,
+            signal_stop_loss=first.signal_stop_loss,
+            stop_distance=first.stop_distance,
+            tick_size=first.tick_size,
+            tick_value=first.tick_value,
+            loss_per_lot_at_stop=first.loss_per_lot_at_stop,
+            raw_volume=first.raw_volume,
+            volume=first.volume,
+            risk_budget_per_position=first.risk_budget_per_position,
+            actual_risk_per_position=first.actual_risk_per_position,
+            position_count=len(positions),
+            total_risk_budget=sum((item.risk_budget for item in positions), _ZERO),
+            total_actual_risk=sum((item.actual_risk for item in positions), _ZERO),
             positions=positions,
         )
 
