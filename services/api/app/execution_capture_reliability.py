@@ -24,6 +24,7 @@ from sqlalchemy import text
 
 from app.mt5_execution_day26 import Day26ExecutionError, _SignalInput
 from app.risk_sizing_day24 import Day24RiskSizingResult
+from app.superseded_pending_guard import SupersededPendingOrderGuard
 from app.trading_accounting import CanonicalTradingAccountingService
 from app.trading_execution_canonical import (
     CanonicalTradingExecutionService,
@@ -44,6 +45,8 @@ _SIZING_USER_ID: ContextVar[UUID | None] = ContextVar(
 
 
 class _CaptureRetryMixin:
+    _supersession_account_environment = "demo"
+
     async def execute_owner_demo_signal(
         self,
         *,
@@ -52,6 +55,21 @@ class _CaptureRetryMixin:
         risk_percent,
         double_lot_approved: bool,
     ):
+        # A newer provider signal owns the symbol. Before any new mutation, cancel
+        # every older broker-held pending entry from that same provider/symbol. If
+        # broker truth is ambiguous or an old pending already filled, fail closed.
+        guard = SupersededPendingOrderGuard(
+            session_factory=self._session_factory,
+            cipher=self._cipher,
+            read_gateway=self._read_gateway,
+            trade_gateway=self._trade_gateway,
+        )
+        await guard.cancel_before_signal(
+            user_id=owner_user_id,
+            signal_id=signal_id,
+            account_environment=self._supersession_account_environment,
+        )
+
         context_token = _SIZING_USER_ID.set(owner_user_id)
         try:
             for attempt in range(1, _MAX_CAPTURE_ATTEMPTS + 1):
@@ -184,12 +202,16 @@ class CaptureReliableCanonicalTradingExecutionService(
 ):
     """Owner demo canonical engine with safe transient capture retry."""
 
+    _supersession_account_environment = "demo"
+
 
 class CaptureReliableMemberTradingExecutionService(
     _CaptureRetryMixin,
     MemberTradingExecutionService,
 ):
     """Eligible member LIVE canonical engine with the identical retry contract."""
+
+    _supersession_account_environment = "live"
 
 
 __all__ = [
