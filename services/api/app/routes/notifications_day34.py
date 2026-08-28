@@ -17,7 +17,7 @@ import hashlib
 import os
 from datetime import datetime
 from typing import Annotated, Any
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
 from pydantic import BaseModel, Field
@@ -83,6 +83,12 @@ class PushUnsubscribeRequest(BaseModel):
 
 class PushUnsubscribeResponse(BaseModel):
     disabled: bool
+    broker_trade_action_created: bool = False
+
+
+class PushTestResponse(BaseModel):
+    notification_id: UUID
+    queued: bool
     broker_trade_action_created: bool = False
 
 
@@ -354,3 +360,62 @@ def unsubscribe_push(
     session.commit()
     _no_store(response)
     return PushUnsubscribeResponse(disabled=changed is not None)
+
+
+@router.post("/push/test", response_model=PushTestResponse)
+def test_push(
+    response: Response,
+    session: DbSession,
+    identity: Identity,
+) -> PushTestResponse:
+    """Queue one harmless user-only push so the device path can be verified end to end."""
+    user_id = identity["id"]
+    enabled_subscription = session.execute(
+        text(
+            """
+            SELECT 1
+            FROM push_subscriptions
+            WHERE user_id=:user_id AND enabled=true
+            LIMIT 1
+            """
+        ),
+        {"user_id": user_id},
+    ).scalar_one_or_none()
+    if enabled_subscription is None:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={
+                "code": "push_subscription_missing",
+                "message": "This account does not have an enabled device notification subscription.",
+            },
+        )
+
+    notification_id = uuid4()
+    session.execute(
+        text(
+            """
+            INSERT INTO notification_events(
+                id,event_key,signal_id,lifecycle_event_id,user_id,
+                audience,kind,title,body,payload
+            ) VALUES (
+                :id,:event_key,NULL,NULL,:user_id,
+                'user','push_test','Super Signals test alert',
+                'If you can see this, device notifications are working.',
+                jsonb_build_object(
+                    'diagnostic_test',true,
+                    'provider_identity_exposed',false,
+                    'private_balance_exposed',false,
+                    'trade_action_created',false
+                )
+            )
+            """
+        ),
+        {
+            "id": notification_id,
+            "event_key": f"push-test:{user_id}:{notification_id}",
+            "user_id": user_id,
+        },
+    )
+    session.commit()
+    _no_store(response)
+    return PushTestResponse(notification_id=notification_id, queued=True)
