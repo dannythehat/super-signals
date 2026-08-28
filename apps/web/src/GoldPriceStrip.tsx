@@ -75,10 +75,7 @@ export function GoldPriceStrip({ apiBaseUrl }: Props) {
       controller = new AbortController();
       try {
         const response = await fetch(`${GOLD_API_URL}?_=${Date.now()}`, {
-          headers: {
-            Accept: 'application/json',
-            'Cache-Control': 'no-cache',
-          },
+          headers: { Accept: 'application/json' },
           cache: 'no-store',
           signal: controller.signal,
         });
