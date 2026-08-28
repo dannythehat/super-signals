@@ -149,6 +149,7 @@ def build_canonical_pending_reconciler(
             session_factory=session_factory,
             cipher=MetaApiTokenCipher(broker_keys),
             gateway=PaperResilientMetaApiReadGateway(),
+            trade_gateway=MetaApiTradeGateway(),
             owner_user_id=owner_user_id,
             poll_seconds=poll_seconds,
         )
