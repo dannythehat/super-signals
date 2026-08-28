@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 
 import { DailyProfitChart, type DailyProfitPoint } from './DailyProfitChart';
+import { GoldPriceStrip } from './GoldPriceStrip';
 import { ManualMt5ActivityDay36 } from './ManualMt5ActivityDay36';
 import { OwnerCloseAllButton, OwnerPositionCloseButton } from './OwnerInlineCloseControls';
 import { TodayTradingSummary } from './TodayTradingSummary';
@@ -252,6 +253,8 @@ export function MobileDashboard({ apiBaseUrl, displayName, roleLabel, onOpenSett
       <div><span className="day32-kicker">{memberKicker}</span><h1 id="day32-home-title">Hi, {displayName}</h1><p>Your Smart Signals account, trading state and latest activity.</p></div>
       <button className="day32-settings-button" type="button" onClick={onOpenSettings} aria-label="Open Settings">⚙</button>
     </div>
+
+    <GoldPriceStrip apiBaseUrl={apiBaseUrl} />
 
     {error && <div className="day32-inline-warning" role="status"><span>Live refresh paused</span><strong>{error}</strong><button type="button" onClick={() => void refresh()} disabled={refreshing}>{refreshing ? 'Refreshing…' : 'Retry'}</button></div>}
 
