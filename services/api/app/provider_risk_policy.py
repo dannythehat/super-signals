@@ -1,8 +1,8 @@
 """Approved provider-specific execution/risk policy.
 
 Owner-approved provider rules are exact and fail closed before broker submission.
-FXTradingVision, GTMO and TIG allocations are explicit. FX/GTMO SELL is disabled;
-TIG trades only the approved TP subset for each direction.
+FXTradingVision, GTMO and TIG allocations are explicit. GTMO SELL is disabled;
+FX trades both directions and TIG trades only the approved TP subset for each direction.
 """
 
 from __future__ import annotations
@@ -16,7 +16,7 @@ def _approved(value: str) -> ApprovedProviderRisk:
     return ApprovedProviderRisk(value)
 
 
-_FX_BUY_PROFILE = (_approved("4"), _approved("4"), _approved("2"))
+_FX_PROFILE = (_approved("5"), _approved("5"), _approved("1"))
 _GTMO_BUY_HEAD = (_approved("4"), _approved("3"), _approved("2"))
 _GTMO_ADDITIONAL_LEG_RISK = _approved("0.5")
 _TIG_BUY_PROFILE = (
@@ -66,16 +66,14 @@ def provider_side_enabled(*, source_name: str, side: str) -> bool:
     normalized_side = side.strip().upper()
     if normalized_side != "SELL":
         return True
-    return not (
-        _is_fxtradingvision(source_name=source_name)
-        or _is_gtmo(source_name=source_name)
-    )
+    return not _is_gtmo(source_name=source_name)
 
 
 def provider_tp_limit(*, source_name: str, side: str) -> int | None:
     # Explicit limits remove all later numeric targets and any open runner before
     # sizing/broker submission. GTMO keeps every supplied additional target/runner.
-    if is_fxtradingvision_buy(source_name=source_name, side=side):
+    normalized_side = side.strip().upper()
+    if _is_fxtradingvision(source_name=source_name) and normalized_side in {"BUY", "SELL"}:
         return 3
     if is_tig_buy(source_name=source_name, side=side):
         return 4
@@ -102,14 +100,15 @@ def provider_risk_profile(
         raise ValueError("provider_position_count_invalid")
 
     # The execution engine converts zero risk into its canonical risk sizing failure
-    # before broker mutation. This is the fail-closed SELL switch for approved providers.
+    # before broker mutation. This remains the fail-closed SELL switch for GTMO.
     if not provider_side_enabled(source_name=source_name, side=side):
         return (_DISABLED_PROFILE_RISK,) * position_count
 
-    if is_fxtradingvision_buy(source_name=source_name, side=side):
-        if position_count > len(_FX_BUY_PROFILE):
-            raise ValueError("fxtradingvision_buy_position_count_invalid")
-        return _FX_BUY_PROFILE[:position_count]
+    normalized_side = side.strip().upper()
+    if _is_fxtradingvision(source_name=source_name) and normalized_side in {"BUY", "SELL"}:
+        if position_count > len(_FX_PROFILE):
+            raise ValueError("fxtradingvision_position_count_invalid")
+        return _FX_PROFILE[:position_count]
 
     if is_gtmo_buy(source_name=source_name, side=side):
         return _gtmo_profile(position_count)
