@@ -14,9 +14,11 @@ from app.mt5_connection_service import Mt5ConnectionError, Mt5ConnectionView
 from app.mt5_connection_service_day30 import Day30Mt5ConnectionService
 from app.mt5_runtime import require_mt5_service
 from app.routes.dashboard_day32 import router as dashboard_day32_router
+from app.routes.gold_quote import router as gold_quote_router
 
 router = APIRouter(prefix="/account/mt5", tags=["mt5-user"])
 router.include_router(dashboard_day32_router)
+router.include_router(gold_quote_router)
 UserIdentity = Annotated[dict[str, Any], Depends(get_current_identity)]
 
 
