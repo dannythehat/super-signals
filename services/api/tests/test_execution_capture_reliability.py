@@ -10,6 +10,17 @@ from app.execution_capture_reliability import _CaptureRetryMixin
 from app.mt5_execution_day26 import Day26ExecutionError
 
 
+@pytest.fixture(autouse=True)
+def _bypass_superseded_pending_guard(monkeypatch: pytest.MonkeyPatch) -> None:
+    async def no_cancel(_self, **_kwargs):
+        return ()
+
+    monkeypatch.setattr(
+        "app.execution_capture_reliability.SupersededPendingOrderGuard.cancel_before_signal",
+        no_cancel,
+    )
+
+
 class _FailThenSucceed:
     def __init__(self, codes: list[str]) -> None:
         self.codes = list(codes)
@@ -27,6 +38,13 @@ class _RetryHarness(_CaptureRetryMixin, _FailThenSucceed):
         _FailThenSucceed.__init__(self, codes)
         self.clean = clean
         self.audits: list[dict] = []
+        # The production mixin now constructs the superseded-pending guard before
+        # entering its retry loop. These placeholders keep this isolated retry harness
+        # focused on retry semantics; the guard call itself is stubbed by the fixture.
+        self._session_factory = object()
+        self._cipher = object()
+        self._read_gateway = object()
+        self._trade_gateway = object()
 
     def _prepare_clean_retry(self, user_id, signal_id):
         return self.clean
