@@ -1,8 +1,8 @@
 """Free public XAU/USD spot quote for the dashboard.
 
-This route is intentionally isolated from MetaAPI and the broker account. Dashboard gold
-prices come from the keyless Gold API public real-time endpoint, so displaying a price
-cannot consume trading API credits or touch MT5 account state.
+This route is deliberately isolated from MetaAPI and the broker account. It reads only
+keyless public gold feeds, with Gold API as primary and XAUS as fallback, so the dashboard
+price cannot consume trading API credits or touch MT5 account state.
 """
 
 from __future__ import annotations
@@ -22,11 +22,11 @@ router = APIRouter(prefix="/dashboard/gold-quote", tags=["dashboard-gold-quote"]
 Identity = Annotated[dict[str, Any], Depends(get_current_identity)]
 
 _SYMBOL = "XAUUSD"
-_SOURCE = "Gold API"
-_UPSTREAM_URL = "https://api.gold-api.com/price/XAU"
-_LIVE_CACHE_SECONDS = 5.0
-_RETRY_CACHE_SECONDS = 30.0
-_STALE_AFTER_SECONDS = 60.0
+_PRIMARY_URL = "https://api.gold-api.com/price/XAU"
+_FALLBACK_URL = "https://xaus.com/api/v1/spot?compact=1"
+_LIVE_CACHE_SECONDS = 1.0
+_RETRY_CACHE_SECONDS = 3.0
+_STALE_AFTER_SECONDS = 90.0
 
 
 class GoldQuoteResponse(BaseModel):
@@ -38,7 +38,7 @@ class GoldQuoteResponse(BaseModel):
     read_at: datetime
     available: bool
     stale: bool
-    source: str = _SOURCE
+    source: str
 
 
 def _positive_float(value: object) -> float | None:
@@ -63,23 +63,49 @@ def _quote_time(value: object) -> datetime | None:
     return parsed.astimezone(UTC)
 
 
-def _quote_from_payload(payload: dict[str, object], *, now: datetime) -> GoldQuoteResponse:
+def _is_stale(timestamp: datetime | None, *, now: datetime) -> bool:
+    if timestamp is None:
+        return False
+    return max(0.0, (now - timestamp).total_seconds()) > _STALE_AFTER_SECONDS
+
+
+def _gold_api_quote(payload: dict[str, object], *, now: datetime) -> GoldQuoteResponse:
     price = _positive_float(payload.get("price"))
-    bid = _positive_float(payload.get("bid"))
-    ask = _positive_float(payload.get("ask"))
     timestamp = _quote_time(payload.get("updatedAt") or payload.get("updated_at"))
-    stale = (
-        timestamp is None
-        or max(0.0, (now - timestamp).total_seconds()) > _STALE_AFTER_SECONDS
-    )
     return GoldQuoteResponse(
         price=price,
-        bid=bid,
-        ask=ask,
+        bid=_positive_float(payload.get("bid")),
+        ask=_positive_float(payload.get("ask")),
         quote_time=timestamp,
         read_at=now,
         available=price is not None,
-        stale=stale,
+        stale=_is_stale(timestamp, now=now),
+        source="Gold API",
+    )
+
+
+def _xaus_quote(payload: dict[str, object], *, now: datetime) -> GoldQuoteResponse:
+    price = _positive_float(payload.get("spot_usd_oz"))
+    if price is None:
+        xau = payload.get("xau")
+        if isinstance(xau, dict):
+            price = _positive_float(xau.get("price"))
+    timestamp = _quote_time(
+        payload.get("price_as_of") or payload.get("updated_at") or payload.get("updatedAt")
+    )
+    data_state = payload.get("data_state")
+    upstream_stale = False
+    if isinstance(data_state, dict):
+        upstream_stale = str(data_state.get("status") or "").lower() == "stale"
+    return GoldQuoteResponse(
+        price=price,
+        bid=None,
+        ask=None,
+        quote_time=timestamp,
+        read_at=now,
+        available=price is not None,
+        stale=upstream_stale or _is_stale(timestamp, now=now),
+        source="XAUS",
     )
 
 
@@ -92,6 +118,7 @@ def _unavailable(now: datetime) -> GoldQuoteResponse:
         read_at=now,
         available=False,
         stale=True,
+        source="Public gold feeds",
     )
 
 
@@ -106,28 +133,25 @@ def _cache(request: Request) -> dict[str, tuple[float, GoldQuoteResponse]]:
 
 def _store(
     cache: dict[str, tuple[float, GoldQuoteResponse]],
-    key: str,
     quote: GoldQuoteResponse,
 ) -> GoldQuoteResponse:
-    ttl = _LIVE_CACHE_SECONDS if quote.available and not quote.stale else _RETRY_CACHE_SECONDS
-    cache[key] = (monotonic() + ttl, quote)
+    ttl = _LIVE_CACHE_SECONDS if quote.available else _RETRY_CACHE_SECONDS
+    cache[_SYMBOL] = (monotonic() + ttl, quote)
     return quote
 
 
-async def _read_free_gold_price() -> dict[str, object]:
+async def _read_json(url: str, *, cache_bust: int) -> dict[str, object]:
+    separator = "&" if "?" in url else "?"
     timeout = httpx.Timeout(3.0)
     async with httpx.AsyncClient(timeout=timeout) as client:
         response = await client.get(
-            _UPSTREAM_URL,
-            headers={
-                "Accept": "application/json",
-                "User-Agent": "SuperSignals/1.0",
-            },
+            f"{url}{separator}_={cache_bust}",
+            headers={"Accept": "application/json", "User-Agent": "SuperSignals/1.0"},
         )
         response.raise_for_status()
         payload = response.json()
     if not isinstance(payload, dict):
-        raise ValueError("invalid_gold_api_response")
+        raise ValueError("invalid_gold_feed_response")
     return payload
 
 
@@ -138,22 +162,42 @@ async def account_gold_quote(
     _identity: Identity,
 ) -> GoldQuoteResponse:
     now = datetime.now(UTC)
-    key = _SYMBOL
     cache = _cache(request)
-    cached = cache.get(key)
+    cached = cache.get(_SYMBOL)
     if cached is not None and monotonic() < cached[0]:
-        response.headers["Cache-Control"] = "private, max-age=2"
+        response.headers["Cache-Control"] = "no-store"
         return cached[1]
 
     previous = cached[1] if cached is not None else None
+    cache_bust = int(now.timestamp() * 1000)
+
+    quote: GoldQuoteResponse | None = None
     try:
-        payload = await _read_free_gold_price()
-        quote = _quote_from_payload(payload, now=now)
+        quote = _gold_api_quote(
+            await _read_json(_PRIMARY_URL, cache_bust=cache_bust),
+            now=now,
+        )
+        if not quote.available:
+            quote = None
     except (httpx.HTTPError, ValueError, TypeError):
+        quote = None
+
+    if quote is None:
+        try:
+            quote = _xaus_quote(
+                await _read_json(_FALLBACK_URL, cache_bust=cache_bust),
+                now=now,
+            )
+            if not quote.available:
+                quote = None
+        except (httpx.HTTPError, ValueError, TypeError):
+            quote = None
+
+    if quote is None:
         if previous is not None and previous.price is not None:
             quote = previous.model_copy(update={"read_at": now, "stale": True})
         else:
             quote = _unavailable(now)
 
-    response.headers["Cache-Control"] = "private, max-age=2"
-    return _store(cache, key, quote)
+    response.headers["Cache-Control"] = "no-store"
+    return _store(cache, quote)
