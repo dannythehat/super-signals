@@ -15,11 +15,11 @@ from uuid import UUID
 
 from sqlalchemy.orm import Session, sessionmaker
 
-from app.execution_capture_reliability import (
-    CaptureReliableCanonicalTradingExecutionService,
-    CaptureReliableMemberTradingExecutionService,
-)
 from app.execution_dispatch_canonical import CanonicalExecutionDispatcher
+from app.graceful_market_targets import (
+    GracefulCaptureReliableCanonicalTradingExecutionService,
+    GracefulCaptureReliableMemberTradingExecutionService,
+)
 from app.member_routing_canonical import MemberDistributionService, MemberManagementService
 from app.metaapi_margin_gateway import MetaApiMarginGateway
 from app.metaapi_read_gateway import MetaApiReadGateway
@@ -83,7 +83,7 @@ def build_canonical_execution_router(
         # approval/veto budget. Vantage/MT5 is authoritative for actual rejection.
         margin = MetaApiMarginGateway()
 
-        owner_execution = CaptureReliableCanonicalTradingExecutionService(
+        owner_execution = GracefulCaptureReliableCanonicalTradingExecutionService(
             session_factory=session_factory,
             cipher=cipher,
             read_gateway=owner_read,
@@ -96,7 +96,7 @@ def build_canonical_execution_router(
             read_gateway=owner_read,
             trade_gateway=trade,
         )
-        member_execution = CaptureReliableMemberTradingExecutionService(
+        member_execution = GracefulCaptureReliableMemberTradingExecutionService(
             session_factory=session_factory,
             cipher=cipher,
             read_gateway=member_read,
