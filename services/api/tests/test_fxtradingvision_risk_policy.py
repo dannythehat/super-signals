@@ -24,14 +24,16 @@ def _rules() -> BrokerVolumeRules:
     )
 
 
-def test_fxtradingvision_buy_policy_is_exact_4_4_2() -> None:
+def test_fxtradingvision_buy_and_sell_policy_is_exact_5_5_1() -> None:
     source = "FXTradingVision l Forex & Crypto Signals 🚀"
     assert is_fxtradingvision_buy(source_name=source, side="BUY")
-    assert provider_side_enabled(source_name=source, side="BUY")
-    assert provider_tp_limit(source_name=source, side="BUY") == 3
-    assert provider_risk_profile(
-        source_name=source, side="BUY", position_count=3
-    ) == (Decimal("4"), Decimal("4"), Decimal("2"))
+
+    for side in ("BUY", "SELL"):
+        assert provider_side_enabled(source_name=source, side=side)
+        assert provider_tp_limit(source_name=source, side=side) == 3
+        assert provider_risk_profile(
+            source_name=source, side=side, position_count=3
+        ) == (Decimal("5"), Decimal("5"), Decimal("1"))
 
 
 def test_gtmo_buy_policy_is_4_3_2_then_half_percent_per_extra_leg() -> None:
@@ -75,14 +77,8 @@ def test_tig_sell_policy_is_exact_5_5_and_stops_at_tp2() -> None:
     ) == (Decimal("5"), Decimal("5"))
 
 
-@pytest.mark.parametrize(
-    "source",
-    [
-        "FXTradingVision l Forex & Crypto Signals 🚀",
-        "GTMO VIP 🤴🏽",
-    ],
-)
-def test_owner_disabled_provider_sells_fail_closed(source: str) -> None:
+def test_gtmo_sell_remains_owner_disabled_and_fails_closed() -> None:
+    source = "GTMO VIP 🤴🏽"
     assert not provider_side_enabled(source_name=source, side="SELL")
     profile = provider_risk_profile(source_name=source, side="SELL", position_count=3)
     assert profile == (Decimal("0"), Decimal("0"), Decimal("0"))
@@ -107,11 +103,12 @@ def test_other_provider_sell_keeps_standard_policy() -> None:
     ) is None
 
 
-def test_fx_buy_never_creates_a_fourth_tp_leg() -> None:
-    with pytest.raises(ValueError, match="fxtradingvision_buy_position_count_invalid"):
-        provider_risk_profile(
-            source_name="FXTradingVision", side="BUY", position_count=4
-        )
+def test_fx_never_creates_a_fourth_tp_leg_for_buy_or_sell() -> None:
+    for side in ("BUY", "SELL"):
+        with pytest.raises(ValueError, match="fxtradingvision_position_count_invalid"):
+            provider_risk_profile(
+                source_name="FXTradingVision", side=side, position_count=4
+            )
 
 
 def test_tig_buy_never_accepts_a_fifth_leg() -> None:
@@ -128,10 +125,10 @@ def test_tig_sell_never_accepts_a_third_leg() -> None:
         )
 
 
-def test_fx_size_profile_risks_ten_percent_across_three_legs() -> None:
+def test_fx_size_profile_risks_eleven_percent_across_three_legs() -> None:
     result = Day24RiskSizer.size_profile(
         balance=Decimal("1500"),
-        risk_percents=(Decimal("4"), Decimal("4"), Decimal("2")),
+        risk_percents=(Decimal("5"), Decimal("5"), Decimal("1")),
         signal_entry_price=Decimal("100"),
         signal_stop_loss=Decimal("90"),
         tick_size=Decimal("1"),
@@ -140,11 +137,11 @@ def test_fx_size_profile_risks_ten_percent_across_three_legs() -> None:
     )
 
     assert [item.risk_budget for item in result.positions] == [
-        Decimal("60"),
-        Decimal("60"),
-        Decimal("30"),
+        Decimal("75"),
+        Decimal("75"),
+        Decimal("15"),
     ]
-    assert result.total_risk_budget == Decimal("150")
+    assert result.total_risk_budget == Decimal("165")
     assert result.position_count == 3
     assert not result.double_lot_applied
 
