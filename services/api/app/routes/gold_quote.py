@@ -71,7 +71,7 @@ def _quote_from_payload(payload: dict[str, object], *, now: datetime) -> GoldQuo
     bid = _positive_float(payload.get("bid"))
     ask = _positive_float(payload.get("ask"))
     timestamp = _quote_time(payload.get("time"))
-    price = ((bid + ask) / 2.0) if bid is not None and ask is not None else None
+    price = round((bid + ask) / 2.0, 5) if bid is not None and ask is not None else None
     stale = timestamp is None or max(0.0, (now - timestamp).total_seconds()) > _STALE_AFTER_SECONDS
     return GoldQuoteResponse(
         price=price,
