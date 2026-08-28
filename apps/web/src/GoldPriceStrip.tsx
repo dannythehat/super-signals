@@ -18,8 +18,8 @@ type Props = {
   apiBaseUrl: string;
 };
 
-const LIVE_REFRESH_MS = 2000;
-const DELAYED_REFRESH_MS = 15000;
+const LIVE_REFRESH_MS = 5000;
+const DELAYED_REFRESH_MS = 30000;
 const HIDDEN_REFRESH_MS = 30000;
 
 function goldPrice(value: number | null): string {
@@ -104,6 +104,7 @@ export function GoldPriceStrip({ apiBaseUrl }: Props) {
   const live = Boolean(quote?.available && !quote.stale && !feedError);
   const delayed = Boolean(quote?.price !== null && quote?.price !== undefined && !live);
   const stateLabel = live ? 'Live' : delayed ? 'Delayed' : quote === null && !feedError ? 'Connecting' : 'Unavailable';
+  const hasSpread = quote?.bid !== null && quote?.bid !== undefined && quote?.ask !== null && quote?.ask !== undefined;
 
   return <section className={`gold-price-strip ${live ? 'gold-price-strip--live' : ''}`} aria-label="Live gold price">
     <div className="gold-price-strip__identity">
@@ -114,9 +115,11 @@ export function GoldPriceStrip({ apiBaseUrl }: Props) {
       <strong>{goldPrice(quote?.price ?? null)}</strong>
       <span className={`gold-price-strip__state gold-price-strip__state--${live ? 'live' : delayed ? 'delayed' : 'offline'}`}><i />{stateLabel}</span>
     </div>
-    <div className="gold-price-strip__spread" aria-label="Gold bid and ask">
-      <span>Bid <strong>{compactPrice(quote?.bid ?? null)}</strong></span>
-      <span>Ask <strong>{compactPrice(quote?.ask ?? null)}</strong></span>
+    <div className="gold-price-strip__spread" aria-label={hasSpread ? 'Gold bid and ask' : 'Gold price source'}>
+      {hasSpread ? <>
+        <span>Bid <strong>{compactPrice(quote?.bid ?? null)}</strong></span>
+        <span>Ask <strong>{compactPrice(quote?.ask ?? null)}</strong></span>
+      </> : <span>Source <strong>{quote?.source ?? 'Public spot'}</strong></span>}
     </div>
   </section>;
 }
