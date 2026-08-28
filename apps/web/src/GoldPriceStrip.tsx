@@ -14,12 +14,19 @@ type GoldQuote = {
   source: string;
 };
 
+type GoldApiPayload = {
+  price?: number | string | null;
+  updatedAt?: string | null;
+  updated_at?: string | null;
+};
+
 type Props = {
   apiBaseUrl: string;
 };
 
-const LIVE_REFRESH_MS = 5000;
-const DELAYED_REFRESH_MS = 30000;
+const GOLD_API_URL = 'https://api.gold-api.com/price/XAU';
+const LIVE_REFRESH_MS = 2000;
+const ERROR_REFRESH_MS = 10000;
 const HIDDEN_REFRESH_MS = 30000;
 
 function goldPrice(value: number | null): string {
@@ -32,15 +39,17 @@ function goldPrice(value: number | null): string {
   }).format(value);
 }
 
-function compactPrice(value: number | null): string {
-  if (value === null || !Number.isFinite(value)) return '—';
-  return new Intl.NumberFormat(undefined, {
-    minimumFractionDigits: 2,
-    maximumFractionDigits: 2,
-  }).format(value);
+function parsePrice(value: unknown): number | null {
+  if (typeof value === 'number' && Number.isFinite(value) && value > 0) return value;
+  if (typeof value === 'string') {
+    const parsed = Number(value);
+    if (Number.isFinite(parsed) && parsed > 0) return parsed;
+  }
+  return null;
 }
 
 export function GoldPriceStrip({ apiBaseUrl }: Props) {
+  void apiBaseUrl;
   const [quote, setQuote] = useState<GoldQuote | null>(null);
   const [feedError, setFeedError] = useState(false);
 
@@ -65,22 +74,39 @@ export function GoldPriceStrip({ apiBaseUrl }: Props) {
       controller?.abort();
       controller = new AbortController();
       try {
-        const response = await fetch(`${apiBaseUrl}/account/mt5/dashboard/gold-quote`, {
-          credentials: 'include',
-          headers: { Accept: 'application/json' },
+        const response = await fetch(`${GOLD_API_URL}?_=${Date.now()}`, {
+          headers: {
+            Accept: 'application/json',
+            'Cache-Control': 'no-cache',
+          },
           cache: 'no-store',
           signal: controller.signal,
         });
         if (!response.ok) throw new Error('gold_quote_unavailable');
-        const next = (await response.json()) as GoldQuote;
+
+        const payload = (await response.json()) as GoldApiPayload;
+        const price = parsePrice(payload.price);
+        if (price === null) throw new Error('gold_quote_invalid');
+
         if (cancelled) return;
-        setQuote(next);
+        const now = new Date().toISOString();
+        setQuote({
+          symbol: 'XAUUSD',
+          price,
+          bid: null,
+          ask: null,
+          quote_time: payload.updatedAt ?? payload.updated_at ?? now,
+          read_at: now,
+          available: true,
+          stale: false,
+          source: 'Gold API',
+        });
         setFeedError(false);
-        schedule(next.available && !next.stale ? LIVE_REFRESH_MS : DELAYED_REFRESH_MS);
+        schedule(LIVE_REFRESH_MS);
       } catch (error) {
         if (cancelled || (error instanceof DOMException && error.name === 'AbortError')) return;
         setFeedError(true);
-        schedule(DELAYED_REFRESH_MS);
+        schedule(ERROR_REFRESH_MS);
       }
     };
 
@@ -99,12 +125,11 @@ export function GoldPriceStrip({ apiBaseUrl }: Props) {
       controller?.abort();
       document.removeEventListener('visibilitychange', onVisibilityChange);
     };
-  }, [apiBaseUrl]);
+  }, []);
 
-  const live = Boolean(quote?.available && !quote.stale && !feedError);
+  const live = Boolean(quote?.available && !feedError);
   const delayed = Boolean(quote?.price !== null && quote?.price !== undefined && !live);
   const stateLabel = live ? 'Live' : delayed ? 'Delayed' : quote === null && !feedError ? 'Connecting' : 'Unavailable';
-  const hasSpread = quote?.bid !== null && quote?.bid !== undefined && quote?.ask !== null && quote?.ask !== undefined;
 
   return <section className={`gold-price-strip ${live ? 'gold-price-strip--live' : ''}`} aria-label="Live gold price">
     <div className="gold-price-strip__identity">
@@ -115,11 +140,8 @@ export function GoldPriceStrip({ apiBaseUrl }: Props) {
       <strong>{goldPrice(quote?.price ?? null)}</strong>
       <span className={`gold-price-strip__state gold-price-strip__state--${live ? 'live' : delayed ? 'delayed' : 'offline'}`}><i />{stateLabel}</span>
     </div>
-    <div className="gold-price-strip__spread" aria-label={hasSpread ? 'Gold bid and ask' : 'Gold price source'}>
-      {hasSpread ? <>
-        <span>Bid <strong>{compactPrice(quote?.bid ?? null)}</strong></span>
-        <span>Ask <strong>{compactPrice(quote?.ask ?? null)}</strong></span>
-      </> : <span>Source <strong>{quote?.source ?? 'Public spot'}</strong></span>}
+    <div className="gold-price-strip__spread" aria-label="Gold price source">
+      <span>Source <strong>{quote?.source ?? 'Gold API'}</strong></span>
     </div>
   </section>;
 }
