@@ -1,5 +1,6 @@
 name: Deploy Super Signals frontend
 
+# Production deploy path restored on 2026-08-28.
 on:
   push:
     branches:
