@@ -17,11 +17,13 @@ from sqlalchemy import text
 from sqlalchemy.orm import Session, sessionmaker
 
 from app.metaapi_read_gateway import MetaApiReadGateway
+from app.metaapi_trade_gateway import MetaApiTradeGateway
 from app.mt5_crypto import MetaApiTokenCipher
 from app.pending_reconciliation_canonical import (
     AccountPendingReconciler,
     PendingReconcileResult,
 )
+from app.superseded_pending_guard import SupersededPendingOrderGuard
 
 logger = logging.getLogger(__name__)
 
@@ -96,6 +98,7 @@ class UnifiedPendingReconciler:
         gateway: MetaApiReadGateway,
         owner_user_id: UUID,
         poll_seconds: int = 3,
+        trade_gateway: MetaApiTradeGateway | None = None,
     ) -> None:
         if poll_seconds < 1:
             raise ValueError("pending_poll_seconds_invalid")
@@ -110,6 +113,16 @@ class UnifiedPendingReconciler:
             gateway=gateway,
             owner_user_id=owner_user_id,
             poll_seconds=poll_seconds,
+        )
+        self._supersession_guard = (
+            SupersededPendingOrderGuard(
+                session_factory=session_factory,
+                cipher=cipher,
+                read_gateway=gateway,
+                trade_gateway=trade_gateway,
+            )
+            if trade_gateway is not None
+            else None
         )
         self._task: asyncio.Task[None] | None = None
         self._stop = asyncio.Event()
@@ -150,9 +163,35 @@ class UnifiedPendingReconciler:
                 pass
 
     async def reconcile_once(self) -> PendingReconcileResult:
+        if self._supersession_guard is not None:
+            cleanup = await self._supersession_guard.cleanup_existing(
+                user_id=self._owner_user_id,
+                account_environment="demo",
+            )
+            if cleanup.cancelled or cleanup.terminalized:
+                logger.warning(
+                    "Superseded pending cleanup environment=demo cancelled=%d terminalized=%d unresolved=%d",
+                    cleanup.cancelled,
+                    cleanup.terminalized,
+                    cleanup.unresolved,
+                )
+
         results = [await self._owner.reconcile_once()]
         if _live_enabled():
             for user_id in self._live_pending_users():
+                if self._supersession_guard is not None:
+                    cleanup = await self._supersession_guard.cleanup_existing(
+                        user_id=user_id,
+                        account_environment="live",
+                    )
+                    if cleanup.cancelled or cleanup.terminalized:
+                        logger.warning(
+                            "Superseded pending cleanup environment=live user=%s cancelled=%d terminalized=%d unresolved=%d",
+                            user_id,
+                            cleanup.cancelled,
+                            cleanup.terminalized,
+                            cleanup.unresolved,
+                        )
                 reconciler = LiveMemberPendingReconciler(
                     session_factory=self._session_factory,
                     cipher=self._cipher,
