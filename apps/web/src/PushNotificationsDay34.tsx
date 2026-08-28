@@ -39,17 +39,17 @@ async function ensureServiceWorker(): Promise<ServiceWorkerRegistration> {
   const registration = await withTimeout(
     navigator.serviceWorker.register('/sw.js', { scope: '/' }),
     10000,
-    'The notification service could not start in this browser. Open Smart Signals directly in Chrome and try again.',
+    'The notification service could not start in this browser. Open Super Signals directly in Chrome and try again.',
   );
   await withTimeout(
     registration.update(),
     10000,
-    'The notification service could not update in this browser. Open Smart Signals directly in Chrome and try again.',
+    'The notification service could not update in this browser. Open Super Signals directly in Chrome and try again.',
   );
   return withTimeout(
     navigator.serviceWorker.ready,
     10000,
-    'The notification service did not become ready. Open Smart Signals directly in Chrome and try again.',
+    'The notification service did not become ready. Open Super Signals directly in Chrome and try again.',
   );
 }
 
@@ -69,9 +69,24 @@ async function readJson<T>(response: Response): Promise<T> {
   return body;
 }
 
+async function syncSubscription(apiBaseUrl: string, subscription: PushSubscription): Promise<void> {
+  const response = await withTimeout(
+    fetch(`${apiBaseUrl}/notifications/push/subscribe`, {
+      method: 'POST',
+      credentials: 'include',
+      headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+      body: JSON.stringify(subscription.toJSON()),
+    }),
+    15000,
+    'Super Signals could not save this device notification subscription.',
+  );
+  await readJson<{ enabled: boolean }>(response);
+}
+
 export function PushNotificationsDay34({ apiBaseUrl }: PushNotificationsDay34Props) {
   const [state, setState] = useState<PushState>('checking');
   const [busy, setBusy] = useState(false);
+  const [testBusy, setTestBusy] = useState(false);
   const [phase, setPhase] = useState<EnablePhase>(null);
   const [message, setMessage] = useState<string | null>(null);
   const [publicKey, setPublicKey] = useState<string | null>(null);
@@ -105,6 +120,12 @@ export function PushNotificationsDay34({ apiBaseUrl }: PushNotificationsDay34Pro
           10000,
           'The browser could not read the notification subscription.',
         );
+        if (subscription && Notification.permission === 'granted') {
+          // Browser push state can survive while the server record is disabled or stale.
+          // Re-register the existing endpoint on every settings load so "On" means both
+          // halves of the delivery path are active, not merely that Chrome has a token.
+          await syncSubscription(apiBaseUrl, subscription);
+        }
         if (!cancelled) setState(subscription ? 'on' : 'off');
       } catch (error) {
         if (!cancelled) {
@@ -128,7 +149,7 @@ export function PushNotificationsDay34({ apiBaseUrl }: PushNotificationsDay34Pro
       const permission = await withTimeout(
         Notification.requestPermission(),
         15000,
-        'Your browser did not open the notification permission prompt. Open Smart Signals directly in Chrome and try again.',
+        'Your browser did not open the notification permission prompt. Open Super Signals directly in Chrome and try again.',
       );
       if (permission !== 'granted') {
         setState(permission === 'denied' ? 'blocked' : 'off');
@@ -151,22 +172,12 @@ export function PushNotificationsDay34({ apiBaseUrl }: PushNotificationsDay34Pro
             applicationServerKey: urlBase64ToUint8Array(publicKey),
           }),
           20000,
-          'This browser could not create a push subscription. Open Smart Signals directly in Chrome and try again.',
+          'This browser could not create a push subscription. Open Super Signals directly in Chrome and try again.',
         );
       }
 
       setPhase('server');
-      const response = await withTimeout(
-        fetch(`${apiBaseUrl}/notifications/push/subscribe`, {
-          method: 'POST',
-          credentials: 'include',
-          headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
-          body: JSON.stringify(subscription.toJSON()),
-        }),
-        15000,
-        'Smart Signals could not save this device notification subscription.',
-      );
-      await readJson<{ enabled: boolean }>(response);
+      await syncSubscription(apiBaseUrl, subscription);
       setState('on');
       setMessage('Trade alerts are on for this device.');
     } catch (error) {
@@ -174,6 +185,28 @@ export function PushNotificationsDay34({ apiBaseUrl }: PushNotificationsDay34Pro
     } finally {
       setPhase(null);
       setBusy(false);
+    }
+  }
+
+  async function sendTestAlert() {
+    setTestBusy(true);
+    setMessage(null);
+    try {
+      const response = await withTimeout(
+        fetch(`${apiBaseUrl}/notifications/push/test`, {
+          method: 'POST',
+          credentials: 'include',
+          headers: { Accept: 'application/json' },
+        }),
+        15000,
+        'Super Signals could not queue a test alert.',
+      );
+      await readJson<{ queued: boolean }>(response);
+      setMessage('Test alert sent. If it does not appear, Android or Chrome is blocking notifications for Super Signals.');
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : 'The test alert could not be sent.');
+    } finally {
+      setTestBusy(false);
     }
   }
 
@@ -235,7 +268,7 @@ export function PushNotificationsDay34({ apiBaseUrl }: PushNotificationsDay34Pro
       <span className="status-label">Device notifications · {statusLabel}</span>
       <h2 id="trade-alerts-heading">Trade alerts</h2>
       <p>
-        Get plain-English Smart Signals updates on this device when a trade opens, changes or closes.
+        Get plain-English Super Signals updates on this device when a trade opens, changes or closes.
         Private balances and account details are never included in push alerts.
       </p>
       {busy && phase && <p className="form-note" role="status">{busyLabel}</p>}
@@ -250,9 +283,14 @@ export function PushNotificationsDay34({ apiBaseUrl }: PushNotificationsDay34Pro
           </button>
         )}
         {state === 'on' && (
-          <button className="button button--quiet" type="button" onClick={() => void disable()} disabled={busy}>
-            {busy ? 'Turning off…' : 'Turn off alerts'}
-          </button>
+          <>
+            <button className="button" type="button" onClick={() => void sendTestAlert()} disabled={busy || testBusy}>
+              {testBusy ? 'Sending test…' : 'Send test alert'}
+            </button>
+            <button className="button button--quiet" type="button" onClick={() => void disable()} disabled={busy || testBusy}>
+              {busy ? 'Turning off…' : 'Turn off alerts'}
+            </button>
+          </>
         )}
       </div>
     </article>
