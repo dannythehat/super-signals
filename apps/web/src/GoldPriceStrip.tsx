@@ -18,8 +18,8 @@ type Props = {
   apiBaseUrl: string;
 };
 
-const LIVE_REFRESH_MS = 2000;
-const ERROR_REFRESH_MS = 3000;
+const LIVE_REFRESH_MS = 1000;
+const ERROR_REFRESH_MS = 2000;
 const HIDDEN_REFRESH_MS = 30000;
 
 function goldPrice(value: number | null): string {
@@ -118,7 +118,7 @@ export function GoldPriceStrip({ apiBaseUrl }: Props) {
       {hasSpread ? <>
         <span>Bid <strong>{compactPrice(quote?.bid ?? null)}</strong></span>
         <span>Ask <strong>{compactPrice(quote?.ask ?? null)}</strong></span>
-      </> : <span>Source <strong>{quote?.source ?? 'Public gold feed'}</strong></span>}
+      </> : <span>Source <strong>{quote?.source ?? 'Free live feed'}</strong></span>}
     </div>
   </section>;
 }
