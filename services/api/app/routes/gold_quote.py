@@ -1,8 +1,8 @@
-"""Lightweight authenticated XAUUSD quote endpoint for the mobile dashboard.
+"""Free public XAU/USD spot quote for the dashboard.
 
-This endpoint deliberately reads price only. It does not refresh account information,
-positions, performance, reconciliation, or trading state, so a fast quote cadence cannot
-make the main dashboard or execution path heavier.
+This route is intentionally isolated from MetaAPI and the broker account. Dashboard gold
+prices come from the keyless Gold API public real-time endpoint, so displaying a price
+cannot consume trading API credits or touch MT5 account state.
 """
 
 from __future__ import annotations
@@ -12,25 +12,21 @@ from math import isfinite
 from time import monotonic
 from typing import Annotated, Any
 
+import httpx
 from fastapi import APIRouter, Depends, Request, Response
 from pydantic import BaseModel
-from sqlalchemy import text
 
 from app.access_control import get_current_identity
-from app.metaapi_gateway import MetaApiGatewayError
-from app.metaapi_token_scope import inspect_metaapi_token_scope
-from app.mt5_connection_service_day30 import Day30Mt5ConnectionService
-from app.mt5_crypto import BrokerCredentialDecryptionError
-from app.mt5_runtime import require_mt5_service
-from app.paper_resilient_read_gateway import ResilientMetaApiReadGateway
 
 router = APIRouter(prefix="/dashboard/gold-quote", tags=["dashboard-gold-quote"])
 Identity = Annotated[dict[str, Any], Depends(get_current_identity)]
 
 _SYMBOL = "XAUUSD"
-_LIVE_CACHE_SECONDS = 1.5
-_RETRY_CACHE_SECONDS = 10.0
-_STALE_AFTER_SECONDS = 15.0
+_SOURCE = "Gold API"
+_UPSTREAM_URL = "https://api.gold-api.com/price/XAU"
+_LIVE_CACHE_SECONDS = 5.0
+_RETRY_CACHE_SECONDS = 30.0
+_STALE_AFTER_SECONDS = 60.0
 
 
 class GoldQuoteResponse(BaseModel):
@@ -42,7 +38,7 @@ class GoldQuoteResponse(BaseModel):
     read_at: datetime
     available: bool
     stale: bool
-    source: str = "Vantage MT5"
+    source: str = _SOURCE
 
 
 def _positive_float(value: object) -> float | None:
@@ -68,11 +64,14 @@ def _quote_time(value: object) -> datetime | None:
 
 
 def _quote_from_payload(payload: dict[str, object], *, now: datetime) -> GoldQuoteResponse:
+    price = _positive_float(payload.get("price"))
     bid = _positive_float(payload.get("bid"))
     ask = _positive_float(payload.get("ask"))
-    timestamp = _quote_time(payload.get("time"))
-    price = round((bid + ask) / 2.0, 5) if bid is not None and ask is not None else None
-    stale = timestamp is None or max(0.0, (now - timestamp).total_seconds()) > _STALE_AFTER_SECONDS
+    timestamp = _quote_time(payload.get("updatedAt") or payload.get("updated_at"))
+    stale = (
+        timestamp is None
+        or max(0.0, (now - timestamp).total_seconds()) > _STALE_AFTER_SECONDS
+    )
     return GoldQuoteResponse(
         price=price,
         bid=bid,
@@ -105,15 +104,6 @@ def _cache(request: Request) -> dict[str, tuple[float, GoldQuoteResponse]]:
     return created
 
 
-def _gateway(request: Request) -> ResilientMetaApiReadGateway:
-    existing = getattr(request.app.state, "gold_quote_gateway", None)
-    if isinstance(existing, ResilientMetaApiReadGateway):
-        return existing
-    created = ResilientMetaApiReadGateway(timeout_seconds=3.0, attempts=2, retry_delay_seconds=0.15)
-    request.app.state.gold_quote_gateway = created
-    return created
-
-
 def _store(
     cache: dict[str, tuple[float, GoldQuoteResponse]],
     key: str,
@@ -124,6 +114,23 @@ def _store(
     return quote
 
 
+async def _read_free_gold_price() -> dict[str, object]:
+    timeout = httpx.Timeout(3.0)
+    async with httpx.AsyncClient(timeout=timeout) as client:
+        response = await client.get(
+            _UPSTREAM_URL,
+            headers={
+                "Accept": "application/json",
+                "User-Agent": "SuperSignals/1.0",
+            },
+        )
+        response.raise_for_status()
+        payload = response.json()
+    if not isinstance(payload, dict):
+        raise ValueError("invalid_gold_api_response")
+    return payload
+
+
 @router.get("", response_model=GoldQuoteResponse)
 async def account_gold_quote(
     request: Request,
@@ -131,66 +138,22 @@ async def account_gold_quote(
     _identity: Identity,
 ) -> GoldQuoteResponse:
     now = datetime.now(UTC)
-    base = require_mt5_service(request)
-    if not isinstance(base, Day30Mt5ConnectionService):
-        return _unavailable(now)
-
     key = _SYMBOL
     cache = _cache(request)
     cached = cache.get(key)
     if cached is not None and monotonic() < cached[0]:
-        response.headers["Cache-Control"] = "private, max-age=1"
+        response.headers["Cache-Control"] = "private, max-age=2"
         return cached[1]
 
     previous = cached[1] if cached is not None else None
-    with base._session_factory() as session:
-        row = session.execute(
-            text(
-                """
-                SELECT a.metaapi_account_id, a.metaapi_token_ciphertext
-                FROM mt5_accounts a
-                JOIN users u ON u.id = a.owner_user_id
-                JOIN user_roles ur ON ur.user_id = u.id
-                JOIN roles r ON r.id = ur.role_id
-                WHERE r.name = 'owner'
-                  AND u.status NOT IN ('revoked', 'suspended')
-                  AND a.status != 'revoked'
-                ORDER BY u.created_at, u.id
-                LIMIT 1
-                """
-            ),
-        ).mappings().first()
-
-    if row is None:
-        quote = _unavailable(now)
-        response.headers["Cache-Control"] = "private, max-age=1"
-        return _store(cache, key, quote)
-
     try:
-        token = base._cipher.decrypt(bytes(row["metaapi_token_ciphertext"]))
-        scope = inspect_metaapi_token_scope(token)
-        if (
-            scope.jwt_payload_decoded
-            and scope.is_explicitly_narrowed
-            and not scope.has_terminal_access
-        ):
-            quote = _unavailable(now)
-        else:
-            account_id = str(row["metaapi_account_id"])
-            gateway = _gateway(request)
-            region = await gateway.resolve_account_region(token=token, account_id=account_id)
-            payload = await gateway.read_symbol_price(
-                token=token,
-                account_id=account_id,
-                region=region,
-                symbol=_SYMBOL,
-            )
-            quote = _quote_from_payload(payload, now=now)
-    except (BrokerCredentialDecryptionError, MetaApiGatewayError):
+        payload = await _read_free_gold_price()
+        quote = _quote_from_payload(payload, now=now)
+    except (httpx.HTTPError, ValueError, TypeError):
         if previous is not None and previous.price is not None:
             quote = previous.model_copy(update={"read_at": now, "stale": True})
         else:
             quote = _unavailable(now)
 
-    response.headers["Cache-Control"] = "private, max-age=1"
+    response.headers["Cache-Control"] = "private, max-age=2"
     return _store(cache, key, quote)
