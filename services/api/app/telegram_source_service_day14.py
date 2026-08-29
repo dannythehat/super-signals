@@ -35,12 +35,25 @@ class Day14SharedTelegramSourceView:
     status: str
     connection_status: str
     connected_reader_count: int
+    shadow_total: int
+    shadow_open: int
+    shadow_closed: int
+    shadow_wins: int
+    shadow_losses: int
+    shadow_return_percent: str
 
 
 class Day14TelegramSourceService(TelegramSourceService):
     """Keep logical sources durable while reporting private-reader availability."""
 
     def list_shared_sources(self, session: Session) -> list[Day14SharedTelegramSourceView]:
+        # Keep the Day 14 connectivity view compatible with the current shared-source
+        # API contract.  The base service owns the shadow-trading metric semantics;
+        # reusing it here prevents this reliability override from returning an older
+        # object shape when new shared-source fields are added.
+        shared_metrics = {
+            item.source_id: item for item in super().list_shared_sources(session)
+        }
         rows = session.execute(
             text(
                 """
@@ -61,19 +74,30 @@ class Day14TelegramSourceService(TelegramSourceService):
                 """
             )
         ).mappings().all()
-        return [
-            Day14SharedTelegramSourceView(
-                source_id=row["source_id"],
-                chat_id=int(row["chat_id"]),
-                title=str(row["title"]),
-                status=str(row["status"]),
-                connection_status=(
-                    "connected" if int(row["connected_reader_count"] or 0) > 0 else "disconnected"
-                ),
-                connected_reader_count=int(row["connected_reader_count"] or 0),
+        result: list[Day14SharedTelegramSourceView] = []
+        for row in rows:
+            source_id = UUID(str(row["source_id"]))
+            metrics = shared_metrics[source_id]
+            connected_reader_count = int(row["connected_reader_count"] or 0)
+            result.append(
+                Day14SharedTelegramSourceView(
+                    source_id=source_id,
+                    chat_id=int(row["chat_id"]),
+                    title=str(row["title"]),
+                    status=str(row["status"]),
+                    connection_status=(
+                        "connected" if connected_reader_count > 0 else "disconnected"
+                    ),
+                    connected_reader_count=connected_reader_count,
+                    shadow_total=metrics.shadow_total,
+                    shadow_open=metrics.shadow_open,
+                    shadow_closed=metrics.shadow_closed,
+                    shadow_wins=metrics.shadow_wins,
+                    shadow_losses=metrics.shadow_losses,
+                    shadow_return_percent=metrics.shadow_return_percent,
+                )
             )
-            for row in rows
-        ]
+        return result
 
     def unselect_source(
         self,
