@@ -7,12 +7,15 @@ from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from pydantic import BaseModel, Field
+from sqlalchemy.orm import Session
 
 from app.access_control import get_current_identity, require_permission
+from app.db import get_db_session
 from app.metaapi_read_gateway import MetaApiReadGateway
 from app.metaapi_trade_gateway import MetaApiTradeGateway
 from app.mt5_connection_service_day30 import Day30Mt5ConnectionService
 from app.mt5_runtime import require_mt5_service
+from app.subscription_access import require_active_subscription
 from app.trading_controls_day31 import (
     Day31ActivationPreview,
     Day31StopResult,
@@ -29,6 +32,7 @@ RiskIdentity = Annotated[dict[str, Any], Depends(require_permission("risk.manage
 AutomationIdentity = Annotated[
     dict[str, Any], Depends(require_permission("automation.toggle"))
 ]
+DbSession = Annotated[Session, Depends(get_db_session)]
 
 
 class RiskSettingsRequest(BaseModel):
@@ -216,8 +220,10 @@ def activation_preview(
     request: Request,
     response: Response,
     identity: AutomationIdentity,
+    session: DbSession,
 ) -> ActivationPreviewResponse:
     _ordinary_user(identity)
+    require_active_subscription(session, identity["id"])
     try:
         view = _service(request).activation_preview(identity["id"])
     except Day31TradingControlError as exc:
@@ -232,8 +238,10 @@ def activate_trading(
     request: Request,
     response: Response,
     identity: AutomationIdentity,
+    session: DbSession,
 ) -> TradingControlResponse:
     _ordinary_user(identity)
+    require_active_subscription(session, identity["id"])
     try:
         view = _service(request).activate(
             user_id=identity["id"], confirmed=payload.confirmed
