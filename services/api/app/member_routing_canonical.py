@@ -161,6 +161,7 @@ class MemberDistributionService:
         return result
 
     def _targets(self) -> tuple[MemberDistributionTarget, ...]:
+        """Return active trading users with an active paid or complimentary entitlement."""
         with self._session_factory() as session:
             rows = session.execute(
                 text(
@@ -170,8 +171,16 @@ class MemberDistributionService:
                     JOIN user_roles AS ur ON ur.user_id=u.id
                     JOIN roles AS r ON r.id=ur.role_id AND r.name='user'
                     JOIN user_trading_controls AS utc ON utc.user_id=u.id
+                    LEFT JOIN member_subscriptions AS ms
+                      ON ms.user_id=u.id
+                     AND ms.status='active'
+                     AND ms.active_until > now()
+                    LEFT JOIN complimentary_access_grants AS cag
+                      ON cag.user_id=u.id
+                     AND cag.status='active'
                     WHERE u.status='active'
                       AND utc.trading_status='active'
+                      AND (ms.user_id IS NOT NULL OR cag.user_id IS NOT NULL)
                     ORDER BY u.id
                     """
                 )
