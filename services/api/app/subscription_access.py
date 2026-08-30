@@ -1,8 +1,9 @@
 """Shared Smart Signals subscription entitlement checks.
 
-Payment approval controls whether an ordinary member may connect MT5, activate
-trading, or receive new distributed trades. Existing open positions are deliberately
-not invalidated by subscription expiry so they can still be managed and closed safely.
+Paid subscription approval or an active complimentary owner grant controls whether an
+ordinary member may connect MT5, activate trading, or receive new distributed trades.
+Existing open positions are deliberately not invalidated by entitlement expiry/revocation
+so they can still be managed and closed safely.
 """
 
 from __future__ import annotations
@@ -43,6 +44,18 @@ def get_subscription_state(session: Session, user_id: UUID) -> SubscriptionState
         {"user_id": user_id},
     ).mappings().first()
 
+    complimentary = session.execute(
+        text(
+            """
+            SELECT status
+            FROM complimentary_access_grants
+            WHERE user_id=:user_id
+            LIMIT 1
+            """
+        ),
+        {"user_id": user_id},
+    ).mappings().first()
+
     claim = session.execute(
         text(
             """
@@ -58,32 +71,56 @@ def get_subscription_state(session: Session, user_id: UUID) -> SubscriptionState
 
     now = datetime.now(timezone.utc)
     active_until = subscription["active_until"] if subscription else None
-    subscription_active = bool(
+    paid_active = bool(
         subscription
         and subscription["status"] == "active"
         and active_until is not None
         and active_until > now
     )
+    complimentary_active = bool(
+        complimentary and complimentary["status"] == "active"
+    )
+    entitlement_active = paid_active or complimentary_active
 
-    if subscription_active:
+    if complimentary_active:
         state_status = "active"
+        plan_code = "complimentary"
+        effective_active_until = None
+    elif paid_active:
+        state_status = "active"
+        plan_code = str(subscription["plan_code"])
+        effective_active_until = active_until
     elif claim and claim["status"] == "pending":
         state_status = "pending"
+        plan_code = str(subscription["plan_code"]) if subscription else None
+        effective_active_until = active_until
     elif subscription and subscription["status"] == "suspended":
         state_status = "suspended"
+        plan_code = str(subscription["plan_code"])
+        effective_active_until = active_until
     elif subscription and active_until is not None and active_until <= now:
         state_status = "expired"
+        plan_code = str(subscription["plan_code"])
+        effective_active_until = active_until
+    elif complimentary and complimentary["status"] == "revoked":
+        state_status = "revoked"
+        plan_code = "complimentary"
+        effective_active_until = None
     elif claim and claim["status"] == "rejected":
         state_status = "rejected"
+        plan_code = None
+        effective_active_until = None
     else:
         state_status = "unpaid"
+        plan_code = None
+        effective_active_until = None
 
     pending = claim if claim and claim["status"] == "pending" else None
     return SubscriptionState(
         status=state_status,
-        active=subscription_active,
-        plan_code=(str(subscription["plan_code"]) if subscription else None),
-        active_until=active_until,
+        active=entitlement_active,
+        plan_code=plan_code,
+        active_until=effective_active_until,
         pending_claim_id=(UUID(str(pending["id"])) if pending else None),
         pending_plan_code=(str(pending["plan_code"]) if pending else None),
         pending_amount_eur=(int(pending["expected_amount_eur"]) if pending else None),
@@ -101,8 +138,8 @@ def require_active_subscription(session: Session, user_id: UUID) -> Subscription
         detail={
             "code": "subscription_required",
             "message": (
-                "Your Smart Signals subscription must be active before connecting MT5 "
-                "or activating automated trading. Submit your USDC payment for approval first."
+                "Your Smart Signals access must be active before connecting MT5 or "
+                "activating automated trading. Submit your USDC payment for approval first."
             ),
             "subscription_status": state.status,
         },
