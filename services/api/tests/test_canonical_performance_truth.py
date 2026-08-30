@@ -87,7 +87,7 @@ def test_owner_paper_origin_is_immutable_and_not_environment_resettable(monkeypa
 
     epoch = active_paper_epoch(owner)
     assert epoch is not None
-    assert PAPER_RUN_STARTED_AT == datetime(2026, 8, 27, 8, 30, tzinfo=UTC)
+    assert PAPER_RUN_STARTED_AT == datetime(2026, 8, 30, 11, 18, tzinfo=UTC)
     assert PAPER_RUN_BASELINE_BALANCE == Decimal("1500")
     assert epoch.started_at == PAPER_RUN_STARTED_AT
     assert epoch.baseline_balance == Decimal("1500")
@@ -122,7 +122,7 @@ class _StartDayWindowHarness(CanonicalPerformanceRuntimeService):
 
 def test_origin_day_every_window_accumulates_from_same_permanent_start() -> None:
     owner = UUID("11111111-1111-4111-8111-111111111111")
-    point = datetime(2026, 8, 27, 18, 0, tzinfo=UTC)
+    point = datetime(2026, 8, 30, 18, 0, tzinfo=UTC)
     service = _StartDayWindowHarness()
     windows = service.read_windows(owner, now=point)
 
