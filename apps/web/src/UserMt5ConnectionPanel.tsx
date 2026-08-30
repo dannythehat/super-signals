@@ -1,7 +1,7 @@
 import { FormEvent, MouseEvent, useCallback, useEffect, useState } from 'react';
 
 const VANTAGE_AFFILIATE_URL = import.meta.env.VITE_VANTAGE_AFFILIATE_URL
-  || 'https://www.vantagemarkets.com/forex-trading/forex-trading-account/?affid=32372443';
+  || 'https://vigco.co/la-com-inv/rVbJG9xZ';
 
 type MemberMt5OnboardingStatus = {
   request_status: string;
@@ -103,6 +103,7 @@ export function UserMt5ConnectionPanel({ apiBaseUrl }: Props) {
 
   const connected = status?.connection_status === 'connected';
   const waiting = status?.request_status === 'requested' && !status.approved;
+  const needsVantageSetup = !loading && status !== null && !connected && !status.approved && !waiting;
 
   return <section className="settings-panel settings-panel--mt5" aria-labelledby="user-mt5-settings-title">
     <div className="settings-panel-heading">
@@ -110,7 +111,7 @@ export function UserMt5ConnectionPanel({ apiBaseUrl }: Props) {
       {status && <span className={`settings-state settings-state--${connected ? 'good' : 'attention'}`}>{connected ? 'CONNECTED' : status.approved ? 'APPROVED' : waiting ? 'WAITING FOR APPROVAL' : 'SETUP NEEDED'}</span>}
     </div>
 
-    {!connected && <div className="settings-vantage-start">
+    {needsVantageSetup && <div className="settings-vantage-start">
       <strong>Need a Vantage account?</strong>
       <p>Create your Vantage account using the Smart Signals referral link. Vantage opens in your browser, leaving Smart Signals available to return to.</p>
       <a className="button button--quiet" href={VANTAGE_AFFILIATE_URL} target="_blank" rel="noopener noreferrer" onClick={openVantageExternally}>Create a Vantage account ↗</a>
@@ -119,11 +120,11 @@ export function UserMt5ConnectionPanel({ apiBaseUrl }: Props) {
     {loading ? <p className="muted-copy">Checking your trading account…</p> : status ? <>
       {connected && <>
         <div className="settings-account-summary">
-          <div><span>Account</span><strong>{status.approved_login_masked ?? 'Connected'}</strong></div>
-          <div><span>Server</span><strong>{status.approved_server ?? 'Vantage MT5'}</strong></div>
+          <div><span>Account</span><strong>{status.approved_login_masked ?? status.request_login_masked ?? 'Connected'}</strong></div>
+          <div><span>Server</span><strong>{status.approved_server ?? status.request_server ?? 'Vantage MT5'}</strong></div>
           <div><span>Status</span><strong>Connected</strong></div>
         </div>
-        <p className="settings-help">Your approved Vantage MT5 account is connected to Smart Signals.</p>
+        <p className="settings-help">Your Vantage MT5 account is connected to Smart Signals. No further broker setup is required.</p>
       </>}
 
       {!connected && !status.approved && !waiting && <>
