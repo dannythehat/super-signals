@@ -1,13 +1,15 @@
 """Public Smart Signals account creation for the website onboarding flow.
 
-This route deliberately leaves the existing owner-invitation registration path
-untouched. A website signup creates an ordinary member identity in the same user
-database used by the app; broker connectivity and trading remain governed by
-their existing approval/control layers.
+A website signup creates an ordinary member identity in the same user database used by
+the app. Each signup also creates a short-lived, one-time complimentary-access approval
+token and emails the private owner destination when outbound email is configured.
 """
 
 from __future__ import annotations
 
+import hashlib
+import secrets
+from datetime import datetime, timedelta, timezone
 from typing import Annotated
 
 from fastapi import Depends, HTTPException, status
@@ -16,6 +18,7 @@ from sqlalchemy import select, text
 from sqlalchemy.orm import Session
 
 from app.db import get_db_session
+from app.member_email import send_admin_new_signup
 from app.models import AuditEvent, Role, User, UserRole
 from app.routes.auth import router
 from app.security import hash_password
@@ -85,6 +88,9 @@ def public_signup(
 
     requested_name = (payload.display_name or "").strip()
     display_name = (requested_name or email.split("@", 1)[0])[:120]
+    complimentary_token = secrets.token_urlsafe(36)
+    token_hash = hashlib.sha256(complimentary_token.encode("utf-8")).hexdigest()
+    expires_at = datetime.now(timezone.utc) + timedelta(days=7)
 
     user = User(
         email=email,
@@ -104,6 +110,15 @@ def public_signup(
             granted_by_user_id=None,
         )
     )
+    session.execute(
+        text(
+            """
+            INSERT INTO complimentary_access_tokens (user_id, token_hash, expires_at)
+            VALUES (:user_id, :token_hash, :expires_at)
+            """
+        ),
+        {"user_id": user.id, "token_hash": token_hash, "expires_at": expires_at},
+    )
     session.add(
         AuditEvent(
             actor_user_id=user.id,
@@ -115,7 +130,28 @@ def public_signup(
                 "role": "user",
                 "source": "website_onboarding",
                 "trade_action_created": False,
+                "complimentary_owner_approval_available": True,
             },
+        )
+    )
+    session.commit()
+
+    delivery = send_admin_new_signup(
+        member_email=email,
+        display_name=display_name,
+        complimentary_token=complimentary_token,
+    )
+    session.add(
+        AuditEvent(
+            actor_user_id=user.id,
+            event_type=(
+                "access.signup_admin_email_sent"
+                if delivery.sent
+                else "access.signup_admin_email_not_sent"
+            ),
+            entity_type="user",
+            entity_id=user.id,
+            payload={"reason": delivery.reason},
         )
     )
     session.commit()
