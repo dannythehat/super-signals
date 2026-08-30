@@ -8,18 +8,22 @@ from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from pydantic import BaseModel, Field
+from sqlalchemy.orm import Session
 
 from app.access_control import get_current_identity
+from app.db import get_db_session
 from app.mt5_connection_service import Mt5ConnectionError, Mt5ConnectionView
 from app.mt5_connection_service_day30 import Day30Mt5ConnectionService
 from app.mt5_runtime import require_mt5_service
 from app.routes.dashboard_day32 import router as dashboard_day32_router
 from app.routes.gold_quote import router as gold_quote_router
+from app.subscription_access import require_active_subscription
 
 router = APIRouter(prefix="/account/mt5", tags=["mt5-user"])
 router.include_router(dashboard_day32_router)
 router.include_router(gold_quote_router)
 UserIdentity = Annotated[dict[str, Any], Depends(get_current_identity)]
+DbSession = Annotated[Session, Depends(get_db_session)]
 
 
 class UserMt5ConnectRequest(BaseModel):
@@ -155,14 +159,16 @@ async def connect_user_mt5(
     request: Request,
     response: Response,
     identity: UserIdentity,
+    session: DbSession,
 ) -> UserMt5StatusResponse:
-    """Connect the signed-in user's own Vantage MT5 account.
+    """Connect the signed-in member's Vantage MT5 after subscription approval.
 
     Demo Vantage servers are treated as Paper accounts. Live Vantage servers are
-    self-authorised for the same signed-in user before using the established live
-    connection service. The user's MT5 password is never persisted by Smart Signals.
+    bound to the same signed-in member. The member's MT5 password is transient and
+    is never persisted by Smart Signals.
     """
     _ordinary_user(identity)
+    require_active_subscription(session, identity["id"])
     service = _service(request)
     server_folded = payload.server.strip().casefold()
 
