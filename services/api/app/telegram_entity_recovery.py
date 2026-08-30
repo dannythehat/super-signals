@@ -44,7 +44,9 @@ async def read_messages_with_entity_recovery(
 
     Only a ValueError for an integer channel id triggers recovery. Other failures keep
     their normal Telethon semantics. A missing entity is cached briefly on the client so
-    repeated reconciliation sweeps do not hammer the dialog list.
+    repeated reconciliation sweeps do not hammer the dialog list or flood production
+    logs. During that cooldown the history-recovery call behaves as an empty bounded
+    catch-up; live Telegram push delivery remains untouched.
     """
     try:
         return await client.get_messages(entity, *args, **kwargs)
@@ -59,7 +61,11 @@ async def read_messages_with_entity_recovery(
             missing_until = {}
             setattr(client, "_super_signals_missing_entity_until", missing_until)
         if float(missing_until.get(target, 0.0)) > time.monotonic():
-            raise exc
+            # The previous recovery attempt already proved this reader cannot resolve
+            # this source right now. Do not throw the same stack trace every 15 seconds;
+            # skip only historical catch-up until the short cooldown expires. The live
+            # event listener remains registered and continues receiving push updates.
+            return []
 
         async for dialog in client.iter_dialogs():
             dialog_id = _canonical_channel_id(getattr(dialog, "id", None))
