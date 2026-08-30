@@ -19,24 +19,25 @@ from app.risk_sizing_day24 import (
 
 
 def _rules() -> BrokerVolumeRules:
-    return BrokerVolumeRules.from_values(
-        minimum="0.01", maximum="100", step="0.01"
-    )
+    return BrokerVolumeRules.from_values(minimum="0.01", maximum="100", step="0.01")
 
 
-def test_fxtradingvision_buy_and_sell_policy_is_exact_5_5_1() -> None:
+def test_fxtradingvision_buy_is_best_tier_and_sell_is_medium_tier() -> None:
     source = "FXTradingVision l Forex & Crypto Signals 🚀"
     assert is_fxtradingvision_buy(source_name=source, side="BUY")
+    assert provider_side_enabled(source_name=source, side="BUY")
+    assert provider_side_enabled(source_name=source, side="SELL")
+    assert provider_tp_limit(source_name=source, side="BUY") == 3
+    assert provider_tp_limit(source_name=source, side="SELL") == 3
+    assert provider_risk_profile(
+        source_name=source, side="BUY", position_count=3
+    ) == (Decimal("2"), Decimal("2"), Decimal("0.5"))
+    assert provider_risk_profile(
+        source_name=source, side="SELL", position_count=3
+    ) == (Decimal("1"), Decimal("1"), Decimal("0.5"))
 
-    for side in ("BUY", "SELL"):
-        assert provider_side_enabled(source_name=source, side=side)
-        assert provider_tp_limit(source_name=source, side=side) == 3
-        assert provider_risk_profile(
-            source_name=source, side=side, position_count=3
-        ) == (Decimal("5"), Decimal("5"), Decimal("1"))
 
-
-def test_gtmo_buy_policy_is_4_3_2_then_half_percent_per_extra_leg() -> None:
+def test_gtmo_buy_is_medium_tier_with_half_percent_tail() -> None:
     source = "GTMO VIP 🤴🏽"
     assert is_gtmo_buy(source_name=source, side="BUY")
     assert provider_side_enabled(source_name=source, side="BUY")
@@ -44,40 +45,34 @@ def test_gtmo_buy_policy_is_4_3_2_then_half_percent_per_extra_leg() -> None:
     assert provider_risk_profile(
         source_name=source, side="BUY", position_count=5
     ) == (
-        Decimal("4"),
-        Decimal("3"),
-        Decimal("2"),
+        Decimal("1"),
+        Decimal("1"),
+        Decimal("0.5"),
         Decimal("0.5"),
         Decimal("0.5"),
     )
 
 
-def test_tig_buy_policy_is_exact_4_3_2_1_and_stops_at_tp4() -> None:
+def test_tig_buy_is_medium_tier_and_stops_at_tp3() -> None:
     source = "TIG’s Asia Trades"
     assert is_tig_buy(source_name=source, side="BUY")
     assert provider_side_enabled(source_name=source, side="BUY")
-    assert provider_tp_limit(source_name=source, side="BUY") == 4
+    assert provider_tp_limit(source_name=source, side="BUY") == 3
     assert provider_risk_profile(
-        source_name=source, side="BUY", position_count=4
-    ) == (
-        Decimal("4"),
-        Decimal("3"),
-        Decimal("2"),
-        Decimal("1"),
-    )
+        source_name=source, side="BUY", position_count=3
+    ) == (Decimal("1"), Decimal("1"), Decimal("0.5"))
 
 
-def test_tig_sell_policy_is_exact_5_5_and_stops_at_tp2() -> None:
+def test_tig_sell_is_disabled_and_fails_closed() -> None:
     source = "TIG’s Asia Trades"
     assert is_tig_sell(source_name=source, side="SELL")
-    assert provider_side_enabled(source_name=source, side="SELL")
-    assert provider_tp_limit(source_name=source, side="SELL") == 2
+    assert not provider_side_enabled(source_name=source, side="SELL")
     assert provider_risk_profile(
         source_name=source, side="SELL", position_count=2
-    ) == (Decimal("5"), Decimal("5"))
+    ) == (Decimal("0"), Decimal("0"))
 
 
-def test_gtmo_sell_remains_owner_disabled_and_fails_closed() -> None:
+def test_gtmo_sell_remains_disabled_and_fails_closed() -> None:
     source = "GTMO VIP 🤴🏽"
     assert not provider_side_enabled(source_name=source, side="SELL")
     profile = provider_risk_profile(source_name=source, side="SELL", position_count=3)
@@ -96,7 +91,31 @@ def test_gtmo_sell_remains_owner_disabled_and_fails_closed() -> None:
         )
 
 
-def test_other_provider_sell_keeps_standard_policy() -> None:
+def test_sureshot_sell_is_medium_tier_and_buy_is_disabled() -> None:
+    source = "SureShot GOLD"
+    assert provider_side_enabled(source_name=source, side="SELL")
+    assert not provider_side_enabled(source_name=source, side="BUY")
+    assert provider_risk_profile(
+        source_name=source, side="SELL", position_count=4
+    ) == (Decimal("1"), Decimal("1"), Decimal("0.5"), Decimal("0.5"))
+    assert provider_risk_profile(
+        source_name=source, side="BUY", position_count=2
+    ) == (Decimal("0"), Decimal("0"))
+
+
+def test_united_kings_sell_is_developing_half_percent_tier_and_buy_is_disabled() -> None:
+    source = "United Kings™ Signals! 👑"
+    assert provider_side_enabled(source_name=source, side="SELL")
+    assert not provider_side_enabled(source_name=source, side="BUY")
+    assert provider_risk_profile(
+        source_name=source, side="SELL", position_count=3
+    ) == (Decimal("0.5"), Decimal("0.5"), Decimal("0.5"))
+    assert provider_risk_profile(
+        source_name=source, side="BUY", position_count=3
+    ) == (Decimal("0"), Decimal("0"), Decimal("0"))
+
+
+def test_unlisted_provider_keeps_standard_policy() -> None:
     assert provider_side_enabled(source_name="Another Provider", side="SELL")
     assert provider_risk_profile(
         source_name="Another Provider", side="SELL", position_count=3
@@ -106,47 +125,57 @@ def test_other_provider_sell_keeps_standard_policy() -> None:
 def test_fx_never_creates_a_fourth_tp_leg_for_buy_or_sell() -> None:
     for side in ("BUY", "SELL"):
         with pytest.raises(ValueError, match="fxtradingvision_position_count_invalid"):
-            provider_risk_profile(
-                source_name="FXTradingVision", side=side, position_count=4
-            )
+            provider_risk_profile(source_name="FXTradingVision", side=side, position_count=4)
 
 
-def test_tig_buy_never_accepts_a_fifth_leg() -> None:
+def test_tig_buy_never_accepts_a_fourth_leg() -> None:
     with pytest.raises(ValueError, match="tig_buy_position_count_invalid"):
         provider_risk_profile(
-            source_name="TIG’s Asia Trades", side="BUY", position_count=5
+            source_name="TIG’s Asia Trades", side="BUY", position_count=4
         )
 
 
-def test_tig_sell_never_accepts_a_third_leg() -> None:
-    with pytest.raises(ValueError, match="tig_sell_position_count_invalid"):
-        provider_risk_profile(
-            source_name="TIG’s Asia Trades", side="SELL", position_count=3
-        )
-
-
-def test_fx_size_profile_risks_eleven_percent_across_three_legs() -> None:
+def test_fx_buy_profile_totals_four_and_a_half_percent() -> None:
+    profile = provider_risk_profile(
+        source_name="FXTradingVision", side="BUY", position_count=3
+    )
+    assert profile is not None
     result = Day24RiskSizer.size_profile(
         balance=Decimal("1500"),
-        risk_percents=(Decimal("5"), Decimal("5"), Decimal("1")),
+        risk_percents=profile,
         signal_entry_price=Decimal("100"),
         signal_stop_loss=Decimal("90"),
         tick_size=Decimal("1"),
         tick_value=Decimal("1"),
         volume_rules=_rules(),
     )
-
     assert [item.risk_budget for item in result.positions] == [
-        Decimal("75"),
-        Decimal("75"),
-        Decimal("15"),
+        Decimal("30"), Decimal("30"), Decimal("7.5")
     ]
-    assert result.total_risk_budget == Decimal("165")
-    assert result.position_count == 3
-    assert not result.double_lot_applied
+    assert result.total_risk_budget == Decimal("67.5")
 
 
-def test_gtmo_five_leg_profile_accepts_three_percent_and_totals_ten_percent() -> None:
+def test_fx_sell_profile_totals_two_and_a_half_percent() -> None:
+    profile = provider_risk_profile(
+        source_name="FXTradingVision", side="SELL", position_count=3
+    )
+    assert profile is not None
+    result = Day24RiskSizer.size_profile(
+        balance=Decimal("1500"),
+        risk_percents=profile,
+        signal_entry_price=Decimal("100"),
+        signal_stop_loss=Decimal("90"),
+        tick_size=Decimal("1"),
+        tick_value=Decimal("1"),
+        volume_rules=_rules(),
+    )
+    assert [item.risk_budget for item in result.positions] == [
+        Decimal("15"), Decimal("15"), Decimal("7.5")
+    ]
+    assert result.total_risk_budget == Decimal("37.5")
+
+
+def test_gtmo_five_leg_profile_totals_three_and_a_half_percent() -> None:
     profile = provider_risk_profile(
         source_name="GTMO VIP 🤴🏽", side="BUY", position_count=5
     )
@@ -161,20 +190,14 @@ def test_gtmo_five_leg_profile_accepts_three_percent_and_totals_ten_percent() ->
         volume_rules=_rules(),
     )
     assert [item.risk_budget for item in result.positions] == [
-        Decimal("60"),
-        Decimal("45"),
-        Decimal("30"),
-        Decimal("7.5"),
-        Decimal("7.5"),
+        Decimal("15"), Decimal("15"), Decimal("7.5"), Decimal("7.5"), Decimal("7.5")
     ]
-    assert result.total_risk_budget == Decimal("150.0")
-    assert result.position_count == 5
-    assert not result.double_lot_applied
+    assert result.total_risk_budget == Decimal("52.5")
 
 
-def test_tig_buy_profile_totals_ten_percent() -> None:
+def test_tig_buy_profile_totals_two_and_a_half_percent() -> None:
     profile = provider_risk_profile(
-        source_name="TIG’s Asia Trades", side="BUY", position_count=4
+        source_name="TIG’s Asia Trades", side="BUY", position_count=3
     )
     assert profile is not None
     result = Day24RiskSizer.size_profile(
@@ -186,34 +209,7 @@ def test_tig_buy_profile_totals_ten_percent() -> None:
         tick_value=Decimal("1"),
         volume_rules=_rules(),
     )
-    assert [item.risk_budget for item in result.positions] == [
-        Decimal("60"),
-        Decimal("45"),
-        Decimal("30"),
-        Decimal("15"),
-    ]
-    assert result.total_risk_budget == Decimal("150")
-
-
-def test_tig_sell_profile_accepts_provider_only_five_percent_and_totals_ten() -> None:
-    profile = provider_risk_profile(
-        source_name="TIG’s Asia Trades", side="SELL", position_count=2
-    )
-    assert profile is not None
-    result = Day24RiskSizer.size_profile(
-        balance=Decimal("1500"),
-        risk_percents=profile,
-        signal_entry_price=Decimal("100"),
-        signal_stop_loss=Decimal("90"),
-        tick_size=Decimal("1"),
-        tick_value=Decimal("1"),
-        volume_rules=_rules(),
-    )
-    assert [item.risk_budget for item in result.positions] == [
-        Decimal("75"),
-        Decimal("75"),
-    ]
-    assert result.total_risk_budget == Decimal("150")
+    assert result.total_risk_budget == Decimal("37.5")
 
 
 @pytest.mark.parametrize("risk_percent", [Decimal("3"), Decimal("5")])
@@ -234,16 +230,11 @@ def test_provider_only_risks_remain_invalid_as_general_user_risk(
 
 
 def test_locked_provider_risk_is_absolute_even_if_signal_says_double_lot() -> None:
-    gtmo_profile = provider_risk_profile(
-        source_name="GTMO VIP 🤴🏽", side="BUY", position_count=3
+    profile = provider_risk_profile(
+        source_name="FXTradingVision", side="BUY", position_count=3
     )
-    tig_profile = provider_risk_profile(
-        source_name="TIG’s Asia Trades", side="SELL", position_count=2
-    )
-    assert gtmo_profile is not None
-    assert tig_profile is not None
-
-    for risk in (gtmo_profile[1], tig_profile[0]):
+    assert profile is not None
+    for risk in profile:
         result = Day24RiskSizer.size(
             balance=Decimal("1500"),
             risk_percent=risk,
