@@ -11,6 +11,7 @@ from . import manual_reconciliation_day36 as _manual_reconciliation_day36
 from . import mt5_approvals_day30 as _mt5_approvals_day30
 from . import mt5_onboarding_day35 as _mt5_onboarding_day35
 from . import owner_manual_close as _owner_manual_close
+from . import public_registration as _public_registration  # noqa: F401
 from . import registration as _registration  # noqa: F401
 from . import trading_controls_day31 as _trading_controls_day31
 from . import user_mt5_accounts as _user_mt5_accounts
