@@ -2,12 +2,17 @@
 
 from __future__ import annotations
 
+import hashlib
 import os
+import secrets
+from datetime import datetime, timedelta, timezone
 
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from app.db import get_engine
+from app.member_email import send_admin_new_signup
+from app.models import AuditEvent, User, UserRole
 from app.security import hash_password, verify_password
 from app.seed import seed_owner
 
@@ -129,6 +134,96 @@ def grant_configured_complimentary_access(
     return granted
 
 
+def send_configured_onboarding_test(session: Session, *, test_email: str) -> bool:
+    """Create one disposable real member signup and emit the genuine owner approval email."""
+
+    if not test_email:
+        return False
+
+    row = session.execute(
+        text("SELECT id, display_name FROM users WHERE lower(email::text)=lower(:email) LIMIT 1"),
+        {"email": test_email},
+    ).mappings().first()
+
+    if row is None:
+        role_id = session.execute(text("SELECT id FROM roles WHERE name='user' LIMIT 1")).scalar_one_or_none()
+        if role_id is None:
+            print("Onboarding test skipped: user role missing")
+            return False
+
+        user = User(email=test_email, display_name="Onboarding Test Member", status="active")
+        session.add(user)
+        session.flush()
+        session.execute(
+            text("UPDATE users SET password_hash=:password_hash WHERE id=:user_id"),
+            {"password_hash": hash_password(secrets.token_urlsafe(32)), "user_id": user.id},
+        )
+        session.add(UserRole(user_id=user.id, role_id=role_id, granted_by_user_id=None))
+        session.commit()
+        user_id = user.id
+        display_name = "Onboarding Test Member"
+    else:
+        user_id = row["id"]
+        display_name = str(row["display_name"] or "Onboarding Test Member")
+
+    already_sent = bool(
+        session.execute(
+            text(
+                """
+                SELECT EXISTS(
+                    SELECT 1 FROM audit_events
+                    WHERE actor_user_id=:user_id
+                      AND event_type='access.onboarding_test_admin_email_sent'
+                )
+                """
+            ),
+            {"user_id": user_id},
+        ).scalar_one()
+    )
+    if already_sent:
+        print(f"Onboarding test already sent: {test_email}")
+        return True
+
+    complimentary_token = secrets.token_urlsafe(36)
+    token_hash = hashlib.sha256(complimentary_token.encode("utf-8")).hexdigest()
+    expires_at = datetime.now(timezone.utc) + timedelta(days=7)
+    session.execute(
+        text(
+            """
+            INSERT INTO complimentary_access_tokens (user_id, token_hash, expires_at)
+            VALUES (:user_id, :token_hash, :expires_at)
+            """
+        ),
+        {"user_id": user_id, "token_hash": token_hash, "expires_at": expires_at},
+    )
+    session.commit()
+
+    delivery = send_admin_new_signup(
+        member_email=test_email,
+        display_name=display_name,
+        complimentary_token=complimentary_token,
+    )
+    session.add(
+        AuditEvent(
+            actor_user_id=user_id,
+            event_type=(
+                "access.onboarding_test_admin_email_sent"
+                if delivery.sent
+                else "access.onboarding_test_admin_email_not_sent"
+            ),
+            entity_type="user",
+            entity_id=user_id,
+            payload={"reason": delivery.reason, "source": "one_shot_onboarding_test"},
+        )
+    )
+    session.commit()
+    if delivery.sent:
+        print(f"Onboarding test admin email sent for: {test_email}")
+        return True
+    print(f"Onboarding test admin email failed: {delivery.reason}")
+    return False
+
+
 def main() -> None:
     email = os.getenv("SUPER_SIGNALS_OWNER_EMAIL", "").strip()
     password = os.getenv("SUPER_SIGNALS_OWNER_PASSWORD", "")
@@ -138,6 +233,7 @@ def main() -> None:
         for value in os.getenv("SUPER_SIGNALS_COMPLIMENTARY_EMAILS", "").split(",")
         if value.strip()
     )
+    onboarding_test_email = os.getenv("SMART_SIGNALS_ONBOARDING_TEST_EMAIL", "").strip().lower()
 
     if not email:
         raise RuntimeError("SUPER_SIGNALS_OWNER_EMAIL must be configured")
@@ -151,11 +247,17 @@ def main() -> None:
             owner_email=email,
             member_emails=complimentary_emails,
         )
+        onboarding_test_sent = send_configured_onboarding_test(
+            session,
+            test_email=onboarding_test_email,
+        )
 
     status = "created or rotated" if changed else "already configured"
     print(f"Owner account {status}: {email}")
     if complimentary_emails:
         print(f"Complimentary bootstrap grants active: {granted}")
+    if onboarding_test_email:
+        print(f"Onboarding test email emitted: {onboarding_test_sent}")
 
 
 if __name__ == "__main__":
