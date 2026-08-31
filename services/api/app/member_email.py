@@ -25,7 +25,7 @@ class EmailDeliveryResult:
 
 def _settings() -> tuple[str, str, str, str]:
     return (
-        os.getenv("RESEND_API_KEY", "").strip(),
+        (os.getenv("RESEND", "").strip() or os.getenv("RESEND_API_KEY", "").strip()),
         os.getenv("SMART_SIGNALS_EMAIL_FROM", "").strip(),
         os.getenv("SMART_SIGNALS_ADMIN_EMAIL", "").strip(),
         os.getenv("SMART_SIGNALS_PUBLIC_URL", "https://smartsignals.site").strip().rstrip("/"),
