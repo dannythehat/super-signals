@@ -69,7 +69,9 @@ export function TodayTradingSummary({ apiBaseUrl, currency, timezoneName }: Prop
 
   useEffect(() => {
     void refresh();
-    const readInterval = window.setInterval(() => void refresh(), 15_000);
+    // This endpoint is ledger-only. Once a minute is enough for background display;
+    // focus/visibility events still refresh immediately when the user returns.
+    const readInterval = window.setInterval(() => void refresh(), 60_000);
     const onFocus = () => void refresh();
     const onVisibility = () => { if (document.visibilityState === 'visible') void refresh(); };
     window.addEventListener('focus', onFocus);
