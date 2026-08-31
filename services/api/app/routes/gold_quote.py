@@ -95,8 +95,8 @@ def _gold_api_quote(payload: dict[str, object], *, now: datetime) -> GoldQuoteRe
         quote_time=_quote_time(payload.get("updatedAt") or payload.get("updated_at")),
         read_at=now,
         available=price is not None,
-        stale=True,
-        source="Gold API fallback",
+        stale=False,
+        source="Gold API live fallback",
     )
 
 
