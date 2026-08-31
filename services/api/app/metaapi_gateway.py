@@ -65,9 +65,10 @@ class MetaApiProvisioningGateway:
             or DEFAULT_METAAPI_PROVISIONING_URL
         ).rstrip("/")
         self._timeout = httpx.Timeout(timeout_seconds)
-        # A reconnect must refresh credentials on an existing disconnected
-        # MetaAPI account instead of silently reusing the first password forever.
-        self._retry_existing_accounts: dict[tuple[str, str], str] = {}
+        # If a previous attempt produced a permanently disconnected MetaAPI
+        # terminal, the next explicit Connect must use the password entered now.
+        # Track that stale remote only for the duration of this request flow.
+        self._stale_accounts: dict[tuple[str, str], str] = {}
 
     @staticmethod
     def new_transaction_id() -> str:
@@ -99,7 +100,7 @@ class MetaApiProvisioningGateway:
                 continue
             state = self._account_state(item)
             if state.connection_status == "DISCONNECTED":
-                self._retry_existing_accounts[(login, server.casefold())] = state.account_id
+                self._stale_accounts[(login, server.casefold())] = state.account_id
                 return None
             return state
         return None
@@ -113,35 +114,16 @@ class MetaApiProvisioningGateway:
         server: str,
         transaction_id: str,
     ) -> MetaApiCreateResult:
-        retry_account_id = self._retry_existing_accounts.pop(
-            (login, server.casefold()),
-            None,
-        )
-        if retry_account_id is not None:
-            # MetaAPI requires updated settings to be redeployed. Updating the
-            # existing account avoids duplicate MetaAPI accounts and means a user
-            # can correct an MT5 password on the next Connect attempt.
+        stale_account_id = self._stale_accounts.pop((login, server.casefold()), None)
+        if stale_account_id is not None:
+            # The previous MetaAPI terminal is not connected and cannot be used
+            # for trading. Remove just that remote terminal before reprovisioning
+            # it with the credentials the member entered on this Connect attempt.
             await self._request(
-                "PUT",
-                f"/users/current/accounts/{retry_account_id}",
+                "DELETE",
+                f"/users/current/accounts/{stale_account_id}",
                 token=token,
-                json={
-                    "password": password,
-                    "name": "Super Signals owner demo",
-                    "server": server,
-                },
-                accepted_statuses={200, 204},
-            )
-            await self._request(
-                "POST",
-                f"/users/current/accounts/{retry_account_id}/redeploy",
-                token=token,
-                accepted_statuses={200, 201, 202, 204},
-            )
-            return MetaApiCreateResult(
-                pending=False,
-                account_id=retry_account_id,
-                state="DEPLOYED",
+                accepted_statuses={204, 404},
             )
 
         response = await self._request(
@@ -152,7 +134,7 @@ class MetaApiProvisioningGateway:
             json={
                 "login": login,
                 "password": password,
-                "name": "Super Signals owner demo",
+                "name": "Smart Signals MT5",
                 "server": server,
                 "platform": "mt5",
                 "magic": SUPER_SIGNALS_MAGIC,
@@ -272,6 +254,13 @@ class MetaApiProvisioningGateway:
                 candidate = body.get("error")
                 if isinstance(candidate, str) and _SAFE_REMOTE_CODE.fullmatch(candidate):
                     remote_code = candidate
+            # MetaAPI sometimes returns a ValidationError without an E_AUTH detail.
+            # Do not expose remote prose, but preserve the useful authentication
+            # meaning when the safe message clearly identifies broker auth failure.
+            if remote_code is None:
+                message = str(body.get("message") or "").casefold()
+                if "failed to authenticate" in message or "invalid account" in message:
+                    remote_code = "E_AUTH"
         if remote_code:
             return MetaApiGatewayError(
                 f"metaapi_{remote_code.lower().replace('-', '_')}"
