@@ -10,7 +10,6 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
 from pydantic import BaseModel
 
-from app.acceptance_self_test import acceptance_mirror_owner_user_id
 from app.access_control import get_current_identity
 from app.admin_portfolio_day35 import Day35AdminPortfolioService, PeriodKey, SortKey
 from app.mt5_connection_service_day30 import Day30Mt5ConnectionService
@@ -161,9 +160,9 @@ def _service(request: Request) -> Day33PerformanceLedgerServiceV2:
     return service
 
 
-def _read_user_id(request: Request, identity: dict[str, Any]) -> UUID:
-    service = _service(request)
-    return acceptance_mirror_owner_user_id(identity, service._session_factory) or identity["id"]
+def _read_user_id(_request: Request, identity: dict[str, Any]) -> UUID:
+    """Performance reads always belong to the authenticated member."""
+    return identity["id"]
 
 
 def _no_store(response: Response) -> None:
