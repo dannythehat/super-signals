@@ -17,11 +17,13 @@ from app.mt5_connection_service_day30 import Day30Mt5ConnectionService
 from app.mt5_runtime import require_mt5_service
 from app.routes.dashboard_day32 import router as dashboard_day32_router
 from app.routes.gold_quote import router as gold_quote_router
+from app.routes.mt5_account_profiles import router as mt5_account_profiles_router
 from app.subscription_access import require_active_subscription
 
 router = APIRouter(prefix="/account/mt5", tags=["mt5-user"])
 router.include_router(dashboard_day32_router)
 router.include_router(gold_quote_router)
+router.include_router(mt5_account_profiles_router)
 UserIdentity = Annotated[dict[str, Any], Depends(get_current_identity)]
 DbSession = Annotated[Session, Depends(get_db_session)]
 
@@ -84,7 +86,7 @@ def _safe_message(code: str) -> str:
         "mt5_login_invalid": "Enter your Vantage MT5 account number.",
         "mt5_server_invalid": "Enter the exact Vantage MT5 server name.",
         "mt5_password_invalid": "Enter your MT5 trading password.",
-        "mt5_account_already_bound": "A different MT5 account is already connected. Disconnect or replace it before adding another.",
+        "mt5_account_already_bound": "A different MT5 account is already connected. Use Trading account settings to save and switch between Demo and Real accounts.",
         "metaapi_e_auth": "Vantage rejected the MT5 account number, trading password or server.",
         "metaapi_platform_token_not_configured": "Smart Signals MT5 connectivity needs administrator recovery.",
         "broker_credential_decryption_failed": "Smart Signals MT5 connectivity needs administrator recovery.",
