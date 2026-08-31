@@ -1,13 +1,20 @@
-"""Idempotent hosted-environment bootstrap for the first owner account."""
+"""Idempotent hosted-environment bootstrap for owner and temporary member setup."""
 
 from __future__ import annotations
 
+import asyncio
 import os
+from uuid import UUID
 
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
-from app.db import get_engine
+from app.db import get_engine, get_session_factory
+from app.metaapi_gateway import MetaApiProvisioningGateway
+from app.mt5_account_profiles import Mt5AccountProfileService
+from app.mt5_connection_service import Mt5ConnectionError
+from app.mt5_connection_service_day30 import Day30Mt5ConnectionService
+from app.mt5_crypto import MetaApiTokenCipher
 from app.security import hash_password, verify_password
 from app.seed import seed_owner
 
@@ -129,6 +136,83 @@ def grant_configured_complimentary_access(
     return granted
 
 
+async def run_member_mt5_bootstrap() -> None:
+    """One-shot member MT5 connection using temporary environment credentials.
+
+    Broker passwords are read only from process environment, are never logged or
+    persisted by Smart Signals, and should be cleared from Render immediately after
+    the acceptance run.
+    """
+
+    email = os.getenv("SUPER_SIGNALS_MEMBER_MT5_BOOTSTRAP_EMAIL", "").strip().lower()
+    login = os.getenv("SUPER_SIGNALS_MEMBER_MT5_BOOTSTRAP_LOGIN", "").strip()
+    password = os.getenv("SUPER_SIGNALS_MEMBER_MT5_BOOTSTRAP_PASSWORD", "")
+    server = os.getenv("SUPER_SIGNALS_MEMBER_MT5_BOOTSTRAP_SERVER", "").strip()
+    if not any((email, login, password, server)):
+        return
+    if not all((email, login, password, server)):
+        print("Member MT5 bootstrap skipped: temporary configuration is incomplete")
+        return
+
+    session_factory = get_session_factory()
+    with session_factory() as session:
+        row = session.execute(
+            text(
+                """
+                SELECT id, status
+                FROM users
+                WHERE lower(email::text)=lower(:email)
+                LIMIT 1
+                """
+            ),
+            {"email": email},
+        ).mappings().first()
+    if row is None or str(row["status"]) != "active":
+        print(f"Member MT5 bootstrap skipped: active member not found for {email}")
+        return
+
+    key_value = (
+        os.getenv("SUPER_SIGNALS_BROKER_CREDENTIAL_KEYS")
+        or os.getenv("SUPER_SIGNALS_MT5_ENCRYPTION_KEYS")
+        or ""
+    )
+    keys = tuple(value.strip() for value in key_value.split(",") if value.strip())
+    if not keys:
+        print("Member MT5 bootstrap skipped: broker encryption keys are unavailable")
+        return
+
+    user_id = UUID(str(row["id"]))
+    service = Day30Mt5ConnectionService(
+        session_factory=session_factory,
+        cipher=MetaApiTokenCipher(keys),
+        gateway=MetaApiProvisioningGateway(),
+    )
+    try:
+        token = service.resolve_platform_token()
+        view = await service.connect_owner_demo(
+            owner_user_id=user_id,
+            metaapi_token=token,
+            login=login,
+            password=password,
+            server=server,
+        )
+        if view.status == "connected":
+            Mt5AccountProfileService(
+                session_factory=session_factory,
+                connection_service=service,
+            ).sync_active_profile_from_canonical(user_id)
+        print(
+            "Member MT5 bootstrap completed "
+            f"email={email} status={view.status} "
+            f"remote_state={view.remote_state} "
+            f"remote_connection_status={view.remote_connection_status}"
+        )
+    except Mt5ConnectionError as exc:
+        print(f"Member MT5 bootstrap failed email={email} code={exc.code}")
+    except Exception as exc:  # noqa: BLE001 - never expose exception text/secrets
+        print(f"Member MT5 bootstrap failed email={email} code={type(exc).__name__}")
+
+
 def main() -> None:
     email = os.getenv("SUPER_SIGNALS_OWNER_EMAIL", "").strip()
     password = os.getenv("SUPER_SIGNALS_OWNER_PASSWORD", "")
@@ -156,6 +240,8 @@ def main() -> None:
     print(f"Owner account {status}: {email}")
     if complimentary_emails:
         print(f"Complimentary bootstrap grants active: {granted}")
+
+    asyncio.run(run_member_mt5_bootstrap())
 
 
 if __name__ == "__main__":
