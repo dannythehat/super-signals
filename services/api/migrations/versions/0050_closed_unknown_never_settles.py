@@ -5,14 +5,17 @@ Revises: 0049_mt5_status_text
 Create Date: 2026-08-31
 
 `closed_unknown` is diagnostic uncertainty, not proof that a broker position closed.
-It must never close a local live position, publish a settled-trade lifecycle event,
-or contribute a final result. Only a broker-confirmed exit outcome (won/lost/
-breakeven) may settle a mapped trade.
+It must never close a local live position or contribute a final result. Only a
+broker-confirmed exit outcome (won/lost/breakeven) may settle a mapped trade.
 
 This migration also repairs rows that the legacy Day 34 settlement watcher may have
 falsely marked closed from `closed_unknown` without any broker exit deal. The repair
 changes local application state only; it never places, closes, or modifies a broker
 trade.
+
+Signal lifecycle events are intentionally append-only, so historical bad events are
+not deleted here. The repaired position/outcome state is authoritative and future
+unknown settlement events are prevented by the guards below.
 """
 
 from collections.abc import Sequence
@@ -25,37 +28,7 @@ branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
 
-_EXIT_DEAL_PREDICATE = """
-EXISTS (
-    SELECT 1
-    FROM broker_deals AS d
-    WHERE d.position_id = p.id
-      AND UPPER(COALESCE(d.entry_type,'')) IN ('DEAL_ENTRY_OUT','DEAL_ENTRY_OUT_BY')
-)
-"""
-
-
 def upgrade() -> None:
-    # Remove member-facing lifecycle/result evidence created from uncertainty.
-    op.execute(
-        """
-        DELETE FROM signal_lifecycle_events AS ev
-        USING positions AS p, performance_trade_outcomes AS o
-        WHERE o.position_id = p.id
-          AND o.status = 'closed_unknown'
-          AND NOT EXISTS (
-              SELECT 1
-              FROM broker_deals AS d
-              WHERE d.position_id = p.id
-                AND UPPER(COALESCE(d.entry_type,'')) IN ('DEAL_ENTRY_OUT','DEAL_ENTRY_OUT_BY')
-          )
-          AND (
-              ev.event_key = 'broker-position-settled:' || p.id::text
-              OR ev.event_key = 'broker-signal-settled:' || p.signal_id::text
-          )
-        """
-    )
-
     # Repair only positions that the broker-settlement watcher itself falsely closed.
     # Broker state is untouched. These rows become locally open again until an actual
     # exit deal is observed.
@@ -119,9 +92,8 @@ def upgrade() -> None:
         """
     )
 
-    # Belt-and-suspenders protection: even if an invalid outcome somehow exists,
-    # broker settlement cannot transition an open position to closed without a
-    # decided broker outcome backed by at least one broker deal.
+    # Even if invalid application code tries to settle a live position, block the
+    # transition unless a decided broker outcome backed by broker deals exists.
     op.execute(
         """
         CREATE OR REPLACE FUNCTION prevent_unconfirmed_broker_settlement_close()
