@@ -146,19 +146,34 @@ def send_configured_onboarding_test(session: Session, *, test_email: str) -> boo
     ).mappings().first()
 
     if row is None:
-        role_id = session.execute(text("SELECT id FROM roles WHERE name='user' LIMIT 1")).scalar_one_or_none()
+        role_id = session.execute(
+            text("SELECT id FROM roles WHERE name='user' LIMIT 1")
+        ).scalar_one_or_none()
         if role_id is None:
             print("Onboarding test skipped: user role missing")
             return False
 
-        user = User(email=test_email, display_name="Onboarding Test Member", status="active")
+        user = User(
+            email=test_email,
+            display_name="Onboarding Test Member",
+            status="active",
+        )
         session.add(user)
         session.flush()
         session.execute(
             text("UPDATE users SET password_hash=:password_hash WHERE id=:user_id"),
-            {"password_hash": hash_password(secrets.token_urlsafe(32)), "user_id": user.id},
+            {
+                "password_hash": hash_password(secrets.token_urlsafe(32)),
+                "user_id": user.id,
+            },
         )
-        session.add(UserRole(user_id=user.id, role_id=role_id, granted_by_user_id=None))
+        session.add(
+            UserRole(
+                user_id=user.id,
+                role_id=role_id,
+                granted_by_user_id=None,
+            )
+        )
         session.commit()
         user_id = user.id
         display_name = "Onboarding Test Member"
@@ -233,7 +248,10 @@ def main() -> None:
         for value in os.getenv("SUPER_SIGNALS_COMPLIMENTARY_EMAILS", "").split(",")
         if value.strip()
     )
-    onboarding_test_email = os.getenv("SMART_SIGNALS_ONBOARDING_TEST_EMAIL", "").strip().lower()
+    onboarding_test_email = (
+        os.getenv("SMART_SIGNALS_ONBOARDING_TEST_EMAIL", "").strip().lower()
+        or "delivered@resend.dev"
+    )
 
     if not email:
         raise RuntimeError("SUPER_SIGNALS_OWNER_EMAIL must be configured")
