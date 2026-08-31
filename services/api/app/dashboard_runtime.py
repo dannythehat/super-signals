@@ -73,6 +73,7 @@ class CanonicalDashboardRuntimeService(Day32DashboardService):
         )
 
     def _eligible_signal_ids(self, user_id: UUID) -> set[UUID] | None:
+        """Visible signals include post-origin signals and genuine carry-over positions."""
         epoch = active_paper_epoch(user_id)
         if epoch is None:
             return None
@@ -80,14 +81,40 @@ class CanonicalDashboardRuntimeService(Day32DashboardService):
             values = session.execute(
                 text(
                     """
-                    SELECT s.id
+                    SELECT DISTINCT s.id
                     FROM signals AS s
                     JOIN sources AS src ON src.id=s.source_id
-                    WHERE COALESCE(s.source_posted_at,s.created_at)>=:cutoff
-                      AND src.status<>'revoked'
+                    WHERE src.status<>'revoked'
+                      AND (
+                            COALESCE(s.source_posted_at,s.created_at)>=:cutoff
+                            OR EXISTS (
+                                SELECT 1
+                                FROM positions AS p
+                                WHERE p.user_id=:user_id
+                                  AND p.signal_id=s.id
+                                  AND p.status IN ('open','pending')
+                            )
+                            OR EXISTS (
+                                SELECT 1
+                                FROM performance_trade_outcomes AS o
+                                WHERE o.user_id=:user_id
+                                  AND o.signal_id=s.id
+                                  AND (
+                                        (
+                                            o.status IN ('won','lost','breakeven')
+                                            AND o.closed_at>=:cutoff
+                                        )
+                                        OR o.status IN ('open','pending')
+                                        OR (
+                                            o.status='closed_unknown'
+                                            AND COALESCE(o.closed_at,o.derived_at)>=:cutoff
+                                        )
+                                  )
+                            )
+                      )
                     """
                 ),
-                {"cutoff": epoch.started_at},
+                {"cutoff": epoch.started_at, "user_id": user_id},
             ).scalars().all()
         return {UUID(str(value)) for value in values}
 
@@ -187,7 +214,12 @@ class CanonicalDashboardRuntimeService(Day32DashboardService):
 
 
 class CanonicalTodayTradingSummaryService(TodayTradingSummaryService):
-    """Today summary whose Owner session cannot begin before the active paper epoch."""
+    """Today summary whose Owner session begins at the accepted opening balance.
+
+    Signals already open at that boundary remain legitimate trades. If they close after
+    the boundary their post-boundary outcome is added to Today's trade/win/loss/pip counts,
+    matching the cash ledger used by both the app and website.
+    """
 
     def _session_start(
         self,
@@ -209,6 +241,147 @@ class CanonicalTodayTradingSummaryService(TodayTradingSummaryService):
         if _utc(day_start) <= epoch.started_at < _utc(day_end):
             return max(_utc(start), epoch.started_at)
         return start
+
+    def read(
+        self,
+        user_id: UUID,
+        *,
+        timezone_name: str = "UTC",
+        now_utc: datetime | None = None,
+    ):
+        base = super().read(
+            user_id,
+            timezone_name=timezone_name,
+            now_utc=now_utc,
+        )
+        epoch = active_paper_epoch(user_id)
+        if epoch is None:
+            return base
+
+        start = max(_utc(base.session_started_at), epoch.started_at)
+        point = _utc(now_utc or datetime.now(UTC))
+        if point <= start:
+            return base
+
+        with self._session_factory() as session:
+            rows = session.execute(
+                text(
+                    """
+                    WITH carry_signals AS (
+                        SELECT DISTINCT s.id AS signal_id
+                        FROM signals AS s
+                        JOIN sources AS src ON src.id=s.source_id
+                        JOIN positions AS p ON p.signal_id=s.id AND p.user_id=:user_id
+                        WHERE src.status<>'revoked'
+                          AND COALESCE(s.source_posted_at,s.created_at)<:start_at
+                    ),
+                    outcome_values AS (
+                        SELECT
+                            o.signal_id,
+                            o.status,
+                            o.closed_at,
+                            COALESCE(o.cash_pnl,0) AS cash_pnl,
+                            COALESCE(
+                                o.net_pips,
+                                CASE
+                                    WHEN UPPER(o.symbol)='XAUUSD'
+                                     AND o.entry_price IS NOT NULL
+                                     AND o.exit_price IS NOT NULL
+                                    THEN CASE
+                                        WHEN UPPER(o.side)='BUY' THEN (o.exit_price-o.entry_price)/0.1
+                                        WHEN UPPER(o.side)='SELL' THEN (o.entry_price-o.exit_price)/0.1
+                                        ELSE NULL
+                                    END
+                                    ELSE NULL
+                                END
+                            ) AS effective_pips
+                        FROM performance_trade_outcomes AS o
+                        JOIN carry_signals AS c ON c.signal_id=o.signal_id
+                        WHERE o.user_id=:user_id
+                    ),
+                    carry AS (
+                        SELECT
+                            c.signal_id,
+                            COUNT(*) FILTER (
+                                WHERE o.status IN ('won','lost','breakeven')
+                                  AND o.closed_at>=:start_at
+                                  AND o.closed_at<:end_at
+                            )::int AS post_outcomes,
+                            COUNT(*) FILTER (WHERE o.status='open')::int AS open_legs,
+                            COUNT(*) FILTER (WHERE o.status='pending')::int AS pending_legs,
+                            COUNT(*) FILTER (
+                                WHERE o.status='closed_unknown'
+                                  AND COALESCE(o.closed_at,:end_at)>=:start_at
+                            )::int AS settling_legs,
+                            COALESCE(SUM(o.cash_pnl) FILTER (
+                                WHERE o.status IN ('won','lost','breakeven')
+                                  AND o.closed_at>=:start_at
+                                  AND o.closed_at<:end_at
+                            ),0) AS post_pnl,
+                            COALESCE(SUM(o.effective_pips) FILTER (
+                                WHERE o.status IN ('won','lost','breakeven')
+                                  AND o.closed_at>=:start_at
+                                  AND o.closed_at<:end_at
+                            ),0) AS post_pips,
+                            COALESCE(SUM(o.effective_pips) FILTER (
+                                WHERE o.status='won'
+                                  AND o.closed_at>=:start_at
+                                  AND o.closed_at<:end_at
+                                  AND o.effective_pips>0
+                            ),0) AS winning_pips
+                        FROM carry_signals AS c
+                        LEFT JOIN outcome_values AS o ON o.signal_id=c.signal_id
+                        GROUP BY c.signal_id
+                    )
+                    SELECT * FROM carry
+                    WHERE post_outcomes>0 OR open_legs>0 OR pending_legs>0 OR settling_legs>0
+                    """
+                ),
+                {"user_id": user_id, "start_at": start, "end_at": point},
+            ).mappings().all()
+
+        if not rows:
+            return base
+
+        extra_trades = len(rows)
+        extra_open = sum(1 for row in rows if int(row["open_legs"] or 0) > 0)
+        extra_settling = sum(
+            1
+            for row in rows
+            if int(row["open_legs"] or 0) == 0
+            and int(row["pending_legs"] or 0) == 0
+            and int(row["settling_legs"] or 0) > 0
+        )
+        closed_rows = [
+            row
+            for row in rows
+            if int(row["post_outcomes"] or 0) > 0
+            and int(row["open_legs"] or 0) == 0
+            and int(row["pending_legs"] or 0) == 0
+            and int(row["settling_legs"] or 0) == 0
+        ]
+        extra_wins = sum(1 for row in closed_rows if Decimal(str(row["post_pnl"] or 0)) > 0)
+        extra_losses = sum(1 for row in closed_rows if Decimal(str(row["post_pnl"] or 0)) < 0)
+        extra_breakeven = sum(1 for row in closed_rows if Decimal(str(row["post_pnl"] or 0)) == 0)
+        extra_pnl = sum((Decimal(str(row["post_pnl"] or 0)) for row in rows), Decimal("0"))
+        extra_pips = sum((Decimal(str(row["post_pips"] or 0)) for row in rows), Decimal("0"))
+        extra_winning_pips = sum(
+            (Decimal(str(row["winning_pips"] or 0)) for row in rows),
+            Decimal("0"),
+        )
+
+        return replace(
+            base,
+            trades=base.trades + extra_trades,
+            wins=base.wins + extra_wins,
+            losses=base.losses + extra_losses,
+            breakeven=base.breakeven + extra_breakeven,
+            open=base.open + extra_open,
+            settling=base.settling + extra_settling,
+            realised_pnl=base.realised_pnl + extra_pnl,
+            winning_pips=base.winning_pips + extra_winning_pips,
+            net_pips=base.net_pips + extra_pips,
+        )
 
 
 __all__ = [
