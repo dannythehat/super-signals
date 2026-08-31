@@ -65,6 +65,9 @@ class MetaApiProvisioningGateway:
             or DEFAULT_METAAPI_PROVISIONING_URL
         ).rstrip("/")
         self._timeout = httpx.Timeout(timeout_seconds)
+        # A reconnect must refresh credentials on an existing disconnected
+        # MetaAPI account instead of silently reusing the first password forever.
+        self._retry_existing_accounts: dict[tuple[str, str], str] = {}
 
     @staticmethod
     def new_transaction_id() -> str:
@@ -94,7 +97,11 @@ class MetaApiProvisioningGateway:
                 continue
             if str(item.get("server", "")).casefold() != server.casefold():
                 continue
-            return self._account_state(item)
+            state = self._account_state(item)
+            if state.connection_status == "DISCONNECTED":
+                self._retry_existing_accounts[(login, server.casefold())] = state.account_id
+                return None
+            return state
         return None
 
     async def create_account(
@@ -106,6 +113,37 @@ class MetaApiProvisioningGateway:
         server: str,
         transaction_id: str,
     ) -> MetaApiCreateResult:
+        retry_account_id = self._retry_existing_accounts.pop(
+            (login, server.casefold()),
+            None,
+        )
+        if retry_account_id is not None:
+            # MetaAPI requires updated settings to be redeployed. Updating the
+            # existing account avoids duplicate MetaAPI accounts and means a user
+            # can correct an MT5 password on the next Connect attempt.
+            await self._request(
+                "PUT",
+                f"/users/current/accounts/{retry_account_id}",
+                token=token,
+                json={
+                    "password": password,
+                    "name": "Super Signals owner demo",
+                    "server": server,
+                },
+                accepted_statuses={200, 204},
+            )
+            await self._request(
+                "POST",
+                f"/users/current/accounts/{retry_account_id}/redeploy",
+                token=token,
+                accepted_statuses={200, 201, 202, 204},
+            )
+            return MetaApiCreateResult(
+                pending=False,
+                account_id=retry_account_id,
+                state="DEPLOYED",
+            )
+
         response = await self._request(
             "POST",
             "/users/current/accounts",
