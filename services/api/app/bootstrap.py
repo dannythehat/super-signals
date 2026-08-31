@@ -11,6 +11,7 @@ from sqlalchemy.orm import Session
 
 from app.db import get_engine, get_session_factory
 from app.metaapi_gateway import MetaApiGatewayError, MetaApiProvisioningGateway
+from app.metaapi_read_gateway import MetaApiReadGateway
 from app.mt5_account_profiles import Mt5AccountProfileService
 from app.mt5_connection_service import Mt5ConnectionError
 from app.mt5_connection_service_day30 import Day30Mt5ConnectionService
@@ -137,11 +138,11 @@ def grant_configured_complimentary_access(
 
 
 async def run_member_mt5_bootstrap() -> None:
-    """One-shot member MT5 connection using temporary environment credentials.
+    """One-shot member MT5 connection/read using temporary environment credentials.
 
     Broker passwords are read only from process environment, are never logged or
-    persisted by Smart Signals, and should be cleared from Render immediately after
-    the acceptance run.
+    persisted by Smart Signals. Once the member has a verified connected terminal,
+    subsequent bootstrap runs are strictly read-only and never reprovision it.
     """
 
     email = os.getenv("SUPER_SIGNALS_MEMBER_MT5_BOOTSTRAP_EMAIL", "").strip().lower()
@@ -191,10 +192,41 @@ async def run_member_mt5_bootstrap() -> None:
     try:
         token = service.resolve_platform_token()
 
-        # Acceptance bootstrap deliberately bypasses find/update/redeploy. Several
-        # failed attempts can leave a remote terminal in a bad lifecycle state. A
-        # clean POST proves the supplied broker credentials independently and gives
-        # MetaAPI a chance to return its broker-specific validation code directly.
+        # Never touch an already-working terminal. Read account information only.
+        with session_factory() as session:
+            connected = session.execute(
+                text(
+                    """
+                    SELECT metaapi_account_id, login, server
+                    FROM mt5_accounts
+                    WHERE owner_user_id=:user_id
+                      AND status='connected'
+                      AND remote_state='DEPLOYED'
+                      AND remote_connection_status='CONNECTED'
+                    LIMIT 1
+                    """
+                ),
+                {"user_id": user_id},
+            ).mappings().first()
+        if connected is not None:
+            account_id = str(connected["metaapi_account_id"])
+            reader = MetaApiReadGateway()
+            region = await reader.resolve_account_region(token=token, account_id=account_id)
+            info = await reader.read_account_information(
+                token=token,
+                account_id=account_id,
+                region=region,
+            )
+            balance = info.get("balance")
+            equity = info.get("equity")
+            currency = info.get("currency")
+            print(
+                "Member MT5 account information "
+                f"email={email} balance={balance} equity={equity} currency={currency}"
+            )
+            return
+
+        # No verified terminal yet: create one cleanly from the supplied credentials.
         remote = await service._provision_new_account(  # noqa: SLF001
             token=token,
             login=login,
@@ -227,11 +259,11 @@ async def run_member_mt5_bootstrap() -> None:
             f"remote_connection_status={view.remote_connection_status}"
         )
     except MetaApiGatewayError as exc:
-        print(f"Member MT5 fresh bootstrap failed email={email} code={exc.code}")
+        print(f"Member MT5 bootstrap failed email={email} code={exc.code}")
     except Mt5ConnectionError as exc:
-        print(f"Member MT5 fresh bootstrap failed email={email} code={exc.code}")
+        print(f"Member MT5 bootstrap failed email={email} code={exc.code}")
     except Exception as exc:  # noqa: BLE001 - never expose exception text/secrets
-        print(f"Member MT5 fresh bootstrap failed email={email} code={type(exc).__name__}")
+        print(f"Member MT5 bootstrap failed email={email} code={type(exc).__name__}")
 
 
 def main() -> None:
