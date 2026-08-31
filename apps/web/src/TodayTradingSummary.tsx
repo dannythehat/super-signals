@@ -88,11 +88,12 @@ export function TodayTradingSummary({ apiBaseUrl, currency, timezoneName }: Prop
   }
 
   const decidedTrades = summary.wins + summary.losses;
+  const visibleTrades = summary.wins + summary.losses + summary.breakeven + summary.open;
   const winRate = decidedTrades > 0 ? (summary.wins / decidedTrades) * 100 : null;
 
   return <section className="today-trading-card" aria-label="Today's trading summary" aria-live="polite">
     <div className="today-trading-head">
-      <div className="today-trading-primary"><span>Today</span><strong>{summary.trades} trade{summary.trades === 1 ? '' : 's'}</strong></div>
+      <div className="today-trading-primary"><span>Today</span><strong>{visibleTrades} trade{visibleTrades === 1 ? '' : 's'}</strong></div>
       <div className="today-trading-headline"><span>Realised P/L</span><strong className={pnlClass(summary.realised_pnl)}>{money(summary.realised_pnl, currency)}</strong></div>
       <div className="today-trading-headline"><span>Win rate</span><strong>{winRate === null ? '—' : percent(winRate)}</strong></div>
     </div>
