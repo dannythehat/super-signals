@@ -1,4 +1,4 @@
-"""Normal-user Vantage MT5 account linking for Smart Signals onboarding."""
+"""Canonical member Vantage MT5 account routes for Smart Signals."""
 
 from __future__ import annotations
 
@@ -7,31 +7,21 @@ from datetime import datetime
 from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
-from pydantic import BaseModel, Field
-from sqlalchemy.orm import Session
+from pydantic import BaseModel
 
 from app.access_control import get_current_identity
-from app.db import get_db_session
-from app.mt5_connection_service import Mt5ConnectionError, Mt5ConnectionView
+from app.mt5_connection_service import Mt5ConnectionView
 from app.mt5_connection_service_day30 import Day30Mt5ConnectionService
 from app.mt5_runtime import require_mt5_service
 from app.routes.dashboard_day32 import router as dashboard_day32_router
 from app.routes.gold_quote import router as gold_quote_router
 from app.routes.mt5_account_profiles import router as mt5_account_profiles_router
-from app.subscription_access import require_active_subscription
 
 router = APIRouter(prefix="/account/mt5", tags=["mt5-user"])
 router.include_router(dashboard_day32_router)
 router.include_router(gold_quote_router)
 router.include_router(mt5_account_profiles_router)
 UserIdentity = Annotated[dict[str, Any], Depends(get_current_identity)]
-DbSession = Annotated[Session, Depends(get_db_session)]
-
-
-class UserMt5ConnectRequest(BaseModel):
-    login: str = Field(min_length=1, max_length=32)
-    password: str = Field(min_length=1, max_length=256)
-    server: str = Field(min_length=2, max_length=160)
 
 
 class UserMt5StatusResponse(BaseModel):
@@ -79,44 +69,6 @@ def _no_store(response: Response) -> None:
     response.headers["Pragma"] = "no-cache"
 
 
-def _safe_message(code: str) -> str:
-    messages = {
-        "mt5_account_not_approved": "This Vantage MT5 account could not be authorised for your Smart Signals login.",
-        "mt5_vantage_server_required": "Use the exact Vantage MT5 server shown in your Vantage welcome email or Client Portal.",
-        "mt5_login_invalid": "Enter your Vantage MT5 account number.",
-        "mt5_server_invalid": "Enter the exact Vantage MT5 server name.",
-        "mt5_password_invalid": "Enter your MT5 trading password.",
-        "mt5_account_already_bound": "A different MT5 account is already connected. Use Trading account settings to save and switch between Demo and Real accounts.",
-        "metaapi_e_auth": "Vantage rejected the MT5 account number, trading password or server.",
-        "metaapi_platform_token_not_configured": "Smart Signals MT5 connectivity needs administrator recovery.",
-        "broker_credential_decryption_failed": "Smart Signals MT5 connectivity needs administrator recovery.",
-        "metaapi_timeout": "MT5 connectivity is temporarily unavailable. Retry Connect in a moment.",
-        "metaapi_unreachable": "MT5 connectivity is temporarily unavailable. Retry Connect in a moment.",
-        "metaapi_temporarily_unavailable": "MT5 connectivity is temporarily unavailable. Retry Connect in a moment.",
-        "metaapi_provisioning_timeout": "MT5 setup is still processing. Retry Connect; Smart Signals will reuse the same broker account rather than create a duplicate.",
-    }
-    return messages.get(code, "The Vantage MT5 account could not be linked.")
-
-
-def _raise_connection(exc: Mt5ConnectionError) -> None:
-    transient = {
-        "metaapi_timeout",
-        "metaapi_unreachable",
-        "metaapi_temporarily_unavailable",
-        "metaapi_provisioning_timeout",
-        "metaapi_platform_token_not_configured",
-        "broker_credential_decryption_failed",
-    }
-    raise HTTPException(
-        status_code=(
-            status.HTTP_503_SERVICE_UNAVAILABLE
-            if exc.code in transient
-            else status.HTTP_400_BAD_REQUEST
-        ),
-        detail={"code": exc.code, "message": _safe_message(exc.code)},
-    ) from exc
-
-
 def _response(
     service: Day30Mt5ConnectionService,
     user_id,
@@ -151,55 +103,6 @@ async def user_mt5_status(
     _ordinary_user(identity)
     service = _service(request)
     view = service.get_status(identity["id"])
-    _no_store(response)
-    return _response(service, identity["id"], view)
-
-
-@router.post("/connect", response_model=UserMt5StatusResponse)
-async def connect_user_mt5(
-    payload: UserMt5ConnectRequest,
-    request: Request,
-    response: Response,
-    identity: UserIdentity,
-    session: DbSession,
-) -> UserMt5StatusResponse:
-    """Connect the signed-in member's Vantage MT5 after subscription approval.
-
-    Demo Vantage servers are treated as Paper accounts. Live Vantage servers are
-    bound to the same signed-in member. The member's MT5 password is transient and
-    is never persisted by Smart Signals.
-    """
-    _ordinary_user(identity)
-    require_active_subscription(session, identity["id"])
-    service = _service(request)
-    server_folded = payload.server.strip().casefold()
-
-    try:
-        if "demo" in server_folded:
-            token = service.resolve_platform_token()
-            view = await service.connect_owner_demo(
-                owner_user_id=identity["id"],
-                metaapi_token=token,
-                login=payload.login,
-                password=payload.password,
-                server=payload.server,
-            )
-        else:
-            service.approve_user_account(
-                approver_user_id=identity["id"],
-                user_id=identity["id"],
-                login=payload.login,
-                server=payload.server,
-            )
-            view = await service.connect_user_live(
-                user_id=identity["id"],
-                login=payload.login,
-                password=payload.password,
-                server=payload.server,
-            )
-    except Mt5ConnectionError as exc:
-        _raise_connection(exc)
-
     _no_store(response)
     return _response(service, identity["id"], view)
 
