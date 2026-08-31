@@ -1,6 +1,6 @@
 """Keep cancelled/unfilled broker orders out of trading performance.
 
-Revision ID: 0041_reject_unfilled_settling_outcomes
+Revision ID: 0041_unfilled_outcomes
 Revises: 0040_retire_rikke_admin_login
 Create Date: 2026-08-31
 
@@ -24,7 +24,7 @@ from collections.abc import Sequence
 
 from alembic import op
 
-revision: str = "0041_reject_unfilled_settling_outcomes"
+revision: str = "0041_unfilled_outcomes"
 down_revision: str | None = "0040_retire_rikke_admin_login"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
@@ -40,8 +40,6 @@ def upgrade() -> None:
         """
     )
 
-    # Remove fake settling outcomes for orders which never became broker positions,
-    # plus stale local error diagnostics. Raw positions/deals/audits remain intact.
     op.execute(
         """
         DELETE FROM performance_trade_outcomes AS o
@@ -80,9 +78,6 @@ def upgrade() -> None:
             WHERE p.id = NEW.position_id;
 
             IF local_status IN ('error','skipped','cancelled') THEN
-                -- A local terminal diagnostic is not a member-facing trade. If
-                -- complete broker history later appears, the derived status will
-                -- become won/lost/breakeven and pass this guard normally.
                 RETURN NULL;
             END IF;
 
