@@ -49,6 +49,79 @@ def _no_store(response: Response) -> None:
     response.headers["Pragma"] = "no-cache"
 
 
+def _member_email_already_sent(session: Session, user_id: UUID | str) -> bool:
+    return bool(
+        session.execute(
+            text(
+                """
+                SELECT EXISTS(
+                    SELECT 1
+                    FROM audit_events
+                    WHERE entity_type='user'
+                      AND entity_id=:user_id
+                      AND event_type='subscription.complimentary_member_email_sent'
+                )
+                """
+            ),
+            {"user_id": user_id},
+        ).scalar_one()
+    )
+
+
+def _send_member_email_if_needed(
+    session: Session,
+    *,
+    actor_user_id: UUID | str,
+    member_user_id: UUID | str,
+    member_email: str,
+    display_name: str,
+) -> bool:
+    """Send the post-approval email once, or recover it after an interrupted request."""
+    if _member_email_already_sent(session, member_user_id):
+        return True
+
+    delivery = send_member_complimentary_activated(
+        member_email=member_email,
+        display_name=display_name,
+    )
+    session.add(
+        AuditEvent(
+            actor_user_id=actor_user_id,
+            event_type=(
+                "subscription.complimentary_member_email_sent"
+                if delivery.sent
+                else "subscription.complimentary_member_email_not_sent"
+            ),
+            entity_type="user",
+            entity_id=member_user_id,
+            payload={"reason": delivery.reason},
+        )
+    )
+    session.commit()
+    return delivery.sent
+
+
+def _response(
+    *,
+    response: Response,
+    row: Any,
+    member_email_sent: bool,
+) -> ComplimentaryGrantResponse:
+    _no_store(response)
+    return ComplimentaryGrantResponse(
+        status="active",
+        user_id=UUID(str(row["user_id"])),
+        email=str(row["email"]),
+        display_name=str(row["display_name"] or "Smart Signals member"),
+        member_email_sent=member_email_sent,
+        message=(
+            "Complimentary access activated. The member has been emailed and can now connect MT5."
+            if member_email_sent
+            else "Complimentary access activated. The member email could not be sent yet."
+        ),
+    )
+
+
 @router.post("/grant", response_model=ComplimentaryGrantResponse)
 def grant_complimentary_access(
     payload: ComplimentaryGrantRequest,
@@ -56,7 +129,13 @@ def grant_complimentary_access(
     identity: Identity,
     session: DbSession,
 ) -> ComplimentaryGrantResponse:
-    """Consume one signup token and activate complimentary access for that member."""
+    """Consume one signup token and activate complimentary access for that member.
+
+    The operation is idempotent after a successful grant. If the browser loses the
+    original response during a rolling deployment, retrying the same token returns the
+    existing active grant instead of failing with "already used". The member email is
+    also recovered if the grant committed before delivery completed.
+    """
     _owner(identity)
     token_hash = hashlib.sha256(payload.token.strip().encode("utf-8")).hexdigest()
 
@@ -79,11 +158,41 @@ def grant_complimentary_access(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="This complimentary access link is invalid.",
         )
+
     if row["used_at"] is not None:
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail="This complimentary access link has already been used.",
+        active_grant = bool(
+            session.execute(
+                text(
+                    """
+                    SELECT EXISTS(
+                        SELECT 1
+                        FROM complimentary_access_grants
+                        WHERE user_id=:user_id AND status='active'
+                    )
+                    """
+                ),
+                {"user_id": row["user_id"]},
+            ).scalar_one()
         )
+        if not active_grant:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="This complimentary access link has already been used.",
+            )
+
+        member_email_sent = _send_member_email_if_needed(
+            session,
+            actor_user_id=identity["id"],
+            member_user_id=row["user_id"],
+            member_email=str(row["email"]),
+            display_name=str(row["display_name"] or "Smart Signals member"),
+        )
+        return _response(
+            response=response,
+            row=row,
+            member_email_sent=member_email_sent,
+        )
+
     now = datetime.now(timezone.utc)
     if row["expires_at"] <= now:
         raise HTTPException(
@@ -139,35 +248,15 @@ def grant_complimentary_access(
     )
     session.commit()
 
-    delivery = send_member_complimentary_activated(
+    member_email_sent = _send_member_email_if_needed(
+        session,
+        actor_user_id=identity["id"],
+        member_user_id=row["user_id"],
         member_email=str(row["email"]),
         display_name=str(row["display_name"] or "Smart Signals member"),
     )
-    session.add(
-        AuditEvent(
-            actor_user_id=identity["id"],
-            event_type=(
-                "subscription.complimentary_member_email_sent"
-                if delivery.sent
-                else "subscription.complimentary_member_email_not_sent"
-            ),
-            entity_type="user",
-            entity_id=row["user_id"],
-            payload={"reason": delivery.reason},
-        )
-    )
-    session.commit()
-    _no_store(response)
-
-    return ComplimentaryGrantResponse(
-        status="active",
-        user_id=UUID(str(row["user_id"])),
-        email=str(row["email"]),
-        display_name=str(row["display_name"] or "Smart Signals member"),
-        member_email_sent=delivery.sent,
-        message=(
-            "Complimentary access activated. The member has been emailed and can now connect MT5."
-            if delivery.sent
-            else "Complimentary access activated. Member email delivery is not configured yet."
-        ),
+    return _response(
+        response=response,
+        row=row,
+        member_email_sent=member_email_sent,
     )
