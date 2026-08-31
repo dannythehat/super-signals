@@ -334,7 +334,7 @@ class CanonicalPerformanceRuntimeService(CanonicalPerformanceLedgerService):
         )
 
     def _timeline_rows(self, user_id: UUID) -> list[Any]:
-        rows = list(super()._timeline_rows(user_id))
+        rows = [dict(row) for row in super()._timeline_rows(user_id)]
         eligible = self._eligible_signal_ids(user_id)
         if eligible is None:
             with self._session_factory() as session:
@@ -349,7 +349,97 @@ class CanonicalPerformanceRuntimeService(CanonicalPerformanceLedgerService):
                     )
                 ).scalars().all()
             eligible = {UUID(str(value)) for value in values}
-        return [row for row in rows if UUID(str(row["signal_id"])) in eligible]
+        rows = [row for row in rows if UUID(str(row["signal_id"])) in eligible]
+
+        run_start = self._run_start(user_id)
+        if run_start is None or not rows:
+            return rows
+
+        signal_ids = [UUID(str(row["signal_id"])) for row in rows]
+        with self._session_factory() as session:
+            carry = {
+                UUID(str(row["signal_id"])): row
+                for row in session.execute(
+                    text(
+                        """
+                        SELECT
+                            o.signal_id,
+                            COUNT(*) FILTER (
+                                WHERE o.status IN ('won','lost','breakeven')
+                                  AND o.closed_at>=:run_started_at
+                            )::int AS closed_positions,
+                            COUNT(*) FILTER (WHERE o.status='open')::int AS open_positions,
+                            COUNT(*) FILTER (WHERE o.status='pending')::int AS pending_positions,
+                            COALESCE(SUM(o.cash_pnl) FILTER (
+                                WHERE o.status IN ('won','lost','breakeven')
+                                  AND o.closed_at>=:run_started_at
+                            ),0) AS cash_pnl,
+                            CASE
+                                WHEN COUNT(*) FILTER (
+                                    WHERE o.status IN ('won','lost','breakeven')
+                                      AND o.closed_at>=:run_started_at
+                                      AND o.net_pips IS NULL
+                                )=0
+                                THEN SUM(o.net_pips) FILTER (
+                                    WHERE o.status IN ('won','lost','breakeven')
+                                      AND o.closed_at>=:run_started_at
+                                )
+                                ELSE NULL
+                            END AS net_pips,
+                            SUM(o.model_500_pnl) FILTER (
+                                WHERE o.status IN ('won','lost','breakeven')
+                                  AND o.closed_at>=:run_started_at
+                            ) AS model_500_pnl,
+                            MAX(o.closed_at) FILTER (
+                                WHERE o.status IN ('won','lost','breakeven')
+                                  AND o.closed_at>=:run_started_at
+                            ) AS closed_at,
+                            BOOL_OR(o.status='won' AND o.closed_at>=:run_started_at) AS has_win,
+                            BOOL_OR(o.status='lost' AND o.closed_at>=:run_started_at) AS has_loss,
+                            BOOL_OR(o.status='breakeven' AND o.closed_at>=:run_started_at) AS has_breakeven,
+                            BOOL_OR(
+                                o.status='closed_unknown'
+                                AND COALESCE(o.closed_at,o.derived_at)>=:run_started_at
+                            ) AS has_unknown
+                        FROM performance_trade_outcomes AS o
+                        JOIN signals AS s ON s.id=o.signal_id
+                        WHERE o.user_id=:user_id
+                          AND o.signal_id=ANY(:signal_ids)
+                          AND COALESCE(s.source_posted_at,s.created_at)<:run_started_at
+                        GROUP BY o.signal_id
+                        """
+                    ),
+                    {
+                        "user_id": user_id,
+                        "signal_ids": signal_ids,
+                        "run_started_at": run_start,
+                    },
+                ).mappings().all()
+            }
+
+        for row in rows:
+            signal_id = UUID(str(row["signal_id"]))
+            sliced = carry.get(signal_id)
+            if sliced is None:
+                continue
+            closed_positions = int(sliced["closed_positions"] or 0)
+            open_positions = int(sliced["open_positions"] or 0)
+            pending_positions = int(sliced["pending_positions"] or 0)
+            if not (closed_positions or open_positions or pending_positions or bool(sliced["has_unknown"])):
+                continue
+            row["closed_positions"] = closed_positions
+            row["open_positions"] = open_positions
+            row["pending_positions"] = pending_positions
+            row["position_count"] = closed_positions + open_positions + pending_positions
+            row["cash_pnl"] = sliced["cash_pnl"]
+            row["net_pips"] = sliced["net_pips"]
+            row["model_500_pnl"] = sliced["model_500_pnl"]
+            row["closed_at"] = sliced["closed_at"] or row.get("closed_at")
+            row["has_win"] = bool(sliced["has_win"])
+            row["has_loss"] = bool(sliced["has_loss"])
+            row["has_breakeven"] = bool(sliced["has_breakeven"])
+            row["has_unknown"] = bool(sliced["has_unknown"])
+        return rows
 
     def read_shared_live_board(self) -> list[Any]:
         rows = list(super().read_shared_live_board())
