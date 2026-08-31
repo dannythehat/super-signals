@@ -113,6 +113,13 @@ type Props = {
   onOpenSettings: () => void;
 };
 
+type CachedDashboardAccount = {
+  account: DashboardAccount;
+  stored_at: string;
+};
+
+const ACCOUNT_CACHE_PREFIX = 'super-signals:last-confirmed-account:v2';
+
 async function readJson<T>(response: Response): Promise<T> {
   const body = (await response.json()) as T;
   if (!response.ok) {
@@ -174,6 +181,37 @@ function detectedTimeZone(): string {
   }
 }
 
+function accountCacheKey(apiBaseUrl: string, connection: DashboardConnection): string | null {
+  const login = connection.login_masked?.trim();
+  const server = connection.server?.trim();
+  if (!login || !server) return null;
+  const environment = connection.account_environment ?? 'unknown';
+  return `${ACCOUNT_CACHE_PREFIX}:${encodeURIComponent(apiBaseUrl)}:${encodeURIComponent(environment)}:${encodeURIComponent(server)}:${encodeURIComponent(login)}`;
+}
+
+function readCachedAccount(key: string): DashboardAccount | null {
+  try {
+    const raw = window.localStorage.getItem(key);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as CachedDashboardAccount;
+    const account = parsed?.account;
+    if (!account || typeof account.currency !== 'string') return null;
+    if (![account.balance, account.equity, account.margin, account.free_margin].every((value) => Number.isFinite(value))) return null;
+    return account;
+  } catch {
+    return null;
+  }
+}
+
+function writeCachedAccount(key: string, account: DashboardAccount): void {
+  try {
+    const payload: CachedDashboardAccount = { account, stored_at: new Date().toISOString() };
+    window.localStorage.setItem(key, JSON.stringify(payload));
+  } catch {
+    // Storage can be unavailable in hardened/private browser modes. The in-memory fallback still works.
+  }
+}
+
 export function MobileDashboard({ apiBaseUrl, displayName, roleLabel, onOpenSettings }: Props) {
   const [data, setData] = useState<DashboardData | null>(null);
   const [loading, setLoading] = useState(true);
@@ -191,15 +229,26 @@ export function MobileDashboard({ apiBaseUrl, displayName, roleLabel, onOpenSett
         cache: 'no-store',
       });
       const next = await readJson<DashboardData>(response);
+      const nextCacheKey = accountCacheKey(apiBaseUrl, next.connection);
       setData((current) => {
+        if (next.account !== null) {
+          if (nextCacheKey) writeCachedAccount(nextCacheKey, next.account);
+          return next;
+        }
+
+        const currentCacheKey = current ? accountCacheKey(apiBaseUrl, current.connection) : null;
+        const sameAccount = Boolean(nextCacheKey && currentCacheKey && nextCacheKey === currentCacheKey);
+        const fallbackAccount = sameAccount && current?.account
+          ? current.account
+          : nextCacheKey
+            ? readCachedAccount(nextCacheKey)
+            : null;
         const preserveLastConfirmedAccount =
-          next.account === null &&
           next.connection.configured &&
           next.connection.status === 'connection_error' &&
-          current?.account !== null &&
-          current?.account !== undefined;
-        return preserveLastConfirmedAccount && current
-          ? { ...next, account: current.account }
+          fallbackAccount !== null;
+        return preserveLastConfirmedAccount
+          ? { ...next, account: fallbackAccount }
           : next;
       });
       setError(null);
@@ -257,6 +306,7 @@ export function MobileDashboard({ apiBaseUrl, displayName, roleLabel, onOpenSett
   const isOwnerDemo = roleLabel.toLowerCase().includes('owner') && data.connection.account_environment === 'demo';
   const currentMonthPnl = data.performance.find((period) => period.key === 'month')?.amount ?? null;
   const allTimePnl = data.performance.find((period) => period.key === 'all')?.amount ?? null;
+  const usingLastConfirmedAccount = data.account !== null && data.connection.status === 'connection_error';
 
   return <section className="day32-dashboard" aria-labelledby="day32-home-title">
     <div className="day32-dashboard-head">
@@ -275,7 +325,7 @@ export function MobileDashboard({ apiBaseUrl, displayName, roleLabel, onOpenSett
     </div>
 
     <section className="day32-balance-card" aria-label="Trading account balance">
-      <div className="day32-balance-copy"><span>Balance</span><strong>{money(data.account?.balance, currency)}</strong><small>{data.connection.login_masked ? `${data.connection.login_masked} · ${data.connection.server ?? 'Vantage MT5'}` : 'Connect your Vantage MT5 account in Settings'}</small></div>
+      <div className="day32-balance-copy"><span>Balance</span><strong>{money(data.account?.balance, currency)}</strong><small>{data.connection.login_masked ? `${data.connection.login_masked} · ${data.connection.server ?? 'Vantage MT5'}${usingLastConfirmedAccount ? ' · last confirmed' : ''}` : 'Connect your Vantage MT5 account in Settings'}</small></div>
       <div className="day32-equity-copy"><span>Equity</span><strong>{money(data.account?.equity, currency)}</strong><small>Free margin {money(data.account?.free_margin, currency)}</small></div>
       <button className="day32-refresh" type="button" onClick={() => void refresh()} disabled={refreshing}>{refreshing ? 'Refreshing…' : 'Refresh'}</button>
     </section>
