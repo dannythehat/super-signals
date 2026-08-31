@@ -17,7 +17,7 @@ from app.mt5_connection_service_day30 import Day30Mt5ConnectionService
 from app.mt5_runtime import require_mt5_service
 from app.subscription_access import require_active_subscription
 
-router = APIRouter(prefix="/profiles", tags=["mt5-user-profiles"])
+router = APIRouter(prefix="/account/mt5/profiles", tags=["mt5-user-profiles"])
 UserIdentity = Annotated[dict[str, Any], Depends(get_current_identity)]
 DbSession = Annotated[Session, Depends(get_db_session)]
 
@@ -81,6 +81,7 @@ def _raise_profile_error(exc: Mt5ConnectionError) -> None:
         "mt5_profile_not_connected": "This MT5 account is not connected yet. Reconnect it before switching.",
         "mt5_switch_open_exposure": "Close all Smart Signals open trades and pending orders before switching accounts.",
         "mt5_account_not_approved": "This Real MT5 account is not approved for this Smart Signals login.",
+        "mt5_real_execution_disabled": "Real trading is temporarily unavailable. Keep Paper / Demo active for now.",
         "metaapi_e_auth": "Vantage rejected the MT5 account number, trading password or server.",
         "metaapi_timeout": "MT5 connectivity is temporarily unavailable. Try again in a moment.",
         "metaapi_unreachable": "MT5 connectivity is temporarily unavailable. Try again in a moment.",
@@ -150,6 +151,8 @@ async def activate_mt5_profile(
 ) -> dict[str, Any]:
     role = _eligible(identity)
     _require_member_subscription(session, identity, role)
+    if payload.account_environment == "live" and not live_execution_enabled():
+        _raise_profile_error(Mt5ConnectionError("mt5_real_execution_disabled"))
     try:
         result = _profiles(request).activate_profile(
             user_id=identity["id"],
