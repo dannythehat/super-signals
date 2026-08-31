@@ -4,8 +4,8 @@ from datetime import UTC, datetime
 from app.dashboard_today_summary import TodayTradingSummary, local_day_bounds
 from app.routes.dashboard_day32 import (
     TodayTradingSummaryResponse,
-    _active_broker_order_ids,
-    _broker_pending_trade_count,
+    _local_pending_trade_count,
+    account_dashboard_today,
 )
 
 
@@ -58,7 +58,7 @@ def test_today_summary_contract_counts_signals_not_tp_positions() -> None:
     assert "source_id" not in payload
 
 
-def test_today_pending_is_unknown_when_broker_truth_is_unavailable() -> None:
+def test_today_pending_can_be_unknown_without_breaking_contract() -> None:
     response = TodayTradingSummaryResponse(
         timezone="Europe/Sofia",
         trades=0,
@@ -75,34 +75,19 @@ def test_today_pending_is_unknown_when_broker_truth_is_unavailable() -> None:
     assert response.pending is None
 
 
-def test_empty_mt5_active_order_list_means_zero_pending_trades() -> None:
-    assert _broker_pending_trade_count(
-        object(),  # type: ignore[arg-type]
-        object(),  # type: ignore[arg-type]
-        session_started_at=datetime(2026, 8, 20, 0, 0, tzinfo=UTC),
-        active_order_ids=set(),
-    ) == 0
-
-
-def test_missing_mt5_active_order_read_never_falls_back_to_local_pending_rows() -> None:
-    assert _broker_pending_trade_count(
-        object(),  # type: ignore[arg-type]
-        object(),  # type: ignore[arg-type]
-        session_started_at=datetime(2026, 8, 20, 0, 0, tzinfo=UTC),
-        active_order_ids=None,
-    ) is None
-
-
-def test_dashboard_pending_count_requires_current_canonical_pending_status() -> None:
-    source = inspect.getsource(_broker_pending_trade_count)
+def test_dashboard_pending_count_uses_reconciled_local_pending_ledger() -> None:
+    source = inspect.getsource(_local_pending_trade_count)
     assert "p.status='pending'" in source
+    assert "p.broker_order_id IS NOT NULL" in source
+    assert "src.status<>'revoked'" in source
 
 
-def test_dashboard_pending_fast_path_never_reads_broker_history() -> None:
-    source = inspect.getsource(_active_broker_order_ids)
-    assert "read_orders" in source
+def test_today_summary_never_contacts_metaapi() -> None:
+    source = inspect.getsource(account_dashboard_today)
+    assert "read_orders" not in source
     assert "read_history_orders_by_time_range" not in source
     assert "read_history_orders_by_ticket" not in source
+    assert "_active_broker_order_ids" not in source
 
 
 def test_today_summary_has_no_local_pending_field_or_fallback() -> None:
