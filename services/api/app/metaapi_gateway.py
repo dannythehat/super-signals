@@ -1,15 +1,15 @@
-"""Provisioning-only MetaAPI gateway for Day 22.
+"""Provisioning-only MetaAPI gateway for Smart Signals MT5 accounts.
 
-This module intentionally exposes account creation, deployment and connection
-status only. It contains no trading/order endpoint.
+There is one canonical customer rule: reuse a matching terminal only when it is
+already genuinely connected. A disconnected terminal is stale state and is never
+updated/redeployed as part of a member retry; the caller provisions a fresh terminal
+from the credentials entered for that attempt.
 """
 
 from __future__ import annotations
 
-import asyncio
 import os
 import re
-import time
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from email.utils import parsedate_to_datetime
@@ -67,11 +67,6 @@ class MetaApiProvisioningGateway:
             or DEFAULT_METAAPI_PROVISIONING_URL
         ).rstrip("/")
         self._timeout = httpx.Timeout(timeout_seconds)
-        # When a user explicitly retries a disconnected account, MetaAPI's
-        # supported path is to update the existing account and redeploy it. Keep
-        # the account id only for this request flow so the newly-entered password
-        # is applied instead of silently reusing the first one.
-        self._retry_existing_accounts: dict[tuple[str, str], str] = {}
 
     @staticmethod
     def new_transaction_id() -> str:
@@ -84,6 +79,15 @@ class MetaApiProvisioningGateway:
         login: str,
         server: str,
     ) -> MetaApiAccountState | None:
+        """Return only a genuinely connected terminal matching login/server.
+
+        Interrupted onboarding can leave one or more old DEPLOYED/DISCONNECTED
+        terminals in MetaAPI. They must never become the source of truth for a new
+        customer connection attempt. Scan all matches and prefer a terminal whose
+        broker session is already CONNECTED; otherwise return ``None`` so the caller
+        creates a clean terminal from the password supplied on this request.
+        """
+
         response = await self._request(
             "GET",
             "/users/current/accounts",
@@ -94,6 +98,7 @@ class MetaApiProvisioningGateway:
         rows = payload.get("items", []) if isinstance(payload, dict) else payload
         if not isinstance(rows, list):
             raise MetaApiGatewayError("metaapi_invalid_response")
+
         for item in rows:
             if not isinstance(item, dict):
                 continue
@@ -102,10 +107,8 @@ class MetaApiProvisioningGateway:
             if str(item.get("server", "")).casefold() != server.casefold():
                 continue
             state = self._account_state(item)
-            if state.connection_status == "DISCONNECTED":
-                self._retry_existing_accounts[(login, server.casefold())] = state.account_id
-                return None
-            return state
+            if state.state == "DEPLOYED" and state.connection_status == "CONNECTED":
+                return state
         return None
 
     async def create_account(
@@ -117,57 +120,7 @@ class MetaApiProvisioningGateway:
         server: str,
         transaction_id: str,
     ) -> MetaApiCreateResult:
-        retry_account_id = self._retry_existing_accounts.pop(
-            (login, server.casefold()),
-            None,
-        )
-        if retry_account_id is not None:
-            # MetaAPI documents exactly password, name and server for account
-            # updates. Do not send create-only fields such as magic/manualTrades.
-            await self._request(
-                "PUT",
-                f"/users/current/accounts/{retry_account_id}",
-                token=token,
-                json={
-                    "password": password,
-                    "name": "Smart Signals MT5",
-                    "server": server,
-                },
-                accepted_statuses={200, 204},
-            )
-            await self._request(
-                "POST",
-                f"/users/current/accounts/{retry_account_id}/redeploy",
-                token=token,
-                accepted_statuses={200, 201, 202, 204},
-            )
-
-            # A member connect request must never sit behind Render for 75+ sec.
-            # MetaAPI documents connectionStatus as the broker-session readiness
-            # signal. Give the redeploy a bounded window, then return a safe,
-            # explicit broker-connect error instead of letting the HTTP request
-            # die as a generic platform 502/503 page.
-            deadline = time.monotonic() + 25
-            latest: MetaApiAccountState | None = None
-            while time.monotonic() < deadline:
-                latest = await self.read_account(
-                    token=token,
-                    account_id=retry_account_id,
-                )
-                if latest.state in {"DEPLOY_FAILED", "REDEPLOY_FAILED"}:
-                    raise MetaApiGatewayError("metaapi_deploy_failed")
-                if latest.state == "DEPLOYED" and latest.connection_status == "CONNECTED":
-                    return MetaApiCreateResult(
-                        pending=False,
-                        account_id=retry_account_id,
-                        state="DEPLOYED",
-                    )
-                await asyncio.sleep(2)
-
-            raise MetaApiGatewayError(
-                "metaapi_broker_not_connected",
-                retryable=True,
-            )
+        """Create a fresh MetaAPI terminal from the credentials entered now."""
 
         response = await self._request(
             "POST",
@@ -183,7 +136,6 @@ class MetaApiProvisioningGateway:
                 "magic": SUPER_SIGNALS_MAGIC,
                 "type": "cloud-g2",
                 "manualTrades": False,
-                # MetaAPI recommends broker keywords when auto-detecting settings.
                 "keywords": ["Vantage Markets"],
             },
             accepted_statuses={201, 202},
@@ -296,8 +248,6 @@ class MetaApiProvisioningGateway:
                 if isinstance(candidate, str) and _SAFE_REMOTE_CODE.fullmatch(candidate):
                     remote_code = candidate
 
-            # Some MetaAPI validation responses omit a structured details code.
-            # Classify only well-known safe phrases and never persist remote prose.
             if remote_code is None:
                 message = str(body.get("message") or "").casefold()
                 if "failed to authenticate" in message or "invalid account" in message:
