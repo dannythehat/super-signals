@@ -11,6 +11,7 @@ from sqlalchemy.orm import Session
 
 from app.access_control import get_current_identity, require_permission
 from app.db import get_db_session
+from app.dual_account_trading_controls import DualAccountTradingControlService
 from app.metaapi_read_gateway import MetaApiReadGateway
 from app.metaapi_trade_gateway import MetaApiTradeGateway
 from app.mt5_connection_service_day30 import Day30Mt5ConnectionService
@@ -24,8 +25,6 @@ from app.trading_controls_day31 import (
     Day31TradingControlView,
 )
 
-# Mounted beneath the existing /account/mt5 invited-user router, producing
-# /account/mt5/trading/... without touching the application/trading startup.
 router = APIRouter(prefix="/trading", tags=["trading-controls"])
 UserIdentity = Annotated[dict[str, Any], Depends(get_current_identity)]
 RiskIdentity = Annotated[dict[str, Any], Depends(require_permission("risk.manage"))]
@@ -95,7 +94,7 @@ def _ordinary_user(identity: dict[str, Any]) -> None:
 
 def _service(request: Request) -> Day31TradingControlService:
     existing = getattr(request.app.state, "day31_trading_control_service", None)
-    if isinstance(existing, Day31TradingControlService):
+    if isinstance(existing, DualAccountTradingControlService):
         return existing
 
     base = require_mt5_service(request)
@@ -107,7 +106,7 @@ def _service(request: Request) -> Day31TradingControlService:
                 "message": "Trading controls are temporarily unavailable.",
             },
         )
-    service = Day31TradingControlService(
+    service = DualAccountTradingControlService(
         session_factory=base._session_factory,
         cipher=base._cipher,
         read_gateway=MetaApiReadGateway(),
@@ -158,7 +157,7 @@ def _raise_control_error(exc: Day31TradingControlError) -> None:
         "activation_confirmation_required": "Confirm the effective risk before activating automated trading.",
         "activation_requirements_incomplete": "Complete the required account and MT5 setup before activating trades.",
         "trading_user_not_eligible": "This account is not eligible for automated trading.",
-        "mt5_account_not_connected": "The approved Vantage MT5 account is not connected.",
+        "mt5_account_not_connected": "The selected Vantage MT5 account is not connected.",
         "broker_credential_decryption_failed": "MT5 connectivity needs administrator recovery.",
     }
     transient = {
