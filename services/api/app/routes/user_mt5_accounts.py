@@ -101,6 +101,7 @@ def _safe_message(code: str) -> str:
         "mt5_active_environment_invalid": "Choose either the connected Paper or Real account.",
         "mt5_active_account_not_connected": "Connect that MT5 account before making it active.",
         "mt5_active_switch_open_positions": "Paper / Real cannot be switched while Smart Signals still has an open or pending trade. Finish the active trade first.",
+        "mt5_account_replace_open_positions": "This MT5 account cannot be replaced while Smart Signals still has an open or pending trade. Finish the active trade first.",
         "metaapi_e_auth": "Vantage rejected the MT5 account number, trading password or server.",
         "metaapi_platform_token_not_configured": "Smart Signals MT5 connectivity needs administrator recovery.",
         "broker_credential_decryption_failed": "Smart Signals MT5 connectivity needs administrator recovery.",
