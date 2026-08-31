@@ -9,11 +9,10 @@ that day's realised Super Signals P/L divided by the account balance at the star
 local calendar day.
 
 The Owner demo uses the active paper epoch as its synthetic capital origin. For the
-current live run that is USD 1,517.23 from 31 August 2026 00:00 Europe/Sofia, with no
-historical carry-in. Only signals that themselves began inside that epoch may affect the
-synthetic balance, so an older carry-over trade closing later can never leak into the new
-run. That exact synthetic balance is also used for percentage risk sizing. LIVE accounts
-use their actual broker balance; deposits/withdrawals affect capital but never performance.
+current clean run that is USD 1,500 from 27 August 2026 11:30 Europe/Sofia, with no
+historical carry-in. That exact synthetic balance is also used for percentage risk sizing.
+LIVE accounts use their actual broker balance; deposits/withdrawals affect capital but
+never performance.
 """
 
 from __future__ import annotations
@@ -149,8 +148,7 @@ class CanonicalTradingAccountingService:
         account_id, _ = account
         start_utc = _utc(start)
         end_utc = _utc(end)
-        synthetic = self.uses_synthetic_demo_balance(user_id)
-        if synthetic:
+        if self.uses_synthetic_demo_balance(user_id):
             start_utc = max(start_utc, OWNER_DEMO_SERIES_STARTED_AT)
         if end_utc <= start_utc:
             return Decimal("0")
@@ -164,22 +162,12 @@ class CanonicalTradingAccountingService:
                         + COALESCE(bd.swap,0)
                     ),0)
                     FROM broker_deals AS bd
-                    LEFT JOIN signals AS s ON s.id=bd.signal_id
-                    LEFT JOIN sources AS src ON src.id=s.source_id
                     WHERE bd.user_id=:user_id
                       AND bd.mt5_account_id=:account_id
                       AND bd.entry_type='DEAL_ENTRY_OUT'
                       AND (bd.signal_id IS NOT NULL OR bd.broker_client_id LIKE 'SS_%')
                       AND bd.occurred_at>=:start_at
                       AND bd.occurred_at<:end_at
-                      AND (
-                            :synthetic = FALSE
-                            OR (
-                                bd.signal_id IS NOT NULL
-                                AND COALESCE(s.source_posted_at,s.created_at)>=:paper_run_started_at
-                                AND src.status<>'revoked'
-                            )
-                      )
                     """
                 ),
                 {
@@ -187,8 +175,6 @@ class CanonicalTradingAccountingService:
                     "account_id": account_id,
                     "start_at": start_utc,
                     "end_at": end_utc,
-                    "synthetic": synthetic,
-                    "paper_run_started_at": OWNER_DEMO_SERIES_STARTED_AT,
                 },
             ).scalar_one()
         return Decimal(str(value or 0))
@@ -277,7 +263,6 @@ class CanonicalTradingAccountingService:
         end: datetime,
         timezone_name: str,
     ) -> dict[date, Decimal]:
-        synthetic = self.uses_synthetic_demo_balance(user_id)
         with self._session_factory() as session:
             rows = session.execute(
                 text(
@@ -290,22 +275,12 @@ class CanonicalTradingAccountingService:
                             + COALESCE(bd.swap,0)
                         ),0) AS pnl
                     FROM broker_deals AS bd
-                    LEFT JOIN signals AS s ON s.id=bd.signal_id
-                    LEFT JOIN sources AS src ON src.id=s.source_id
                     WHERE bd.user_id=:user_id
                       AND bd.mt5_account_id=:account_id
                       AND bd.entry_type='DEAL_ENTRY_OUT'
                       AND (bd.signal_id IS NOT NULL OR bd.broker_client_id LIKE 'SS_%')
                       AND bd.occurred_at>=:start_at
                       AND bd.occurred_at<:end_at
-                      AND (
-                            :synthetic = FALSE
-                            OR (
-                                bd.signal_id IS NOT NULL
-                                AND COALESCE(s.source_posted_at,s.created_at)>=:paper_run_started_at
-                                AND src.status<>'revoked'
-                            )
-                      )
                     GROUP BY 1
                     ORDER BY 1
                     """
@@ -316,8 +291,6 @@ class CanonicalTradingAccountingService:
                     "timezone_name": timezone_name,
                     "start_at": start,
                     "end_at": end,
-                    "synthetic": synthetic,
-                    "paper_run_started_at": OWNER_DEMO_SERIES_STARTED_AT,
                 },
             ).mappings().all()
         return {
