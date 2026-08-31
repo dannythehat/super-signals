@@ -18,34 +18,49 @@ interface ProviderLabImportProps {
 
 const RESEARCH_CANDIDATES = [
   {
-    name: 'Nation Forex Free Signals',
-    identifier: '@XAUUSD',
-    note: 'Structured Gold entry zones, SL and TP1/TP2.',
-  },
-  {
-    name: 'XAUUSD Scalping Signals',
-    identifier: '@xauusd_trading_scalping_signals',
-    note: 'Scalping feed with multiple targets and management updates.',
-  },
-  {
-    name: 'Tania Trading Academy',
-    identifier: '@taniatradingacademy',
-    note: 'Gold entry zones, limit orders, SL and target updates.',
+    name: 'GoldSignals.io',
+    identifier: '@GoldSignalsOfficial',
+    note: 'Gold-focused public feed with XAUUSD reporting and TP/SL management language.',
   },
   {
     name: 'Gold Signals VIP',
     identifier: '@Gold_Signals',
-    note: 'Public mixed-market feed with regular XAUUSD ideas.',
+    note: 'Public XAUUSD feed with explicit entry, stop and take-profit structures.',
   },
   {
-    name: 'Learn 2 Trade',
-    identifier: '@learn2tradenews',
-    note: 'Structured XAUUSD entry zones with SL and targets.',
+    name: 'XAUUSD SIGNALS',
+    identifier: '@XAUUSDSIGNALSG1',
+    note: 'Gold-only style with multi-TP signals and TP-hit follow-up posts.',
   },
   {
-    name: 'XAUUSD Signals',
-    identifier: '@XAUUSDOFFICAL',
-    note: 'Smaller public feed useful for parser diversity and management language.',
+    name: 'XAUUSD Scalping Signals',
+    identifier: '@xauusd_trading_scalping_signals',
+    note: 'Scalping feed with multiple targets, BE instructions and partial-profit management.',
+  },
+  {
+    name: 'XAUUSD Gold Scalping Signals',
+    identifier: '@Xauusd_Gold_Scalping_Signal',
+    note: 'Short-distance multi-TP Gold signals with close/partial instructions.',
+  },
+  {
+    name: 'XAUUSD/GOLD SIGNALS',
+    identifier: '@XAUUSDGOLDFXPIPS',
+    note: 'Entry zones, up to four targets and explicit stop losses.',
+  },
+  {
+    name: 'Gold FX Signals',
+    identifier: '@gold_fx_signals_001',
+    note: 'Entry ranges, six-target ladders and stated risk per trade.',
+  },
+  {
+    name: 'XAUUSD Adviser',
+    identifier: '@redanalyze',
+    note: 'Wide target ladders useful for testing parser and TP-allocation behaviour.',
+  },
+  {
+    name: 'Gold Trader Sunny',
+    identifier: '@goldtradersunny',
+    note: 'Large Gold-focused feed using entry zones, multiple targets and re-entry language.',
   },
 ];
 
@@ -138,7 +153,7 @@ export function ProviderLabImport({
           <input
             value={identifier}
             onChange={(event) => setIdentifier(event.currentTarget.value)}
-            placeholder="@XAUUSD or https://t.me/XAUUSD"
+            placeholder="@GoldSignalsOfficial or https://t.me/GoldSignalsOfficial"
             autoComplete="off"
             disabled={disabled || busyIdentifier !== null}
           />
