@@ -289,7 +289,7 @@ export function MobileDashboard({ apiBaseUrl, displayName, roleLabel, onOpenSett
       ownerDemo={isOwnerDemo}
     />
 
-    <TradeTimeline apiBaseUrl={apiBaseUrl} currency={currency} />
+    <TradeTimeline apiBaseUrl={apiBaseUrl} currency={currency} balance={data.account?.balance ?? null} livePositions={data.open_positions} />
 
     <section className="day32-risk-strip" aria-label="Selected trading risk">
       <div><span>Selected risk</span><strong>{riskText}</strong>{doubleLotText && <small>{doubleLotText}</small>}</div>
