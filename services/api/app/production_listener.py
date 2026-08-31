@@ -14,8 +14,9 @@ from __future__ import annotations
 from typing import Any
 
 from app.canonical_signal_ledger import CanonicalSignalLedger
-from app.production_ai_pipeline import ProductionAiMessagePipeline
+from app.provider_aware_ai_pipeline import ProviderAwareProductionAiPipeline
 from app.provider_research import ProviderResearchManager, build_provider_research_manager
+from app.shadow_lifecycle_bridge import ShadowAwareAiLifecycleBridge
 from app.telegram_listener_canonical import (
     CanonicalProductionTelegramListenerManager,
     build_canonical_production_listener_manager,
@@ -23,7 +24,7 @@ from app.telegram_listener_canonical import (
 from app.telegram_source_gateway import TelethonTelegramSourceGateway
 
 PRODUCTION_LISTENER_GENERATION = "canonical-v1"
-PRODUCTION_AI_GENERATION = "canonical-v1"
+PRODUCTION_AI_GENERATION = "provider-aware-v2"
 
 
 class ProviderResearchProductionListener(CanonicalProductionTelegramListenerManager):
@@ -64,11 +65,12 @@ def build_production_listener_manager(**kwargs: Any) -> CanonicalProductionTeleg
 
     existing_pipeline = getattr(manager, "_ai_pipeline", None)
     if existing_pipeline is not None:
-        pipeline = ProductionAiMessagePipeline(
+        pipeline = ProviderAwareProductionAiPipeline(
             session_factory=manager._session_factory,
             supervisor=getattr(existing_pipeline, "_supervisor", None),
         )
         pipeline._signals = CanonicalSignalLedger(manager._session_factory)
+        pipeline._lifecycle = ShadowAwareAiLifecycleBridge(manager._session_factory)
         manager._ai_pipeline = pipeline
 
     api_id = kwargs.get("api_id")
