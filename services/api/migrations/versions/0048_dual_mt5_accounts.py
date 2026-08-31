@@ -34,6 +34,39 @@ def upgrade() -> None:
         "active_account_environment IS NULL OR active_account_environment IN ('demo', 'live')",
     )
 
+    # Every position must retain the broker account that created it once a user can
+    # own both Paper and Real accounts. The column is nullable for legacy/non-broker
+    # records; all existing broker-backed users currently have one account and are
+    # backfilled unambiguously before a second environment can be connected.
+    op.add_column(
+        "positions",
+        sa.Column("mt5_account_id", sa.Uuid(), nullable=True),
+    )
+    op.create_foreign_key(
+        "fk_positions_mt5_account_id",
+        "positions",
+        "mt5_accounts",
+        ["mt5_account_id"],
+        ["id"],
+        ondelete="SET NULL",
+    )
+    op.create_index(
+        "ix_positions_user_mt5_account",
+        "positions",
+        ["user_id", "mt5_account_id"],
+        unique=False,
+    )
+    op.execute(
+        """
+        UPDATE positions AS p
+        SET mt5_account_id = m.id
+        FROM mt5_accounts AS m
+        WHERE m.owner_user_id = p.user_id
+          AND m.status != 'revoked'
+          AND p.mt5_account_id IS NULL
+        """
+    )
+
     # Preserve existing behaviour: whichever single account a user already had remains
     # their active account after the schema starts allowing both environments.
     op.execute(
@@ -60,6 +93,9 @@ def downgrade() -> None:
           AND newer.created_at < older.created_at
         """
     )
+    op.drop_index("ix_positions_user_mt5_account", table_name="positions")
+    op.drop_constraint("fk_positions_mt5_account_id", "positions", type_="foreignkey")
+    op.drop_column("positions", "mt5_account_id")
     op.drop_constraint(
         "ck_user_trading_controls_active_environment",
         "user_trading_controls",
