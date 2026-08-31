@@ -35,6 +35,36 @@ type LiveAccountState = {
   pending: number | null;
 };
 
+type LivePosition = {
+  signal_id: string;
+  symbol: string;
+  side: string;
+  volume: number;
+  planned_risk_percent: number;
+  entry_price: number;
+  current_price: number | null;
+  stop_loss: number | null;
+  take_profit: number | null;
+  profit: number | null;
+};
+
+type LiveDashboard = {
+  account: { balance: number; currency: string } | null;
+  open_positions: LivePosition[];
+};
+
+type SignalProjection = {
+  current: number | null;
+  currentPercent: number | null;
+  tp: number | null;
+  tpPercent: number | null;
+  sl: number | null;
+  slPercent: number | null;
+  entryPrice: number | null;
+  currentPrice: number | null;
+  positionCount: number;
+};
+
 type FilterKey = 'all' | 'open' | 'pending' | 'closed' | 'won' | 'lost' | 'breakeven' | 'skipped';
 
 type Props = {
@@ -68,6 +98,16 @@ function money(value: number | null, currency: string): string {
   } catch {
     return `${currency || '$'} ${value.toFixed(2)}`;
   }
+}
+
+function signedMoney(value: number | null, currency: string): string {
+  if (value === null || !Number.isFinite(value)) return '—';
+  return `${value >= 0 ? '+' : '-'}${money(Math.abs(value), currency)}`;
+}
+
+function signedPercent(value: number | null): string {
+  if (value === null || !Number.isFinite(value)) return '—';
+  return `${value >= 0 ? '+' : ''}${value.toFixed(2)}%`;
 }
 
 function shortTime(value: string | null): string {
@@ -112,9 +152,61 @@ function skippedReason(value: string | null): string {
   return value.replaceAll('_', ' ');
 }
 
+function projectedAt(position: LivePosition, target: number | null, balance: number | null, kind: 'tp' | 'sl'): number | null {
+  const entry = Number(position.entry_price);
+  const level = target === null ? Number.NaN : Number(target);
+  const volume = Number(position.volume);
+  const symbol = String(position.symbol || '').toUpperCase();
+  const side = String(position.side || '').toUpperCase();
+
+  if (Number.isFinite(entry) && Number.isFinite(level) && Number.isFinite(volume) && volume > 0 && symbol === 'XAUUSD' && (side === 'BUY' || side === 'SELL')) {
+    const direction = side === 'BUY' ? 1 : -1;
+    return (level - entry) * direction * volume * 100;
+  }
+
+  if (balance !== null && Number.isFinite(balance) && balance > 0 && Number.isFinite(position.planned_risk_percent)) {
+    const riskAmount = balance * Number(position.planned_risk_percent) / 100;
+    if (kind === 'sl') return -riskAmount;
+    const sl = position.stop_loss === null ? Number.NaN : Number(position.stop_loss);
+    const tp = position.take_profit === null ? Number.NaN : Number(position.take_profit);
+    if (Number.isFinite(entry) && Number.isFinite(sl) && Number.isFinite(tp)) {
+      const riskDistance = Math.abs(entry - sl);
+      const rewardDistance = Math.abs(tp - entry);
+      if (riskDistance > 0) return riskAmount * rewardDistance / riskDistance;
+    }
+  }
+  return null;
+}
+
+function buildProjection(signalId: string, dashboard: LiveDashboard | null): SignalProjection | null {
+  const positions = dashboard?.open_positions?.filter((position) => position.signal_id === signalId) ?? [];
+  if (positions.length === 0) return null;
+  const balance = dashboard?.account && Number.isFinite(dashboard.account.balance) ? dashboard.account.balance : null;
+  const profits = positions.map((position) => position.profit).filter((value): value is number => value !== null && Number.isFinite(value));
+  const current = profits.length > 0 ? profits.reduce((sum, value) => sum + value, 0) : null;
+  const tpValues = positions.map((position) => projectedAt(position, position.take_profit, balance, 'tp'));
+  const slValues = positions.map((position) => projectedAt(position, position.stop_loss, balance, 'sl'));
+  const tp = tpValues.every((value) => value !== null) ? tpValues.reduce<number>((sum, value) => sum + (value ?? 0), 0) : null;
+  const sl = slValues.every((value) => value !== null) ? slValues.reduce<number>((sum, value) => sum + (value ?? 0), 0) : null;
+  const firstEntry = positions.find((position) => Number.isFinite(position.entry_price))?.entry_price ?? null;
+  const firstCurrent = positions.find((position) => position.current_price !== null && Number.isFinite(position.current_price))?.current_price ?? null;
+  return {
+    current,
+    currentPercent: balance && current !== null ? current / balance * 100 : null,
+    tp,
+    tpPercent: balance && tp !== null ? tp / balance * 100 : null,
+    sl,
+    slPercent: balance && sl !== null ? sl / balance * 100 : null,
+    entryPrice: firstEntry,
+    currentPrice: firstCurrent,
+    positionCount: positions.length,
+  };
+}
+
 export function TradeTimeline({ apiBaseUrl, currency }: Props) {
   const [data, setData] = useState<TimelineData | null>(null);
   const [liveState, setLiveState] = useState<LiveAccountState | null>(null);
+  const [liveDashboard, setLiveDashboard] = useState<LiveDashboard | null>(null);
   const [statusFilter, setStatusFilter] = useState<FilterKey>('all');
   const [sourceFilter, setSourceFilter] = useState('all');
   const [traderFilter, setTraderFilter] = useState('all');
@@ -126,21 +218,24 @@ export function TradeTimeline({ apiBaseUrl, currency }: Props) {
     if (!quiet) setRefreshing(true);
 
     try {
-      const [timelineResponse, liveResponse] = await Promise.all([
+      const timezone = Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC';
+      const query = new URLSearchParams({ timezone_name: timezone });
+      const [timelineResponse, liveResponse, dashboardResponse] = await Promise.all([
         fetch(`${apiBaseUrl}/account/mt5/dashboard/performance/timeline?limit=250`, {
           credentials: 'include',
           headers: { Accept: 'application/json' },
           cache: 'no-store',
         }),
-        (() => {
-          const timezone = Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC';
-          const query = new URLSearchParams({ timezone_name: timezone });
-          return fetch(`${apiBaseUrl}/account/mt5/dashboard/today?${query.toString()}`, {
-            credentials: 'include',
-            headers: { Accept: 'application/json' },
-            cache: 'no-store',
-          });
-        })(),
+        fetch(`${apiBaseUrl}/account/mt5/dashboard/today?${query.toString()}`, {
+          credentials: 'include',
+          headers: { Accept: 'application/json' },
+          cache: 'no-store',
+        }),
+        fetch(`${apiBaseUrl}/account/mt5/dashboard?${query.toString()}`, {
+          credentials: 'include',
+          headers: { Accept: 'application/json' },
+          cache: 'no-store',
+        }),
       ]);
 
       const next = await readJson<TimelineData>(timelineResponse);
@@ -153,6 +248,12 @@ export function TradeTimeline({ apiBaseUrl, currency }: Props) {
       } else {
         setLiveState(null);
       }
+      if (dashboardResponse.ok) {
+        const dashboard = (await dashboardResponse.json()) as LiveDashboard;
+        setLiveDashboard(dashboard);
+      } else {
+        setLiveDashboard(null);
+      }
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : 'Trade history is temporarily unavailable.');
     } finally {
@@ -163,7 +264,7 @@ export function TradeTimeline({ apiBaseUrl, currency }: Props) {
 
   useEffect(() => {
     void refresh(true);
-    const interval = window.setInterval(() => void refresh(true), 30_000);
+    const interval = window.setInterval(() => void refresh(true), 15_000);
     const onFocus = () => void refresh(true);
     const onVisibility = () => { if (document.visibilityState === 'visible') void refresh(true); };
     window.addEventListener('focus', onFocus);
@@ -191,7 +292,7 @@ export function TradeTimeline({ apiBaseUrl, currency }: Props) {
       all: null,
       open: new Set(['open']),
       pending: new Set(['pending']),
-      closed: new Set(['won', 'lost', 'breakeven', 'closed_unknown']),
+      closed: new Set(['won', 'lost', 'breakeven']),
       won: new Set(['won']),
       lost: new Set(['lost']),
       breakeven: new Set(['breakeven']),
@@ -238,6 +339,8 @@ export function TradeTimeline({ apiBaseUrl, currency }: Props) {
 
     {visibleTrades.length === 0 ? <div className="day33-empty"><strong>No trades yet</strong><span>Your Smart Signals trades will appear here.</span></div> : <div className="day33-trade-list">{visibleTrades.map((trade) => {
       const identity = publicTradeIdentity(trade.signal_id);
+      const projection = trade.status === 'open' ? buildProjection(trade.signal_id, liveDashboard) : null;
+      const displayedPnl = projection?.current ?? trade.cash_pnl;
       return <article className={`day33-trade-card day33-status--${trade.status_color}`} key={trade.signal_id}>
         <div className="day33-trade-reference" aria-label={`Trade ${identity.reference}`}><span aria-hidden="true">{identity.marker}</span><strong>{identity.reference}</strong><small>Trade ID</small></div>
         <div className="day33-trade-top">
@@ -257,8 +360,18 @@ export function TradeTimeline({ apiBaseUrl, currency }: Props) {
             {trade.closed_positions > 0 && <span>{trade.closed_positions} closed</span>}
           </div>
 
+          {projection && <div className="day33-live-projection" aria-label="Live signal profit and loss projection">
+            <div className="day33-live-projection-head"><span><i />LIVE SIGNAL</span><small>{projection.positionCount} position{projection.positionCount === 1 ? '' : 's'} remaining</small></div>
+            <div className="day33-live-projection-grid">
+              <div><span>Current P/L</span><strong className={pnlClass(projection.current)}>{signedMoney(projection.current, currency)}</strong><small>{signedPercent(projection.currentPercent)}</small></div>
+              <div><span>TP estimate</span><strong className={pnlClass(projection.tp)}>{signedMoney(projection.tp, currency)}</strong><small>{signedPercent(projection.tpPercent)}</small></div>
+              <div><span>SL estimate</span><strong className={pnlClass(projection.sl)}>{signedMoney(projection.sl, currency)}</strong><small>{signedPercent(projection.slPercent)}</small></div>
+            </div>
+            <div className="day33-live-projection-prices"><span>Entry {projection.entryPrice === null ? '—' : projection.entryPrice.toFixed(2)}</span><span>Now {projection.currentPrice === null ? '—' : projection.currentPrice.toFixed(2)}</span><em>Auto-calculated from live balance, lot size, SL and TP.</em></div>
+          </div>}
+
           <div className="day33-trade-metrics">
-            <div><span>Actual P/L</span><strong className={pnlClass(trade.cash_pnl)}>{money(trade.cash_pnl, currency)}</strong></div>
+            <div><span>{trade.status === 'open' ? 'Live P/L' : 'Actual P/L'}</span><strong className={pnlClass(displayedPnl)}>{trade.status === 'open' ? signedMoney(displayedPnl, currency) : money(displayedPnl, currency)}</strong></div>
             <div><span>Pips</span><strong>{trade.net_pips === null ? '—' : `${trade.net_pips > 0 ? '+' : ''}${trade.net_pips}`}</strong></div>
             <div><span>$500 @ 1%</span><strong className={pnlClass(trade.model_500_pnl)}>{trade.model_500_pnl === null ? '—' : money(trade.model_500_pnl, 'USD')}</strong></div>
           </div>
