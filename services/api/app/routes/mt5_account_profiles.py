@@ -17,7 +17,7 @@ from app.mt5_connection_service_day30 import Day30Mt5ConnectionService
 from app.mt5_runtime import require_mt5_service
 from app.subscription_access import require_active_subscription
 
-router = APIRouter(prefix="/account/mt5/profiles", tags=["mt5-user-profiles"])
+router = APIRouter(prefix="/profiles", tags=["mt5-user-profiles"])
 UserIdentity = Annotated[dict[str, Any], Depends(get_current_identity)]
 DbSession = Annotated[Session, Depends(get_db_session)]
 
