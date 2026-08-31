@@ -1,5 +1,6 @@
-const CACHE_NAME = 'smart-signals-static-v5';
-const STATIC_ASSETS = ['/manifest.webmanifest', '/smart-signals-app-icon.png', '/super-signals-logo.png'];
+const CACHE_NAME = 'smart-signals-static-v6';
+const APP_SHELL = '/';
+const STATIC_ASSETS = [APP_SHELL, '/manifest.webmanifest', '/smart-signals-app-icon.png', '/super-signals-logo.png'];
 const PRIVATE_PREFIXES = ['/api/', '/auth/', '/account/', '/admin/', '/owner/', '/notifications'];
 const CACHEABLE_DESTINATIONS = new Set(['image', 'font']);
 
@@ -15,6 +16,32 @@ self.addEventListener('activate', (event) => {
   self.clients.claim();
 });
 
+async function networkFirstWithFallback(request, fallbackPath = null) {
+  const cache = await caches.open(CACHE_NAME);
+  try {
+    const response = await fetch(request, { cache: 'no-store' });
+    if (response.ok) {
+      await cache.put(request, response.clone());
+      return response;
+    }
+    if (response.status < 500) return response;
+  } catch {
+    // A Render restart can temporarily remove the only origin instance. Fall through
+    // to the last healthy app shell/assets rather than exposing Render's 502 page.
+  }
+
+  const cached = await cache.match(request);
+  if (cached) return cached;
+  if (fallbackPath) {
+    const fallback = await cache.match(fallbackPath);
+    if (fallback) return fallback;
+  }
+  return new Response('Smart Signals is reconnecting. Please try again shortly.', {
+    status: 503,
+    headers: { 'Content-Type': 'text/plain; charset=utf-8', 'Cache-Control': 'no-store' },
+  });
+}
+
 self.addEventListener('fetch', (event) => {
   const request = event.request;
   if (request.method !== 'GET') return;
@@ -23,10 +50,17 @@ self.addEventListener('fetch', (event) => {
   if (url.origin !== self.location.origin) return;
   if (PRIVATE_PREFIXES.some((prefix) => url.pathname.startsWith(prefix))) return;
 
-  // App HTML and executable assets must always follow the deployed build. Never let
-  // a service-worker cache keep an old dashboard bundle alive after production moves.
-  if (request.mode === 'navigate' || request.destination === 'script' || request.destination === 'style') {
-    event.respondWith(fetch(request, { cache: 'no-store' }));
+  // Keep authenticated API/account reads strictly live and uncached, but make the
+  // application shell resilient to the brief zero-instance window Render can create
+  // during a restart. Successful HTML/JS/CSS is refreshed immediately and retained
+  // only as a fallback for the next transport outage.
+  if (request.mode === 'navigate') {
+    event.respondWith(networkFirstWithFallback(request, APP_SHELL));
+    return;
+  }
+
+  if (request.destination === 'script' || request.destination === 'style') {
+    event.respondWith(networkFirstWithFallback(request));
     return;
   }
 
