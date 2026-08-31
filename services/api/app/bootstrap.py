@@ -10,7 +10,7 @@ from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from app.db import get_engine, get_session_factory
-from app.metaapi_gateway import MetaApiProvisioningGateway
+from app.metaapi_gateway import MetaApiGatewayError, MetaApiProvisioningGateway
 from app.mt5_account_profiles import Mt5AccountProfileService
 from app.mt5_connection_service import Mt5ConnectionError
 from app.mt5_connection_service_day30 import Day30Mt5ConnectionService
@@ -182,35 +182,56 @@ async def run_member_mt5_bootstrap() -> None:
         return
 
     user_id = UUID(str(row["id"]))
+    gateway = MetaApiProvisioningGateway()
     service = Day30Mt5ConnectionService(
         session_factory=session_factory,
         cipher=MetaApiTokenCipher(keys),
-        gateway=MetaApiProvisioningGateway(),
+        gateway=gateway,
     )
     try:
         token = service.resolve_platform_token()
-        view = await service.connect_owner_demo(
-            owner_user_id=user_id,
-            metaapi_token=token,
+
+        # Acceptance bootstrap deliberately bypasses find/update/redeploy. Several
+        # failed attempts can leave a remote terminal in a bad lifecycle state. A
+        # clean POST proves the supplied broker credentials independently and gives
+        # MetaAPI a chance to return its broker-specific validation code directly.
+        remote = await service._provision_new_account(  # noqa: SLF001
+            token=token,
             login=login,
             password=password,
             server=server,
         )
+        local_account_id = service._store_connection(  # noqa: SLF001
+            owner_user_id=user_id,
+            token=token,
+            login=login,
+            server=server,
+            remote=remote,
+        )
+        remote = await service._ensure_deployed_and_poll_connected(  # noqa: SLF001
+            token=token,
+            remote=remote,
+            max_wait_seconds=45,
+        )
+        service._update_remote_state(local_account_id, remote, error_code=None)  # noqa: SLF001
+        view = service.get_status(user_id)
         if view.status == "connected":
             Mt5AccountProfileService(
                 session_factory=session_factory,
                 connection_service=service,
             ).sync_active_profile_from_canonical(user_id)
         print(
-            "Member MT5 bootstrap completed "
+            "Member MT5 fresh bootstrap completed "
             f"email={email} status={view.status} "
             f"remote_state={view.remote_state} "
             f"remote_connection_status={view.remote_connection_status}"
         )
+    except MetaApiGatewayError as exc:
+        print(f"Member MT5 fresh bootstrap failed email={email} code={exc.code}")
     except Mt5ConnectionError as exc:
-        print(f"Member MT5 bootstrap failed email={email} code={exc.code}")
+        print(f"Member MT5 fresh bootstrap failed email={email} code={exc.code}")
     except Exception as exc:  # noqa: BLE001 - never expose exception text/secrets
-        print(f"Member MT5 bootstrap failed email={email} code={type(exc).__name__}")
+        print(f"Member MT5 fresh bootstrap failed email={email} code={type(exc).__name__}")
 
 
 def main() -> None:
