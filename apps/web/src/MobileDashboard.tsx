@@ -191,7 +191,17 @@ export function MobileDashboard({ apiBaseUrl, displayName, roleLabel, onOpenSett
         cache: 'no-store',
       });
       const next = await readJson<DashboardData>(response);
-      setData(next);
+      setData((current) => {
+        const preserveLastConfirmedAccount =
+          next.account === null &&
+          next.connection.configured &&
+          next.connection.status === 'connection_error' &&
+          current?.account !== null &&
+          current?.account !== undefined;
+        return preserveLastConfirmedAccount && current
+          ? { ...next, account: current.account }
+          : next;
+      });
       setError(null);
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : 'Account data is temporarily unavailable.');
