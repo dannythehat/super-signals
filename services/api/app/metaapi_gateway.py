@@ -6,8 +6,10 @@ status only. It contains no trading/order endpoint.
 
 from __future__ import annotations
 
+import asyncio
 import os
 import re
+import time
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from email.utils import parsedate_to_datetime
@@ -120,8 +122,8 @@ class MetaApiProvisioningGateway:
             None,
         )
         if retry_account_id is not None:
-            # MetaAPI documents PUT account + POST redeploy as the supported way
-            # to apply corrected credentials to an already-provisioned account.
+            # MetaAPI documents exactly password, name and server for account
+            # updates. Do not send create-only fields such as magic/manualTrades.
             await self._request(
                 "PUT",
                 f"/users/current/accounts/{retry_account_id}",
@@ -130,8 +132,6 @@ class MetaApiProvisioningGateway:
                     "password": password,
                     "name": "Smart Signals MT5",
                     "server": server,
-                    "magic": SUPER_SIGNALS_MAGIC,
-                    "manualTrades": False,
                 },
                 accepted_statuses={200, 204},
             )
@@ -141,10 +141,32 @@ class MetaApiProvisioningGateway:
                 token=token,
                 accepted_statuses={200, 201, 202, 204},
             )
-            return MetaApiCreateResult(
-                pending=False,
-                account_id=retry_account_id,
-                state="DEPLOYED",
+
+            # A member connect request must never sit behind Render for 75+ sec.
+            # MetaAPI documents connectionStatus as the broker-session readiness
+            # signal. Give the redeploy a bounded window, then return a safe,
+            # explicit broker-connect error instead of letting the HTTP request
+            # die as a generic platform 502/503 page.
+            deadline = time.monotonic() + 25
+            latest: MetaApiAccountState | None = None
+            while time.monotonic() < deadline:
+                latest = await self.read_account(
+                    token=token,
+                    account_id=retry_account_id,
+                )
+                if latest.state in {"DEPLOY_FAILED", "REDEPLOY_FAILED"}:
+                    raise MetaApiGatewayError("metaapi_deploy_failed")
+                if latest.state == "DEPLOYED" and latest.connection_status == "CONNECTED":
+                    return MetaApiCreateResult(
+                        pending=False,
+                        account_id=retry_account_id,
+                        state="DEPLOYED",
+                    )
+                await asyncio.sleep(2)
+
+            raise MetaApiGatewayError(
+                "metaapi_broker_not_connected",
+                retryable=True,
             )
 
         response = await self._request(
