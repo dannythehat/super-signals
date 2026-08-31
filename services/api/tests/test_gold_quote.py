@@ -61,11 +61,11 @@ def test_biquote_quote_marks_closed_market_stale() -> None:
     assert quote.stale is True
 
 
-def test_gold_api_fallback_is_delayed_by_definition() -> None:
+def test_gold_api_fallback_valid_price_is_live() -> None:
     now = datetime(2026, 8, 28, 5, 30, tzinfo=UTC)
     quote = _gold_api_quote({"price": 4615.90}, now=now)
 
     assert quote.price == 4615.90
     assert quote.available is True
-    assert quote.stale is True
-    assert quote.source == "Gold API fallback"
+    assert quote.stale is False
+    assert quote.source == "Gold API live fallback"
