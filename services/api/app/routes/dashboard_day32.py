@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import asdict, replace
+from dataclasses import asdict
 from datetime import date, datetime
 from typing import Annotated, Any
 from uuid import UUID
@@ -11,7 +11,6 @@ from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from pydantic import BaseModel
 from sqlalchemy import text
 
-from app.acceptance_self_test import acceptance_mirror_owner_user_id
 from app.access_control import get_current_identity
 from app.dashboard_day32 import QuietDay23Mt5ReadService
 from app.dashboard_runtime import (
@@ -176,9 +175,6 @@ def _service(request: Request) -> CanonicalDashboardRuntimeService:
                 "message": "Account data is temporarily unavailable.",
             },
         )
-    # Dashboard reads are display-only. Never make the UI wait through the
-    # execution/reconciliation retry policy: one short broker attempt is enough,
-    # and durable local state remains visible if MetaAPI is temporarily slow.
     read_service = QuietDay23Mt5ReadService(
         session_factory=base._session_factory,
         cipher=base._cipher,
@@ -241,23 +237,21 @@ async def account_dashboard_today(
     timezone_name: str = "UTC",
 ) -> TodayTradingSummaryResponse:
     service = _service(request)
-    mirror_user_id = acceptance_mirror_owner_user_id(identity, service._session_factory)
-    data_user_id = mirror_user_id or identity["id"]
     summary = CanonicalTodayTradingSummaryService(
         session_factory=service._session_factory
     ).read(
-        data_user_id,
+        identity["id"],
         timezone_name=timezone_name,
     )
     accounting_windows = CanonicalTradingAccountingService(
         service._session_factory
     ).windows(
-        data_user_id,
+        identity["id"],
         timezone_name=timezone_name,
     )
     pending = _local_pending_trade_count(
         service,
-        data_user_id,
+        identity["id"],
         session_started_at=summary.session_started_at,
     )
     _no_store(response)
@@ -285,20 +279,11 @@ async def account_dashboard(
     timezone_name: str = "UTC",
 ) -> DashboardResponse:
     service = _service(request)
-    mirror_user_id = acceptance_mirror_owner_user_id(identity, service._session_factory)
-    data_user_id = mirror_user_id or identity["id"]
-    view = await service.read(data_user_id)
-    if mirror_user_id is not None:
-        view = replace(
-            view,
-            connection=replace(view.connection, account_environment="live"),
-            trading=service._trading(identity["id"]),
-            reconciled_external_positions=0,
-        )
+    view = await service.read(identity["id"])
 
     accounting = CanonicalTradingAccountingService(service._session_factory)
     money_windows = accounting.windows(
-        data_user_id,
+        identity["id"],
         timezone_name=timezone_name,
     )
     canonical_periods = (
@@ -340,7 +325,7 @@ async def account_dashboard(
                 return_percent=float(item.return_percent),
             )
             for item in accounting.daily(
-                data_user_id,
+                identity["id"],
                 broker_balance=view.account.balance,
                 timezone_name=timezone_name,
             )
@@ -350,8 +335,10 @@ async def account_dashboard(
     )
 
     ledger = _performance_service(request)
-    ready = ledger.ledger_ready(data_user_id)
-    old_windows = {item.key: item for item in ledger.read_windows(data_user_id)} if ready else {}
+    ready = ledger.ledger_ready(identity["id"])
+    old_windows = {
+        item.key: item for item in ledger.read_windows(identity["id"])
+    } if ready else {}
     all_time = old_windows.get("all")
     win_loss = (
         WinLossResponse(
@@ -377,12 +364,22 @@ async def account_dashboard(
     _no_store(response)
     return DashboardResponse(
         connection=ConnectionResponse(**asdict(view.connection)),
-        account=(AccountResponse(**asdict(view.account)) if view.account is not None else None),
+        account=(
+            AccountResponse(**asdict(view.account)) if view.account is not None else None
+        ),
         trading=TradingResponse(**asdict(view.trading)),
         open_profit=_safe_open_profit(view),
-        open_positions=tuple(OpenPositionResponse(**asdict(item)) for item in view.open_positions),
-        latest_signal=(LatestSignalResponse(**asdict(view.latest_signal)) if view.latest_signal is not None else None),
-        recent_completed=tuple(CompletedPositionResponse(**asdict(item)) for item in view.recent_completed),
+        open_positions=tuple(
+            OpenPositionResponse(**asdict(item)) for item in view.open_positions
+        ),
+        latest_signal=(
+            LatestSignalResponse(**asdict(view.latest_signal))
+            if view.latest_signal is not None
+            else None
+        ),
+        recent_completed=tuple(
+            CompletedPositionResponse(**asdict(item)) for item in view.recent_completed
+        ),
         performance=canonical_periods,
         performance_timezone=money_windows.timezone,
         daily_profit=daily_profit,
