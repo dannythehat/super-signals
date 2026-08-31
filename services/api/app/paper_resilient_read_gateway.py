@@ -28,7 +28,13 @@ class PaperResilientMetaApiReadGateway(MetaApiReadGateway):
         retry_delay_seconds: float = 0.25,
     ) -> None:
         super().__init__(timeout_seconds=timeout_seconds)
-        self._paper_read_attempts = max(1, int(attempts))
+        # Production dashboard wiring historically passed attempts=1 to keep reads
+        # snappy. That made a single MetaAPI 429/5xx/network blip erase the whole live
+        # account snapshot (balance, equity and current position prices) even though
+        # the next request often succeeded seconds later. Read-only GETs are safe to
+        # retry, so never allow fewer than three bounded attempts here. Trade/order
+        # mutations do not use this gateway and are never retried by this policy.
+        self._paper_read_attempts = max(3, int(attempts))
         self._paper_retry_delay_seconds = max(0.0, float(retry_delay_seconds))
 
     async def _request(self, method: str, url: str, *, token: str):
