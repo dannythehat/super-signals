@@ -210,6 +210,14 @@
     grid-column: auto;
   }
 
+  .settings-panel--mt5 {
+    scroll-margin-top: 76px;
+  }
+
+  .settings-mt5-form input {
+    font-size: 16px;
+  }
+
   .settings-page .trading-activation-panel {
     right: auto;
     bottom: auto;
