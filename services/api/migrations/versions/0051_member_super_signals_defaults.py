@@ -24,9 +24,6 @@ depends_on: str | Sequence[str] | None = None
 
 
 def upgrade() -> None:
-    # Backfill currently entitled ordinary members who were approved before the
-    # automatic-control invariant existed. This includes the first real onboarding
-    # cohort and immediately makes connected Demo/Live accounts eligible for routing.
     op.execute(
         """
         INSERT INTO user_trading_controls (
@@ -40,11 +37,11 @@ def upgrade() -> None:
         )
         SELECT DISTINCT
             u.id,
-            1.0,
+            1.0::numeric,
             TRUE,
-            'active',
+            'active'::varchar,
             now(),
-            NULL,
+            NULL::timestamptz,
             now()
         FROM users AS u
         JOIN user_roles AS ur ON ur.user_id = u.id
@@ -62,9 +59,6 @@ def upgrade() -> None:
         """
     )
 
-    # One invariant for all future access paths: when a membership entitlement first
-    # becomes active, create an ACTIVE Smart Signals control row if none exists.
-    # ON CONFLICT DO NOTHING intentionally preserves an explicit member stop/change.
     op.execute(
         """
         CREATE OR REPLACE FUNCTION ensure_member_super_signals_defaults()
@@ -94,7 +88,7 @@ def upgrade() -> None:
                     TRUE,
                     'active',
                     now(),
-                    NULL,
+                    NULL::timestamptz,
                     now()
                 )
                 ON CONFLICT (user_id) DO NOTHING;
