@@ -14,6 +14,10 @@ for a broker order which was successfully cancelled. The original positions stat
 constraint did not allow that value, so the broker cancellation could succeed while
 the local row remained pending. This migration makes ``cancelled`` a first-class
 terminal state and excludes it from performance.
+
+Rows already marked local ``error`` are diagnostic evidence, not active trades. A
+future complete broker deal can still rebuild such a row as won/lost/breakeven, but
+an unresolved ``closed_unknown`` error must never appear to members as settling.
 """
 
 from collections.abc import Sequence
@@ -27,9 +31,6 @@ depends_on: str | Sequence[str] | None = None
 
 
 def upgrade() -> None:
-    # The execution layer already uses `cancelled` when a broker pending order is
-    # successfully cancelled. Make that terminal state legal instead of allowing
-    # a successful broker mutation to leave a stale local `pending` row.
     op.execute("ALTER TABLE positions DROP CONSTRAINT IF EXISTS ck_positions_status")
     op.execute(
         """
@@ -39,17 +40,22 @@ def upgrade() -> None:
         """
     )
 
-    # Purge only derived outcomes for orders which demonstrably never became a
-    # broker position. Raw positions, broker order IDs and audit history remain.
+    # Remove fake settling outcomes for orders which never became broker positions,
+    # plus stale local error diagnostics. Raw positions/deals/audits remain intact.
     op.execute(
         """
         DELETE FROM performance_trade_outcomes AS o
         USING positions AS p
         WHERE o.position_id = p.id
           AND o.status = 'closed_unknown'
-          AND p.broker_position_id IS NULL
-          AND p.broker_order_id IS NOT NULL
-          AND p.status IN ('closed','cancelled','skipped','error')
+          AND (
+                (
+                    p.broker_position_id IS NULL
+                    AND p.broker_order_id IS NOT NULL
+                    AND p.status IN ('closed','cancelled','skipped','error')
+                )
+                OR p.status IN ('error','skipped','cancelled')
+          )
         """
     )
 
@@ -73,11 +79,16 @@ def upgrade() -> None:
             FROM positions AS p
             WHERE p.id = NEW.position_id;
 
+            IF local_status IN ('error','skipped','cancelled') THEN
+                -- A local terminal diagnostic is not a member-facing trade. If
+                -- complete broker history later appears, the derived status will
+                -- become won/lost/breakeven and pass this guard normally.
+                RETURN NULL;
+            END IF;
+
             IF mapped_position_id IS NULL
                AND local_order_id IS NOT NULL
-               AND local_status IN ('closed','cancelled','skipped','error') THEN
-                -- No broker position ever existed: this was a cancelled/unfilled
-                -- order, not a trade and not a settlement diagnostic.
+               AND local_status = 'closed' THEN
                 RETURN NULL;
             END IF;
 
@@ -111,5 +122,3 @@ def downgrade() -> None:
         """
     )
     op.execute("DROP FUNCTION IF EXISTS reject_unfilled_performance_outcome()")
-    # Do not narrow the position constraint on downgrade: rows may legitimately
-    # already be `cancelled`, and making them invalid would break rollback.
