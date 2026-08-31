@@ -1,10 +1,8 @@
 """Canonical production execution-router wiring.
 
-This is the only production builder for provider decisions -> paper/future-LIVE broker
-routing. It installs no runtime patches and no day-numbered router generation. Paper and
-future LIVE use the same execution, management, transient-capture retry and pending-fill
-reconciliation policy; only account eligibility/credentials and the explicit member-
-distribution switch differ.
+This is the only production builder for provider decisions -> paper/LIVE broker routing.
+Each user has exactly one canonical active MT5 slot. The selected slot may be Vantage Demo
+or Vantage Live; interpretation, risk, pending and management policy remain shared.
 """
 
 from __future__ import annotations
@@ -15,21 +13,20 @@ from uuid import UUID
 
 from sqlalchemy.orm import Session, sessionmaker
 
-from app.execution_dispatch_canonical import CanonicalExecutionDispatcher
-from app.graceful_market_targets import (
-    GracefulCaptureReliableCanonicalTradingExecutionService,
-    GracefulCaptureReliableMemberTradingExecutionService,
+from app.active_account_execution import ActiveAccountCanonicalTradingExecutionService
+from app.active_account_management import ActiveAccountCanonicalTradingManagementService
+from app.active_account_member_routing import (
+    ActiveAccountMemberDistributionService,
+    ActiveAccountMemberManagementService,
 )
-from app.member_routing_canonical import MemberDistributionService, MemberManagementService
+from app.execution_dispatch_canonical import CanonicalExecutionDispatcher
+from app.graceful_market_targets import GracefulCaptureReliableMemberTradingExecutionService
 from app.metaapi_margin_gateway import MetaApiMarginGateway
 from app.metaapi_read_gateway import MetaApiReadGateway
 from app.metaapi_trade_gateway import MetaApiTradeGateway
 from app.mt5_crypto import MetaApiTokenCipher
 from app.paper_resilient_read_gateway import PaperResilientMetaApiReadGateway
-from app.trading_management_canonical import (
-    CanonicalTradingManagementService,
-    MemberTradingManagementService,
-)
+from app.trading_management_canonical import MemberTradingManagementService
 from app.unified_pending_reconciler import UnifiedPendingReconciler
 
 logger = logging.getLogger(__name__)
@@ -78,49 +75,67 @@ def build_canonical_execution_router(
         owner_read = PaperResilientMetaApiReadGateway()
         member_read = MetaApiReadGateway()
         trade = MetaApiTradeGateway()
-        # This dependency remains constructor-compatible with the lower execution
-        # transport, but canonical policy never uses local margin availability as an
-        # approval/veto budget. Vantage/MT5 is authoritative for actual rejection.
         margin = MetaApiMarginGateway()
 
-        owner_execution = GracefulCaptureReliableCanonicalTradingExecutionService(
+        owner_execution = ActiveAccountCanonicalTradingExecutionService(
             session_factory=session_factory,
             cipher=cipher,
             read_gateway=owner_read,
             margin_gateway=margin,
             trade_gateway=trade,
         )
-        owner_management = CanonicalTradingManagementService(
+        owner_management = ActiveAccountCanonicalTradingManagementService(
             session_factory=session_factory,
             cipher=cipher,
             read_gateway=owner_read,
             trade_gateway=trade,
         )
-        member_execution = GracefulCaptureReliableMemberTradingExecutionService(
+
+        # Ordinary member Demo/Paper execution uses the same canonical policy as the
+        # reference account, but with the member's own active account and risk controls.
+        demo_member_execution = ActiveAccountCanonicalTradingExecutionService(
             session_factory=session_factory,
             cipher=cipher,
             read_gateway=member_read,
             margin_gateway=margin,
             trade_gateway=trade,
         )
-        member_management = MemberTradingManagementService(
+        demo_member_management = ActiveAccountCanonicalTradingManagementService(
             session_factory=session_factory,
             cipher=cipher,
             read_gateway=member_read,
             trade_gateway=trade,
         )
+
+        # Real member execution retains its additional user-role/account-approval gate.
+        live_member_execution = GracefulCaptureReliableMemberTradingExecutionService(
+            session_factory=session_factory,
+            cipher=cipher,
+            read_gateway=member_read,
+            margin_gateway=margin,
+            trade_gateway=trade,
+        )
+        live_member_management = MemberTradingManagementService(
+            session_factory=session_factory,
+            cipher=cipher,
+            read_gateway=member_read,
+            trade_gateway=trade,
+        )
+
         return CanonicalExecutionDispatcher(
             session_factory=session_factory,
             owner_user_id=owner_user_id,
             execution_service=owner_execution,
             management_service=owner_management,
-            member_distribution=MemberDistributionService(
+            member_distribution=ActiveAccountMemberDistributionService(
                 session_factory=session_factory,
-                execution_service=member_execution,
+                demo_execution_service=demo_member_execution,
+                live_execution_service=live_member_execution,
             ),
-            member_management=MemberManagementService(
+            member_management=ActiveAccountMemberManagementService(
                 session_factory=session_factory,
-                management_service=member_management,
+                demo_management_service=demo_member_management,
+                live_management_service=live_member_management,
             ),
             risk_percent=risk_percent,
             double_lot_approved=double_lot_approved,
