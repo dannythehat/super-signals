@@ -9,9 +9,10 @@ Accounting contract:
 * open/pending state is reported separately;
 * Today is the configured local calendar day (Europe/Sofia by default), never UTC
   midnight unless explicitly configured that way;
-* the Owner paper run has one immutable origin. Pre-origin evidence remains in the
-  broker/audit ledger but can never re-enter dashboard windows or timeline after a
-  deploy/restart;
+* the Owner paper run has one immutable balance origin. Pre-origin evidence remains in
+  the broker/audit ledger, while any position that was genuinely still open at the origin
+  contributes the part of its result realised after the origin. This keeps the opening
+  balance and subsequent broker exits mathematically consistent;
 * Today, 7d, 30d, Month and All-time are ordinary cumulative views. No calendar day,
   deploy or restart may manufacture zero windows or reset post-origin results.
 
@@ -72,6 +73,13 @@ class CanonicalPerformanceRuntimeService(CanonicalPerformanceLedgerService):
         return epoch.started_at if epoch is not None else None
 
     def _eligible_signal_ids(self, user_id: UUID) -> set[UUID] | None:
+        """Signals visible in the active run, including genuine carry-over positions.
+
+        A signal that began before the balance origin is still relevant when one of its
+        outcomes closes after the origin, or while it remains open/pending. Pre-origin
+        closed outcomes remain hidden; only their already-realised cash is represented in
+        the accepted opening balance.
+        """
         run_start = self._run_start(user_id)
         if run_start is None:
             return None
@@ -82,10 +90,27 @@ class CanonicalPerformanceRuntimeService(CanonicalPerformanceLedgerService):
                     SELECT DISTINCT s.id
                     FROM signals AS s
                     JOIN sources AS src ON src.id=s.source_id
-                    LEFT JOIN positions AS p ON p.signal_id=s.id
-                    WHERE COALESCE(s.source_posted_at,s.created_at)>=:run_started_at
-                      AND src.status<>'revoked'
-                      AND (p.user_id=:user_id OR p.user_id IS NULL)
+                    WHERE src.status<>'revoked'
+                      AND (
+                            COALESCE(s.source_posted_at,s.created_at)>=:run_started_at
+                            OR EXISTS (
+                                SELECT 1
+                                FROM performance_trade_outcomes AS o
+                                WHERE o.user_id=:user_id
+                                  AND o.signal_id=s.id
+                                  AND (
+                                        (
+                                            o.status IN ('won','lost','breakeven')
+                                            AND o.closed_at>=:run_started_at
+                                        )
+                                        OR o.status IN ('open','pending')
+                                        OR (
+                                            o.status='closed_unknown'
+                                            AND COALESCE(o.closed_at,o.derived_at)>=:run_started_at
+                                        )
+                                  )
+                            )
+                      )
                     """
                 ),
                 {"run_started_at": run_start, "user_id": user_id},
@@ -166,13 +191,17 @@ class CanonicalPerformanceRuntimeService(CanonicalPerformanceLedgerService):
         params: dict[str, Any] = {"user_id": user_id, "window_end": now}
         run_start = self._run_start(user_id)
         if run_start is not None:
-            clauses.append("COALESCE(s.source_posted_at,s.created_at)>=:run_started_at")
+            clauses.append(
+                "(COALESCE(s.source_posted_at,s.created_at)>=:run_started_at "
+                "OR (o.status IN ('won','lost','breakeven') AND o.closed_at>=:run_started_at) "
+                "OR o.status IN ('open','pending') "
+                "OR (o.status='closed_unknown' AND COALESCE(o.closed_at,o.derived_at)>=:run_started_at))"
+            )
             params["run_started_at"] = run_start
         if since is not None:
             clauses.append(
-                "(o.closed_at>=:since OR "
-                "(o.status IN ('open','pending','closed_unknown') AND "
-                "COALESCE(o.opened_at,o.closed_at,o.derived_at)>=:since))"
+                "(o.closed_at>=:since OR o.status IN ('open','pending') OR "
+                "(o.status='closed_unknown' AND COALESCE(o.closed_at,o.derived_at)>=:since))"
             )
             params["since"] = since
         clauses.append("COALESCE(o.closed_at,o.opened_at,o.derived_at)<:window_end")
@@ -330,11 +359,18 @@ class CanonicalPerformanceRuntimeService(CanonicalPerformanceLedgerService):
             values = session.execute(
                 text(
                     """
-                    SELECT s.id
+                    SELECT DISTINCT s.id
                     FROM signals s
                     JOIN sources src ON src.id=s.source_id
-                    WHERE COALESCE(s.source_posted_at,s.created_at)>=:run_started_at
-                      AND src.status<>'revoked'
+                    WHERE src.status<>'revoked'
+                      AND (
+                            COALESCE(s.source_posted_at,s.created_at)>=:run_started_at
+                            OR EXISTS (
+                                SELECT 1 FROM positions p
+                                WHERE p.signal_id=s.id
+                                  AND p.status IN ('open','pending')
+                            )
+                      )
                     """
                 ),
                 {"run_started_at": PAPER_RUN_STARTED_AT},
