@@ -1,6 +1,6 @@
 """Canonical reconnect/restart safety acceptance.
 
-This proves stale-entry recovery safety, immediate MT5 reconciliation, and
+This proves stale-entry recovery safety, immediate non-blocking MT5 reconciliation, and
 broker-authoritative SL/TP truth across fresh service instances. Durable route
 idempotency and no-automatic-retry behavior are covered by test_canonical_execution_dispatch.
 """
@@ -81,22 +81,36 @@ def test_restart_recovery_persists_stale_entry_as_evidence_but_never_executes(mo
 class _ReconcileService:
     def __init__(self) -> None:
         self.calls = 0
+        self.started = asyncio.Event()
+        self.release = asyncio.Event()
 
     async def reconcile_all(self) -> int:
         self.calls += 1
+        self.started.set()
+        await self.release.wait()
         return 1
 
 
-def test_mt5_connection_manager_reconciles_immediately_on_restart() -> None:
-    async def scenario() -> int:
+def test_mt5_connection_manager_reconciles_immediately_without_blocking_web_startup() -> None:
+    async def scenario() -> tuple[int, bool]:
         service = _ReconcileService()
         manager = Mt5ConnectionManager(service, refresh_seconds=3600)  # type: ignore[arg-type]
-        await manager.start()
-        calls_after_start = service.calls
-        await manager.stop()
-        return calls_after_start
 
-    assert asyncio.run(scenario()) == 1
+        # start() must return even while the external broker reconciliation is still
+        # deliberately blocked. This is what lets FastAPI open /health immediately.
+        await asyncio.wait_for(manager.start(), timeout=0.1)
+        await asyncio.wait_for(service.started.wait(), timeout=0.1)
+        returned_while_reconcile_blocked = not service.release.is_set()
+        calls_after_background_start = service.calls
+
+        service.release.set()
+        await asyncio.sleep(0)
+        await manager.stop()
+        return calls_after_background_start, returned_while_reconcile_blocked
+
+    calls, non_blocking = asyncio.run(scenario())
+    assert calls == 1
+    assert non_blocking is True
 
 
 USER = UUID("11111111-1111-4111-8111-111111111111")
