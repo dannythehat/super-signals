@@ -65,10 +65,11 @@ class MetaApiProvisioningGateway:
             or DEFAULT_METAAPI_PROVISIONING_URL
         ).rstrip("/")
         self._timeout = httpx.Timeout(timeout_seconds)
-        # If a previous attempt produced a permanently disconnected MetaAPI
-        # terminal, the next explicit Connect must use the password entered now.
-        # Track that stale remote only for the duration of this request flow.
-        self._stale_accounts: dict[tuple[str, str], str] = {}
+        # When a user explicitly retries a disconnected account, MetaAPI's
+        # supported path is to update the existing account and redeploy it. Keep
+        # the account id only for this request flow so the newly-entered password
+        # is applied instead of silently reusing the first one.
+        self._retry_existing_accounts: dict[tuple[str, str], str] = {}
 
     @staticmethod
     def new_transaction_id() -> str:
@@ -100,7 +101,7 @@ class MetaApiProvisioningGateway:
                 continue
             state = self._account_state(item)
             if state.connection_status == "DISCONNECTED":
-                self._stale_accounts[(login, server.casefold())] = state.account_id
+                self._retry_existing_accounts[(login, server.casefold())] = state.account_id
                 return None
             return state
         return None
@@ -114,16 +115,36 @@ class MetaApiProvisioningGateway:
         server: str,
         transaction_id: str,
     ) -> MetaApiCreateResult:
-        stale_account_id = self._stale_accounts.pop((login, server.casefold()), None)
-        if stale_account_id is not None:
-            # The previous MetaAPI terminal is not connected and cannot be used
-            # for trading. Remove just that remote terminal before reprovisioning
-            # it with the credentials the member entered on this Connect attempt.
+        retry_account_id = self._retry_existing_accounts.pop(
+            (login, server.casefold()),
+            None,
+        )
+        if retry_account_id is not None:
+            # MetaAPI documents PUT account + POST redeploy as the supported way
+            # to apply corrected credentials to an already-provisioned account.
             await self._request(
-                "DELETE",
-                f"/users/current/accounts/{stale_account_id}",
+                "PUT",
+                f"/users/current/accounts/{retry_account_id}",
                 token=token,
-                accepted_statuses={204, 404},
+                json={
+                    "password": password,
+                    "name": "Smart Signals MT5",
+                    "server": server,
+                    "magic": SUPER_SIGNALS_MAGIC,
+                    "manualTrades": False,
+                },
+                accepted_statuses={200, 204},
+            )
+            await self._request(
+                "POST",
+                f"/users/current/accounts/{retry_account_id}/redeploy",
+                token=token,
+                accepted_statuses={200, 201, 202, 204},
+            )
+            return MetaApiCreateResult(
+                pending=False,
+                account_id=retry_account_id,
+                state="DEPLOYED",
             )
 
         response = await self._request(
@@ -140,6 +161,8 @@ class MetaApiProvisioningGateway:
                 "magic": SUPER_SIGNALS_MAGIC,
                 "type": "cloud-g2",
                 "manualTrades": False,
+                # MetaAPI recommends broker keywords when auto-detecting settings.
+                "keywords": ["Vantage Markets"],
             },
             accepted_statuses={201, 202},
         )
@@ -250,20 +273,37 @@ class MetaApiProvisioningGateway:
                 candidate = details.get("code")
                 if isinstance(candidate, str) and _SAFE_REMOTE_CODE.fullmatch(candidate):
                     remote_code = candidate
-            if remote_code is None:
-                candidate = body.get("error")
-                if isinstance(candidate, str) and _SAFE_REMOTE_CODE.fullmatch(candidate):
-                    remote_code = candidate
-            # MetaAPI sometimes returns a ValidationError without an E_AUTH detail.
-            # Do not expose remote prose, but preserve the useful authentication
-            # meaning when the safe message clearly identifies broker auth failure.
+
+            # Some MetaAPI validation responses omit a structured details code.
+            # Classify only well-known safe phrases and never persist remote prose.
             if remote_code is None:
                 message = str(body.get("message") or "").casefold()
                 if "failed to authenticate" in message or "invalid account" in message:
                     remote_code = "E_AUTH"
+                elif "password" in message and "change" in message and "required" in message:
+                    remote_code = "E_PASSWORD_CHANGE_REQUIRED"
+                elif "one-time password" in message or "otp" in message:
+                    remote_code = "ERR_OTP_REQUIRED"
+                elif "account" in message and "disabled" in message:
+                    remote_code = "E_TRADING_ACCOUNT_DISABLED"
+                elif "server file" in message or ".dat file for server" in message:
+                    remote_code = "E_SRV_NOT_FOUND"
+                elif "retrieve server settings" in message or "server settings" in message:
+                    remote_code = "E_SERVER_TIMEZONE"
+                elif "resource slots" in message:
+                    remote_code = "E_RESOURCE_SLOTS"
+                elif "no symbols" in message:
+                    remote_code = "E_NO_SYMBOLS"
+
+            if remote_code is None:
+                candidate = body.get("error")
+                if isinstance(candidate, str) and _SAFE_REMOTE_CODE.fullmatch(candidate):
+                    remote_code = candidate
+
         if remote_code:
             return MetaApiGatewayError(
-                f"metaapi_{remote_code.lower().replace('-', '_')}"
+                f"metaapi_{remote_code.lower().replace('-', '_')}",
+                retryable=remote_code in {"E_SERVER_TIMEZONE"},
             )
         return MetaApiGatewayError("metaapi_account_rejected")
 
@@ -277,9 +317,6 @@ class MetaApiProvisioningGateway:
         if not account_id:
             raise MetaApiGatewayError("metaapi_invalid_response")
         account_id_text = str(account_id)
-        # Provisioning reconciliation runs before the Telegram listener starts.
-        # Capture MetaAPI's account shard there so terminal reads during a fresh
-        # trade do not make a second provisioning call just to rediscover it.
         remember_metaapi_region(
             account_id_text,
             str(payload.get("region") or ""),
