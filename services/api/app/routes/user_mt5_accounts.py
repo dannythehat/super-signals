@@ -8,10 +8,8 @@ from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from pydantic import BaseModel, Field
-from sqlalchemy.orm import Session
 
 from app.access_control import get_current_identity
-from app.db import get_db_session
 from app.dual_mt5_accounts import (
     connect_demo,
     connect_live,
@@ -24,13 +22,11 @@ from app.mt5_connection_service_day30 import Day30Mt5ConnectionService
 from app.mt5_runtime import require_mt5_service
 from app.routes.dashboard_day32 import router as dashboard_day32_router
 from app.routes.gold_quote import router as gold_quote_router
-from app.subscription_access import require_active_subscription
 
 router = APIRouter(prefix="/account/mt5", tags=["mt5-user"])
 router.include_router(dashboard_day32_router)
 router.include_router(gold_quote_router)
 UserIdentity = Annotated[dict[str, Any], Depends(get_current_identity)]
-DbSession = Annotated[Session, Depends(get_db_session)]
 
 
 class UserMt5ConnectRequest(BaseModel):
@@ -178,7 +174,6 @@ async def user_mt5_accounts(
     response: Response,
     identity: UserIdentity,
 ) -> DualMt5AccountsResponse:
-    """Return Paper and Real account status plus the account selected for new trades."""
     _ordinary_user(identity)
     service = _service(request)
     result = _dual_response(service, identity["id"])
@@ -192,7 +187,6 @@ async def user_mt5_status(
     response: Response,
     identity: UserIdentity,
 ) -> UserMt5StatusResponse:
-    """Backward-compatible status: return the active account when one is selected."""
     _ordinary_user(identity)
     service = _service(request)
     dual = get_dual_accounts(service, identity["id"])
@@ -210,11 +204,9 @@ async def connect_user_mt5(
     request: Request,
     response: Response,
     identity: UserIdentity,
-    session: DbSession,
 ) -> DualMt5AccountsResponse:
-    """Connect one Paper or Real Vantage MT5 without replacing the other environment."""
+    """Connect Paper or Real during onboarding; trade activation remains subscription-gated."""
     _ordinary_user(identity)
-    require_active_subscription(session, identity["id"])
     service = _service(request)
     server_folded = payload.server.strip().casefold()
     try:
@@ -246,11 +238,9 @@ async def choose_active_mt5(
     request: Request,
     response: Response,
     identity: UserIdentity,
-    session: DbSession,
 ) -> DualMt5AccountsResponse:
-    """Choose which connected account receives future Smart Signals trades."""
+    """Choose the connected account for future trades; activation still requires subscription."""
     _ordinary_user(identity)
-    require_active_subscription(session, identity["id"])
     service = _service(request)
     try:
         set_active_environment(
