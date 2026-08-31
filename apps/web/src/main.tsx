@@ -24,7 +24,6 @@ ReactDOM.createRoot(document.getElementById('root')!).render(
 );
 
 const BUILD_CHECK_INTERVAL_MS = 30_000;
-const LIVE_ACCOUNT_SYNC_INTERVAL_MS = 5_000;
 let reloadStarted = false;
 
 function currentModuleScript(): string | null {
@@ -67,10 +66,10 @@ void reloadForNewBuild();
 window.setInterval(() => void reloadForNewBuild(), BUILD_CHECK_INTERVAL_MS);
 window.addEventListener('focus', () => void reloadForNewBuild());
 
-// MobileDashboard listens for this event and rereads the canonical /dashboard
-// response. Keep the balance/equity/P&L snapshot moving on the same five-second
-// cadence used by the member website. No balance arithmetic lives in this pulse.
-window.setInterval(requestCanonicalAccountSync, LIVE_ACCOUNT_SYNC_INTERVAL_MS);
+// MobileDashboard already owns its bounded 15-second refresh cadence. Do not add a
+// second global timer here: overlapping broker-backed reads can queue behind MetaAPI
+// retries and make the single web worker appear unavailable to Render. Focus and
+// visibility changes still request an immediate refresh for a returning user.
 window.addEventListener('focus', requestCanonicalAccountSync);
 document.addEventListener('visibilitychange', requestCanonicalAccountSync);
 
