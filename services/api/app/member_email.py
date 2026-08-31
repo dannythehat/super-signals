@@ -74,14 +74,14 @@ def send_admin_new_signup(*, member_email: str, display_name: str, complimentary
       <div style="max-width:620px;margin:auto;background:#0b1722;border:1px solid #244252;border-radius:18px;padding:28px">
         <div style="font-size:12px;letter-spacing:1.5px;color:#67e8f9;font-weight:700">SMART SIGNALS</div>
         <h1 style="font-size:24px;margin:10px 0 18px;color:#ffffff">New Smart Signals signup</h1>
-        <p style="color:#c8d8e5;line-height:1.6">A new member created an account before payment.</p>
+        <p style="color:#c8d8e5;line-height:1.6">A new member created a Smart Signals account and is waiting for owner approval.</p>
         <div style="background:#08131c;border:1px solid #1b3443;border-radius:14px;padding:16px;margin:18px 0">
           <div style="margin-bottom:8px"><strong>Name:</strong> {safe_name}</div>
           <div><strong>Email:</strong> {safe_email}</div>
         </div>
-        <p style="color:#c8d8e5;line-height:1.6">If this is a friend, family member or someone you want to admit without payment, use the private owner action below.</p>
+        <p style="color:#c8d8e5;line-height:1.6">Use the private owner action below to approve this member. Once approved, Smart Signals will automatically email them with instructions to sign in and connect their Vantage MT5 account.</p>
         <p style="margin:24px 0">
-          <a href="{safe_url}" style="display:inline-block;background:#22c55e;color:#04110a;text-decoration:none;font-weight:800;padding:14px 20px;border-radius:12px">Grant Complimentary Access</a>
+          <a href="{safe_url}" style="display:inline-block;background:#22c55e;color:#04110a;text-decoration:none;font-weight:800;padding:14px 20px;border-radius:12px">Approve Member Access</a>
         </p>
         <p style="font-size:12px;color:#7f9cad;line-height:1.5">This approval link is private, expires after 7 days and can only be completed from an authenticated Smart Signals owner account.</p>
       </div>
@@ -90,13 +90,14 @@ def send_admin_new_signup(*, member_email: str, display_name: str, complimentary
     text_body = (
         "New Smart Signals signup\n\n"
         f"Name: {display_name}\nEmail: {member_email}\n\n"
-        "Grant complimentary access (owner login required):\n"
+        "Approve member access (owner login required):\n"
         f"{approval_url}\n\n"
+        "After approval, Smart Signals automatically emails the member to connect their Vantage MT5 account.\n"
         "The private approval link expires after 7 days."
     )
     return _send(
         to=admin_email,
-        subject=f"New Smart Signals signup — {display_name}",
+        subject=f"Approval needed — Smart Signals signup — {display_name}",
         html_body=html_body,
         text_body=text_body,
     )
@@ -111,24 +112,24 @@ def send_member_complimentary_activated(*, member_email: str, display_name: str)
     <div style="font-family:Arial,sans-serif;background:#071018;color:#eef8ff;padding:28px">
       <div style="max-width:620px;margin:auto;background:#0b1722;border:1px solid #244252;border-radius:18px;padding:28px">
         <div style="font-size:12px;letter-spacing:1.5px;color:#67e8f9;font-weight:700">SMART SIGNALS</div>
-        <h1 style="font-size:24px;margin:10px 0 18px;color:#ffffff">Your Smart Signals access is active</h1>
-        <p style="color:#c8d8e5;line-height:1.6">Hi {safe_name}, your account has been approved with complimentary access.</p>
-        <p style="color:#c8d8e5;line-height:1.6">You can now continue setup, connect your Vantage MT5 account and finish your Smart Signals trading setup.</p>
+        <h1 style="font-size:24px;margin:10px 0 18px;color:#ffffff">Your Smart Signals access is approved</h1>
+        <p style="color:#c8d8e5;line-height:1.6">Hi {safe_name}, your Smart Signals account has been approved and is ready for setup.</p>
+        <p style="color:#c8d8e5;line-height:1.6">Sign in, open your trading-account setup and enter the three details supplied by Vantage: your MT5 account number, MT5 trading password and exact MT5 server. Smart Signals does not store your MT5 password.</p>
         <p style="margin:24px 0">
-          <a href="{safe_url}" style="display:inline-block;background:#22c55e;color:#04110a;text-decoration:none;font-weight:800;padding:14px 20px;border-radius:12px">Continue Smart Signals Setup</a>
+          <a href="{safe_url}" style="display:inline-block;background:#22c55e;color:#04110a;text-decoration:none;font-weight:800;padding:14px 20px;border-radius:12px">Connect Vantage MT5</a>
         </p>
       </div>
     </div>
     """
     text_body = (
         f"Hi {display_name},\n\n"
-        "Your Smart Signals account has been approved with complimentary access. "
-        "You can now connect your Vantage MT5 account and finish setup.\n\n"
-        f"Continue: {continue_url}"
+        "Your Smart Signals account has been approved.\n\n"
+        "Next step: sign in and connect your Vantage MT5 account using the MT5 account number, trading password and exact server supplied by Vantage. Smart Signals does not store your MT5 password.\n\n"
+        f"Connect MT5: {continue_url}"
     )
     return _send(
         to=member_email,
-        subject="Your Smart Signals access is active",
+        subject="Approved — connect your Vantage MT5 account",
         html_body=html_body,
         text_body=text_body,
     )
