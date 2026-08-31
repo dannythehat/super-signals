@@ -1,4 +1,4 @@
-"""Add fair Provider Lab execution evidence and TP-level benchmark rows.
+"""Add fair Provider Lab execution evidence and TP/runner-level benchmark rows.
 
 Revision ID: 0047_provider_fairness_v2
 Revises: 0046_provider_benchmark_view
@@ -20,6 +20,7 @@ depends_on = None
 def upgrade() -> None:
     op.execute("DROP VIEW IF EXISTS provider_benchmark_performance")
     op.drop_constraint("ck_shadow_benchmark_model", "shadow_trades", type_="check")
+    op.drop_constraint("shadow_trades_signal_id_key", "shadow_trades", type_="unique")
 
     op.alter_column(
         "shadow_trades",
@@ -36,6 +37,8 @@ def upgrade() -> None:
         "benchmark_model IN ('fixed_1000_10_per_tp_fair_v2')",
     )
 
+    op.add_column("shadow_trades", sa.Column("entry_index", sa.Integer(), nullable=False, server_default="1"))
+    op.add_column("shadow_trades", sa.Column("entry_order_type", sa.String(length=24), nullable=False, server_default="market"))
     op.add_column("shadow_trades", sa.Column("provider_style", sa.String(length=32), nullable=False, server_default="unknown"))
     op.add_column("shadow_trades", sa.Column("interpretation_readiness_at_entry", sa.Numeric(6, 5), nullable=False, server_default="0"))
     op.add_column("shadow_trades", sa.Column("signal_posted_at", sa.DateTime(timezone=True), nullable=True))
@@ -48,6 +51,8 @@ def upgrade() -> None:
     op.add_column("shadow_trades", sa.Column("entry_spread", sa.Numeric(24, 10), nullable=True))
     op.add_column("shadow_trades", sa.Column("target_count", sa.Integer(), nullable=False, server_default="0"))
 
+    op.create_unique_constraint("uq_shadow_signal_entry", "shadow_trades", ["signal_id", "entry_index"])
+    op.create_check_constraint("ck_shadow_entry_index", "shadow_trades", "entry_index >= 1")
     op.create_check_constraint(
         "ck_shadow_fair_style",
         "shadow_trades",
@@ -68,11 +73,7 @@ def upgrade() -> None:
         "shadow_trades",
         "quote_mode IN ('unobserved','snapshot_poll','stream_quote','stream_tick')",
     )
-    op.create_check_constraint(
-        "ck_shadow_fair_target_count",
-        "shadow_trades",
-        "target_count >= 0",
-    )
+    op.create_check_constraint("ck_shadow_fair_target_count", "shadow_trades", "target_count >= 0")
 
     op.create_table(
         "shadow_trade_legs",
@@ -81,7 +82,9 @@ def upgrade() -> None:
         sa.Column("source_id", postgresql.UUID(as_uuid=True), sa.ForeignKey("sources.id", ondelete="CASCADE"), nullable=False),
         sa.Column("signal_id", postgresql.UUID(as_uuid=True), sa.ForeignKey("signals.id", ondelete="CASCADE"), nullable=False),
         sa.Column("tp_index", sa.Integer(), nullable=False),
-        sa.Column("target_price", sa.Numeric(24, 10), nullable=False),
+        sa.Column("target_price", sa.Numeric(24, 10), nullable=True),
+        sa.Column("is_runner", sa.Boolean(), nullable=False, server_default=sa.false()),
+        sa.Column("remaining_fraction", sa.Numeric(8, 6), nullable=False, server_default="1"),
         sa.Column("status", sa.String(length=16), nullable=False, server_default="pending"),
         sa.Column("exit_reason", sa.String(length=40), nullable=True),
         sa.Column("exit_price", sa.Numeric(24, 10), nullable=True),
@@ -94,6 +97,8 @@ def upgrade() -> None:
         sa.UniqueConstraint("shadow_trade_id", "tp_index", name="uq_shadow_trade_leg_tp"),
         sa.CheckConstraint("tp_index >= 1", name="ck_shadow_leg_tp_index"),
         sa.CheckConstraint("status IN ('pending','open','closed','cancelled')", name="ck_shadow_leg_status"),
+        sa.CheckConstraint("remaining_fraction >= 0 AND remaining_fraction <= 1", name="ck_shadow_leg_fraction"),
+        sa.CheckConstraint("(is_runner AND target_price IS NULL) OR NOT is_runner", name="ck_shadow_leg_runner_target"),
     )
     op.create_index("ix_shadow_legs_source_status", "shadow_trade_legs", ["source_id", "status"])
     op.create_index("ix_shadow_legs_signal", "shadow_trade_legs", ["signal_id"])
@@ -103,19 +108,13 @@ def upgrade() -> None:
         CREATE VIEW provider_benchmark_performance AS
         WITH eligible_closed AS (
             SELECT
-                t.id,
-                t.source_id,
-                t.closed_at,
-                t.quality_r_multiple,
-                t.benchmark_pnl_usd,
+                t.id,t.signal_id,t.source_id,t.closed_at,t.quality_r_multiple,t.benchmark_pnl_usd,
                 SUM(t.benchmark_pnl_usd) OVER (
                     PARTITION BY t.source_id ORDER BY t.closed_at,t.id
                     ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
                 ) AS cumulative_pnl_usd
             FROM shadow_trades t
-            WHERE t.status='closed'
-              AND t.closed_at IS NOT NULL
-              AND t.score_eligible
+            WHERE t.status='closed' AND t.closed_at IS NOT NULL AND t.score_eligible
               AND t.benchmark_model='fixed_1000_10_per_tp_fair_v2'
         ), equity AS (
             SELECT e.*,
@@ -127,7 +126,8 @@ def upgrade() -> None:
         ), agg AS (
             SELECT
                 source_id,
-                COUNT(*)::integer AS closed_trades,
+                COUNT(*)::integer AS closed_actions,
+                COUNT(DISTINCT signal_id)::integer AS closed_signals,
                 COUNT(*) FILTER (WHERE quality_r_multiple>0)::integer AS wins,
                 COUNT(*) FILTER (WHERE quality_r_multiple<0)::integer AS losses,
                 COUNT(DISTINCT closed_at::date)::integer AS trading_days,
@@ -148,14 +148,11 @@ def upgrade() -> None:
                    COUNT(*) FILTER (WHERE day_pnl<0)::integer AS losing_days
             FROM daily GROUP BY source_id
         ), recent AS (
-            SELECT source_id,
-                   COUNT(*)::integer AS recent_closed_trades,
+            SELECT source_id,COUNT(*)::integer AS recent_closed_actions,
                    COALESCE(SUM(quality_r_multiple),0)::numeric(18,6) AS recent_total_r
-            FROM eligible_closed
-            WHERE closed_at >= now()-interval '30 days'
-            GROUP BY source_id
+            FROM eligible_closed WHERE closed_at>=now()-interval '30 days' GROUP BY source_id
         ), excluded AS (
-            SELECT source_id,COUNT(*)::integer AS excluded_closed_trades
+            SELECT source_id,COUNT(*)::integer AS excluded_closed_actions
             FROM shadow_trades
             WHERE status='closed' AND NOT score_eligible
               AND benchmark_model='fixed_1000_10_per_tp_fair_v2'
@@ -169,8 +166,11 @@ def upgrade() -> None:
             COALESCE(p.research_state,'learning') AS research_state,
             COALESCE(p.interpretation_readiness,0)::numeric(6,5) AS interpretation_readiness,
             p.duplicate_of_source_id,
-            COALESCE(a.closed_trades,0) AS closed_trades,
-            COALESCE(x.excluded_closed_trades,0) AS excluded_closed_trades,
+            COALESCE(a.closed_actions,0) AS closed_trades,
+            COALESCE(a.closed_actions,0) AS closed_actions,
+            COALESCE(a.closed_signals,0) AS closed_signals,
+            COALESCE(x.excluded_closed_actions,0) AS excluded_closed_trades,
+            COALESCE(x.excluded_closed_actions,0) AS excluded_closed_actions,
             COALESCE(a.wins,0) AS wins,
             COALESCE(a.losses,0) AS losses,
             COALESCE(a.trading_days,0) AS trading_days,
@@ -178,11 +178,9 @@ def upgrade() -> None:
             COALESCE(d.profitable_days,0) AS profitable_days,
             COALESCE(d.losing_days,0) AS losing_days,
             CASE WHEN COALESCE(a.trading_days,0)>0
-                 THEN ROUND((COALESCE(d.profitable_days,0)::numeric/a.trading_days)*100,2)
-                 ELSE 0 END AS profitable_day_rate_percent,
-            CASE WHEN COALESCE(a.closed_trades,0)>0
-                 THEN ROUND((COALESCE(a.wins,0)::numeric/a.closed_trades)*100,2)
-                 ELSE 0 END AS win_rate_percent,
+                 THEN ROUND((COALESCE(d.profitable_days,0)::numeric/a.trading_days)*100,2) ELSE 0 END AS profitable_day_rate_percent,
+            CASE WHEN COALESCE(a.closed_actions,0)>0
+                 THEN ROUND((COALESCE(a.wins,0)::numeric/a.closed_actions)*100,2) ELSE 0 END AS win_rate_percent,
             COALESCE(a.total_r,0)::numeric(18,6) AS total_r,
             COALESCE(a.average_r,0)::numeric(18,6) AS average_r,
             CASE WHEN COALESCE(a.gross_negative_r,0)=0 AND COALESCE(a.gross_positive_r,0)>0 THEN 999
@@ -192,25 +190,25 @@ def upgrade() -> None:
             (1000+COALESCE(a.benchmark_pnl_usd,0))::numeric(18,2) AS benchmark_balance_usd,
             ROUND((COALESCE(a.benchmark_pnl_usd,0)/1000)*100,2) AS benchmark_return_percent,
             COALESCE(a.max_drawdown_usd,0)::numeric(18,2) AS max_drawdown_usd,
-            COALESCE(r.recent_closed_trades,0) AS recent_closed_trades,
+            COALESCE(r.recent_closed_actions,0) AS recent_closed_trades,
+            COALESCE(r.recent_closed_actions,0) AS recent_closed_actions,
             COALESCE(r.recent_total_r,0)::numeric(18,6) AS recent_total_r,
             CASE
                 WHEN p.duplicate_of_source_id IS NOT NULL THEN 'DUPLICATE_REVIEW'
                 WHEN COALESCE(p.interpretation_readiness,0)<0.90 THEN 'LEARNING'
                 WHEN COALESCE(p.style,'unknown')='scalper'
-                     AND (COALESCE(a.closed_trades,0)<100 OR COALESCE(a.trading_days,0)<20 OR COALESCE(a.trading_weeks,0)<4)
+                     AND (COALESCE(a.closed_actions,0)<100 OR COALESCE(a.trading_days,0)<20 OR COALESCE(a.trading_weeks,0)<4)
                      THEN 'INSUFFICIENT_EVIDENCE'
                 WHEN COALESCE(p.style,'unknown')='intraday'
-                     AND (COALESCE(a.closed_trades,0)<60 OR COALESCE(a.trading_days,0)<30 OR COALESCE(a.trading_weeks,0)<6)
+                     AND (COALESCE(a.closed_actions,0)<60 OR COALESCE(a.trading_days,0)<30 OR COALESCE(a.trading_weeks,0)<6)
                      THEN 'INSUFFICIENT_EVIDENCE'
                 WHEN COALESCE(p.style,'unknown')='swing_or_sparse'
-                     AND (COALESCE(a.closed_trades,0)<30 OR COALESCE(a.trading_days,0)<45 OR COALESCE(a.trading_weeks,0)<8)
+                     AND (COALESCE(a.closed_actions,0)<30 OR COALESCE(a.trading_days,0)<45 OR COALESCE(a.trading_weeks,0)<8)
                      THEN 'INSUFFICIENT_EVIDENCE'
                 WHEN COALESCE(p.style,'unknown') IN ('mixed','unknown')
-                     AND (COALESCE(a.closed_trades,0)<60 OR COALESCE(a.trading_days,0)<30 OR COALESCE(a.trading_weeks,0)<6)
+                     AND (COALESCE(a.closed_actions,0)<60 OR COALESCE(a.trading_days,0)<30 OR COALESCE(a.trading_weeks,0)<6)
                      THEN 'INSUFFICIENT_EVIDENCE'
-                WHEN COALESCE(r.recent_closed_trades,0)>=10 AND COALESCE(r.recent_total_r,0)<0
-                     THEN 'RECENT_DETERIORATION'
+                WHEN COALESCE(r.recent_closed_actions,0)>=10 AND COALESCE(r.recent_total_r,0)<0 THEN 'RECENT_DETERIORATION'
                 WHEN COALESCE(a.total_r,0)>0
                      AND (CASE WHEN COALESCE(a.gross_negative_r,0)=0 AND COALESCE(a.gross_positive_r,0)>0 THEN 999
                                WHEN COALESCE(a.gross_negative_r,0)=0 THEN 0
@@ -218,7 +216,7 @@ def upgrade() -> None:
                      AND COALESCE(a.average_r,0)>0
                      AND COALESCE(a.max_drawdown_usd,0)<=150
                      AND COALESCE(p.interpretation_readiness,0)>=0.95
-                     AND COALESCE(d.profitable_days,0) >= COALESCE(d.losing_days,0)
+                     AND COALESCE(d.profitable_days,0)>=COALESCE(d.losing_days,0)
                      THEN 'QUALIFIED_EVIDENCE'
                 WHEN COALESCE(a.total_r,0)>0 THEN 'PROMISING'
                 ELSE 'NOT_PROVEN'
@@ -237,13 +235,9 @@ def upgrade() -> None:
         """
         CREATE VIEW provider_benchmark_segments AS
         SELECT
-            t.source_id,
-            COALESCE(s.chat_title,s.source_alias) AS title,
-            t.provider_style AS style,
-            t.side,
-            t.session_bucket,
-            t.weekday_iso,
-            l.tp_index,
+            t.source_id,COALESCE(s.chat_title,s.source_alias) AS title,t.provider_style AS style,
+            t.side,t.session_bucket,t.weekday_iso,t.entry_index,t.entry_order_type,
+            l.tp_index,l.is_runner,
             COUNT(*) FILTER (WHERE l.status='closed')::integer AS closed_legs,
             COUNT(*) FILTER (WHERE l.status='closed' AND l.quality_r>0)::integer AS winning_legs,
             ROUND(COALESCE(AVG(l.quality_r) FILTER (WHERE l.status='closed'),0),6) AS average_r,
@@ -261,9 +255,9 @@ def upgrade() -> None:
         FROM shadow_trade_legs l
         JOIN shadow_trades t ON t.id=l.shadow_trade_id
         JOIN sources s ON s.id=t.source_id
-        WHERE t.score_eligible
-          AND t.benchmark_model='fixed_1000_10_per_tp_fair_v2'
-        GROUP BY t.source_id,COALESCE(s.chat_title,s.source_alias),t.provider_style,t.side,t.session_bucket,t.weekday_iso,l.tp_index
+        WHERE t.score_eligible AND t.benchmark_model='fixed_1000_10_per_tp_fair_v2'
+        GROUP BY t.source_id,COALESCE(s.chat_title,s.source_alias),t.provider_style,t.side,
+                 t.session_bucket,t.weekday_iso,t.entry_index,t.entry_order_type,l.tp_index,l.is_runner
         """
     )
 
@@ -273,20 +267,19 @@ def downgrade() -> None:
     op.execute("DROP VIEW IF EXISTS provider_benchmark_performance")
     op.drop_table("shadow_trade_legs")
     for constraint in (
-        "ck_shadow_fair_target_count",
-        "ck_shadow_fair_quote_mode",
-        "ck_shadow_fair_weekday",
-        "ck_shadow_fair_readiness",
-        "ck_shadow_fair_style",
+        "ck_shadow_fair_target_count","ck_shadow_fair_quote_mode","ck_shadow_fair_weekday",
+        "ck_shadow_fair_readiness","ck_shadow_fair_style","ck_shadow_entry_index",
     ):
         op.drop_constraint(constraint, "shadow_trades", type_="check")
+    op.drop_constraint("uq_shadow_signal_entry", "shadow_trades", type_="unique")
     for column in (
         "target_count","entry_spread","entry_delay_ms","score_exclusion_reason","score_eligible",
-        "quote_mode","weekday_iso","session_bucket","signal_posted_at","interpretation_readiness_at_entry","provider_style",
+        "quote_mode","weekday_iso","session_bucket","signal_posted_at","interpretation_readiness_at_entry",
+        "provider_style","entry_order_type","entry_index",
     ):
         op.drop_column("shadow_trades", column)
     op.drop_constraint("ck_shadow_benchmark_model", "shadow_trades", type_="check")
     op.alter_column("shadow_trades", "benchmark_model", server_default="fixed_1000_10_per_tp_v1")
     op.execute("UPDATE shadow_trades SET benchmark_model='fixed_1000_10_per_tp_v1'")
     op.create_check_constraint("ck_shadow_benchmark_model", "shadow_trades", "benchmark_model IN ('fixed_1000_10_per_tp_v1')")
-    from services.api.migrations.versions import _dummy  # pragma: no cover
+    op.create_unique_constraint("shadow_trades_signal_id_key", "shadow_trades", ["signal_id"])
