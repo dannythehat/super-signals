@@ -48,11 +48,6 @@ type LivePosition = {
   profit: number | null;
 };
 
-type LiveDashboard = {
-  account: { balance: number; currency: string } | null;
-  open_positions: LivePosition[];
-};
-
 type SignalProjection = {
   current: number | null;
   currentPercent: number | null;
@@ -70,6 +65,8 @@ type FilterKey = 'all' | 'open' | 'pending' | 'closed' | 'won' | 'lost' | 'break
 type Props = {
   apiBaseUrl: string;
   currency: string;
+  balance: number | null;
+  livePositions: LivePosition[];
 };
 
 const TRADE_MARKERS = ['🟣', '🟪', '🔷', '🟧', '🔶', '🔹', '🔸', '💠'] as const;
@@ -178,10 +175,9 @@ function projectedAt(position: LivePosition, target: number | null, balance: num
   return null;
 }
 
-function buildProjection(signalId: string, dashboard: LiveDashboard | null): SignalProjection | null {
-  const positions = dashboard?.open_positions?.filter((position) => position.signal_id === signalId) ?? [];
+function buildProjection(signalId: string, balance: number | null, livePositions: LivePosition[]): SignalProjection | null {
+  const positions = livePositions.filter((position) => position.signal_id === signalId);
   if (positions.length === 0) return null;
-  const balance = dashboard?.account && Number.isFinite(dashboard.account.balance) ? dashboard.account.balance : null;
   const profits = positions.map((position) => position.profit).filter((value): value is number => value !== null && Number.isFinite(value));
   const current = profits.length > 0 ? profits.reduce((sum, value) => sum + value, 0) : null;
   const tpValues = positions.map((position) => projectedAt(position, position.take_profit, balance, 'tp'));
@@ -203,10 +199,9 @@ function buildProjection(signalId: string, dashboard: LiveDashboard | null): Sig
   };
 }
 
-export function TradeTimeline({ apiBaseUrl, currency }: Props) {
+export function TradeTimeline({ apiBaseUrl, currency, balance, livePositions }: Props) {
   const [data, setData] = useState<TimelineData | null>(null);
   const [liveState, setLiveState] = useState<LiveAccountState | null>(null);
-  const [liveDashboard, setLiveDashboard] = useState<LiveDashboard | null>(null);
   const [statusFilter, setStatusFilter] = useState<FilterKey>('all');
   const [sourceFilter, setSourceFilter] = useState('all');
   const [traderFilter, setTraderFilter] = useState('all');
@@ -220,18 +215,13 @@ export function TradeTimeline({ apiBaseUrl, currency }: Props) {
     try {
       const timezone = Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC';
       const query = new URLSearchParams({ timezone_name: timezone });
-      const [timelineResponse, liveResponse, dashboardResponse] = await Promise.all([
+      const [timelineResponse, liveResponse] = await Promise.all([
         fetch(`${apiBaseUrl}/account/mt5/dashboard/performance/timeline?limit=250`, {
           credentials: 'include',
           headers: { Accept: 'application/json' },
           cache: 'no-store',
         }),
         fetch(`${apiBaseUrl}/account/mt5/dashboard/today?${query.toString()}`, {
-          credentials: 'include',
-          headers: { Accept: 'application/json' },
-          cache: 'no-store',
-        }),
-        fetch(`${apiBaseUrl}/account/mt5/dashboard?${query.toString()}`, {
           credentials: 'include',
           headers: { Accept: 'application/json' },
           cache: 'no-store',
@@ -247,12 +237,6 @@ export function TradeTimeline({ apiBaseUrl, currency }: Props) {
         setLiveState({ open: state.open, pending: state.pending });
       } else {
         setLiveState(null);
-      }
-      if (dashboardResponse.ok) {
-        const dashboard = (await dashboardResponse.json()) as LiveDashboard;
-        setLiveDashboard(dashboard);
-      } else {
-        setLiveDashboard(null);
       }
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : 'Trade history is temporarily unavailable.');
@@ -339,7 +323,7 @@ export function TradeTimeline({ apiBaseUrl, currency }: Props) {
 
     {visibleTrades.length === 0 ? <div className="day33-empty"><strong>No trades yet</strong><span>Your Smart Signals trades will appear here.</span></div> : <div className="day33-trade-list">{visibleTrades.map((trade) => {
       const identity = publicTradeIdentity(trade.signal_id);
-      const projection = trade.status === 'open' ? buildProjection(trade.signal_id, liveDashboard) : null;
+      const projection = trade.status === 'open' ? buildProjection(trade.signal_id, balance, livePositions) : null;
       const displayedPnl = projection?.current ?? trade.cash_pnl;
       return <article className={`day33-trade-card day33-status--${trade.status_color}`} key={trade.signal_id}>
         <div className="day33-trade-reference" aria-label={`Trade ${identity.reference}`}><span aria-hidden="true">{identity.marker}</span><strong>{identity.reference}</strong><small>Trade ID</small></div>
