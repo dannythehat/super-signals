@@ -1,22 +1,14 @@
-"""Read-only Telegram dialog discovery plus controlled public research-channel joins."""
+"""Read-only Telegram dialog discovery and bounded Provider Lab sampling."""
 
 from __future__ import annotations
 
 import re
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from typing import Literal, Protocol
-from urllib.parse import urlparse
 
 from telethon import TelegramClient
-from telethon.errors import (
-    ChannelPrivateError,
-    UserAlreadyParticipantError,
-    UsernameInvalidError,
-    UsernameNotOccupiedError,
-)
 from telethon.sessions import StringSession
-from telethon.tl.functions.channels import JoinChannelRequest
-from telethon.utils import get_peer_id
 
 from app.telegram_gateway import TelegramSessionInvalidError
 
@@ -32,39 +24,26 @@ class TelegramSelectableDialog:
     kind: Literal["group", "channel"]
 
 
-def normalize_public_telegram_identifier(value: str) -> str:
-    """Return a public Telegram username and reject private/invite-link forms."""
+@dataclass(frozen=True, slots=True)
+class TelegramResearchMessage:
+    telegram_message_id: int
+    raw_text: str
+    posted_at: datetime
+    edited_at: datetime | None
 
-    raw = value.strip()
-    if not raw:
-        raise ValueError("Enter a public Telegram @username or t.me link.")
 
-    if raw.startswith("@"):
-        username = raw[1:]
-    else:
-        candidate = raw
-        if "://" not in candidate and candidate.lower().startswith(("t.me/", "telegram.me/")):
-            candidate = f"https://{candidate}"
+@dataclass(frozen=True, slots=True)
+class TelegramResearchDialog:
+    chat_id: int
+    title: str
+    kind: Literal["group", "channel"]
+    messages: tuple[TelegramResearchMessage, ...]
 
-        if "://" in candidate:
-            parsed = urlparse(candidate)
-            host = (parsed.hostname or "").lower()
-            if host not in {"t.me", "www.t.me", "telegram.me", "www.telegram.me"}:
-                raise ValueError("Only public t.me Telegram links can be imported.")
-            segments = [segment for segment in parsed.path.split("/") if segment]
-            if segments and segments[0].lower() == "s":
-                segments = segments[1:]
-            if len(segments) != 1:
-                raise ValueError("Use a public Telegram channel link, not a private invite link.")
-            username = segments[0]
-        else:
-            username = candidate
 
-    if username.startswith("+") or username.lower().startswith("joinchat"):
-        raise ValueError("Private Telegram invite links are not allowed in Provider Lab.")
-    if not re.fullmatch(r"[A-Za-z][A-Za-z0-9_]{3,31}", username):
-        raise ValueError("That does not look like a valid public Telegram username.")
-    return username
+_RESEARCH_TITLE_HINT = re.compile(
+    r"\b(?:xau(?:usd)?|gold|forex|fx|trade(?:r|rs|s|ing)?|signal(?:s)?|scalp(?:er|ing)?)\b",
+    re.IGNORECASE,
+)
 
 
 class TelegramSourceGateway(Protocol):
@@ -72,13 +51,20 @@ class TelegramSourceGateway(Protocol):
         self, session_string: str
     ) -> list[TelegramSelectableDialog]: ...
 
-    async def join_public_source(
-        self, session_string: str, identifier: str
-    ) -> TelegramSelectableDialog: ...
+    async def scan_joined_research_dialogs(
+        self,
+        session_string: str,
+        *,
+        history_limit: int = 30,
+    ) -> list[TelegramResearchDialog]: ...
 
 
 class TelethonTelegramSourceGateway:
-    """List selected dialogs and explicitly join public research channels only."""
+    """Read Telegram sources already visible to the connected private reader.
+
+    Provider Lab never joins, leaves, archives or mutes Telegram chats. It only samples
+    a bounded number of recent text messages from already joined likely trading dialogs.
+    """
 
     def __init__(self, api_id: int, api_hash: str) -> None:
         self._api_id = api_id
@@ -126,10 +112,13 @@ class TelethonTelegramSourceGateway:
             if client.is_connected():
                 await client.disconnect()
 
-    async def join_public_source(
-        self, session_string: str, identifier: str
-    ) -> TelegramSelectableDialog:
-        username = normalize_public_telegram_identifier(identifier)
+    async def scan_joined_research_dialogs(
+        self,
+        session_string: str,
+        *,
+        history_limit: int = 30,
+    ) -> list[TelegramResearchDialog]:
+        safe_limit = min(max(int(history_limit), 5), 100)
         client = self._client(session_string)
         try:
             await client.connect()
@@ -138,54 +127,65 @@ class TelethonTelegramSourceGateway:
                     "The stored Telegram session is no longer authorised."
                 )
 
-            entity = await client.get_entity(username)
-            option = self._entity_to_selectable_dialog(entity)
-            if option is None:
-                raise ValueError("That Telegram username is not a public group or channel.")
+            candidates: list[TelegramResearchDialog] = []
+            async for dialog in client.iter_dialogs():
+                option = self._to_selectable_dialog(dialog)
+                if option is None or _RESEARCH_TITLE_HINT.search(option.title) is None:
+                    continue
 
-            try:
-                await client(JoinChannelRequest(entity))
-            except UserAlreadyParticipantError:
-                pass
+                samples: list[TelegramResearchMessage] = []
+                entity = getattr(dialog, "entity", None)
+                if entity is None:
+                    continue
+                async for message in client.iter_messages(entity, limit=safe_limit):
+                    raw_text = str(getattr(message, "raw_text", "") or "").strip()
+                    if not raw_text:
+                        continue
+                    message_id = getattr(message, "id", None)
+                    if message_id is None:
+                        continue
+                    posted_at = self._utc_datetime(getattr(message, "date", None))
+                    edited_at = self._utc_datetime(getattr(message, "edit_date", None), optional=True)
+                    samples.append(
+                        TelegramResearchMessage(
+                            telegram_message_id=int(message_id),
+                            raw_text=raw_text,
+                            posted_at=posted_at,
+                            edited_at=edited_at,
+                        )
+                    )
 
-            # Resolve again after the join so the listener receives the canonical marked chat id.
-            entity = await client.get_entity(username)
-            option = self._entity_to_selectable_dialog(entity)
-            if option is None:
-                raise ValueError("That Telegram username is not a public group or channel.")
-            return option
+                candidates.append(
+                    TelegramResearchDialog(
+                        chat_id=option.chat_id,
+                        title=option.title,
+                        kind=option.kind,
+                        messages=tuple(samples),
+                    )
+                )
+
+            candidates.sort(key=lambda item: (item.title.casefold(), item.chat_id))
+            return candidates
         except TelegramSessionInvalidError:
-            raise
-        except (UsernameInvalidError, UsernameNotOccupiedError, ChannelPrivateError) as exc:
-            raise ValueError("That public Telegram channel could not be found or joined.") from exc
-        except ValueError:
             raise
         except Exception as exc:
             raise TelegramSourceGatewayError(
-                "Telegram could not join the public research channel."
+                "Telegram Provider Lab could not sample joined research channels."
             ) from exc
         finally:
             if client.is_connected():
                 await client.disconnect()
 
     @staticmethod
-    def _entity_to_selectable_dialog(entity: object) -> TelegramSelectableDialog | None:
-        title = str(getattr(entity, "title", "") or "").strip()
-        if not title:
-            return None
-        is_group = bool(getattr(entity, "megagroup", False))
-        is_channel = bool(getattr(entity, "broadcast", False))
-        if not is_group and not is_channel:
-            return None
-        return TelegramSelectableDialog(
-            chat_id=int(get_peer_id(entity)),
-            title=title,
-            kind="group" if is_group else "channel",
-        )
+    def _utc_datetime(value: object, *, optional: bool = False) -> datetime | None:
+        if not isinstance(value, datetime):
+            return None if optional else datetime.now(UTC)
+        if value.tzinfo is None:
+            return value.replace(tzinfo=UTC)
+        return value.astimezone(UTC)
 
     @staticmethod
     def _to_selectable_dialog(dialog: object) -> TelegramSelectableDialog | None:
-        # Explicitly reject user dialogs first. This includes private one-to-one chats and bots.
         if bool(getattr(dialog, "is_user", False)):
             return None
 
@@ -202,6 +202,5 @@ class TelethonTelegramSourceGateway:
         if not title:
             return None
 
-        # Supergroups can report as both group and channel. Present them as groups.
         kind: Literal["group", "channel"] = "group" if is_group else "channel"
         return TelegramSelectableDialog(chat_id=int(raw_id), title=title, kind=kind)
