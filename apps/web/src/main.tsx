@@ -19,6 +19,7 @@ ReactDOM.createRoot(document.getElementById('root')!).render(
 );
 
 const BUILD_CHECK_INTERVAL_MS = 30_000;
+const LIVE_ACCOUNT_SYNC_INTERVAL_MS = 5_000;
 let reloadStarted = false;
 
 function currentModuleScript(): string | null {
@@ -52,9 +53,21 @@ async function reloadForNewBuild(): Promise<void> {
   }
 }
 
+function requestCanonicalAccountSync(): void {
+  if (document.visibilityState !== 'visible') return;
+  window.dispatchEvent(new Event('super-signals-ledger-synced'));
+}
+
 void reloadForNewBuild();
 window.setInterval(() => void reloadForNewBuild(), BUILD_CHECK_INTERVAL_MS);
 window.addEventListener('focus', () => void reloadForNewBuild());
+
+// MobileDashboard listens for this event and rereads the canonical /dashboard
+// response. Keep the balance/equity/P&L snapshot moving on the same five-second
+// cadence used by the member website. No balance arithmetic lives in this pulse.
+window.setInterval(requestCanonicalAccountSync, LIVE_ACCOUNT_SYNC_INTERVAL_MS);
+window.addEventListener('focus', requestCanonicalAccountSync);
+document.addEventListener('visibilitychange', requestCanonicalAccountSync);
 
 if ('serviceWorker' in navigator) {
   window.addEventListener('load', () => {
