@@ -2,8 +2,8 @@
 
 A member may bind at most one Vantage demo account and one Vantage live account.
 Connecting a second environment never silently changes the active trading target.
-Switching the active environment is blocked while Smart Signals still has unfinished
-positions for that user so provider management cannot be routed to the wrong broker.
+Switching or replacing an account is blocked while Smart Signals still has unfinished
+positions that could otherwise be managed against the wrong broker account.
 """
 
 from __future__ import annotations
@@ -21,6 +21,7 @@ from app.mt5_connection_service import Mt5ConnectionError, Mt5ConnectionView
 from app.mt5_connection_service_day30 import Day30Mt5ConnectionService
 
 _ENVIRONMENTS = {"demo", "live"}
+_FINISHED_POSITION_STATUSES = {"closed", "skipped", "error"}
 
 
 @dataclass(frozen=True, slots=True)
@@ -84,6 +85,47 @@ def _active_environment(service: Day30Mt5ConnectionService, user_id: UUID) -> st
         ).scalar_one_or_none()
     normalized = str(value or "").lower()
     return normalized if normalized in _ENVIRONMENTS else None
+
+
+def _unfinished_position_count(
+    service: Day30Mt5ConnectionService,
+    user_id: UUID,
+) -> int:
+    with service._session_factory() as session:
+        return int(
+            session.execute(
+                text(
+                    """
+                    SELECT COUNT(*)
+                    FROM positions
+                    WHERE user_id=:user_id
+                      AND status NOT IN ('closed','skipped','error')
+                    """
+                ),
+                {"user_id": user_id},
+            ).scalar_one()
+        )
+
+
+def _guard_account_replacement(
+    service: Day30Mt5ConnectionService,
+    *,
+    user_id: UUID,
+    environment: str,
+    login: str,
+    server: str,
+) -> None:
+    existing = _load_environment_row(service, user_id, environment)
+    if existing is None:
+        return
+    same_account = (
+        str(existing["login"]) == login
+        and str(existing["server"]).strip().casefold() == server.strip().casefold()
+    )
+    if same_account:
+        return
+    if _unfinished_position_count(service, user_id):
+        raise Mt5ConnectionError("mt5_account_replace_open_positions")
 
 
 def get_dual_accounts(
@@ -154,25 +196,12 @@ def set_active_environment(
     if current == normalized:
         return get_dual_accounts(service, user_id)
 
-    with service._session_factory() as session:
-        unfinished = int(
-            session.execute(
-                text(
-                    """
-                    SELECT COUNT(*)
-                    FROM positions
-                    WHERE user_id=:user_id
-                      AND status NOT IN ('closed','skipped','error')
-                    """
-                ),
-                {"user_id": user_id},
-            ).scalar_one()
-        )
-        if unfinished:
-            raise Mt5ConnectionError("mt5_active_switch_open_positions")
+    if _unfinished_position_count(service, user_id):
+        raise Mt5ConnectionError("mt5_active_switch_open_positions")
 
-        _ensure_control(service, user_id)
-        now = datetime.now(UTC)
+    _ensure_control(service, user_id)
+    now = datetime.now(UTC)
+    with service._session_factory() as session:
         session.execute(
             text(
                 """
@@ -193,7 +222,7 @@ def set_active_environment(
                 payload={
                     "from": current,
                     "to": normalized,
-                    "open_positions_blocked": True,
+                    "unfinished_positions_checked": True,
                     "trade_action_created": False,
                 },
             )
@@ -361,6 +390,13 @@ async def connect_demo(
     server: str,
 ) -> Mt5ConnectionView:
     normalized_login, normalized_server = _validate_demo(login, password, server)
+    _guard_account_replacement(
+        service,
+        user_id=user_id,
+        environment="demo",
+        login=normalized_login,
+        server=normalized_server,
+    )
     return await _provision_and_store(
         service,
         user_id=user_id,
@@ -417,7 +453,6 @@ def _approve_live(
             or str(previous["server"]).casefold() != server.casefold()
         )
         if changed:
-            # Replacing a Real account must never revoke the member's Paper account.
             session.execute(
                 text(
                     """
@@ -446,6 +481,13 @@ async def connect_live(
     normalized_login, normalized_server = service.validate_live_vantage_account(login, server)
     if not password or len(password) > 256:
         raise Mt5ConnectionError("mt5_password_invalid")
+    _guard_account_replacement(
+        service,
+        user_id=user_id,
+        environment="live",
+        login=normalized_login,
+        server=normalized_server,
+    )
     _approve_live(
         service,
         user_id=user_id,
