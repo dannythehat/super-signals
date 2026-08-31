@@ -32,6 +32,25 @@ def _settings() -> tuple[str, str, str, str]:
     )
 
 
+def _safe_resend_error(response: httpx.Response) -> tuple[str, str]:
+    """Return Resend's documented error type/message without logging request secrets."""
+
+    error_type = "unknown"
+    message = ""
+    try:
+        body = response.json()
+        if isinstance(body, dict):
+            raw_type = body.get("name") or body.get("type") or body.get("error")
+            raw_message = body.get("message")
+            if isinstance(raw_type, str) and raw_type.strip():
+                error_type = raw_type.strip()[:80]
+            if isinstance(raw_message, str) and raw_message.strip():
+                message = raw_message.strip()[:500]
+    except Exception:
+        pass
+    return error_type, message
+
+
 def _send(*, to: str, subject: str, html_body: str, text_body: str) -> EmailDeliveryResult:
     api_key, sender, _admin, _public_url = _settings()
     if not api_key or not sender or not to.strip():
@@ -51,9 +70,17 @@ def _send(*, to: str, subject: str, html_body: str, text_body: str) -> EmailDeli
             },
             timeout=8.0,
         )
-        response.raise_for_status()
+        if response.is_error:
+            error_type, message = _safe_resend_error(response)
+            logger.error(
+                "Resend email rejected status=%s type=%s message=%s",
+                response.status_code,
+                error_type,
+                message or "(no message)",
+            )
+            return EmailDeliveryResult(False, f"resend_{error_type.lower()}")
     except Exception:
-        logger.exception("Member email delivery failed")
+        logger.exception("Member email delivery failed before Resend returned a response")
         return EmailDeliveryResult(False, "email_delivery_failed")
     return EmailDeliveryResult(True)
 
