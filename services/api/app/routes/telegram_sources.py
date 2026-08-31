@@ -1,4 +1,4 @@
-"""Administrator Telegram source discovery, sharing and Provider Lab controls."""
+"""Administrator Telegram source discovery, sharing and Day 11 state controls."""
 
 from __future__ import annotations
 
@@ -12,10 +12,6 @@ from pydantic import BaseModel
 from app.access_control import DbSession, require_permission
 from app.telegram_crypto import SessionDecryptionError
 from app.telegram_gateway import TelegramSessionInvalidError
-from app.telegram_provider_import import (
-    PublicProviderImportService,
-    get_public_provider_import_service,
-)
 from app.telegram_source_gateway import TelegramSourceGatewayError
 from app.telegram_source_service import (
     OwnerSourceAlertView,
@@ -45,10 +41,6 @@ OwnerIdentity = Annotated[
 
 class TelegramSourceSelectionRequest(BaseModel):
     chat_id: int
-
-
-class PublicProviderImportRequest(BaseModel):
-    identifier: str
 
 
 class TelegramSelectableSourceResponse(BaseModel):
@@ -119,26 +111,9 @@ def provide_telegram_source_service() -> TelegramSourceService:
         ) from exc
 
 
-def provide_public_provider_import_service() -> PublicProviderImportService:
-    try:
-        return get_public_provider_import_service()
-    except TelegramSourceConfigurationError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail={
-                "code": "telegram_not_configured",
-                "message": "Telegram Provider Lab is not configured on this server.",
-            },
-        ) from exc
-
-
 TelegramSources = Annotated[
     TelegramSourceService,
     Depends(provide_telegram_source_service),
-]
-PublicProviderImports = Annotated[
-    PublicProviderImportService,
-    Depends(provide_public_provider_import_service),
 ]
 
 
@@ -219,7 +194,7 @@ def _translate_error(exc: Exception) -> HTTPException:
             status_code=status.HTTP_502_BAD_GATEWAY,
             detail={
                 "code": "telegram_unavailable",
-                "message": str(exc) or "Telegram groups and channels could not be reached.",
+                "message": "Telegram groups and channels could not be listed.",
             },
         )
     return HTTPException(
@@ -306,34 +281,6 @@ async def list_available_sources(
     response.headers["Cache-Control"] = "no-store"
     response.headers["Pragma"] = "no-cache"
     return [_response(item) for item in items]
-
-
-@router.post(
-    "/accounts/{account_id}/import-public",
-    response_model=TelegramSelectableSourceResponse,
-    response_model_exclude_defaults=True,
-    status_code=status.HTTP_201_CREATED,
-)
-async def import_public_provider(
-    account_id: UUID,
-    body: PublicProviderImportRequest,
-    response: Response,
-    session: DbSession,
-    identity: AdminIdentity,
-    service: PublicProviderImports,
-) -> TelegramSelectableSourceResponse:
-    try:
-        item = await service.import_public_source(
-            session,
-            actor=identity,
-            account_id=account_id,
-            identifier=body.identifier,
-        )
-    except Exception as exc:
-        raise _translate_error(exc) from exc
-    response.headers["Cache-Control"] = "no-store"
-    response.headers["Pragma"] = "no-cache"
-    return _response(item)
 
 
 @router.post(
