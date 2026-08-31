@@ -2,6 +2,7 @@ import React from 'react';
 import ReactDOM from 'react-dom/client';
 
 import { App } from './App';
+import { installApiFetchGuard } from './apiFetchGuard';
 import './styles.css';
 import './navigation.css';
 import './workspace-enhancements.css';
@@ -11,6 +12,10 @@ import './dashboard-day32.css';
 import './owner-manual-close.css';
 import './settings-day32.css';
 import './trade-timeline-day33.css';
+
+// Install before React mounts so every JSON API read gets the same Render-transition
+// protection. Mutating requests are never retried by the guard.
+installApiFetchGuard();
 
 ReactDOM.createRoot(document.getElementById('root')!).render(
   <React.StrictMode>
