@@ -62,9 +62,9 @@ def test_paper_run_origin_is_fixed_to_accepted_clean_start(monkeypatch: pytest.M
 
     epoch = active_paper_epoch(OWNER)
     assert epoch is not None
-    assert epoch.started_at == datetime(2026, 8, 30, 11, 18, tzinfo=UTC)
+    assert epoch.started_at == datetime(2026, 8, 30, 21, 0, tzinfo=UTC)
     assert epoch.started_at == PAPER_RUN_STARTED_AT
-    assert epoch.baseline_balance == Decimal("1500")
+    assert epoch.baseline_balance == Decimal("1517.23")
     assert epoch.baseline_balance == PAPER_RUN_BASELINE_BALANCE
     assert active_paper_epoch(OTHER) is None
 
@@ -98,7 +98,7 @@ def test_origin_day_all_windows_accumulate_from_same_permanent_start(
 ) -> None:
     monkeypatch.setenv("SUPER_SIGNALS_DAY28_OWNER_ID", str(OWNER))
     service = _PerformanceHarness()
-    now = datetime(2026, 8, 30, 18, 0, tzinfo=UTC)
+    now = datetime(2026, 8, 31, 6, 0, tzinfo=UTC)
 
     windows = service.read_windows(OWNER, now=now)
 
@@ -201,7 +201,7 @@ async def test_dashboard_owner_demo_uses_canonical_trading_balance(
         assert user_id == OWNER
         assert broker_balance == 812.0
         assert now is None
-        return Decimal("1324.29")
+        return Decimal("1531.78")
 
     monkeypatch.setattr(Day32DashboardService, "read", fake_base_read)
     monkeypatch.setattr(
@@ -215,9 +215,9 @@ async def test_dashboard_owner_demo_uses_canonical_trading_balance(
     result = await service.read(OWNER)
 
     assert result.account is not None
-    assert result.account.balance == 1324.29
-    assert result.account.equity == pytest.approx(1321.79)
-    assert result.account.free_margin == pytest.approx(1221.79)
+    assert result.account.balance == 1531.78
+    assert result.account.equity == pytest.approx(1529.28)
+    assert result.account.free_margin == pytest.approx(1429.28)
     assert result.account.margin == 100.0
     assert result.open_profit == -2.5
 
@@ -236,7 +236,7 @@ def test_today_session_starts_at_permanent_epoch_on_origin_day(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setenv("SUPER_SIGNALS_DAY28_OWNER_ID", str(OWNER))
-    day_start = datetime(2026, 8, 29, 21, 0, tzinfo=UTC)
+    day_start = datetime(2026, 8, 30, 21, 0, tzinfo=UTC)
     day_end = day_start + timedelta(days=1)
 
     monkeypatch.setattr(
