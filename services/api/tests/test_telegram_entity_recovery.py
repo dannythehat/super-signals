@@ -59,13 +59,19 @@ async def test_non_numeric_entity_error_is_not_hidden() -> None:
 
 
 @pytest.mark.asyncio
-async def test_unknown_numeric_channel_still_fails_closed() -> None:
+async def test_removed_numeric_channel_isolated_without_repeat_dialog_scans() -> None:
     client = _Client(
         [SimpleNamespace(id=-100123, input_entity=object())],
         numeric_error="missing channel",
     )
-    with pytest.raises(ValueError, match="missing channel"):
-        await read_messages_with_entity_recovery(client, -1002176701424)
+
+    first = await read_messages_with_entity_recovery(client, -1002176701424)
+    second = await read_messages_with_entity_recovery(client, -1002176701424)
+
+    assert first == []
+    assert second == []
+    assert len(client.calls) == 1
+    assert client.dialog_calls == 1
 
 
 @pytest.mark.asyncio
