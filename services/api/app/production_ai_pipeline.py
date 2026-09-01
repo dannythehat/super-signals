@@ -45,6 +45,42 @@ class ProductionAiMessagePipeline(CanonicalAiMessagePipeline):
     """Single production AI/semantic pipeline with no legacy trade-parser fallback."""
 
     @staticmethod
+    def _load_revision(
+        session,
+        *,
+        source_id,
+        telegram_message_id: int,
+        revision_index: int,
+    ):
+        """Load testing/live execution sources and isolated Provider Lab shadow sources."""
+        return session.execute(
+            text(
+                """
+                SELECT
+                    m.id AS message_id,
+                    CASE WHEN :revision_index = 0 THEN m.raw_text ELSE mr.raw_text END AS raw_text,
+                    CASE WHEN :revision_index = 0 THEN m.raw_payload ELSE mr.raw_payload END AS raw_payload,
+                    s.status AS source_status
+                FROM messages AS m
+                JOIN sources AS s ON s.id = m.source_id
+                LEFT JOIN message_revisions AS mr
+                  ON mr.message_id = m.id
+                 AND mr.revision_index = :revision_index
+                WHERE m.source_id = :source_id
+                  AND m.telegram_message_id = :telegram_message_id
+                  AND m.deleted_at IS NULL
+                  AND s.status IN ('testing', 'shadow', 'live')
+                  AND (:revision_index = 0 OR mr.revision_index IS NOT NULL)
+                """
+            ),
+            {
+                "source_id": source_id,
+                "telegram_message_id": telegram_message_id,
+                "revision_index": revision_index,
+            },
+        ).mappings().first()
+
+    @staticmethod
     def _existing_decision(session, message_id, revision_index: int):
         """Return the exact durable decision for one Telegram revision, if present."""
         return session.execute(
