@@ -185,14 +185,24 @@ def test_four_private_readers_and_two_admins_share_selected_sources(day10_client
 
     owner_shared = client.get("/admin/telegram/sources/shared")
     assert owner_shared.status_code == 200
-    assert owner_shared.json() == [
-        {
-            "source_id": owner_source_id,
-            "chat_id": -100111,
-            "title": "Owner Gold Signals",
-            "status": "paused",
-        }
-    ]
+    owner_shared_rows = owner_shared.json()
+    assert len(owner_shared_rows) == 1
+    owner_shared_row = owner_shared_rows[0]
+    assert {
+        key: owner_shared_row[key]
+        for key in ("source_id", "chat_id", "title", "status")
+    } == {
+        "source_id": owner_source_id,
+        "chat_id": -100111,
+        "title": "Owner Gold Signals",
+        "status": "paused",
+    }
+    assert owner_shared_row["shadow_total"] == 0
+    assert owner_shared_row["shadow_open"] == 0
+    assert owner_shared_row["shadow_closed"] == 0
+    assert owner_shared_row["shadow_wins"] == 0
+    assert owner_shared_row["shadow_losses"] == 0
+    assert owner_shared_row["shadow_return_percent"] == "0"
 
     assert client.post("/auth/logout").status_code == 204
     _login(client, "friend@example.com", "friend password 123")
