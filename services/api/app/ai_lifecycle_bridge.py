@@ -248,6 +248,24 @@ class AiLifecycleBridge:
         if len(active) == 1:
             return active[0], "active_broker_unique"
         if len(active) > 1:
+            # Provider TP-management posts carry stronger trade context than a bare
+            # no-reply management command. Let the hardened standalone linker use
+            # its unique/recent rules, but only accept a signal that is also in the
+            # broker-active set. This preserves fail-closed ambiguity handling while
+            # allowing updates like "TP1 hit, SL back to entry" to reach the right
+            # currently exposed trade.
+            raw_upper = str(row["raw_text"] or "").upper()
+            has_named_tp_context = any(
+                f"TP{index}" in raw_upper or f"TP {index}" in raw_upper
+                for index in range(1, 10)
+            )
+            if has_named_tp_context:
+                candidate, method, _reason = StandaloneLifecycleLinkerV2._resolve_candidate(
+                    session, row
+                )
+                active_ids = {item["id"] for item in active}
+                if candidate is not None and candidate["id"] in active_ids:
+                    return candidate, method or "standalone_active_context"
             return None, "active_trade_target_ambiguous"
 
         candidate, method, reason = StandaloneLifecycleLinkerV2._resolve_candidate(session, row)
