@@ -22,7 +22,6 @@ from app.active_account_member_routing import (
 from app.execution_dispatch_canonical import CanonicalExecutionDispatcher
 from app.graceful_market_targets import GracefulCaptureReliableMemberTradingExecutionService
 from app.metaapi_margin_gateway import MetaApiMarginGateway
-from app.metaapi_read_gateway import MetaApiReadGateway
 from app.metaapi_trade_gateway import MetaApiTradeGateway
 from app.mt5_crypto import MetaApiTokenCipher
 from app.paper_resilient_read_gateway import PaperResilientMetaApiReadGateway
@@ -73,7 +72,7 @@ def build_canonical_execution_router(
     try:
         cipher = MetaApiTokenCipher(broker_keys)
         owner_read = PaperResilientMetaApiReadGateway()
-        member_read = MetaApiReadGateway()
+        member_read = PaperResilientMetaApiReadGateway()
         trade = MetaApiTradeGateway()
         margin = MetaApiMarginGateway()
 

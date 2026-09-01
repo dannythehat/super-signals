@@ -35,6 +35,8 @@ _TRANSIENT_READ_OR_ROUTE_ERRORS = {
     "metaapi_timeout",
     "metaapi_unreachable",
     "metaapi_temporarily_unavailable",
+    "price_stale",
+    "price_unavailable",
 }
 _MAX_CAPTURE_ATTEMPTS = 4
 _RETRY_DELAY_SECONDS = 0.5
