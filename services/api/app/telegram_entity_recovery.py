@@ -18,7 +18,24 @@ from typing import Any
 logger = logging.getLogger(__name__)
 
 _COOLDOWN_SECONDS = 300.0
+_TRANSIENT_HISTORY_COOLDOWN_SECONDS = 30.0
 _TELETHON_CHANNEL_MARK = 1_000_000_000_000
+
+# A cold Telethon StringSession can legitimately know a numeric channel id without
+# knowing the access hash needed for a history read. Only those entity-resolution
+# failures should trigger the expensive dialog scan. Telegram RPC outages can also end
+# as ValueError("Request was unsuccessful N time(s)"); treating those as a missing
+# entity causes every source recovery task to hammer GetDialogs while Telegram is down.
+_ENTITY_RESOLUTION_ERROR_MARKERS = (
+    "cannot find any entity corresponding",
+    "could not find the input entity",
+    "cold entity cache",
+    "missing channel",
+)
+_TRANSIENT_HISTORY_ERROR_MARKERS = (
+    "request was unsuccessful",
+    "telegram is having internal issues",
+)
 
 
 def _canonical_channel_id(value: Any) -> int | None:
@@ -34,6 +51,27 @@ def _canonical_channel_id(value: Any) -> int | None:
     return parsed
 
 
+def _matches_error(exc: BaseException, markers: tuple[str, ...]) -> bool:
+    message = str(exc).casefold()
+    return any(marker in message for marker in markers)
+
+
+def _history_outage_active(client: Any) -> bool:
+    raw = getattr(client, "_super_signals_history_unavailable_until", 0.0)
+    try:
+        return float(raw) > time.monotonic()
+    except (TypeError, ValueError):
+        return False
+
+
+def _defer_history_after_transient_error(client: Any) -> None:
+    setattr(
+        client,
+        "_super_signals_history_unavailable_until",
+        time.monotonic() + _TRANSIENT_HISTORY_COOLDOWN_SECONDS,
+    )
+
+
 async def read_messages_with_entity_recovery(
     client: Any,
     entity: Any,
@@ -42,16 +80,32 @@ async def read_messages_with_entity_recovery(
 ) -> Any:
     """Read Telegram history, resolving one cold numeric channel through dialogs.
 
-    Only a ValueError for an integer channel id triggers recovery. Other failures keep
-    their normal Telethon semantics. A missing entity is cached briefly on the client so
-    repeated reconciliation sweeps do not hammer the dialog list or flood production
-    logs. During that cooldown the history-recovery call behaves as an empty bounded
-    catch-up; live Telegram push delivery remains untouched.
+    A short client-wide cooldown is used when Telegram itself is returning transient
+    internal-history failures. Live Telegram push delivery remains registered throughout;
+    only bounded history catch-up pauses, preventing recovery sweeps from amplifying an
+    upstream outage with repeated GetHistory/GetDialogs calls.
+
+    Numeric-channel entity-resolution failures still get one dialog-based recovery. A
+    genuinely missing entity is then cached per source for five minutes.
     """
+    if _history_outage_active(client):
+        return []
+
     try:
         return await client.get_messages(entity, *args, **kwargs)
     except ValueError as exc:
-        if not isinstance(entity, int):
+        if _matches_error(exc, _TRANSIENT_HISTORY_ERROR_MARKERS):
+            _defer_history_after_transient_error(client)
+            logger.warning(
+                "Telegram history temporarily unavailable; deferring recovery for %.0fs",
+                _TRANSIENT_HISTORY_COOLDOWN_SECONDS,
+            )
+            return []
+
+        if not isinstance(entity, int) or not _matches_error(
+            exc,
+            _ENTITY_RESOLUTION_ERROR_MARKERS,
+        ):
             raise
 
         target = int(entity)
@@ -81,7 +135,18 @@ async def read_messages_with_entity_recovery(
 
             missing_until.pop(target, None)
             logger.info("Recovered Telegram input entity for history reconciliation")
-            return await client.get_messages(input_entity, *args, **kwargs)
+            try:
+                return await client.get_messages(input_entity, *args, **kwargs)
+            except ValueError as retry_exc:
+                if _matches_error(retry_exc, _TRANSIENT_HISTORY_ERROR_MARKERS):
+                    _defer_history_after_transient_error(client)
+                    logger.warning(
+                        "Telegram history temporarily unavailable after entity recovery; "
+                        "deferring recovery for %.0fs",
+                        _TRANSIENT_HISTORY_COOLDOWN_SECONDS,
+                    )
+                    return []
+                raise
 
         missing_until[target] = time.monotonic() + _COOLDOWN_SECONDS
         raise exc
