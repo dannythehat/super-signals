@@ -85,8 +85,10 @@ async def read_messages_with_entity_recovery(
     only bounded history catch-up pauses, preventing recovery sweeps from amplifying an
     upstream outage with repeated GetHistory/GetDialogs calls.
 
-    Numeric-channel entity-resolution failures still get one dialog-based recovery. A
-    genuinely missing entity is then cached per source for five minutes.
+    Numeric-channel entity-resolution failures still get one dialog-based recovery. If
+    the reader is no longer a member of that source, historical catch-up is quietly
+    deferred for that source instead of repeatedly throwing errors. Live push listening
+    for every other selected source remains unaffected.
     """
     if _history_outage_active(client):
         return []
@@ -116,9 +118,8 @@ async def read_messages_with_entity_recovery(
             setattr(client, "_super_signals_missing_entity_until", missing_until)
         if float(missing_until.get(target, 0.0)) > time.monotonic():
             # The previous recovery attempt already proved this reader cannot resolve
-            # this source right now. Do not throw the same stack trace every 15 seconds;
-            # skip only historical catch-up until the short cooldown expires. The live
-            # event listener remains registered and continues receiving push updates.
+            # this source right now. Do not repeat the same history/dialog scan every
+            # 15 seconds; live Telegram push delivery remains registered throughout.
             return []
 
         async for dialog in client.iter_dialogs():
@@ -149,7 +150,11 @@ async def read_messages_with_entity_recovery(
                 raise
 
         missing_until[target] = time.monotonic() + _COOLDOWN_SECONDS
-        raise exc
+        logger.info(
+            "Telegram source is no longer present in this reader; deferring history recovery for %.0fs",
+            _COOLDOWN_SECONDS,
+        )
+        return []
 
 
 __all__ = ["_canonical_channel_id", "read_messages_with_entity_recovery"]
