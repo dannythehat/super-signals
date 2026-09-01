@@ -13,10 +13,8 @@ from sqlalchemy import text
 
 from app.access_control import get_current_identity
 from app.dashboard_day32 import QuietDay23Mt5ReadService
-from app.dashboard_runtime import (
-    CanonicalDashboardRuntimeService,
-    CanonicalTodayTradingSummaryService,
-)
+from app.dashboard_resilient_runtime import ResilientDashboardRuntimeService
+from app.dashboard_runtime import CanonicalTodayTradingSummaryService
 from app.mt5_connection_service_day30 import Day30Mt5ConnectionService
 from app.mt5_runtime import require_mt5_service
 from app.paper_resilient_read_gateway import ResilientMetaApiReadGateway
@@ -162,9 +160,9 @@ class DashboardResponse(BaseModel):
     broker_trade_action_created: bool = False
 
 
-def _service(request: Request) -> CanonicalDashboardRuntimeService:
+def _service(request: Request) -> ResilientDashboardRuntimeService:
     existing = getattr(request.app.state, "day32_dashboard_service", None)
-    if isinstance(existing, CanonicalDashboardRuntimeService):
+    if isinstance(existing, ResilientDashboardRuntimeService):
         return existing
     base = require_mt5_service(request)
     if not isinstance(base, Day30Mt5ConnectionService):
@@ -180,7 +178,7 @@ def _service(request: Request) -> CanonicalDashboardRuntimeService:
         cipher=base._cipher,
         gateway=ResilientMetaApiReadGateway(timeout_seconds=2.5, attempts=1),
     )
-    service = CanonicalDashboardRuntimeService(
+    service = ResilientDashboardRuntimeService(
         session_factory=base._session_factory,
         read_service=read_service,
     )
@@ -200,7 +198,7 @@ def _safe_open_profit(view: Any) -> float | None:
 
 
 def _local_pending_trade_count(
-    service: CanonicalDashboardRuntimeService,
+    service: ResilientDashboardRuntimeService,
     user_id: UUID,
     *,
     session_started_at: datetime,
