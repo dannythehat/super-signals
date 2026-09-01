@@ -10,6 +10,7 @@ class _Client:
         self._dialogs = dialogs
         self._numeric_error = numeric_error
         self.calls = []
+        self.dialog_calls = 0
 
     async def get_messages(self, entity, *args, **kwargs):
         self.calls.append((entity, kwargs))
@@ -18,6 +19,7 @@ class _Client:
         return ["message"]
 
     async def iter_dialogs(self):
+        self.dialog_calls += 1
         for item in self._dialogs:
             yield item
 
@@ -42,6 +44,7 @@ async def test_numeric_channel_recovers_input_entity_from_dialog() -> None:
     assert client.calls[0][0] == -1002176701424
     assert client.calls[1][0] is recovered
     assert client.calls[1][1]["limit"] == 25
+    assert client.dialog_calls == 1
 
 
 @pytest.mark.asyncio
@@ -63,3 +66,27 @@ async def test_unknown_numeric_channel_still_fails_closed() -> None:
     )
     with pytest.raises(ValueError, match="missing channel"):
         await read_messages_with_entity_recovery(client, -1002176701424)
+
+
+@pytest.mark.asyncio
+async def test_telegram_internal_failure_pauses_history_without_dialog_hammering() -> None:
+    client = _Client(
+        [SimpleNamespace(id=-1002176701424, input_entity=object())],
+        numeric_error="Request was unsuccessful 6 time(s)",
+    )
+
+    first = await read_messages_with_entity_recovery(
+        client,
+        -1002176701424,
+        limit=50,
+    )
+    second = await read_messages_with_entity_recovery(
+        client,
+        -1002176701424,
+        limit=50,
+    )
+
+    assert first == []
+    assert second == []
+    assert len(client.calls) == 1
+    assert client.dialog_calls == 0
