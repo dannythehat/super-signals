@@ -64,6 +64,25 @@ def _history_outage_active(client: Any) -> bool:
         return False
 
 
+def _missing_entity_cache(client: Any) -> dict[int, float]:
+    raw = getattr(client, "_super_signals_missing_entity_until", None)
+    if isinstance(raw, dict):
+        return raw
+    cache: dict[int, float] = {}
+    setattr(client, "_super_signals_missing_entity_until", cache)
+    return cache
+
+
+def _known_missing_entity(client: Any, entity: Any) -> bool:
+    if not isinstance(entity, int):
+        return False
+    raw = _missing_entity_cache(client).get(int(entity), 0.0)
+    try:
+        return float(raw) > time.monotonic()
+    except (TypeError, ValueError):
+        return False
+
+
 def _defer_history_after_transient_error(client: Any) -> None:
     setattr(
         client,
@@ -90,7 +109,7 @@ async def read_messages_with_entity_recovery(
     deferred for that source instead of repeatedly throwing errors. Live push listening
     for every other selected source remains unaffected.
     """
-    if _history_outage_active(client):
+    if _history_outage_active(client) or _known_missing_entity(client, entity):
         return []
 
     try:
@@ -112,15 +131,7 @@ async def read_messages_with_entity_recovery(
 
         target = int(entity)
         canonical_target = _canonical_channel_id(target)
-        missing_until = getattr(client, "_super_signals_missing_entity_until", None)
-        if not isinstance(missing_until, dict):
-            missing_until = {}
-            setattr(client, "_super_signals_missing_entity_until", missing_until)
-        if float(missing_until.get(target, 0.0)) > time.monotonic():
-            # The previous recovery attempt already proved this reader cannot resolve
-            # this source right now. Do not repeat the same history/dialog scan every
-            # 15 seconds; live Telegram push delivery remains registered throughout.
-            return []
+        missing_until = _missing_entity_cache(client)
 
         async for dialog in client.iter_dialogs():
             dialog_id = _canonical_channel_id(getattr(dialog, "id", None))
