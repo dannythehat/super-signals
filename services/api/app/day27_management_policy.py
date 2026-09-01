@@ -143,7 +143,7 @@ _TP_HIT = re.compile(
     r"\bTP\s*(\d+)\b"
     r"(?:\s*(?:&|AND|,)\s*(?:TP\s*)?(\d+)\b)?"
     r"(?:\s*(?:&|AND|,)\s*(?:TP\s*)?(\d+)\b)?"
-    r"\s*(?:ARE\s+)?(?:BOTH\s+|ALL\s+)?HIT\b",
+    r"\s*(?:(?:IS|ARE)\s+)?(?:BOTH\s+|ALL\s+)?HIT\b",
     re.IGNORECASE,
 )
 _TAKE_PARTIALS = re.compile(
