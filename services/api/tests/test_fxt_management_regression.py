@@ -57,6 +57,32 @@ def test_fxt_result_text_closes_hit_tps_before_move_to_entry() -> None:
     )
 
 
+def test_fxt_close_with_small_loss_is_explicit_close_all() -> None:
+    raw = "Close with small loss."
+    result = day27.extract_day27_management_actions(raw)
+    assert result.actions == (
+        {"type": "close", "target": "all", "value": None},
+    )
+    allowed = apply_v1_message_policy(_decision(), raw_text=raw)
+    assert allowed.decision == "trade_update"
+    assert allowed.action == "apply_update"
+    assert allowed.extracted["management_actions"] == [
+        {"type": "close", "target": "all", "value": None},
+    ]
+
+
+def test_fxt_bare_sl_back_to_entry_is_explicit_breakeven() -> None:
+    raw = "TP 1 is hit! 👏\n\n+ 40 pips profit secured.\n\nSL back to entry."
+    result = day27.extract_day27_management_actions(raw)
+    assert result.actions == (
+        {"type": "close", "target": "TP1", "value": None},
+        {"type": "move_to_break_even", "target": "all", "value": None},
+    )
+    allowed = apply_v1_message_policy(_decision(), raw_text=raw)
+    assert allowed.decision == "trade_update"
+    assert allowed.action == "apply_update"
+
+
 def test_v1_fxt_result_plus_management_overrides_ai_ignore() -> None:
     raw = (
         "TP 1 & 2 are BOTH hit ✅\n\n"
