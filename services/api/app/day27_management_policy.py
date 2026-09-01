@@ -68,6 +68,13 @@ _CLOSE_PROFIT = re.compile(
     r"|\bTAKE\s+PROFIT\s+WHEN\s+YOU\s+SEE\s+IT\b",
     re.IGNORECASE,
 )
+_CLOSE_LOSS = re.compile(
+    r"\bCLOSE(?:\s+(?:IT|THE\s+(?:TRADE|POSITION)))?\s+"
+    r"(?:WITH|AT|FOR|IN)\s+(?:(?:A|THE)\s+)?(?:SMALL\s+|MINOR\s+|TINY\s+)?LOSS(?:ES)?\b"
+    r"|\bTAKE\s+(?:(?:THE|A)\s+)?(?:SMALL\s+|MINOR\s+|TINY\s+)?LOSS(?:ES)?\b"
+    r"|\bCUT\s+(?:THE\s+)?LOSS(?:ES)?\b",
+    re.IGNORECASE,
+)
 _CLOSE_NUMBERED = re.compile(
     r"\bCLOSE\s+(?:YOUR\s+)?(?:TP|POSITION)\s*([1-9]\d*)\b",
     re.IGNORECASE,
@@ -121,6 +128,7 @@ _MOVE_BE = re.compile(
     r"\b(?:MOVE|SET|PUT)\s+(?:ALL\s+)?(?:(?:THE|YOUR|MY|OUR)\s+)?"
     r"(?:(?:GOLD|XAUUSD)\s+)?(?:SL(?:S)?|STOP\s*LOSS(?:ES)?|STOP|STOPS)\s+"
     r"(?:BACK\s+)?(?:TO|AT)\s+(?:ENTRY|BE|BREAKEVEN|BREAK\s+EVEN)\b"
+    r"|\b(?:SL(?:S)?|STOP\s*LOSS(?:ES)?|STOP|STOPS)\s+(?:BACK\s+)?(?:TO|AT)\s+(?:ENTRY|BE|BREAKEVEN|BREAK\s+EVEN)\b"
     r"|\b(?:MOVE|SET)\s+(?:TO\s+)?(?:FULLY\s+)?(?:BE|BREAKEVEN|BREAK\s+EVEN)\b"
     r"|^\s*(?:BE|BREAKEVEN|BREAK\s+EVEN)\s+NOW\s*[.!✅🔥]*\s*$"
     r"|\bBREAKEVEN\s+SET\b"
@@ -135,7 +143,7 @@ _TP_HIT = re.compile(
     r"\bTP\s*(\d+)\b"
     r"(?:\s*(?:&|AND|,)\s*(?:TP\s*)?(\d+)\b)?"
     r"(?:\s*(?:&|AND|,)\s*(?:TP\s*)?(\d+)\b)?"
-    r"\s*(?:ARE\s+)?(?:BOTH\s+|ALL\s+)?HIT\b",
+    r"\s*(?:(?:IS|ARE)\s+)?(?:BOTH\s+|ALL\s+)?HIT\b",
     re.IGNORECASE,
 )
 _TAKE_PARTIALS = re.compile(
@@ -190,7 +198,7 @@ def _dedupe(actions: list[dict[str, str | None]]) -> tuple[dict[str, str | None]
 
 
 def _decisive_close(text: str) -> bool:
-    if _OUT_THIS_SETUP.search(text):
+    if _OUT_THIS_SETUP.search(text) or _CLOSE_LOSS.search(text):
         return True
     if _TARGETED_OR_PARTIAL_CLOSE.search(text):
         return False
