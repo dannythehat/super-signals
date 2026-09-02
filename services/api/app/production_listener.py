@@ -17,10 +17,10 @@ from typing import Any
 
 from sqlalchemy import text
 
-from app.canonical_signal_ledger import CanonicalSignalLedger
 from app.provider_aware_ai_pipeline import ProviderAwareProductionAiPipeline
 from app.provider_research import ProviderResearchManager, build_provider_research_manager
 from app.shadow_lifecycle_bridge import ShadowAwareAiLifecycleBridge
+from app.shadow_signal_ledger import ShadowAwareCanonicalSignalLedger
 from app.telegram_listener_canonical import (
     CanonicalProductionTelegramListenerManager,
     build_canonical_production_listener_manager,
@@ -191,7 +191,7 @@ def build_production_listener_manager(**kwargs: Any) -> CanonicalProductionTeleg
             session_factory=manager._session_factory,
             supervisor=getattr(existing_pipeline, "_supervisor", None),
         )
-        pipeline._signals = CanonicalSignalLedger(manager._session_factory)
+        pipeline._signals = ShadowAwareCanonicalSignalLedger(manager._session_factory)
         pipeline._lifecycle = ShadowAwareAiLifecycleBridge(manager._session_factory)
         manager._ai_pipeline = pipeline
 
