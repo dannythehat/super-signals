@@ -24,7 +24,7 @@ services:
       - key: SUPER_SIGNALS_SESSION_COOKIE
         value: super_signals_day8_session
       - key: SUPER_SIGNALS_SESSION_TTL_SECONDS
-        value: "28800"
+        value: "2592000"
       - key: SUPER_SIGNALS_FINGERPRINT_SECRET
         generateValue: true
       - key: SUPER_SIGNALS_TELEGRAM_SESSION_SECRET
