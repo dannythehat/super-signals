@@ -1,23 +1,28 @@
-"""Live XAU/USD dashboard quote from a free public market-data feed.
+"""Live XAU/USD quote plus a privacy-safe public performance feed.
 
-This route is completely isolated from MetaAPI and the user's broker account. The primary
-source is biquote's live XAUUSD MT5 market-data feed; Gold API is fallback only.
+The Gold quote remains isolated from MetaAPI and the user's broker account. The public
+performance feed is read-only and exposes only the Owner reference ledger needed by the
+Smart Signals public website: daily realised P/L plus provider-hidden trade outcomes.
 """
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from math import isfinite
 from time import monotonic
 from typing import Annotated, Any
+from uuid import UUID
+from zoneinfo import ZoneInfo
 
 import httpx
-from fastapi import APIRouter, Depends, Request, Response
+from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from pydantic import BaseModel
+from sqlalchemy import text
 
 from app.access_control import get_current_identity
+from app.performance_ledger_day33_v2 import Day33PerformanceLedgerServiceV2
 
-router = APIRouter(prefix="/dashboard/gold-quote", tags=["dashboard-gold-quote"])
+router = APIRouter(prefix="/dashboard", tags=["dashboard-public-data"])
 Identity = Annotated[dict[str, Any], Depends(get_current_identity)]
 
 _SYMBOL = "XAUUSD"
@@ -25,6 +30,11 @@ _PRIMARY_URL = "https://biquote.io/api/XAUUSD?allowStale=false"
 _FALLBACK_URL = "https://api.gold-api.com/price/XAU"
 _LIVE_CACHE_SECONDS = 0.75
 _RETRY_CACHE_SECONDS = 2.0
+_PUBLIC_TIMEZONE = "Europe/London"
+_PUBLIC_LIVE_START = date(2026, 8, 31)
+_PUBLIC_TRADE_DETAIL_START = date(2026, 9, 3)
+_PUBLIC_STARTING_BALANCE = 1517.23
+_HISTORICAL_STARTING_BALANCE = 1000.00
 
 
 class GoldQuoteResponse(BaseModel):
@@ -37,6 +47,42 @@ class GoldQuoteResponse(BaseModel):
     available: bool
     stale: bool
     source: str
+
+
+class PublicDailyPnlResponse(BaseModel):
+    day: date
+    pnl: float
+
+
+class PublicTradeResponse(BaseModel):
+    day: date
+    signal_id: UUID
+    symbol: str
+    side: str
+    status: str
+    status_label: str
+    opened_at: datetime | None
+    closed_at: datetime | None
+    position_count: int
+    open_positions: int
+    pending_positions: int
+    closed_positions: int
+    cash_pnl: float | None
+    net_pips: float | None
+    close_reason: str | None
+
+
+class PublicPerformanceResponse(BaseModel):
+    timezone: str = _PUBLIC_TIMEZONE
+    live_start_date: date = _PUBLIC_LIVE_START
+    trade_detail_start_date: date = _PUBLIC_TRADE_DETAIL_START
+    live_starting_balance: float = _PUBLIC_STARTING_BALANCE
+    current_recorded_balance: float
+    total_recorded_pnl: float
+    return_percent: float
+    daily: tuple[PublicDailyPnlResponse, ...]
+    trades: tuple[PublicTradeResponse, ...]
+    updated_at: datetime
 
 
 def _positive_float(value: object) -> float | None:
@@ -95,8 +141,8 @@ def _gold_api_quote(payload: dict[str, object], *, now: datetime) -> GoldQuoteRe
         quote_time=_quote_time(payload.get("updatedAt") or payload.get("updated_at")),
         read_at=now,
         available=price is not None,
-        stale=False,
-        source="Gold API live fallback",
+        stale=True,
+        source="Gold API fallback",
     )
 
 
@@ -146,7 +192,120 @@ async def _read_json(url: str) -> dict[str, object]:
     return payload
 
 
-@router.get("", response_model=GoldQuoteResponse)
+def _performance_service(request: Request) -> Day33PerformanceLedgerServiceV2:
+    service = getattr(request.app.state, "day33_performance_service", None)
+    if not isinstance(service, Day33PerformanceLedgerServiceV2):
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail={
+                "code": "public_performance_unavailable",
+                "message": "Public performance data is temporarily unavailable.",
+            },
+        )
+    return service
+
+
+def _owner_reference_user_id(service: Day33PerformanceLedgerServiceV2) -> UUID:
+    with service._session_factory() as session:
+        value = session.execute(
+            text(
+                """
+                SELECT u.id
+                FROM users u
+                JOIN user_roles ur ON ur.user_id=u.id
+                JOIN roles r ON r.id=ur.role_id
+                WHERE r.name='owner'
+                  AND u.status NOT IN ('revoked','suspended')
+                ORDER BY u.created_at,u.id
+                LIMIT 1
+                """
+            )
+        ).scalar_one_or_none()
+    if not isinstance(value, UUID):
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail={
+                "code": "public_performance_owner_missing",
+                "message": "Public performance data is temporarily unavailable.",
+            },
+        )
+    return value
+
+
+def _public_daily(service: Day33PerformanceLedgerServiceV2, user_id: UUID) -> tuple[PublicDailyPnlResponse, ...]:
+    with service._session_factory() as session:
+        rows = session.execute(
+            text(
+                """
+                SELECT
+                    timezone(:timezone_name, bd.occurred_at)::date AS local_day,
+                    COALESCE(SUM(
+                        COALESCE(bd.profit,0)
+                        + COALESCE(bd.commission,0)
+                        + COALESCE(bd.swap,0)
+                    ),0) AS pnl
+                FROM broker_deals bd
+                WHERE bd.user_id=:user_id
+                  AND bd.entry_type='DEAL_ENTRY_OUT'
+                  AND (bd.signal_id IS NOT NULL OR bd.broker_client_id LIKE 'SS_%')
+                  AND timezone(:timezone_name, bd.occurred_at)::date >= :start_day
+                GROUP BY 1
+                ORDER BY 1
+                """
+            ),
+            {
+                "user_id": user_id,
+                "timezone_name": _PUBLIC_TIMEZONE,
+                "start_day": _PUBLIC_LIVE_START,
+            },
+        ).mappings().all()
+    return tuple(
+        PublicDailyPnlResponse(day=row["local_day"], pnl=round(float(row["pnl"] or 0), 2))
+        for row in rows
+    )
+
+
+def _public_trades(service: Day33PerformanceLedgerServiceV2, user_id: UUID) -> tuple[PublicTradeResponse, ...]:
+    zone = ZoneInfo(_PUBLIC_TIMEZONE)
+    timeline = service.read_timeline(
+        user_id,
+        viewer_role="user",
+        limit=250,
+    )
+    trades: list[PublicTradeResponse] = []
+    for item in timeline.trades:
+        if int(item.position_count or 0) <= 0:
+            continue
+        event_time = item.opened_at or item.closed_at
+        if event_time is None:
+            continue
+        aware = event_time if event_time.tzinfo is not None else event_time.replace(tzinfo=UTC)
+        local_day = aware.astimezone(zone).date()
+        if local_day < _PUBLIC_TRADE_DETAIL_START:
+            continue
+        trades.append(
+            PublicTradeResponse(
+                day=local_day,
+                signal_id=item.signal_id,
+                symbol=item.symbol,
+                side=item.side,
+                status=item.status,
+                status_label=item.status_label,
+                opened_at=item.opened_at,
+                closed_at=item.closed_at,
+                position_count=item.position_count,
+                open_positions=item.open_positions,
+                pending_positions=item.pending_positions,
+                closed_positions=item.closed_positions,
+                cash_pnl=(float(item.cash_pnl) if item.cash_pnl is not None else None),
+                net_pips=(float(item.net_pips) if item.net_pips is not None else None),
+                close_reason=item.close_reason,
+            )
+        )
+    return tuple(trades)
+
+
+@router.get("/gold-quote", response_model=GoldQuoteResponse)
 async def account_gold_quote(
     request: Request,
     response: Response,
@@ -185,3 +344,33 @@ async def account_gold_quote(
 
     response.headers["Cache-Control"] = "no-store"
     return _store(cache, quote)
+
+
+@router.get("/public-performance", response_model=PublicPerformanceResponse)
+async def public_performance(
+    request: Request,
+    response: Response,
+) -> PublicPerformanceResponse:
+    """Provider-hidden public ledger feed for smartsignals.site.
+
+    No login is required. The feed contains only aggregate realised P/L and executed
+    trade outcome metadata; provider identity, users and broker credentials are never
+    exposed.
+    """
+    service = _performance_service(request)
+    user_id = _owner_reference_user_id(service)
+    daily = _public_daily(service, user_id)
+    trades = _public_trades(service, user_id)
+    live_pnl = round(sum(item.pnl for item in daily), 2)
+    current = round(_PUBLIC_STARTING_BALANCE + live_pnl, 2)
+    total = round(current - _HISTORICAL_STARTING_BALANCE, 2)
+    return_percent = round(total / _HISTORICAL_STARTING_BALANCE * 100, 2)
+    response.headers["Cache-Control"] = "public, max-age=5, stale-while-revalidate=30"
+    return PublicPerformanceResponse(
+        current_recorded_balance=current,
+        total_recorded_pnl=total,
+        return_percent=return_percent,
+        daily=daily,
+        trades=trades,
+        updated_at=datetime.now(UTC),
+    )
