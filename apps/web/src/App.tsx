@@ -1,5 +1,6 @@
 import { FormEvent, useCallback, useEffect, useState } from 'react';
 
+import { AdminMemberControlsDay35 } from './AdminMemberControlsDay35';
 import { MobileDashboard } from './MobileDashboard';
 import { Mt5DemoConnectionPanel } from './Mt5DemoConnectionPanel';
 import { PushNotificationsDay34 } from './PushNotificationsDay34';
@@ -11,7 +12,7 @@ import { UserMt5ConnectionPanel } from './UserMt5ConnectionPanel';
 
 type AuthState = 'checking' | 'signed-out' | 'signed-in';
 type Notice = { tone: 'error' | 'success'; message: string } | null;
-type WorkspaceView = 'overview' | 'settings' | 'setup' | 'telegram' | 'sources' | 'mt5' | 'access';
+type WorkspaceView = 'overview' | 'settings' | 'setup' | 'telegram' | 'sources' | 'mt5' | 'access' | 'users';
 
 interface AccessAction { permission: string; label: string; description: string; }
 interface AccessSection { key: 'owner' | 'trading' | 'user'; label: string; description: string; actions: AccessAction[]; }
@@ -30,7 +31,7 @@ const SERVICE_RECONNECT_MESSAGE = 'Reconnecting to the secure service…';
 const SERVICE_RESPONSE_ERROR = 'The secure service is reconnecting. Please try again in a moment.';
 
 function workspaceViewFromHistory(value: unknown): WorkspaceView | null {
-  return value === 'overview' || value === 'settings' || value === 'setup' || value === 'telegram' || value === 'sources' || value === 'mt5' || value === 'access' ? value : null;
+  return value === 'overview' || value === 'settings' || value === 'setup' || value === 'telegram' || value === 'sources' || value === 'mt5' || value === 'access' || value === 'users' ? value : null;
 }
 function requestedWorkspaceView(): WorkspaceView | null {
   return workspaceViewFromHistory(new URLSearchParams(window.location.search).get('view'));
@@ -88,6 +89,7 @@ export function App() {
   const [setupCheckComplete, setSetupCheckComplete] = useState(false);
   const canManageTelegram = account?.permissions.includes('sources.manage') ?? false;
   const canManageMt5 = account?.permissions.includes('mt5_accounts.approve') ?? false;
+  const canManageUsers = account?.role === 'owner' && (account?.permissions.includes('users.manage') ?? false);
   const canViewOwnerAlerts = account?.permissions.includes('admins.manage') ?? false;
 
   const refreshSharedSources = useCallback(async () => {
@@ -150,16 +152,16 @@ export function App() {
     const requestedView = requestedWorkspaceView();
     const historyView = workspaceViewFromHistory(window.history.state?.superSignalsView);
     const candidate = historyView ?? requestedView ?? 'overview';
-    const initialView = candidate === 'mt5' && !canManageMt5 ? 'settings' : candidate;
+    const initialView = (candidate === 'mt5' && !canManageMt5) || (candidate === 'users' && !canManageUsers) ? 'settings' : candidate;
     setActiveView(initialView);
     window.history.replaceState(historyStateWithView(initialView), '', urlForView(initialView));
     function handlePopState(event: PopStateEvent) {
       const candidateView = workspaceViewFromHistory(event.state?.superSignalsView) ?? requestedWorkspaceView() ?? 'overview';
-      const view = candidateView === 'mt5' && !canManageMt5 ? 'settings' : candidateView;
+      const view = (candidateView === 'mt5' && !canManageMt5) || (candidateView === 'users' && !canManageUsers) ? 'settings' : candidateView;
       setActiveView(view); setMenuOpen(false); if (view === 'settings') void refreshSharedSources();
     }
     window.addEventListener('popstate', handlePopState); return () => window.removeEventListener('popstate', handlePopState);
-  }, [authState, canManageMt5, refreshSharedSources]);
+  }, [authState, canManageMt5, canManageUsers, refreshSharedSources]);
 
   useEffect(() => { if (!menuOpen) return; const closeOnEscape = (event: KeyboardEvent) => { if (event.key === 'Escape') setMenuOpen(false); }; window.addEventListener('keydown', closeOnEscape); return () => window.removeEventListener('keydown', closeOnEscape); }, [menuOpen]);
 
@@ -169,7 +171,8 @@ export function App() {
       const response = await fetch(`${apiBaseUrl}/auth/login`, { method: 'POST', credentials: 'include', headers: { 'Content-Type': 'application/json', Accept: 'application/json' }, body: JSON.stringify({ email: form.get('email'), password: form.get('password') }) });
       const authenticatedAccount = await readJson<Account>(response);
       const requestedView = requestedWorkspaceView();
-      const loginView = requestedView === 'mt5' && !authenticatedAccount.permissions.includes('mt5_accounts.approve') ? 'settings' : requestedView ?? 'overview';
+      const requestedUsersAllowed = authenticatedAccount.role === 'owner' && authenticatedAccount.permissions.includes('users.manage');
+      const loginView = (requestedView === 'mt5' && !authenticatedAccount.permissions.includes('mt5_accounts.approve')) || (requestedView === 'users' && !requestedUsersAllowed) ? 'settings' : requestedView ?? 'overview';
       setAccount(authenticatedAccount); setAuthState('signed-in'); setActiveView(loginView); window.history.replaceState(historyStateWithView(loginView), '', urlForView(loginView)); event.currentTarget.reset();
     } catch (error) { setNotice({ tone: 'error', message: error instanceof Error ? error.message : 'Login failed.' }); }
     finally { setBusy(false); }
@@ -210,15 +213,17 @@ export function App() {
         <div className="drawer-header"><div><strong>Smart Signals</strong><span>{visibleRoleLabel}</span></div><button className="menu-close" type="button" aria-label="Close menu" onClick={() => setMenuOpen(false)}>×</button></div>
         <nav className="drawer-nav" aria-label="Main menu">
           <button type="button" aria-current={activeView === 'overview' ? 'page' : undefined} onClick={() => navigate('overview')}><span className="drawer-nav-icon" aria-hidden="true">⌂</span><span className="drawer-nav-label"><strong>Home</strong><small>Balance, positions and trading activity</small></span></button>
+          {canManageUsers && <button type="button" aria-current={activeView === 'users' ? 'page' : undefined} onClick={() => navigate('users')}><span className="drawer-nav-icon" aria-hidden="true">♙</span><span className="drawer-nav-label"><strong>Users &amp; Access</strong><small>View connected members and revoke access</small></span></button>}
           <button type="button" aria-current={activeView === 'settings' ? 'page' : undefined} onClick={() => navigate('settings')}><span className="drawer-nav-icon" aria-hidden="true">⚙</span><span className="drawer-nav-label"><strong>Settings</strong><small>Risk, MT5, sources and security</small></span></button>
         </nav>
         <div className="drawer-footer"><div className="drawer-account"><strong>{displayName}</strong><small>{account.email}</small></div><button className="button button--quiet" type="button" onClick={handleLogout} disabled={busy}>Log out</button></div>
       </aside>
       <div className="workspace-content">
-        {activeView !== 'overview' && activeView !== 'settings' && activeView !== 'setup' && <button className="workspace-back-button" type="button" onClick={() => navigate('settings')}><span aria-hidden="true">←</span> Back to Settings</button>}
+        {activeView !== 'overview' && activeView !== 'settings' && activeView !== 'setup' && activeView !== 'users' && <button className="workspace-back-button" type="button" onClick={() => navigate('settings')}><span aria-hidden="true">←</span> Back to Settings</button>}
         {activeView === 'setup' && account.role === 'trading_admin' && canManageTelegram && <TradingAdminOnboarding apiBaseUrl={apiBaseUrl} displayName={displayName} onComplete={() => { void refreshSharedSources(); navigate('overview'); }} />}
 
         {activeView === 'overview' && <MobileDashboard apiBaseUrl={apiBaseUrl} displayName={displayName} roleLabel={visibleRoleLabel} onOpenSettings={() => navigate('settings')} />}
+        {activeView === 'users' && canManageUsers && <AdminMemberControlsDay35 apiBaseUrl={apiBaseUrl} />}
 
         {activeView === 'settings' && <section className="settings-page" aria-labelledby="settings-page-title">
           <div className="workspace-page-header"><div><p className="eyebrow">Account controls</p><h1 id="settings-page-title">Settings</h1><p className="intro">The daily dashboard stays focused on trading. Connections, risk and administration live here.</p></div><span className="workspace-role-pill">{visibleRoleLabel}</span></div>
