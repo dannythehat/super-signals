@@ -71,10 +71,36 @@ def test_ai_break_even_wording_keeps_trade_open() -> None:
     )
 
 
-def test_ai_close_wording_distinguishes_it_from_break_even() -> None:
+def test_ai_close_wording_names_the_target_and_explains_confirmation() -> None:
     event_type, rendered = AiLifecycleBridge._render("close", {"update_target": "TP1"})
     assert event_type == "close_instruction"
     assert rendered == (
         "TRADE UPDATE\n"
-        "Separate close request received for TP1.\nThis is not a broker closure confirmation."
+        "Close TP1 position.\n"
+        "Broker execution confirmation follows separately."
     )
+
+
+def test_ai_multi_action_wording_lists_every_management_instruction() -> None:
+    event_type, rendered = AiLifecycleBridge._render(
+        "close",
+        {
+            "update_target": "entry_2_partial_tp1",
+            "update_value": None,
+            "management_actions": [
+                {"type": "close", "target": "entry_2_partial_tp1", "value": None},
+                {"type": "close", "target": "entry_1", "value": None},
+                {"type": "edit_stop_loss", "target": "entry_2", "value": "4431"},
+            ],
+        },
+    )
+    assert event_type == "close_instruction"
+    assert rendered == (
+        "TRADE UPDATE\n"
+        "Instructions received:\n"
+        "• Book partial profit on Entry 2.\n"
+        "• Close Entry 1.\n"
+        "• Move Entry 2 SL to 4431.\n"
+        "Broker execution confirmation follows separately."
+    )
+    assert "separate close request" not in rendered.lower()

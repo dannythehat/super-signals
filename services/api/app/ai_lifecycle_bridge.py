@@ -276,7 +276,117 @@ class AiLifecycleBridge:
         return None, "signal_link_unresolved"
 
     @staticmethod
-    def _render(update_type: str, extracted: dict[str, Any]) -> tuple[str | None, str]:
+    def _render_management_action(action: dict[str, Any]) -> str | None:
+        action_type = str(action.get("type") or "").strip().lower()
+        target = str(action.get("target") or "").strip()
+        normalised_target = target.lower()
+        value = action.get("value")
+
+        entry_label: str | None = None
+        if normalised_target.startswith("entry_"):
+            suffix = normalised_target.removeprefix("entry_").split("_", 1)[0]
+            if suffix.isdigit():
+                entry_label = f"Entry {int(suffix)}"
+
+        if action_type == "close":
+            if normalised_target == "entry_2_partial_tp1":
+                return "Book partial profit on Entry 2."
+            if entry_label is not None:
+                return f"Close {entry_label}."
+            if target.upper().startswith("TP") and target[2:].isdigit():
+                return f"Close {target.upper()} position."
+            if normalised_target == "partial_tp1":
+                return "Book partial profit at TP1."
+            if normalised_target == "profitable_only":
+                return "Close profitable positions only."
+            if normalised_target == "remaining":
+                return "Close all remaining positions."
+            if normalised_target == "all":
+                return "Close all open positions."
+            return "Close instructed position(s)."
+
+        if action_type == "edit_stop_loss":
+            value_text = str(value).strip() if value is not None else ""
+            if entry_label is not None:
+                return (
+                    f"Move {entry_label} SL to {value_text}."
+                    if value_text
+                    else f"Update {entry_label} SL."
+                )
+            if normalised_target == "all":
+                return (
+                    f"Move SL on all open positions to {value_text}."
+                    if value_text
+                    else "Update SL on all open positions."
+                )
+            return f"Move SL to {value_text}." if value_text else "Update SL."
+
+        if action_type == "move_to_break_even":
+            if entry_label is not None:
+                return f"Move {entry_label} SL to break even."
+            return "Move SL to break even."
+
+        if action_type == "edit_take_profit":
+            value_text = str(value).strip() if value is not None else ""
+            target_label = target.upper() if target.upper().startswith("TP") else "take profit"
+            return (
+                f"Move {target_label} to {value_text}."
+                if value_text
+                else f"Update {target_label}."
+            )
+
+        if action_type == "cancel_pending":
+            return "Cancel pending order(s)."
+
+        if action_type == "add_market":
+            side = str(value or "").strip().upper()
+            return f"Add {side} market entry." if side in {"BUY", "SELL"} else "Add market entry."
+
+        return None
+
+    @staticmethod
+    def _event_type_for_update(update_type: str) -> str:
+        return {
+            "tp_hit": "take_profit_hit",
+            "close": "close_instruction",
+            "close_half": "partial_close",
+            "move_to_break_even": "break_even",
+            "edit_stop_loss": "stop_change",
+            "edit_take_profit": "take_profit_change",
+            "cancel_pending": "cancel",
+            "add_market": "add_market",
+        }.get(update_type, "provider_update")
+
+    @classmethod
+    def _render_multi_action_update(
+        cls,
+        update_type: str,
+        extracted: dict[str, Any],
+    ) -> tuple[str, str] | None:
+        raw_actions = extracted.get("management_actions")
+        if not isinstance(raw_actions, list) or len(raw_actions) < 2:
+            return None
+
+        details = [
+            detail
+            for action in raw_actions
+            if isinstance(action, dict)
+            if (detail := cls._render_management_action(action)) is not None
+        ]
+        if len(details) < 2:
+            return None
+
+        lines = ["TRADE UPDATE", "Instructions received:"]
+        lines.extend(f"• {detail}" for detail in details)
+        lines.append("Broker execution confirmation follows separately.")
+        return cls._event_type_for_update(update_type), "\n".join(lines)
+
+    @classmethod
+    def _render(cls, update_type: str, extracted: dict[str, Any]) -> tuple[str | None, str]:
+        multi_action = cls._render_multi_action_update(update_type, extracted)
+        if multi_action is not None:
+            return multi_action
+
         target = extracted.get("update_target")
         value = extracted.get("update_value")
         if update_type == "tp_hit":
@@ -284,17 +394,30 @@ class AiLifecycleBridge:
         if update_type == "close":
             target_label = str(target or "").strip()
             normalised_target = target_label.lower()
-            if normalised_target == "partial_tp1":
-                detail = "Separate partial-close request received for TP1."
+            if normalised_target == "entry_2_partial_tp1":
+                detail = "Book partial profit on Entry 2."
+            elif normalised_target.startswith("entry_"):
+                suffix = normalised_target.removeprefix("entry_").split("_", 1)[0]
+                detail = (
+                    f"Close Entry {int(suffix)}."
+                    if suffix.isdigit()
+                    else "Close instructed position(s)."
+                )
+            elif normalised_target == "partial_tp1":
+                detail = "Book partial profit at TP1."
             elif target_label.upper().startswith("TP") and target_label[2:].isdigit():
-                detail = f"Separate close request received for {target_label.upper()}."
-            elif normalised_target in {"all", "remaining"}:
-                detail = "Separate close request received for all remaining positions."
+                detail = f"Close {target_label.upper()} position."
+            elif normalised_target == "remaining":
+                detail = "Close all remaining positions."
+            elif normalised_target == "all":
+                detail = "Close all open positions."
+            elif normalised_target == "profitable_only":
+                detail = "Close profitable positions only."
             else:
-                detail = "A separate close request was received."
+                detail = "Close instruction received."
             return (
                 "close_instruction",
-                f"TRADE UPDATE\n{detail}\nThis is not a broker closure confirmation.",
+                f"TRADE UPDATE\n{detail}\nBroker execution confirmation follows separately.",
             )
         if update_type == "close_half":
             return "partial_close", "TRADE UPDATE\nPartial close instructed."
