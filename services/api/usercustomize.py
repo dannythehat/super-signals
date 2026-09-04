@@ -19,9 +19,10 @@ def _should_activate() -> bool:
 if _should_activate():
     try:
         import sitecustomize as incident
+        from app.incident_20260904_asia_owner_cleanup import run_owner_asia_cleanup
 
         incident._install_reader_hotfix()
-        asyncio.run(incident._cleanup_stale_asia_exposure())
+        asyncio.run(run_owner_asia_cleanup())
     except Exception as exc:
         print(
             f"SUPER_SIGNALS_ASIA_INCIDENT_ACTIVATION_FATAL={type(exc).__name__}:{str(exc)[:180]}",
