@@ -56,6 +56,10 @@ type RevokeResult = {
 
 type Props = { apiBaseUrl: string };
 
+// The owner subscription router is mounted under the existing owner MT5 approvals
+// router in the API. Keep this path in one place so list/pause/resume cannot drift.
+const OWNER_SUBSCRIPTIONS_PATH = '/owner/mt5/approvals/subscriptions';
+
 async function readJson<T>(response: Response): Promise<T> {
   const body = (await response.json()) as T;
   if (!response.ok) {
@@ -105,7 +109,7 @@ export function AdminMemberControlsDay35({ apiBaseUrl }: Props) {
         fetch(`${apiBaseUrl}/access/day35/user-controls/users`, {
           credentials: 'include', headers: { Accept: 'application/json' }, cache: 'no-store',
         }),
-        fetch(`${apiBaseUrl}/subscriptions/members`, {
+        fetch(`${apiBaseUrl}${OWNER_SUBSCRIPTIONS_PATH}/members`, {
           credentials: 'include', headers: { Accept: 'application/json' }, cache: 'no-store',
         }),
       ]);
@@ -126,7 +130,7 @@ export function AdminMemberControlsDay35({ apiBaseUrl }: Props) {
   async function updateMemberAccess(user: ManagedUser, action: 'pause' | 'resume') {
     setAccessBusyUserId(user.user_id); setError(null); setNotice(null); setResult(null);
     try {
-      const response = await fetch(`${apiBaseUrl}/subscriptions/users/${user.user_id}/${action}`, {
+      const response = await fetch(`${apiBaseUrl}${OWNER_SUBSCRIPTIONS_PATH}/users/${user.user_id}/${action}`, {
         method: 'POST', credentials: 'include', headers: { Accept: 'application/json' }, cache: 'no-store',
       });
       const completed = await readJson<MemberAccessMutation>(response);
