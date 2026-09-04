@@ -8,6 +8,11 @@ timezone, while immutable broker-deal timestamps remain stored in UTC. A daily r
 that day's realised Super Signals P/L divided by the account balance at the start of that
 local calendar day.
 
+Audited incident overrides never rewrite broker evidence. Pre-cutoff broker exits on an
+overridden reporting day are excluded from user-facing cash totals and replaced by the
+reviewed cash amount stored in performance_reporting_overrides. Post-cutoff exits continue
+to count normally.
+
 The Owner demo uses the active paper epoch as its synthetic capital origin. For the
 current clean run that is USD 1,500 from 27 August 2026 11:30 Europe/Sofia, with no
 historical carry-in. That exact synthetic balance is also used for percentage risk sizing.
@@ -30,6 +35,11 @@ from app.paper_run_epoch import (
     PAPER_RUN_BASELINE_BALANCE,
     PAPER_RUN_STARTED_AT,
     active_paper_epoch,
+)
+from app.reporting_overrides import (
+    BROKER_DEAL_NOT_OVERRIDDEN_SQL,
+    override_cash_by_day,
+    override_cash_for_window,
 )
 
 DEFAULT_TRADING_TIMEZONE = "UTC"
@@ -155,7 +165,7 @@ class CanonicalTradingAccountingService:
         with self._session_factory() as session:
             value = session.execute(
                 text(
-                    """
+                    f"""
                     SELECT COALESCE(SUM(
                         COALESCE(bd.profit,0)
                         + COALESCE(bd.commission,0)
@@ -168,6 +178,7 @@ class CanonicalTradingAccountingService:
                       AND (bd.signal_id IS NOT NULL OR bd.broker_client_id LIKE 'SS_%')
                       AND bd.occurred_at>=:start_at
                       AND bd.occurred_at<:end_at
+                      AND {BROKER_DEAL_NOT_OVERRIDDEN_SQL}
                     """
                 ),
                 {
@@ -177,7 +188,13 @@ class CanonicalTradingAccountingService:
                     "end_at": end_utc,
                 },
             ).scalar_one()
-        return Decimal(str(value or 0))
+            reviewed_cash = override_cash_for_window(
+                session,
+                user_id,
+                start=start_utc,
+                end=end_utc,
+            )
+        return Decimal(str(value or 0)) + reviewed_cash
 
     def realised_between(
         self,
@@ -266,7 +283,7 @@ class CanonicalTradingAccountingService:
         with self._session_factory() as session:
             rows = session.execute(
                 text(
-                    """
+                    f"""
                     SELECT
                         timezone(:timezone_name, bd.occurred_at)::date AS local_day,
                         COALESCE(SUM(
@@ -281,6 +298,7 @@ class CanonicalTradingAccountingService:
                       AND (bd.signal_id IS NOT NULL OR bd.broker_client_id LIKE 'SS_%')
                       AND bd.occurred_at>=:start_at
                       AND bd.occurred_at<:end_at
+                      AND {BROKER_DEAL_NOT_OVERRIDDEN_SQL}
                     GROUP BY 1
                     ORDER BY 1
                     """
@@ -293,10 +311,21 @@ class CanonicalTradingAccountingService:
                     "end_at": end,
                 },
             ).mappings().all()
-        return {
+            reviewed_by_day = override_cash_by_day(
+                session,
+                user_id,
+                start=start,
+                end=end,
+            )
+        values = {
             row["local_day"]: _money(Decimal(str(row["pnl"] or 0)))
             for row in rows
         }
+        for reporting_day, reviewed_cash in reviewed_by_day.items():
+            values[reporting_day] = _money(
+                values.get(reporting_day, Decimal("0.00")) + reviewed_cash
+            )
+        return values
 
     def _daily_total_balance_changes(
         self,
