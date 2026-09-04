@@ -18,7 +18,7 @@ function textResponse(status: number): Response {
     status,
     headers: new Headers({ 'content-type': 'text/plain; charset=utf-8' }),
     json: async () => { throw new SyntaxError("Unexpected token 'I'"); },
-  } as Response;
+  } as unknown as Response;
 }
 
 const userId = '2791cc0b-d501-4e51-8b96-72262f11df0b';
