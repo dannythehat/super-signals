@@ -2,8 +2,8 @@
 
 Paid subscription approval or an active complimentary owner grant controls whether an
 ordinary member may connect MT5, activate trading, or receive new distributed trades.
-Existing open positions are deliberately not invalidated by entitlement expiry/revocation
-so they can still be managed and closed safely.
+Existing open positions are deliberately not invalidated by entitlement expiry,
+revocation or pause so they can still be managed and closed safely.
 """
 
 from __future__ import annotations
@@ -80,6 +80,10 @@ def get_subscription_state(session: Session, user_id: UUID) -> SubscriptionState
     complimentary_active = bool(
         complimentary and complimentary["status"] == "active"
     )
+    paid_suspended = bool(subscription and subscription["status"] == "suspended")
+    complimentary_suspended = bool(
+        complimentary and complimentary["status"] == "suspended"
+    )
     entitlement_active = paid_active or complimentary_active
 
     if complimentary_active:
@@ -90,13 +94,19 @@ def get_subscription_state(session: Session, user_id: UUID) -> SubscriptionState
         state_status = "active"
         plan_code = str(subscription["plan_code"])
         effective_active_until = active_until
+    elif complimentary_suspended or paid_suspended:
+        # An explicit owner pause takes precedence over a pending payment claim so the
+        # admin UI always offers Resume until payment approval/reactivation restores it.
+        state_status = "suspended"
+        if complimentary_suspended:
+            plan_code = "complimentary"
+            effective_active_until = None
+        else:
+            plan_code = str(subscription["plan_code"])
+            effective_active_until = active_until
     elif claim and claim["status"] == "pending":
         state_status = "pending"
         plan_code = str(subscription["plan_code"]) if subscription else None
-        effective_active_until = active_until
-    elif subscription and subscription["status"] == "suspended":
-        state_status = "suspended"
-        plan_code = str(subscription["plan_code"])
         effective_active_until = active_until
     elif subscription and active_until is not None and active_until <= now:
         state_status = "expired"

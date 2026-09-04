@@ -45,6 +45,20 @@ class SubscriptionStateResponse(BaseModel):
     last_claim_status: str | None
 
 
+class MemberAccessStateResponse(BaseModel):
+    user_id: UUID
+    email: str
+    display_name: str | None
+    status: str
+    active: bool
+    plan_code: str | None
+    active_until: datetime | None
+
+
+class MemberAccessMutationResponse(MemberAccessStateResponse):
+    message: str
+
+
 class PaymentClaimRequest(BaseModel):
     plan_code: str = Field(pattern="^(monthly|annual)$")
     transaction_signature: str = Field(min_length=32, max_length=160)
@@ -110,6 +124,46 @@ def _state_response(session: Session, user_id: UUID) -> SubscriptionStateRespons
         pending_transaction_signature=state.pending_transaction_signature,
         last_claim_status=state.last_claim_status,
     )
+
+
+def _managed_member(session: Session, user_id: UUID) -> Any:
+    row = session.execute(
+        text(
+            """
+            SELECT DISTINCT u.id AS user_id, u.email, u.display_name
+            FROM users u
+            JOIN user_roles ur ON ur.user_id=u.id
+            JOIN roles r ON r.id=ur.role_id
+            WHERE u.id=:user_id AND r.name='user'
+            LIMIT 1
+            """
+        ),
+        {"user_id": user_id},
+    ).mappings().first()
+    if row is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Member account not found.")
+    return row
+
+
+def _member_access_response(
+    session: Session,
+    member: Any,
+    *,
+    message: str | None = None,
+) -> MemberAccessStateResponse | MemberAccessMutationResponse:
+    state = get_subscription_state(session, UUID(str(member["user_id"])))
+    values = {
+        "user_id": UUID(str(member["user_id"])),
+        "email": str(member["email"]),
+        "display_name": (str(member["display_name"]) if member["display_name"] else None),
+        "status": state.status,
+        "active": state.active,
+        "plan_code": state.plan_code,
+        "active_until": state.active_until,
+    }
+    if message is None:
+        return MemberAccessStateResponse(**values)
+    return MemberAccessMutationResponse(**values, message=message)
 
 
 def _valid_solana_signature(value: str) -> str:
@@ -193,6 +247,164 @@ def submit_payment_claim(
         expected_amount_eur=amount,
         transaction_signature=signature,
         message="Payment submitted. MT5 unlocks after Smart Signals approves the payment.",
+    )
+
+
+@owner_router.get("/members", response_model=list[MemberAccessStateResponse])
+def member_access_states(
+    response: Response,
+    identity: Identity,
+    session: DbSession,
+) -> list[MemberAccessStateResponse]:
+    _owner(identity)
+    members = session.execute(
+        text(
+            """
+            SELECT DISTINCT u.id AS user_id, u.email, u.display_name
+            FROM users u
+            JOIN user_roles ur ON ur.user_id=u.id
+            JOIN roles r ON r.id=ur.role_id
+            WHERE r.name='user'
+            ORDER BY lower(COALESCE(u.display_name, '')), lower(u.email::text)
+            """
+        )
+    ).mappings().all()
+    _no_store(response)
+    return [
+        _member_access_response(session, member)
+        for member in members
+    ]
+
+
+@owner_router.post(
+    "/users/{user_id}/pause",
+    response_model=MemberAccessMutationResponse,
+)
+def pause_member_access(
+    user_id: UUID,
+    response: Response,
+    identity: Identity,
+    session: DbSession,
+) -> MemberAccessMutationResponse:
+    _owner(identity)
+    member = _managed_member(session, user_id)
+
+    paid_paused = session.execute(
+        text(
+            """
+            UPDATE member_subscriptions
+            SET status='suspended', updated_at=now()
+            WHERE user_id=:user_id AND status='active'
+            RETURNING user_id
+            """
+        ),
+        {"user_id": user_id},
+    ).scalar_one_or_none()
+    complimentary_paused = session.execute(
+        text(
+            """
+            UPDATE complimentary_access_grants
+            SET status='suspended', revoked_at=NULL, updated_at=now()
+            WHERE user_id=:user_id AND status='active'
+            RETURNING user_id
+            """
+        ),
+        {"user_id": user_id},
+    ).scalar_one_or_none()
+
+    if paid_paused is None and complimentary_paused is None:
+        current = get_subscription_state(session, user_id)
+        if current.status != "suspended":
+            session.rollback()
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail={
+                    "message": "This member has no active subscription or complimentary access to pause.",
+                    "subscription_status": current.status,
+                },
+            )
+    else:
+        session.commit()
+
+    _no_store(response)
+    return _member_access_response(
+        session,
+        member,
+        message=(
+            "Subscription paused. New subscription-gated trading is blocked, while the "
+            "member's MT5 connection, settings and history are preserved."
+        ),
+    )
+
+
+@owner_router.post(
+    "/users/{user_id}/resume",
+    response_model=MemberAccessMutationResponse,
+)
+def resume_member_access(
+    user_id: UUID,
+    response: Response,
+    identity: Identity,
+    session: DbSession,
+) -> MemberAccessMutationResponse:
+    _owner(identity)
+    member = _managed_member(session, user_id)
+
+    paid_resumed = session.execute(
+        text(
+            """
+            UPDATE member_subscriptions
+            SET status='active', updated_at=now()
+            WHERE user_id=:user_id
+              AND status='suspended'
+              AND active_until > now()
+            RETURNING user_id
+            """
+        ),
+        {"user_id": user_id},
+    ).scalar_one_or_none()
+    complimentary_resumed = session.execute(
+        text(
+            """
+            UPDATE complimentary_access_grants
+            SET status='active', revoked_at=NULL, updated_at=now()
+            WHERE user_id=:user_id AND status='suspended'
+            RETURNING user_id
+            """
+        ),
+        {"user_id": user_id},
+    ).scalar_one_or_none()
+
+    if paid_resumed is None and complimentary_resumed is None:
+        current = get_subscription_state(session, user_id)
+        if current.active:
+            session.rollback()
+        elif current.status == "suspended":
+            session.rollback()
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail={
+                    "message": "This paused paid subscription has expired. Approve the member's new payment instead of resuming the old period.",
+                    "subscription_status": current.status,
+                },
+            )
+        else:
+            session.rollback()
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail={
+                    "message": "This member does not have paused access to resume.",
+                    "subscription_status": current.status,
+                },
+            )
+    else:
+        session.commit()
+
+    _no_store(response)
+    return _member_access_response(
+        session,
+        member,
+        message="Subscription resumed. Saved MT5 and account settings remain in place.",
     )
 
 
