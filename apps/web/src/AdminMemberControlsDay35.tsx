@@ -61,17 +61,32 @@ type Props = { apiBaseUrl: string };
 const OWNER_SUBSCRIPTIONS_PATH = '/owner/mt5/approvals/subscriptions';
 
 async function readJson<T>(response: Response): Promise<T> {
-  const body = (await response.json()) as T;
+  let body: unknown = null;
+  const contentType = response.headers.get('content-type') || '';
+  if (contentType.toLowerCase().includes('json')) {
+    try {
+      body = await response.json();
+    } catch {
+      body = null;
+    }
+  }
   if (!response.ok) {
-    const detail = typeof body === 'object' && body !== null && 'detail' in body ? (body as { detail: unknown }).detail : null;
+    const detail = typeof body === 'object' && body !== null && 'detail' in body
+      ? (body as { detail: unknown }).detail
+      : null;
     const message = typeof detail === 'object' && detail !== null && 'message' in detail
       ? String((detail as { message: unknown }).message)
       : typeof detail === 'string'
         ? detail
-        : 'The member control could not be completed safely.';
+        : response.status >= 500
+          ? 'Member controls are temporarily unavailable. Please refresh in a moment.'
+          : 'The member control could not be completed safely.';
     throw new Error(message);
   }
-  return body;
+  if (body === null) {
+    throw new Error('Member controls returned an invalid response. Please refresh in a moment.');
+  }
+  return body as T;
 }
 
 function riskLabel(user: ManagedUser): string {
