@@ -1,5 +1,6 @@
 const TRANSIENT_STATUS = new Set([502, 503, 504]);
 const RETRY_DELAYS_MS = [350, 900];
+const SESSION_READ_TIMEOUT_MS = 4_000;
 
 let installed = false;
 
@@ -13,6 +14,15 @@ function requestMethod(input: RequestInfo | URL, init?: RequestInit): string {
   return 'GET';
 }
 
+function requestPath(input: RequestInfo | URL): string {
+  const raw = input instanceof Request ? input.url : String(input);
+  try {
+    return new URL(raw, window.location.href).pathname;
+  } catch {
+    return raw;
+  }
+}
+
 function acceptsJson(input: RequestInfo | URL, init?: RequestInit): boolean {
   const headers = new Headers(input instanceof Request ? input.headers : undefined);
   if (init?.headers) {
@@ -23,6 +33,31 @@ function acceptsJson(input: RequestInfo | URL, init?: RequestInit): boolean {
 
 function isHtml(response: Response): boolean {
   return (response.headers.get('content-type') || '').toLowerCase().includes('text/html');
+}
+
+function isSessionRestoreRead(input: RequestInfo | URL, method: string): boolean {
+  return (method === 'GET' || method === 'HEAD') && requestPath(input).endsWith('/auth/me');
+}
+
+async function sessionFetchWithTimeout(
+  nativeFetch: typeof window.fetch,
+  input: RequestInfo | URL,
+  init?: RequestInit,
+): Promise<Response> {
+  const controller = new AbortController();
+  const upstreamSignal = init?.signal ?? (input instanceof Request ? input.signal : undefined);
+  const abortFromUpstream = () => controller.abort();
+
+  if (upstreamSignal?.aborted) controller.abort();
+  else upstreamSignal?.addEventListener('abort', abortFromUpstream, { once: true });
+
+  const timeout = window.setTimeout(() => controller.abort(), SESSION_READ_TIMEOUT_MS);
+  try {
+    return await nativeFetch(input, { ...init, signal: controller.signal });
+  } finally {
+    window.clearTimeout(timeout);
+    upstreamSignal?.removeEventListener('abort', abortFromUpstream);
+  }
 }
 
 function temporaryJsonResponse(): Response {
@@ -49,6 +84,9 @@ function temporaryJsonResponse(): Response {
  *
  * GET/HEAD JSON reads are retried twice. Mutating requests are never retried, so
  * this guard cannot duplicate a trade, close, settings change, or other action.
+ * Session restoration is intentionally different: /auth/me gets one bounded four-second
+ * attempt and then hands control back to App's existing 1.5-second reconnect loop. This
+ * prevents a mobile browser request opened during a Render restart from hanging forever.
  */
 export function installApiFetchGuard(): void {
   if (installed) return;
@@ -61,11 +99,14 @@ export function installApiFetchGuard(): void {
 
     const method = requestMethod(input, init);
     const mayRetry = method === 'GET' || method === 'HEAD';
-    const maxAttempts = mayRetry ? RETRY_DELAYS_MS.length + 1 : 1;
+    const sessionRestoreRead = isSessionRestoreRead(input, method);
+    const maxAttempts = sessionRestoreRead ? 1 : mayRetry ? RETRY_DELAYS_MS.length + 1 : 1;
 
     for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
       try {
-        const response = await nativeFetch(input, init);
+        const response = sessionRestoreRead
+          ? await sessionFetchWithTimeout(nativeFetch, input, init)
+          : await nativeFetch(input, init);
         const transient = TRANSIENT_STATUS.has(response.status) || isHtml(response);
 
         if (transient && mayRetry && attempt < maxAttempts - 1) {
