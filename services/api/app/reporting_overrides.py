@@ -4,6 +4,10 @@ Broker deals and canonical outcomes stay immutable. A reporting override removes
 affected local day's pre-cutoff outcomes from user-facing aggregates and substitutes one
 reviewed cash result. This keeps forensic truth while preventing known application
 failures from distorting official performance.
+
+Overrides whose incident_key starts with ``restart-`` are stronger clean-start boundaries:
+all trades opened before the cutoff are excluded from the restart day onward, even if an
+old position closes after the cutoff. Older completed historical days remain intact.
 """
 
 from __future__ import annotations
@@ -21,24 +25,62 @@ NOT EXISTS (
     SELECT 1
     FROM performance_reporting_overrides AS reporting_override
     WHERE reporting_override.user_id=o.user_id
-      AND o.closed_at IS NOT NULL
-      AND o.closed_at < reporting_override.cutoff_at
-      AND (o.closed_at AT TIME ZONE reporting_override.timezone)::date
-          = reporting_override.reporting_date
+      AND (
+        (
+          reporting_override.incident_key NOT LIKE 'restart-%'
+          AND o.closed_at IS NOT NULL
+          AND o.closed_at < reporting_override.cutoff_at
+          AND (o.closed_at AT TIME ZONE reporting_override.timezone)::date
+              = reporting_override.reporting_date
+        )
+        OR
+        (
+          reporting_override.incident_key LIKE 'restart-%'
+          AND COALESCE(o.opened_at,o.closed_at,o.derived_at) < reporting_override.cutoff_at
+          AND (
+            o.status IN ('open','pending')
+            OR COALESCE(o.closed_at,o.derived_at,o.opened_at)
+               >= (reporting_override.reporting_date::timestamp
+                   AT TIME ZONE reporting_override.timezone)
+          )
+        )
+      )
 )
 """
 
 # Broker-deal equivalent of OUTCOME_NOT_OVERRIDDEN_SQL. User-facing cash accounting is
 # broker-backed, so incident days must exclude the same pre-cutoff cash without deleting
-# or rewriting the immutable broker deal itself.
+# or rewriting the immutable broker deal itself. Clean restart overrides additionally
+# exclude exits belonging to positions opened before the restart boundary.
 BROKER_DEAL_NOT_OVERRIDDEN_SQL = """
 NOT EXISTS (
     SELECT 1
     FROM performance_reporting_overrides AS reporting_override
     WHERE reporting_override.user_id=bd.user_id
-      AND bd.occurred_at < reporting_override.cutoff_at
-      AND (bd.occurred_at AT TIME ZONE reporting_override.timezone)::date
-          = reporting_override.reporting_date
+      AND (
+        (
+          reporting_override.incident_key NOT LIKE 'restart-%'
+          AND bd.occurred_at < reporting_override.cutoff_at
+          AND (bd.occurred_at AT TIME ZONE reporting_override.timezone)::date
+              = reporting_override.reporting_date
+        )
+        OR
+        (
+          reporting_override.incident_key LIKE 'restart-%'
+          AND bd.occurred_at >= (
+                reporting_override.reporting_date::timestamp
+                AT TIME ZONE reporting_override.timezone
+              )
+          AND EXISTS (
+              SELECT 1
+              FROM positions AS restart_position
+              WHERE restart_position.user_id=bd.user_id
+                AND restart_position.id=bd.position_id
+                AND COALESCE(restart_position.opened_at,restart_position.created_at)
+                    < reporting_override.cutoff_at
+          )
+        )
+      )
 )
 """
 
