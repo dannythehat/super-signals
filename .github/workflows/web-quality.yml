@@ -1,0 +1,32 @@
+name: Private app web quality
+
+on:
+  pull_request:
+    branches:
+      - feature/day-10-shared-telegram-sources
+  push:
+    branches:
+      - feature/day-10-shared-telegram-sources
+
+permissions:
+  contents: read
+
+jobs:
+  web:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - name: Install dependencies
+        run: npm ci
+      - name: Typecheck
+        run: npm run typecheck
+      - name: Lint web
+        run: npm run lint:web
+      - name: Run web tests
+        run: npm run test:web
+      - name: Build web
+        run: VITE_API_BASE_URL= npm run build:web
