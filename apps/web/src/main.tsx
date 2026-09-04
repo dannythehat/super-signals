@@ -75,7 +75,7 @@ document.addEventListener('visibilitychange', requestCanonicalAccountSync);
 
 if ('serviceWorker' in navigator) {
   window.addEventListener('load', () => {
-    void navigator.serviceWorker.register('/sw.js').then((registration) => {
+    void navigator.serviceWorker.register('/sw.js', { updateViaCache: 'none' }).then((registration) => {
       void registration.update();
       window.setInterval(() => void registration.update(), BUILD_CHECK_INTERVAL_MS);
     });
