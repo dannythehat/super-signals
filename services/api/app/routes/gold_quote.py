@@ -3,11 +3,14 @@
 The Gold quote remains isolated from MetaAPI and the user's broker account. The public
 performance feed is read-only and exposes only the Owner reference ledger needed by the
 Smart Signals public website: daily realised P/L plus provider-hidden trade outcomes.
+Audited reporting overrides are applied to the public cash ledger without changing the
+immutable broker evidence.
 """
 
 from __future__ import annotations
 
 from datetime import UTC, date, datetime
+from decimal import Decimal
 from math import isfinite
 from time import monotonic
 from typing import Annotated, Any
@@ -21,6 +24,10 @@ from sqlalchemy import text
 
 from app.access_control import get_current_identity
 from app.performance_ledger_day33_v2 import Day33PerformanceLedgerServiceV2
+from app.reporting_overrides import (
+    BROKER_DEAL_NOT_OVERRIDDEN_SQL,
+    override_cash_by_day,
+)
 
 router = APIRouter(prefix="/dashboard", tags=["dashboard-public-data"])
 Identity = Annotated[dict[str, Any], Depends(get_current_identity)]
@@ -233,10 +240,18 @@ def _owner_reference_user_id(service: Day33PerformanceLedgerServiceV2) -> UUID:
 
 
 def _public_daily(service: Day33PerformanceLedgerServiceV2, user_id: UUID) -> tuple[PublicDailyPnlResponse, ...]:
+    now = datetime.now(UTC)
+    public_zone = ZoneInfo(_PUBLIC_TIMEZONE)
+    public_start = datetime(
+        _PUBLIC_LIVE_START.year,
+        _PUBLIC_LIVE_START.month,
+        _PUBLIC_LIVE_START.day,
+        tzinfo=public_zone,
+    ).astimezone(UTC)
     with service._session_factory() as session:
         rows = session.execute(
             text(
-                """
+                f"""
                 SELECT
                     timezone(:timezone_name, bd.occurred_at)::date AS local_day,
                     COALESCE(SUM(
@@ -248,7 +263,9 @@ def _public_daily(service: Day33PerformanceLedgerServiceV2, user_id: UUID) -> tu
                 WHERE bd.user_id=:user_id
                   AND bd.entry_type='DEAL_ENTRY_OUT'
                   AND (bd.signal_id IS NOT NULL OR bd.broker_client_id LIKE 'SS_%')
-                  AND timezone(:timezone_name, bd.occurred_at)::date >= :start_day
+                  AND bd.occurred_at>=:start_at
+                  AND bd.occurred_at<:end_at
+                  AND {BROKER_DEAL_NOT_OVERRIDDEN_SQL}
                 GROUP BY 1
                 ORDER BY 1
                 """
@@ -256,12 +273,27 @@ def _public_daily(service: Day33PerformanceLedgerServiceV2, user_id: UUID) -> tu
             {
                 "user_id": user_id,
                 "timezone_name": _PUBLIC_TIMEZONE,
-                "start_day": _PUBLIC_LIVE_START,
+                "start_at": public_start,
+                "end_at": now,
             },
         ).mappings().all()
-    return tuple(
-        PublicDailyPnlResponse(day=row["local_day"], pnl=round(float(row["pnl"] or 0), 2))
+        reviewed_by_day = override_cash_by_day(
+            session,
+            user_id,
+            start=public_start,
+            end=now,
+        )
+
+    values = {
+        row["local_day"]: Decimal(str(row["pnl"] or 0))
         for row in rows
+    }
+    for reporting_day, reviewed_cash in reviewed_by_day.items():
+        values[reporting_day] = values.get(reporting_day, Decimal("0")) + reviewed_cash
+
+    return tuple(
+        PublicDailyPnlResponse(day=day, pnl=round(float(pnl), 2))
+        for day, pnl in sorted(values.items())
     )
 
 
