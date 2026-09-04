@@ -11,7 +11,8 @@ local calendar day.
 Audited incident overrides never rewrite broker evidence. Pre-cutoff broker exits on an
 overridden reporting day are excluded from user-facing cash totals and replaced by the
 reviewed cash amount stored in performance_reporting_overrides. Post-cutoff exits continue
-to count normally.
+to count normally. Revoked providers are excluded from user-facing P/L while their broker
+evidence remains immutable.
 
 The Owner demo uses the active paper epoch as its synthetic capital origin. For the
 current clean run that is USD 1,500 from 27 August 2026 11:30 Europe/Sofia, with no
@@ -132,8 +133,10 @@ class CanonicalTradingAccountingService:
                     """
                     SELECT MIN(bd.occurred_at)
                     FROM broker_deals AS bd
+                    JOIN sources AS src ON src.id=bd.source_id
                     WHERE bd.user_id=:user_id
                       AND bd.mt5_account_id=:account_id
+                      AND src.status<>'revoked'
                       AND bd.entry_type='DEAL_ENTRY_OUT'
                       AND (bd.signal_id IS NOT NULL OR bd.broker_client_id LIKE 'SS_%')
                     """
@@ -172,8 +175,10 @@ class CanonicalTradingAccountingService:
                         + COALESCE(bd.swap,0)
                     ),0)
                     FROM broker_deals AS bd
+                    JOIN sources AS src ON src.id=bd.source_id
                     WHERE bd.user_id=:user_id
                       AND bd.mt5_account_id=:account_id
+                      AND src.status<>'revoked'
                       AND bd.entry_type='DEAL_ENTRY_OUT'
                       AND (bd.signal_id IS NOT NULL OR bd.broker_client_id LIKE 'SS_%')
                       AND bd.occurred_at>=:start_at
@@ -292,8 +297,10 @@ class CanonicalTradingAccountingService:
                             + COALESCE(bd.swap,0)
                         ),0) AS pnl
                     FROM broker_deals AS bd
+                    JOIN sources AS src ON src.id=bd.source_id
                     WHERE bd.user_id=:user_id
                       AND bd.mt5_account_id=:account_id
+                      AND src.status<>'revoked'
                       AND bd.entry_type='DEAL_ENTRY_OUT'
                       AND (bd.signal_id IS NOT NULL OR bd.broker_client_id LIKE 'SS_%')
                       AND bd.occurred_at>=:start_at
