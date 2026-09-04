@@ -12,6 +12,15 @@ function jsonResponse(status: number, body: unknown): Response {
   } as Response;
 }
 
+function textResponse(status: number): Response {
+  return {
+    ok: status >= 200 && status < 300,
+    status,
+    headers: new Headers({ 'content-type': 'text/plain; charset=utf-8' }),
+    json: async () => { throw new SyntaxError("Unexpected token 'I'"); },
+  } as Response;
+}
+
 const userId = '2791cc0b-d501-4e51-8b96-72262f11df0b';
 const managedUser = {
   user_id: userId,
@@ -72,5 +81,21 @@ describe('AdminMemberControlsDay35', () => {
       `/api/owner/mt5/approvals/subscriptions/users/${userId}/pause`,
       expect.objectContaining({ method: 'POST', credentials: 'include' }),
     ));
+  });
+
+  it('shows a clean message instead of a JSON parser failure on a server error', async () => {
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url === '/api/access/day35/user-controls/users') return jsonResponse(200, [managedUser]);
+      if (url === '/api/owner/mt5/approvals/subscriptions/members') return textResponse(500);
+      return jsonResponse(404, { detail: 'Not Found' });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    render(<AdminMemberControlsDay35 apiBaseUrl="/api" />);
+
+    expect(await screen.findByText('Member controls are temporarily unavailable. Please refresh in a moment.')).toBeInTheDocument();
+    expect(screen.queryByText(/Unexpected token/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/not valid JSON/i)).not.toBeInTheDocument();
   });
 });
