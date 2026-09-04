@@ -1,4 +1,4 @@
-"""Activate production incident guards and the 2026-09-04 11:00 Sofia clean restart."""
+"""Activate the authoritative 4 Sep 2026 11:00 Sofia clean-restart guards."""
 
 from __future__ import annotations
 
@@ -20,16 +20,23 @@ if _should_activate():
     try:
         import sitecustomize as incident
         import app.restart_20260904_1100 as restart
-        from app.incident_20260904_asia_owner_cleanup import run_owner_asia_cleanup
+        from app.restart_dashboard_patch_20260904 import install_restart_dashboard_patch
+        from app.restart_repair_20260904 import restore_restart_overrides
 
+        # Keep only the provider-language compatibility shim from the morning incident.
+        # All legacy broker cleanup/reporting mutation is retired after the 11:00 reset.
         incident._install_reader_hotfix()
+
+        # Reassert the clean restart as the sole Sep-4 reporting boundary before any
+        # dashboard service is instantiated. Owner intentionally retains the -$3.60
+        # cleanup settlement; other connected users retain a zero boundary carry.
+        restore_restart_overrides()
         restart.install_execution_hold()
         restart.install_timeline_filter()
-        asyncio.run(run_owner_asia_cleanup())
+        install_restart_dashboard_patch()
 
-        # The 11:00 reset rows are already committed before broker cleanup begins. Keep
-        # future restarts focused on idempotent broker cleanup and avoid rewriting audit
-        # metadata while the fixed restart remains active.
+        # Broker cleanup remains idempotent and targets only pre-11 positions. The
+        # authoritative rows were restored above, so skip the old audit-writing upsert.
         restart._upsert_overrides = lambda _user_ids: None
         asyncio.run(restart.run_connected_account_restart())
     except Exception as exc:
