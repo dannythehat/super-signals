@@ -4,7 +4,7 @@ The Gold quote remains isolated from MetaAPI and the user's broker account. The 
 performance feed is read-only and exposes only the Owner reference ledger needed by the
 Smart Signals public website: daily realised P/L plus provider-hidden trade outcomes.
 Audited reporting overrides are applied to the public cash ledger without changing the
-immutable broker evidence.
+immutable broker evidence, and revoked providers remain outside user-facing performance.
 """
 
 from __future__ import annotations
@@ -260,7 +260,9 @@ def _public_daily(service: Day33PerformanceLedgerServiceV2, user_id: UUID) -> tu
                         + COALESCE(bd.swap,0)
                     ),0) AS pnl
                 FROM broker_deals bd
+                JOIN sources src ON src.id=bd.source_id
                 WHERE bd.user_id=:user_id
+                  AND src.status<>'revoked'
                   AND bd.entry_type='DEAL_ENTRY_OUT'
                   AND (bd.signal_id IS NOT NULL OR bd.broker_client_id LIKE 'SS_%')
                   AND bd.occurred_at>=:start_at
