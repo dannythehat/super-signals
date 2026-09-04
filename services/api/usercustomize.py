@@ -19,18 +19,19 @@ def _should_activate() -> bool:
 if _should_activate():
     try:
         import sitecustomize as incident
+        import app.restart_20260904_1100 as restart
         from app.incident_20260904_asia_owner_cleanup import run_owner_asia_cleanup
-        from app.restart_20260904_1100 import (
-            install_execution_hold,
-            install_timeline_filter,
-            run_connected_account_restart,
-        )
 
         incident._install_reader_hotfix()
-        install_execution_hold()
-        install_timeline_filter()
+        restart.install_execution_hold()
+        restart.install_timeline_filter()
         asyncio.run(run_owner_asia_cleanup())
-        asyncio.run(run_connected_account_restart())
+
+        # The 11:00 reset rows are already committed before broker cleanup begins. Keep
+        # future restarts focused on idempotent broker cleanup and avoid rewriting audit
+        # metadata while the fixed restart remains active.
+        restart._upsert_overrides = lambda _user_ids: None
+        asyncio.run(restart.run_connected_account_restart())
     except Exception as exc:
         print(
             f"SUPER_SIGNALS_PRODUCTION_GUARD_ACTIVATION_FATAL={type(exc).__name__}:{str(exc)[:180]}",
