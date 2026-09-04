@@ -37,7 +37,7 @@ _PRIMARY_URL = "https://biquote.io/api/XAUUSD?allowStale=false"
 _FALLBACK_URL = "https://api.gold-api.com/price/XAU"
 _LIVE_CACHE_SECONDS = 0.75
 _RETRY_CACHE_SECONDS = 2.0
-_PUBLIC_TIMEZONE = "Europe/London"
+_PUBLIC_TIMEZONE = "Europe/Sofia"
 _PUBLIC_LIVE_START = date(2026, 8, 31)
 _PUBLIC_TRADE_DETAIL_START = date(2026, 9, 3)
 _PUBLIC_STARTING_BALANCE = 1517.23
