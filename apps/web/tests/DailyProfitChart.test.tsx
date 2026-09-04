@@ -15,12 +15,18 @@ describe('DailyProfitChart', () => {
             opening_balance: 1000,
             return_percent: 9.917,
           },
+          {
+            day: '2026-09-03',
+            pnl: 99.17,
+            opening_balance: 1000,
+            return_percent: 9.917,
+          },
         ]}
         currency="USD"
         timezoneName="Europe/Sofia"
         currentBalance={1099.17}
         currentMonthPnl={99.17}
-        allTimePnl={99.17}
+        allTimePnl={198.34}
         ownerDemo
       />,
     );
