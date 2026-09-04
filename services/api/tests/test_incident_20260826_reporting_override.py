@@ -1,12 +1,14 @@
 import inspect
 from decimal import Decimal
 
-from app import dashboard_today_summary, performance_runtime
+from app import dashboard_today_summary, performance_runtime, trading_accounting
 from app.reporting_overrides import (
+    BROKER_DEAL_NOT_OVERRIDDEN_SQL,
     OUTCOME_NOT_OVERRIDDEN_SQL,
     current_day_override,
     override_cash_for_window,
 )
+from app.routes import gold_quote
 
 
 def test_override_excludes_only_reporting_outcomes_not_broker_evidence() -> None:
@@ -15,6 +17,14 @@ def test_override_excludes_only_reporting_outcomes_not_broker_evidence() -> None
     assert "broker_deals" not in OUTCOME_NOT_OVERRIDDEN_SQL
     assert "closed_at" in OUTCOME_NOT_OVERRIDDEN_SQL
     assert "cutoff_at" in OUTCOME_NOT_OVERRIDDEN_SQL
+
+
+def test_broker_cash_override_preserves_immutable_broker_deals() -> None:
+    assert "performance_reporting_overrides" in BROKER_DEAL_NOT_OVERRIDDEN_SQL
+    assert "bd.occurred_at" in BROKER_DEAL_NOT_OVERRIDDEN_SQL
+    assert "cutoff_at" in BROKER_DEAL_NOT_OVERRIDDEN_SQL
+    assert "UPDATE" not in BROKER_DEAL_NOT_OVERRIDDEN_SQL.upper()
+    assert "DELETE" not in BROKER_DEAL_NOT_OVERRIDDEN_SQL.upper()
 
 
 def test_today_summary_uses_reviewed_cash_override() -> None:
@@ -28,6 +38,29 @@ def test_every_runtime_window_excludes_incident_day_and_adds_reviewed_cash() -> 
     assert "OUTCOME_NOT_OVERRIDDEN_SQL" in source
     assert "override_cash_for_window" in source
     assert "realised_cash = reviewed_cash" in source
+
+
+def test_dashboard_money_layer_applies_override_and_excludes_revoked_providers() -> None:
+    sum_source = inspect.getsource(trading_accounting.CanonicalTradingAccountingService._sum_exits)
+    daily_source = inspect.getsource(
+        trading_accounting.CanonicalTradingAccountingService._daily_super_signals_pnl
+    )
+    assert "BROKER_DEAL_NOT_OVERRIDDEN_SQL" in sum_source
+    assert "override_cash_for_window" in sum_source
+    assert "JOIN sources AS src" in sum_source
+    assert "src.status<>'revoked'" in sum_source
+    assert "BROKER_DEAL_NOT_OVERRIDDEN_SQL" in daily_source
+    assert "override_cash_by_day" in daily_source
+    assert "JOIN sources AS src" in daily_source
+    assert "src.status<>'revoked'" in daily_source
+
+
+def test_public_performance_feed_uses_same_corrected_cash_contract() -> None:
+    source = inspect.getsource(gold_quote._public_daily)
+    assert "BROKER_DEAL_NOT_OVERRIDDEN_SQL" in source
+    assert "override_cash_by_day" in source
+    assert "JOIN sources src" in source
+    assert "src.status<>'revoked'" in source
 
 
 class _ScalarResult:
