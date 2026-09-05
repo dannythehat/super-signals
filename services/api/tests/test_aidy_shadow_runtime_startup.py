@@ -63,3 +63,10 @@ def test_main_lifespan_starts_aidy_before_broker_gate() -> None:
     assert start in source
     assert stop in source
     assert source.index(construct) < source.index(broker_gate)
+
+
+def test_broker_shadow_manager_cannot_start_second_aidy_resolver() -> None:
+    source = (ROOT / "app" / "shadow_trading_v4.py").read_text(encoding="utf-8")
+    assert "AidyShadowResolver" not in source
+    assert "AidyMarketClient" not in source
+    assert "super-signals-shadow-aidy-m1" not in source
