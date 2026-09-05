@@ -24,6 +24,7 @@ def upgrade() -> None:
         "quote_mode IN ('unobserved','snapshot_poll','stream_quote','stream_tick','aidy_m1')",
     )
     op.add_column("shadow_trades", sa.Column("aidy_m1_cursor_at", sa.DateTime(timezone=True), nullable=True))
+    op.add_column("shadow_trades", sa.Column("aidy_effective_stop", sa.Numeric(24, 10), nullable=True))
     op.add_column("shadow_trades", sa.Column("aidy_resolution_note", sa.String(length=96), nullable=True))
     op.execute(
         """
@@ -48,6 +49,7 @@ def downgrade() -> None:
         """
     )
     op.drop_column("shadow_trades", "aidy_resolution_note")
+    op.drop_column("shadow_trades", "aidy_effective_stop")
     op.drop_column("shadow_trades", "aidy_m1_cursor_at")
     op.drop_constraint("ck_shadow_fair_quote_mode", "shadow_trades", type_="check")
     op.create_check_constraint(
