@@ -21,6 +21,7 @@ from app.day27_code_acceptance import run_day27_code_acceptance_probe
 from app.day34_code_acceptance import run_day34_code_acceptance_probe
 from app.day34_live_acceptance import run_day34_live_acceptance_safely
 from app.db import get_session_factory
+from app.aidy_shadow_runtime import AidyShadowRuntime
 from app.metaapi_gateway import MetaApiProvisioningGateway
 from app.metaapi_read_gateway import MetaApiReadGateway
 from app.metaapi_trade_gateway import MetaApiTradeGateway
@@ -132,6 +133,9 @@ async def _lifespan(application: FastAPI) -> AsyncIterator[None]:
     settings = get_settings()
     publisher_settings = get_publisher_settings()
     session_factory = get_session_factory()
+    aidy_shadow_runtime = AidyShadowRuntime(session_factory)
+    application.state.aidy_shadow_runtime = aidy_shadow_runtime
+    await aidy_shadow_runtime.start()
 
     if os.getenv("SUPER_SIGNALS_DAY26_CODE_PROBE", "").strip() == "1":
         await run_day26_code_acceptance_probe()
@@ -356,6 +360,7 @@ async def _lifespan(application: FastAPI) -> AsyncIterator[None]:
                 await day34_live_acceptance_task
             except asyncio.CancelledError:
                 pass
+        await aidy_shadow_runtime.stop()
         await publisher.stop()
         if push_manager is not None:
             await push_manager.stop()
