@@ -16,9 +16,11 @@ from app.provider_fairness import (
 )
 from app.shadow_trading_v2 import ShadowTradeService as _BaseShadowTradeService, _decimal
 
+_AIDY_STYLES = {"intraday", "swing_or_sparse"}
+
 
 class ShadowTradeService(_BaseShadowTradeService):
-    """Create only real-time benchmark actions and quarantine conflicting revisions."""
+    """Create real-time benchmark actions; AIDY-style lifecycle state is replay-only."""
 
     def record_signal(self, signal_id: UUID) -> bool:
         with self._session_factory() as session:
@@ -95,8 +97,26 @@ class ShadowTradeService(_BaseShadowTradeService):
                 else "market_data_not_observed"
             )
 
+            leg_geometry = [
+                {"tp_index": index, "target_price": str(target), "is_runner": False}
+                for index, target in enumerate(targets, start=1)
+            ]
+            if runner:
+                leg_geometry.append(
+                    {"tp_index": len(targets) + 1, "target_price": None, "is_runner": True}
+                )
+
             created_any = False
             for entry in entries:
+                original_geometry = {
+                    "side": str(row["side"]),
+                    "entry_order_type": entry.order_type,
+                    "entry_low": str(entry.low),
+                    "entry_high": str(entry.high),
+                    "initial_stop": str(stop),
+                    "entry_index": entry.entry_index,
+                    "legs": leg_geometry,
+                }
                 shadow_id = session.execute(
                     text(
                         """
@@ -106,13 +126,13 @@ class ShadowTradeService(_BaseShadowTradeService):
                             benchmark_model,benchmark_start_balance_usd,benchmark_risk_per_leg_usd,
                             entry_index,entry_order_type,provider_style,interpretation_readiness_at_entry,
                             signal_posted_at,session_bucket,weekday_iso,target_count,score_eligible,
-                            score_exclusion_reason,quote_mode
+                            score_exclusion_reason,quote_mode,aidy_original_geometry,aidy_effective_stop
                         ) VALUES (
                             :source_id,:signal_id,:message_id,:symbol,:side,:broad_order_type,:entry_low,
                             :entry_high,:stop,:stop,CAST(:take_profits AS jsonb),'pending',
                             :benchmark_model,:benchmark_balance,:benchmark_risk,:entry_index,:entry_order_type,
                             :provider_style,:readiness,:posted_at,:session_bucket,:weekday_iso,:target_count,
-                            false,:initial_exclusion,'unobserved'
+                            false,:initial_exclusion,'unobserved',CAST(:original_geometry AS jsonb),:stop
                         )
                         ON CONFLICT (signal_id,entry_index) DO NOTHING
                         RETURNING id
@@ -141,6 +161,7 @@ class ShadowTradeService(_BaseShadowTradeService):
                         "weekday_iso": posted_at.isoweekday(),
                         "target_count": len(targets) + int(runner),
                         "initial_exclusion": initial_exclusion,
+                        "original_geometry": json.dumps(original_geometry, separators=(",", ":")),
                     },
                 ).scalar_one_or_none()
                 if shadow_id is None:
@@ -151,8 +172,9 @@ class ShadowTradeService(_BaseShadowTradeService):
                         text(
                             """
                             INSERT INTO shadow_trade_legs(
-                                shadow_trade_id,source_id,signal_id,tp_index,target_price,is_runner
-                            ) VALUES (:shadow_trade_id,:source_id,:signal_id,:tp_index,:target,false)
+                                shadow_trade_id,source_id,signal_id,tp_index,target_price,is_runner,
+                                aidy_original_target,aidy_effective_target
+                            ) VALUES (:shadow_trade_id,:source_id,:signal_id,:tp_index,:target,false,:target,:target)
                             ON CONFLICT (shadow_trade_id,tp_index) DO NOTHING
                             """
                         ),
@@ -169,8 +191,9 @@ class ShadowTradeService(_BaseShadowTradeService):
                         text(
                             """
                             INSERT INTO shadow_trade_legs(
-                                shadow_trade_id,source_id,signal_id,tp_index,target_price,is_runner
-                            ) VALUES (:shadow_trade_id,:source_id,:signal_id,:tp_index,NULL,true)
+                                shadow_trade_id,source_id,signal_id,tp_index,target_price,is_runner,
+                                aidy_original_target,aidy_effective_target
+                            ) VALUES (:shadow_trade_id,:source_id,:signal_id,:tp_index,NULL,true,NULL,NULL)
                             ON CONFLICT (shadow_trade_id,tp_index) DO NOTHING
                             """
                         ),
@@ -183,6 +206,26 @@ class ShadowTradeService(_BaseShadowTradeService):
                     )
             session.commit()
             return created_any
+
+    def record_management(self, lifecycle_event_id: UUID) -> bool:
+        """AIDY intraday/swing events stay append-only; replay is their only state writer."""
+        with self._session_factory() as session:
+            aidy_row = session.execute(
+                text(
+                    """
+                    SELECT 1
+                    FROM signal_lifecycle_events e
+                    JOIN shadow_trades t ON t.signal_id=e.signal_id
+                    WHERE e.id=:event_id
+                      AND t.provider_style IN ('intraday','swing_or_sparse')
+                    LIMIT 1
+                    """
+                ),
+                {"event_id": lifecycle_event_id},
+            ).scalar_one_or_none()
+        if aidy_row is not None:
+            return True
+        return super().record_management(lifecycle_event_id)
 
 
 __all__ = ["ShadowTradeService"]
