@@ -18,6 +18,26 @@ class ProviderAwareProductionAiPipeline(ProductionAiMessagePipeline):
         super().__init__(*args, **kwargs)
         self._adaptive_profiles = AdaptiveProviderProfileService(self._session_factory)
 
+    def refresh_all_provider_profiles(self) -> int:
+        """Build adaptive buckets immediately for every monitored provider source."""
+        with self._session_factory() as session:
+            source_ids = session.execute(
+                text(
+                    """
+                    SELECT id FROM sources
+                    WHERE status IN ('testing','shadow','live')
+                    ORDER BY created_at,id
+                    """
+                )
+            ).scalars().all()
+        refreshed = 0
+        for value in source_ids:
+            source_id = UUID(str(value))
+            self._adaptive_profiles.invalidate(source_id)
+            self._adaptive_profiles.get(source_id)
+            refreshed += 1
+        return refreshed
+
     def _source_context(
         self,
         *,
