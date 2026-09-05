@@ -1,13 +1,9 @@
-"""Public-feed Provider Lab runtime with no always-on broker market-data stream.
+"""Provider Lab runtime with AIDY M1 market truth for intraday/swing providers.
 
-Provider research must never keep the owner's MetaAPI/MT5 connection active merely to
-observe XAUUSD. One lightweight public bid/ask snapshot is shared across every active
-shadow trade. Tight scalps remain stored but cannot qualify from snapshot-resolution
-market data; provider_fairness deliberately requires tick evidence for those outcomes.
-
-The public feed is queried only when at least one shadow trade is pending/open. Database
-evaluation is moved to a worker thread so research traffic cannot block FastAPI's event
-loop or make the owner dashboard feel sticky.
+AIDY is an authenticated read-only provider, never a shared database. Intraday and
+swing shadow trades are resolved incrementally from admitted AIDY M1 OHLC. Scalpers
+remain observed by the lightweight public snapshot path but are explicitly excluded
+from scoring because M1/snapshot evidence is not sufficient for scalp sequencing.
 """
 
 from __future__ import annotations
@@ -20,6 +16,8 @@ from uuid import UUID
 import httpx
 from sqlalchemy import text
 
+from app.aidy_market_client import AidyMarketClient
+from app.aidy_shadow_resolver import AidyShadowResolver
 from app.provider_adaptive_profile import AdaptiveProviderProfileService
 from app.shadow_trading_v3 import ShadowTradeManager as _BaseShadowTradeManager
 from app.shadow_trading_v2 import _decimal
@@ -28,10 +26,16 @@ logger = logging.getLogger(__name__)
 
 _PUBLIC_XAUUSD_URL = "https://biquote.io/api/XAUUSD?allowStale=false"
 _PUBLIC_TIMEOUT_SECONDS = 2.0
+_AIDY_POLL_SECONDS = 300
+_AIDY_STYLES = {"intraday", "swing_or_sparse"}
 
 
 class ShadowTradeManager(_BaseShadowTradeManager):
-    """Evaluate Provider Lab from one public XAUUSD snapshot, never a MetaAPI stream."""
+    """Resolve Provider Lab without any always-on broker market-data stream."""
+
+    def __init__(self, *args, **kwargs) -> None:
+        super().__init__(*args, **kwargs)
+        self._aidy_task: asyncio.Task[None] | None = None
 
     async def start(self) -> None:
         # Deliberately start only the shared public-feed evaluator. Do NOT call the
@@ -42,6 +46,16 @@ class ShadowTradeManager(_BaseShadowTradeManager):
                 self._run(),
                 name="super-signals-shadow-public-gold",
             )
+        if self._aidy_task is None or self._aidy_task.done():
+            client = AidyMarketClient.from_environment()
+            if client is None:
+                logger.warning("AIDY Provider Lab market client not configured; M1 resolver disabled")
+            else:
+                resolver = AidyShadowResolver(self._session_factory, client)
+                self._aidy_task = asyncio.create_task(
+                    self._run_aidy(resolver),
+                    name="super-signals-shadow-aidy-m1",
+                )
         # Provider-language learning must not depend on the Telegram listener being
         # enabled at this exact startup. Backfill every monitored provider from the
         # durable database in an independent worker; failures never affect trading.
@@ -49,6 +63,35 @@ class ShadowTradeManager(_BaseShadowTradeManager):
             self._backfill_adaptive_profiles_once(),
             name="super-signals-adaptive-provider-backfill",
         )
+
+    async def stop(self) -> None:
+        if self._aidy_task is not None and not self._aidy_task.done():
+            self._aidy_task.cancel()
+            try:
+                await self._aidy_task
+            except asyncio.CancelledError:
+                pass
+        self._aidy_task = None
+        await super().stop()
+
+    async def _run_aidy(self, resolver: AidyShadowResolver) -> None:
+        while not self._stopping.is_set():
+            try:
+                processed, failures = await resolver.resolve_once()
+                if processed or failures:
+                    logger.info(
+                        "AIDY Provider Lab M1 resolution processed=%d failures=%d",
+                        processed,
+                        failures,
+                    )
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.exception("AIDY Provider Lab M1 resolver failed safely")
+            try:
+                await asyncio.wait_for(self._stopping.wait(), timeout=_AIDY_POLL_SECONDS)
+            except TimeoutError:
+                pass
 
     async def _backfill_adaptive_profiles_once(self) -> None:
         try:
@@ -82,7 +125,8 @@ class ShadowTradeManager(_BaseShadowTradeManager):
     async def poll_once(self) -> int:
         # No active research trades means no market-data request at all.
         rows = await asyncio.to_thread(self._active_rows)
-        if not rows:
+        public_rows = [row for row in rows if str(row["provider_style"]) not in _AIDY_STYLES]
+        if not public_rows:
             return 0
 
         bid, ask = await self._public_bid_ask()
@@ -90,10 +134,10 @@ class ShadowTradeManager(_BaseShadowTradeManager):
             logger.warning("Provider Lab public XAUUSD quote unavailable")
             return 0
 
-        # snapshot_poll is intentionally non-qualifying for scalpers. The fairness
-        # policy keeps those observations for audit while refusing to manufacture a
-        # precise scalp score from coarse market data.
-        return await self._evaluate_all(
+        # Public snapshot evidence remains observation-only for scalpers. Intraday and
+        # swing rows never enter this path once AIDY is configured as canonical truth.
+        return await self._evaluate_public_rows(
+            public_rows,
             bid=bid,
             ask=ask,
             quote_mode="snapshot_poll",
@@ -130,19 +174,24 @@ class ShadowTradeManager(_BaseShadowTradeManager):
             return None, None
         return bid, ask
 
-    async def _evaluate_all(self, *, bid: Decimal, ask: Decimal, quote_mode: str) -> int:
+    async def _evaluate_public_rows(
+        self,
+        rows,
+        *,
+        bid: Decimal,
+        ask: Decimal,
+        quote_mode: str,
+    ) -> int:
         async with self._evaluation_lock:
             return await asyncio.to_thread(
-                self._evaluate_all_sync,
+                self._evaluate_public_rows_sync,
+                rows,
                 bid,
                 ask,
                 quote_mode,
             )
 
-    def _evaluate_all_sync(self, bid: Decimal, ask: Decimal, quote_mode: str) -> int:
-        rows = self._active_rows()
-        if not rows:
-            return 0
+    def _evaluate_public_rows_sync(self, rows, bid: Decimal, ask: Decimal, quote_mode: str) -> int:
         changed = 0
         with self._session_factory() as session:
             for row in rows:
