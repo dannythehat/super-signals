@@ -1,0 +1,52 @@
+name: Ops AIDY Single Runtime 20260905
+
+on:
+  push:
+    branches: [fix/aidy-single-app-runtime-20260905]
+    paths: [.github/workflows/ops-aidy-single-runtime-20260905.yml]
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: fix/aidy-single-app-runtime-20260905
+          fetch-depth: 0
+      - name: Remove legacy manager-owned AIDY task
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+          p=Path('services/api/app/shadow_trading_v4.py')
+          s=p.read_text()
+          s=s.replace('from app.aidy_market_client import AidyMarketClient\nfrom app.aidy_shadow_resolver import AidyShadowResolver\n','')
+          s=s.replace('''    def __init__(self, *args, **kwargs) -> None:\n        super().__init__(*args, **kwargs)\n        self._aidy_task: asyncio.Task[None] | None = None\n\n''','')
+          old='''        if self._aidy_task is None or self._aidy_task.done():\n            client = AidyMarketClient.from_environment()\n            if client is None:\n                logger.warning("AIDY Provider Lab market client not configured; M1 resolver disabled")\n            else:\n                self._aidy_task = asyncio.create_task(\n                    self._run_aidy(AidyShadowResolver(self._session_factory, client)),\n                    name="super-signals-shadow-aidy-m1",\n                )\n'''
+          assert old in s
+          s=s.replace(old,'')
+          start=s.index('    async def stop(self) -> None:\n')
+          end=s.index('    async def _backfill_adaptive_profiles_once', start)
+          s=s[:start]+s[end:]
+          p.write_text(s)
+
+          t=Path('services/api/tests/test_aidy_shadow_runtime_startup.py')
+          ts=t.read_text()
+          ts += '''\n\ndef test_broker_shadow_manager_cannot_start_second_aidy_resolver() -> None:\n    source = (ROOT / "app" / "shadow_trading_v4.py").read_text(encoding="utf-8")\n    assert "AidyShadowResolver" not in source\n    assert "AidyMarketClient" not in source\n    assert "super-signals-shadow-aidy-m1" not in source\n'''
+          t.write_text(ts)
+          PY
+          git diff --check
+      - name: Commit and self-remove workflow
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git rm .github/workflows/ops-aidy-single-runtime-20260905.yml
+          git add services/api/app/shadow_trading_v4.py services/api/tests/test_aidy_shadow_runtime_startup.py
+          git commit -m "Keep AIDY resolver app-owned only"
+          git push origin HEAD:fix/aidy-single-app-runtime-20260905
