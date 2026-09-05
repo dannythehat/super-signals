@@ -17,9 +17,9 @@ from typing import Any
 
 from sqlalchemy import text
 
+from app.benchmarking_shadow_lifecycle_bridge import BenchmarkingShadowAwareAiLifecycleBridge
 from app.provider_aware_ai_pipeline import ProviderAwareProductionAiPipeline
 from app.provider_research import ProviderResearchManager, build_provider_research_manager
-from app.shadow_lifecycle_bridge import ShadowAwareAiLifecycleBridge
 from app.shadow_signal_ledger import ShadowAwareCanonicalSignalLedger
 from app.telegram_listener_canonical import (
     CanonicalProductionTelegramListenerManager,
@@ -28,13 +28,14 @@ from app.telegram_listener_canonical import (
 from app.telegram_source_gateway import TelethonTelegramSourceGateway
 
 PRODUCTION_LISTENER_GENERATION = "canonical-v1"
-PRODUCTION_AI_GENERATION = "provider-aware-v2"
+PRODUCTION_AI_GENERATION = "provider-aware-v3-adaptive"
+_ADAPTIVE_PROFILE_REFRESH_SECONDS = 900
 
 logger = logging.getLogger(__name__)
 
 
 class ProviderResearchProductionListener(CanonicalProductionTelegramListenerManager):
-    """Lifecycle wrapper: canonical ingress plus non-executing Provider Lab scanner.
+    """Lifecycle wrapper: canonical ingress plus Provider Lab learning services.
 
     Telegram/Provider Lab recovery is deliberately outside FastAPI's HTTP startup
     critical path. A slow Telegram connection, a large recovery set, or one unreadable
@@ -49,6 +50,7 @@ class ProviderResearchProductionListener(CanonicalProductionTelegramListenerMana
         self._inner = inner
         self._research = research
         self._startup_task: asyncio.Task[None] | None = None
+        self._adaptive_refresh_task: asyncio.Task[None] | None = None
         self._stopping = asyncio.Event()
 
     def __getattr__(self, name: str) -> Any:
@@ -65,20 +67,7 @@ class ProviderResearchProductionListener(CanonicalProductionTelegramListenerMana
         )
 
     async def _recover_committed_dispatch_gaps(self) -> int:
-        """Offer fresh committed decisions to the idempotent broker router after restart.
-
-        Raw Telegram evidence and AI decisions are committed before broker dispatch. If a
-        Render replacement lands in the tiny window after that commit but before dispatch,
-        the old process can disappear with a perfectly valid executable decision already
-        stored in PostgreSQL. Telegram history recovery intentionally does not re-run AI on
-        existing rows, so without this durable sweep that trade could be lost forever.
-
-        Only the latest decision for each exact message revision is considered. Revoked
-        sources are excluded. The canonical recovery guard still enforces freshness and
-        the broker executor still enforces its signal-age/current-state checks, while the
-        normal router/position idempotency prevents an already-attempted trade from being
-        opened again.
-        """
+        """Offer fresh committed decisions to the idempotent broker router after restart."""
         with self._inner._session_factory() as session:
             rows = session.execute(
                 text(
@@ -132,6 +121,30 @@ class ProviderResearchProductionListener(CanonicalProductionTelegramListenerMana
             )
         return checked
 
+    async def _refresh_adaptive_profiles(self) -> None:
+        pipeline = getattr(self._inner, "_ai_pipeline", None)
+        refresh = getattr(pipeline, "refresh_all_provider_profiles", None)
+        if callable(refresh):
+            count = await asyncio.to_thread(refresh)
+            logger.info("Adaptive Provider Lab profiles refreshed for %d sources", count)
+
+    async def _adaptive_refresh_loop(self) -> None:
+        while not self._stopping.is_set():
+            try:
+                await asyncio.wait_for(
+                    self._stopping.wait(),
+                    timeout=_ADAPTIVE_PROFILE_REFRESH_SECONDS,
+                )
+                return
+            except TimeoutError:
+                pass
+            try:
+                await self._refresh_adaptive_profiles()
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.exception("Adaptive provider profile refresh failed safely")
+
     async def _start_with_retry(self) -> None:
         while not self._stopping.is_set():
             inner_started = False
@@ -142,7 +155,13 @@ class ProviderResearchProductionListener(CanonicalProductionTelegramListenerMana
                 await self._inner.start()
                 inner_started = True
                 await self._research.start()
-                logger.info("Production Telegram listener and Provider Lab started")
+                await self._refresh_adaptive_profiles()
+                if self._adaptive_refresh_task is None or self._adaptive_refresh_task.done():
+                    self._adaptive_refresh_task = asyncio.create_task(
+                        self._adaptive_refresh_loop(),
+                        name="super-signals-adaptive-provider-profile-refresh",
+                    )
+                logger.info("Production Telegram listener and adaptive Provider Lab started")
                 return
             except asyncio.CancelledError:
                 raise
@@ -164,6 +183,15 @@ class ProviderResearchProductionListener(CanonicalProductionTelegramListenerMana
 
     async def stop(self) -> None:
         self._stopping.set()
+        refresh_task = self._adaptive_refresh_task
+        if refresh_task is not None and not refresh_task.done():
+            refresh_task.cancel()
+            try:
+                await refresh_task
+            except asyncio.CancelledError:
+                pass
+        self._adaptive_refresh_task = None
+
         startup_task = self._startup_task
         if startup_task is not None and not startup_task.done():
             startup_task.cancel()
@@ -192,7 +220,7 @@ def build_production_listener_manager(**kwargs: Any) -> CanonicalProductionTeleg
             supervisor=getattr(existing_pipeline, "_supervisor", None),
         )
         pipeline._signals = ShadowAwareCanonicalSignalLedger(manager._session_factory)
-        pipeline._lifecycle = ShadowAwareAiLifecycleBridge(manager._session_factory)
+        pipeline._lifecycle = BenchmarkingShadowAwareAiLifecycleBridge(manager._session_factory)
         manager._ai_pipeline = pipeline
 
     api_id = kwargs.get("api_id")
