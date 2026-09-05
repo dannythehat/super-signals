@@ -1,27 +1,15 @@
 from __future__ import annotations
 
-import base64
 import os
-import time
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal, InvalidOperation
 from urllib.parse import urlencode
 
 import httpx
-from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
-AIDY_CLIENT_ID = "super-signals-provider-lab"
 AIDY_QUOTE_MODE = "aidy_m1"
 _MAX_WINDOW = timedelta(hours=48)
-
-
-def _b64url_decode(value: str) -> bytes:
-    return base64.urlsafe_b64decode(value + ("=" * (-len(value) % 4)))
-
-
-def _b64url(value: bytes) -> str:
-    return base64.urlsafe_b64encode(value).decode().rstrip("=")
 
 
 def _utc_strict(value: datetime | str, *, field: str) -> datetime:
@@ -72,29 +60,27 @@ class AidyM1Window:
 class AidyMarketClient:
     """GET-only authenticated client for AIDY's bounded Provider Lab market feed."""
 
-    def __init__(self, *, base_url: str, private_key_b64url: str, timeout_seconds: float = 8.0) -> None:
+    def __init__(self, *, base_url: str, bearer_token: str, timeout_seconds: float = 8.0) -> None:
         self._base_url = base_url.rstrip("/")
-        self._private_key = Ed25519PrivateKey.from_private_bytes(_b64url_decode(private_key_b64url))
+        self._bearer_token = bearer_token.strip()
+        if not self._bearer_token:
+            raise ValueError("AIDY provider bearer token is required.")
         self._timeout_seconds = timeout_seconds
 
     @classmethod
     def from_environment(cls) -> AidyMarketClient | None:
         base_url = os.getenv("AIDY_PROVIDER_MARKET_URL", "").strip()
-        private_key = os.getenv("AIDY_PROVIDER_READ_PRIVATE_KEY", "").strip()
-        if not base_url or not private_key:
+        bearer_token = os.getenv("AIDY_PROVIDER_MARKET_TOKEN", "").strip()
+        if not base_url or not bearer_token:
             return None
-        return cls(base_url=base_url, private_key_b64url=private_key)
+        return cls(base_url=base_url, bearer_token=bearer_token)
 
-    def _signed_headers(self, *, path: str, raw_query: str) -> dict[str, str]:
-        timestamp = str(int(time.time()))
-        payload = f"GET\n{path}\n{raw_query}\n{timestamp}\n{AIDY_CLIENT_ID}".encode()
+    def _headers(self) -> dict[str, str]:
         return {
             "Accept": "application/json",
+            "Authorization": f"Bearer {self._bearer_token}",
             "Cache-Control": "no-cache",
-            "User-Agent": "SuperSignals-ProviderLab-AIDY/2.0",
-            "X-AIDY-Client": AIDY_CLIENT_ID,
-            "X-AIDY-Timestamp": timestamp,
-            "X-AIDY-Signature": _b64url(self._private_key.sign(payload)),
+            "User-Agent": "SuperSignals-ProviderLab-AIDY/3.0",
         }
 
     @staticmethod
@@ -150,7 +136,7 @@ class AidyMarketClient:
         async with httpx.AsyncClient(timeout=httpx.Timeout(self._timeout_seconds)) as client:
             response = await client.get(
                 f"{self._base_url}{path}?{raw_query}",
-                headers=self._signed_headers(path=path, raw_query=raw_query),
+                headers=self._headers(),
             )
             response.raise_for_status()
             payload = response.json()
