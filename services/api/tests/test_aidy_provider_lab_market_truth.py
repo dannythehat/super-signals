@@ -317,3 +317,4 @@ def test_architecture_original_truth_and_one_window_continuity() -> None:
     assert "calculated_missing != missing" in client
     assert "first_observed_after_pit_cutoff" in client
     assert "while cursor < end" not in client
+    assert "_MAX_WINDOW = timedelta(hours=1)" in resolver

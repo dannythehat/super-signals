@@ -20,7 +20,8 @@ from app.shadow_trading_v2 import _benchmark_pnl_usd, _leg_r
 
 logger = logging.getLogger(__name__)
 _SUPPORTED_STYLES = {"intraday", "swing_or_sparse"}
-_MAX_WINDOW = timedelta(hours=48)
+# Bound retry amplification: a continuity gap can reread at most one hour per poll.
+_MAX_WINDOW = timedelta(hours=1)
 _TP_RE = re.compile(r"tp\s*(\d+)", re.IGNORECASE)
 _ENTRY_RE = re.compile(r"entry[_\s]*(\d+)", re.IGNORECASE)
 _ENTRY_PRICE_RE = re.compile(r"entry_price_([0-9]+(?:\.[0-9]+)?)", re.IGNORECASE)
