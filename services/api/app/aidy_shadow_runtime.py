@@ -94,24 +94,25 @@ class AidyShadowRuntime:
                 logger.exception("AIDY Provider Lab resolver loop failed safely")
                 processed, failures = 0, 1
 
+            batch_message = (
+                "AIDY Provider Lab M1 resolution "
+                f"processed={processed} failures={failures}"
+            )
+            print(batch_message, flush=True)
             if processed or failures:
-                logger.info(
-                    "AIDY Provider Lab M1 resolution processed=%d failures=%d",
-                    processed,
-                    failures,
-                )
+                logger.info(batch_message)
 
             if draining_startup_backlog:
                 startup_pass += 1
                 if processed > 0 and startup_pass < self._startup_pass_limit:
                     await asyncio.sleep(0)
                     continue
-                logger.info(
-                    "AIDY Provider Lab startup backfill drain complete passes=%d last_processed=%d failures=%d",
-                    startup_pass,
-                    processed,
-                    failures,
+                drain_message = (
+                    "AIDY Provider Lab startup backfill drain complete "
+                    f"passes={startup_pass} last_processed={processed} failures={failures}"
                 )
+                print(drain_message, flush=True)
+                logger.info(drain_message)
                 draining_startup_backlog = False
 
             try:
