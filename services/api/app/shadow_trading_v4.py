@@ -1,9 +1,9 @@
 """Provider Lab runtime with AIDY M1 market truth for intraday/swing providers.
 
 AIDY is an authenticated read-only provider, never a shared database. Intraday and
-swing shadow trades are resolved incrementally from admitted AIDY M1 OHLC. Scalpers
-remain observed by the lightweight public snapshot path but are explicitly excluded
-from scoring because M1/snapshot evidence is not sufficient for scalp sequencing.
+swing shadow trades are resolved incrementally from admitted AIDY M1 OHLC. Scalper
+messages continue to be captured by the normal ingestion pipeline, but their shadow
+rows are explicitly excluded from scoring/promotion and need no market-resolution read.
 """
 
 from __future__ import annotations
@@ -19,8 +19,8 @@ from sqlalchemy import text
 from app.aidy_market_client import AidyMarketClient
 from app.aidy_shadow_resolver import AidyShadowResolver
 from app.provider_adaptive_profile import AdaptiveProviderProfileService
-from app.shadow_trading_v3 import ShadowTradeManager as _BaseShadowTradeManager
 from app.shadow_trading_v2 import _decimal
+from app.shadow_trading_v3 import ShadowTradeManager as _BaseShadowTradeManager
 
 logger = logging.getLogger(__name__)
 
@@ -38,8 +38,6 @@ class ShadowTradeManager(_BaseShadowTradeManager):
         self._aidy_task: asyncio.Task[None] | None = None
 
     async def start(self) -> None:
-        # Deliberately start only the shared public-feed evaluator. Do NOT call the
-        # inherited start(), because that also starts the MetaAPI websocket stream.
         if self._task is None or self._task.done():
             self._stopping.clear()
             self._task = asyncio.create_task(
@@ -51,14 +49,10 @@ class ShadowTradeManager(_BaseShadowTradeManager):
             if client is None:
                 logger.warning("AIDY Provider Lab market client not configured; M1 resolver disabled")
             else:
-                resolver = AidyShadowResolver(self._session_factory, client)
                 self._aidy_task = asyncio.create_task(
-                    self._run_aidy(resolver),
+                    self._run_aidy(AidyShadowResolver(self._session_factory, client)),
                     name="super-signals-shadow-aidy-m1",
                 )
-        # Provider-language learning must not depend on the Telegram listener being
-        # enabled at this exact startup. Backfill every monitored provider from the
-        # durable database in an independent worker; failures never affect trading.
         asyncio.create_task(
             self._backfill_adaptive_profiles_once(),
             name="super-signals-adaptive-provider-backfill",
@@ -122,10 +116,37 @@ class ShadowTradeManager(_BaseShadowTradeManager):
             completed += 1
         return completed
 
+    def _enforce_scalper_exclusion_sync(self) -> int:
+        with self._session_factory() as session:
+            result = session.execute(
+                text(
+                    """
+                    UPDATE shadow_trades
+                    SET score_eligible=false,
+                        score_exclusion_reason='unsupported_style_scalper',
+                        updated_at=now()
+                    WHERE provider_style='scalper'
+                      AND (
+                        score_eligible
+                        OR score_exclusion_reason IS DISTINCT FROM 'unsupported_style_scalper'
+                      )
+                    """
+                )
+            )
+            session.commit()
+            return int(result.rowcount or 0)
+
     async def poll_once(self) -> int:
-        # No active research trades means no market-data request at all.
+        # This is a policy gate, not market inference: future scalper rows are kept for
+        # audit/message observation but cannot silently re-enter scoring or promotion.
+        await asyncio.to_thread(self._enforce_scalper_exclusion_sync)
+
         rows = await asyncio.to_thread(self._active_rows)
-        public_rows = [row for row in rows if str(row["provider_style"]) not in _AIDY_STYLES]
+        public_rows = [
+            row
+            for row in rows
+            if str(row["provider_style"]) not in _AIDY_STYLES | {"scalper"}
+        ]
         if not public_rows:
             return 0
 
@@ -134,8 +155,8 @@ class ShadowTradeManager(_BaseShadowTradeManager):
             logger.warning("Provider Lab public XAUUSD quote unavailable")
             return 0
 
-        # Public snapshot evidence remains observation-only for scalpers. Intraday and
-        # swing rows never enter this path once AIDY is configured as canonical truth.
+        # Mixed/unknown legacy rows retain the existing public-snapshot path. The
+        # explicit Step-1 canonical feed applies only to intraday/swing providers.
         return await self._evaluate_public_rows(
             public_rows,
             bid=bid,
@@ -145,8 +166,7 @@ class ShadowTradeManager(_BaseShadowTradeManager):
 
     async def _public_bid_ask(self) -> tuple[Decimal | None, Decimal | None]:
         try:
-            timeout = httpx.Timeout(_PUBLIC_TIMEOUT_SECONDS)
-            async with httpx.AsyncClient(timeout=timeout) as client:
+            async with httpx.AsyncClient(timeout=httpx.Timeout(_PUBLIC_TIMEOUT_SECONDS)) as client:
                 response = await client.get(
                     _PUBLIC_XAUUSD_URL,
                     headers={
@@ -160,14 +180,10 @@ class ShadowTradeManager(_BaseShadowTradeManager):
         except (httpx.HTTPError, ValueError, TypeError):
             return None, None
 
-        if not isinstance(payload, dict):
+        if not isinstance(payload, dict) or bool(payload.get("stale")):
             return None, None
-        if bool(payload.get("stale")):
+        if str(payload.get("marketState") or "").strip().lower() == "closed":
             return None, None
-        market_state = str(payload.get("marketState") or "").strip().lower()
-        if market_state == "closed":
-            return None, None
-
         bid = _decimal(payload.get("bid"))
         ask = _decimal(payload.get("ask"))
         if bid is None or ask is None or bid <= 0 or ask <= 0 or ask < bid:
