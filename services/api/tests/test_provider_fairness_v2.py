@@ -35,18 +35,25 @@ def test_r_multiple_is_normalized_by_each_provider_stop_distance():
     ) == Decimal("2")
 
 
-def test_scalpers_require_tick_resolution_but_slower_styles_accept_quotes():
-    assert score_eligibility(style="scalper", quote_mode="stream_tick") == (True, None)
-    assert score_eligibility(style="scalper", quote_mode="stream_quote") == (
+def test_scalpers_are_out_and_intraday_swing_require_aidy_m1():
+    assert score_eligibility(style="scalper", quote_mode="stream_tick") == (
         False,
-        "scalper_requires_tick_resolution",
+        "unsupported_style_scalper",
     )
-    assert score_eligibility(style="scalper", quote_mode="snapshot_poll") == (
+    assert score_eligibility(style="scalper", quote_mode="aidy_m1") == (
         False,
-        "scalper_requires_tick_resolution",
+        "unsupported_style_scalper",
     )
-    assert score_eligibility(style="intraday", quote_mode="stream_quote") == (True, None)
-    assert score_eligibility(style="swing_or_sparse", quote_mode="snapshot_poll") == (True, None)
+    assert score_eligibility(style="intraday", quote_mode="stream_quote") == (
+        False,
+        "aidy_m1_required_for_style",
+    )
+    assert score_eligibility(style="swing_or_sparse", quote_mode="snapshot_poll") == (
+        False,
+        "aidy_m1_required_for_style",
+    )
+    assert score_eligibility(style="intraday", quote_mode="aidy_m1") == (True, None)
+    assert score_eligibility(style="swing_or_sparse", quote_mode="aidy_m1") == (True, None)
 
 
 def test_style_evidence_thresholds_are_deliberately_different():

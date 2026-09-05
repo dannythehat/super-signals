@@ -2,8 +2,8 @@
 
 These helpers define only research benchmarking rules. They never place orders or alter
 live provider allocations. Every research provider is measured on the same fixed $1,000
-account and $10 cash risk per TP leg, while execution-resolution and evidence gates adapt
-to the provider's observed trading style.
+account and $10 cash risk per TP leg. Scalper-style providers remain observed but are
+outside the score/promotion funnel; AIDY M1 is canonical market truth for intraday/swing.
 """
 
 from __future__ import annotations
@@ -41,16 +41,24 @@ def session_bucket(posted_at: datetime) -> str:
 
 
 def required_resolution(style: str) -> str:
-    """Scalpers require tick-quality entry/outcome evidence; others accept quote data."""
-    return "tick" if (style or "unknown").strip().lower() == "scalper" else "quote"
+    normalized = (style or "unknown").strip().lower()
+    if normalized == "scalper":
+        return "unsupported"
+    if normalized in {"intraday", "swing_or_sparse"}:
+        return "aidy_m1"
+    return "quote"
 
 
 def score_eligibility(*, style: str, quote_mode: str) -> tuple[bool, str | None]:
     """Decide whether one shadow trade has sufficient market-data resolution to score."""
-    required = required_resolution(style)
+    normalized_style = (style or "unknown").strip().lower()
     mode = (quote_mode or "").strip().lower()
-    if required == "tick" and mode != "stream_tick":
-        return False, "scalper_requires_tick_resolution"
+    if normalized_style == "scalper":
+        return False, "unsupported_style_scalper"
+    if normalized_style in {"intraday", "swing_or_sparse"}:
+        if mode != "aidy_m1":
+            return False, "aidy_m1_required_for_style"
+        return True, None
     if mode not in {"stream_tick", "stream_quote", "snapshot_poll"}:
         return False, "market_data_resolution_unknown"
     return True, None
