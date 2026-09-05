@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 
 from sqlalchemy.orm import Session, sessionmaker
 
@@ -47,11 +48,16 @@ class AidyShadowRuntime:
     async def start(self) -> bool:
         if self.running:
             return True
+        url_configured = bool(os.getenv("AIDY_PROVIDER_MARKET_URL", "").strip())
+        token_configured = bool(os.getenv("AIDY_PROVIDER_MARKET_TOKEN", "").strip())
         client = AidyMarketClient.from_environment()
         if client is None:
-            logger.warning(
-                "AIDY Provider Lab resolver not configured; resolver loop not started"
+            message = (
+                "AIDY Provider Lab resolver loop not started "
+                f"url_configured={url_configured} token_configured={token_configured}"
             )
+            print(message, flush=True)
+            logger.warning(message)
             return False
         self._stopping.clear()
         resolver = AidyShadowResolver(self._session_factory, client)
@@ -59,6 +65,7 @@ class AidyShadowRuntime:
             self._run(resolver),
             name="super-signals-shadow-aidy-m1",
         )
+        print("AIDY Provider Lab resolver loop started", flush=True)
         logger.info("AIDY Provider Lab resolver loop started")
         return True
 
