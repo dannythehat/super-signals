@@ -26,7 +26,7 @@ class ShadowTradeService(_BaseShadowTradeService):
                 text(
                     """
                     SELECT s.id AS signal_id,s.source_revision_index,m.id AS message_id,
-                           m.source_id,m.posted_at,src.status AS source_status,
+                           m.source_id,s.source_posted_at AS posted_at,src.status AS source_status,
                            s.symbol,s.side,s.order_type,s.entry_low,s.entry_high,s.stop_loss,
                            s.take_profits,s.has_open_runner,s.original_text,
                            COALESCE(pr.style,'unknown') AS provider_style,
