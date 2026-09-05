@@ -49,8 +49,6 @@ class ShadowTradeService(_BaseShadowTradeService):
             source_status = str(row["source_status"] or "")
             if revision_index > 0:
                 if source_status == "shadow":
-                    # Shadow source revisions can otherwise rewrite historical benchmark
-                    # geometry. Quarantine any already-enrolled active action.
                     updated = session.execute(
                         text(
                             """
@@ -68,10 +66,6 @@ class ShadowTradeService(_BaseShadowTradeService):
                         session.commit()
                     return False
 
-                # testing/live may first become executable on a provider edit. If no
-                # benchmark row exists yet, enrolling that real-time canonical revision
-                # is prospective evidence, not hindsight. Never create a second action
-                # for a signal already mirrored earlier.
                 existing = session.execute(
                     text("SELECT 1 FROM shadow_trades WHERE signal_id=:signal_id LIMIT 1"),
                     {"signal_id": signal_id},
@@ -94,6 +88,12 @@ class ShadowTradeService(_BaseShadowTradeService):
             if not isinstance(posted_at, datetime):
                 return False
             posted_at = posted_at.replace(tzinfo=UTC) if posted_at.tzinfo is None else posted_at.astimezone(UTC)
+            provider_style = str(row["provider_style"] or "unknown")
+            initial_exclusion = (
+                "unsupported_style_scalper"
+                if provider_style == "scalper"
+                else "market_data_not_observed"
+            )
 
             created_any = False
             for entry in entries:
@@ -112,7 +112,7 @@ class ShadowTradeService(_BaseShadowTradeService):
                             :entry_high,:stop,:stop,CAST(:take_profits AS jsonb),'pending',
                             :benchmark_model,:benchmark_balance,:benchmark_risk,:entry_index,:entry_order_type,
                             :provider_style,:readiness,:posted_at,:session_bucket,:weekday_iso,:target_count,
-                            false,'market_data_not_observed','unobserved'
+                            false,:initial_exclusion,'unobserved'
                         )
                         ON CONFLICT (signal_id,entry_index) DO NOTHING
                         RETURNING id
@@ -134,12 +134,13 @@ class ShadowTradeService(_BaseShadowTradeService):
                         "benchmark_risk": BENCHMARK_RISK_PER_LEG_USD,
                         "entry_index": entry.entry_index,
                         "entry_order_type": entry.order_type,
-                        "provider_style": str(row["provider_style"] or "unknown"),
+                        "provider_style": provider_style,
                         "readiness": row["interpretation_readiness"],
                         "posted_at": posted_at,
                         "session_bucket": session_bucket(posted_at),
                         "weekday_iso": posted_at.isoweekday(),
                         "target_count": len(targets) + int(runner),
+                        "initial_exclusion": initial_exclusion,
                     },
                 ).scalar_one_or_none()
                 if shadow_id is None:
