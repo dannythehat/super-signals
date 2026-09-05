@@ -8,7 +8,7 @@ from uuid import UUID
 from sqlalchemy import text
 
 from app.production_ai_pipeline import ProductionAiMessagePipeline
-from app.provider_adaptive_profile import AdaptiveProviderProfileService
+from app.provider_adaptive_profile_v2 import SignalLevelAdaptiveProviderProfileService
 
 
 class ProviderAwareProductionAiPipeline(ProductionAiMessagePipeline):
@@ -16,7 +16,7 @@ class ProviderAwareProductionAiPipeline(ProductionAiMessagePipeline):
 
     def __init__(self, *args: Any, **kwargs: Any) -> None:
         super().__init__(*args, **kwargs)
-        self._adaptive_profiles = AdaptiveProviderProfileService(self._session_factory)
+        self._adaptive_profiles = SignalLevelAdaptiveProviderProfileService(self._session_factory)
 
     def refresh_all_provider_profiles(self) -> int:
         """Build adaptive buckets immediately for every monitored provider source."""
