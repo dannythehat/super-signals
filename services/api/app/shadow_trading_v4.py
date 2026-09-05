@@ -223,5 +223,19 @@ class ShadowTradeManager(_BaseShadowTradeManager):
             session.commit()
         return changed
 
+    async def _evaluate_all(self, *, bid: Decimal, ask: Decimal, quote_mode: str) -> int:
+        """Keep the inherited fair evaluator's synchronous DB work off the event loop."""
+        async with self._evaluation_lock:
+            rows = await asyncio.to_thread(self._active_rows)
+            if not rows:
+                return 0
+            return await asyncio.to_thread(
+                self._evaluate_public_rows_sync,
+                rows,
+                bid,
+                ask,
+                quote_mode,
+            )
+
 
 __all__ = ["ShadowTradeManager"]

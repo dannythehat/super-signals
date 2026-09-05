@@ -228,7 +228,26 @@ def test_7_lifecycle_watermark_detects_late_old_event() -> None:
     late = _event(1, {"type": "move_to_break_even", "target": "all", "value": None}, key="late")
     first = _event(3, {"type": "move_to_break_even", "target": "all", "value": None}, key="first")
     late["created_at"] = BASE + timedelta(minutes=4)
+    # The applied prefix is chronological, not append-time or market-cursor derived.
     assert lifecycle_watermark([first]) != lifecycle_watermark([first, late])
+    assert lifecycle_watermark([first]) != lifecycle_watermark([late])
+
+
+def test_7_lifecycle_applied_prefix_advances_only_when_event_is_consumed() -> None:
+    g = _geometry("BUY", targets=("120",))
+    event = _event(3, {"type": "move_to_break_even", "target": "all", "value": None}, key="future")
+    state = _run(g, [_bar(0, high="101", low="99"), _bar(1, high="102", low="99")], events=[event])
+    assert state.market_cursor == BASE + timedelta(minutes=1)
+    assert state.lifecycle_applied_count == 0
+    state = _run(
+        g,
+        [_bar(2, high="102", low="99"), _bar(3, high="102", low="101")],
+        events=[event],
+        state=state,
+        full=False,
+    )
+    assert state.lifecycle_applied_count == 1
+    assert state.effective_stop == Decimal("100")
 
 
 def test_8_ambiguity_is_sticky_and_terminal() -> None:
@@ -273,9 +292,12 @@ def test_architecture_single_writer_immutable_geometry_dual_watermarks_and_cas()
     migration = (ROOT / "migrations" / "versions" / "0055_aidy_provider_lab_market_truth.py").read_text(encoding="utf-8")
     assert "aidy_original_geometry" in resolver
     assert "aidy_lifecycle_watermark" in resolver and "aidy_m1_cursor_at" in resolver
+    assert "aidy_lifecycle_applied_count" in resolver
+    assert "already_through = _utc(state.market_cursor)" not in resolver
     assert "aidy_state_version=:expected_version" in resolver
     assert "aidy_m1_cursor_at IS NOT DISTINCT FROM :expected_cursor" in resolver
     assert "aidy_lifecycle_watermark IS NOT DISTINCT FROM :expected_lifecycle_mark" in resolver
+    assert "aidy_lifecycle_applied_count=:expected_lifecycle_count" in resolver
     assert "AND NOT COALESCE(aidy_terminal,false)" in resolver
     assert "origin='provider_update'" in resolver
     assert "if aidy_row is not None:\n            return True" in service

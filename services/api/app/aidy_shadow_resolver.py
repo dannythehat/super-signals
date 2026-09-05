@@ -79,7 +79,7 @@ def lifecycle_watermark(events: Iterable[dict[str, Any]]) -> str:
             }
             for item in events
         ),
-        key=lambda item: (item["created_at"], item["id"]),
+        key=lambda item: (item["occurred_at"], item["created_at"], item["id"]),
     )
     return hashlib.sha256(_canonical(ordered).encode()).hexdigest()
 
@@ -166,6 +166,7 @@ class ResolutionState:
     legs: list[LegState]
     market_cursor: datetime | None
     lifecycle_watermark: str | None
+    lifecycle_applied_count: int = 0
     score_block_reason: str | None = None
     note: str | None = None
     close_reason: str | None = None
@@ -710,6 +711,7 @@ def _initial_state(
         legs=legs,
         market_cursor=None,
         lifecycle_watermark=lifecycle_mark,
+        lifecycle_applied_count=0,
     )
     if geometry.order_type == "market":
         if geometry.entry_low != geometry.entry_high:
@@ -779,13 +781,10 @@ def replay_bars(
         return state
 
     event_index = 0
-    if not full_replay and state.market_cursor is not None:
-        already_through = _utc(state.market_cursor) + timedelta(minutes=1)
-        while (
-            event_index < len(ordered_events)
-            and _utc(ordered_events[event_index]["occurred_at"]) < already_through
-        ):
-            event_index += 1
+    # `events` contains exactly the unapplied chronological lifecycle suffix for an
+    # incremental replay, or the complete lifecycle sequence for a full replay. Event
+    # consumption is tracked only by lifecycle_applied_count; the market cursor is never
+    # used to infer whether a provider instruction was consumed.
 
     signal_minute = _minute_floor(signal_posted_at)
     partial_signal_minute = signal_posted_at != signal_minute
@@ -801,16 +800,18 @@ def replay_bars(
             event_index < len(ordered_events)
             and _utc(ordered_events[event_index]["occurred_at"]) <= bar_open
         ):
-            if not _apply_actions(
+            keep_going = _apply_actions(
                 state,
                 geometry=geometry,
                 event=ordered_events[event_index],
                 sibling_entries=sibling_entries,
-            ):
+            )
+            state.lifecycle_applied_count += 1
+            event_index += 1
+            if not keep_going:
                 if state.market_cursor is None:
                     state.market_cursor = bar_open
                 return state
-            event_index += 1
 
         in_bar_events: list[dict[str, Any]] = []
         probe = event_index
@@ -881,17 +882,21 @@ def replay_bars(
                         note="management_inside_partial_signal_minute",
                         bar=bar,
                     )
+                    state.lifecycle_applied_count += 1
+                    event_index += 1
                     state.market_cursor = bar_open
                     return state
-                if not _apply_actions(
+                keep_going = _apply_actions(
                     state,
                     geometry=geometry,
                     event=event,
                     sibling_entries=sibling_entries,
-                ):
+                )
+                state.lifecycle_applied_count += 1
+                event_index += 1
+                if not keep_going:
                     state.market_cursor = bar_open
                     return state
-                event_index += 1
             state.market_cursor = bar_open
             continue
 
@@ -910,6 +915,8 @@ def replay_bars(
                     note="management_instruction_inside_price_active_m1_bar",
                     bar=bar,
                 )
+                state.lifecycle_applied_count += 1
+                event_index += 1
                 state.market_cursor = bar_open
                 return state
 
@@ -1025,15 +1032,17 @@ def replay_bars(
                 return state
 
         for event in in_bar_events:
-            if not _apply_actions(
+            keep_going = _apply_actions(
                 state,
                 geometry=geometry,
                 event=event,
                 sibling_entries=sibling_entries,
-            ):
+            )
+            state.lifecycle_applied_count += 1
+            event_index += 1
+            if not keep_going:
                 state.market_cursor = bar_open
                 return state
-            event_index += 1
 
         state.market_cursor = bar_open
 
@@ -1188,7 +1197,6 @@ class AidyShadowResolver:
         self,
         trade: dict[str, Any],
         legs: list[LegState],
-        mark: str,
     ) -> ResolutionState:
         raw_ledger = trade.get("aidy_resolution_evidence")
         ledger = list(raw_ledger) if isinstance(raw_ledger, list) else []
@@ -1202,7 +1210,8 @@ class AidyShadowResolver:
             effective_stop=stop,
             legs=legs,
             market_cursor=trade.get("aidy_m1_cursor_at"),
-            lifecycle_watermark=mark,
+            lifecycle_watermark=trade.get("aidy_lifecycle_watermark"),
+            lifecycle_applied_count=int(trade.get("aidy_lifecycle_applied_count") or 0),
             score_block_reason=(
                 str(trade.get("score_exclusion_reason"))
                 if bool(trade.get("aidy_score_blocked"))
@@ -1248,6 +1257,7 @@ class AidyShadowResolver:
         expected_version: int,
         expected_cursor: datetime | None,
         expected_lifecycle_watermark: str | None,
+        expected_lifecycle_count: int,
         loaded_lifecycle_watermark: str,
     ) -> None:
         quality_r = sum(
@@ -1282,6 +1292,7 @@ class AidyShadowResolver:
                         score_eligible=:eligible,score_exclusion_reason=:exclusion,
                         aidy_resolution_note=:note,aidy_m1_cursor_at=:cursor,
                         aidy_lifecycle_watermark=:new_lifecycle_mark,
+                        aidy_lifecycle_applied_count=:new_lifecycle_count,
                         aidy_state_version=aidy_state_version+1,
                         aidy_terminal=:terminal,aidy_score_blocked=:score_blocked,
                         aidy_evidence_digest=:evidence_digest,
@@ -1296,6 +1307,7 @@ class AidyShadowResolver:
                       AND aidy_state_version=:expected_version
                       AND aidy_m1_cursor_at IS NOT DISTINCT FROM :expected_cursor
                       AND aidy_lifecycle_watermark IS NOT DISTINCT FROM :expected_lifecycle_mark
+                      AND aidy_lifecycle_applied_count=:expected_lifecycle_count
                       AND NOT COALESCE(aidy_terminal,false)
                     """
                 ),
@@ -1310,7 +1322,8 @@ class AidyShadowResolver:
                     "exclusion": state.exclusion_reason,
                     "note": state.note,
                     "cursor": state.market_cursor,
-                    "new_lifecycle_mark": loaded_lifecycle_watermark,
+                    "new_lifecycle_mark": state.lifecycle_watermark,
+                    "new_lifecycle_count": state.lifecycle_applied_count,
                     "terminal": state.terminal,
                     "score_blocked": state.score_block_reason is not None,
                     "evidence_digest": state.evidence_digest,
@@ -1326,6 +1339,7 @@ class AidyShadowResolver:
                     "expected_version": expected_version,
                     "expected_cursor": expected_cursor,
                     "expected_lifecycle_mark": expected_lifecycle_watermark,
+                    "expected_lifecycle_count": expected_lifecycle_count,
                 },
             )
             if int(result.rowcount or 0) != 1:
@@ -1384,23 +1398,57 @@ class AidyShadowResolver:
         expected_version = int(trade.get("aidy_state_version") or 0)
         expected_cursor = trade.get("aidy_m1_cursor_at")
         expected_mark = trade.get("aidy_lifecycle_watermark")
+        expected_lifecycle_count = int(trade.get("aidy_lifecycle_applied_count") or 0)
+        ordered_events = sorted(
+            events,
+            key=lambda item: (
+                _utc(item["occurred_at"]),
+                _utc(item["created_at"]),
+                str(item["id"]),
+            ),
+        )
+        prefix_valid = expected_lifecycle_count <= len(ordered_events)
+        if prefix_valid and expected_lifecycle_count:
+            prefix_valid = (
+                lifecycle_watermark(ordered_events[:expected_lifecycle_count]) == expected_mark
+            )
+        elif prefix_valid and expected_lifecycle_count == 0:
+            prefix_valid = expected_mark in {None, lifecycle_watermark([])}
+        pending_events = (
+            ordered_events[expected_lifecycle_count:] if prefix_valid else ordered_events
+        )
+        cursor_boundary = (
+            _utc(expected_cursor) + timedelta(minutes=1)
+            if isinstance(expected_cursor, datetime)
+            else None
+        )
+        late_event_behind_market = bool(
+            cursor_boundary is not None
+            and any(_utc(item["occurred_at"]) < cursor_boundary for item in pending_events)
+        )
         revalidation = trade.get("score_exclusion_reason") in {
             "market_data_not_observed",
             "aidy_m1_revalidation_required",
         }
-        lifecycle_changed = expected_mark != loaded_mark
-        full_replay = revalidation or expected_cursor is None or lifecycle_changed
+        full_replay = (
+            revalidation
+            or expected_cursor is None
+            or not prefix_valid
+            or late_event_behind_market
+        )
         if full_replay:
             leg_ids = {leg.tp_index: leg.id for leg in legs}
             state = _initial_state(
                 geometry=geometry,
                 leg_ids=leg_ids,
                 signal_posted_at=posted_at,
-                lifecycle_mark=loaded_mark,
+                lifecycle_mark=lifecycle_watermark([]),
             )
+            events_to_replay = ordered_events
             start = _minute_floor(posted_at)
         else:
-            state = self._state_from_persisted(trade, legs, loaded_mark)
+            state = self._state_from_persisted(trade, legs)
+            events_to_replay = pending_events
             assert expected_cursor is not None
             start = _utc(expected_cursor)
 
@@ -1426,7 +1474,7 @@ class AidyShadowResolver:
         state = replay_bars(
             state=state,
             geometry=geometry,
-            events=events,
+            events=events_to_replay,
             bars=usable,
             signal_posted_at=posted_at,
             sibling_entries=sibling_entries,
@@ -1442,7 +1490,11 @@ class AidyShadowResolver:
                 "continuity_stop",
                 missing_open_time=first_missing.isoformat(),
             )
-        state.lifecycle_watermark = loaded_mark
+        if state.lifecycle_applied_count > len(ordered_events):
+            raise ValueError("aidy_lifecycle_applied_prefix_invalid")
+        state.lifecycle_watermark = lifecycle_watermark(
+            ordered_events[:state.lifecycle_applied_count]
+        )
         await asyncio.to_thread(
             self._persist,
             trade=trade,
@@ -1450,6 +1502,7 @@ class AidyShadowResolver:
             expected_version=expected_version,
             expected_cursor=expected_cursor,
             expected_lifecycle_watermark=expected_mark,
+            expected_lifecycle_count=expected_lifecycle_count,
             loaded_lifecycle_watermark=loaded_mark,
         )
         return True

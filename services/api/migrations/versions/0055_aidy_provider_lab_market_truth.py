@@ -29,6 +29,7 @@ def upgrade() -> None:
     op.add_column("shadow_trades", sa.Column("aidy_resolution_note", sa.String(length=160), nullable=True))
     op.add_column("shadow_trades", sa.Column("aidy_state_version", sa.Integer(), nullable=False, server_default="0"))
     op.add_column("shadow_trades", sa.Column("aidy_lifecycle_watermark", sa.String(length=64), nullable=True))
+    op.add_column("shadow_trades", sa.Column("aidy_lifecycle_applied_count", sa.Integer(), nullable=False, server_default="0"))
     op.add_column("shadow_trades", sa.Column("aidy_terminal", sa.Boolean(), nullable=False, server_default=sa.false()))
     op.add_column("shadow_trades", sa.Column("aidy_score_blocked", sa.Boolean(), nullable=False, server_default=sa.false()))
     op.add_column(
@@ -101,6 +102,7 @@ def upgrade() -> None:
             score_exclusion_reason='aidy_m1_revalidation_required',
             aidy_m1_cursor_at=NULL,
             aidy_lifecycle_watermark=NULL,
+            aidy_lifecycle_applied_count=0,
             aidy_state_version=0,
             aidy_terminal=false,
             aidy_score_blocked=false,
@@ -132,6 +134,11 @@ def upgrade() -> None:
         "ck_shadow_aidy_state_version",
         "shadow_trades",
         "aidy_state_version >= 0",
+    )
+    op.create_check_constraint(
+        "ck_shadow_aidy_lifecycle_count",
+        "shadow_trades",
+        "aidy_lifecycle_applied_count >= 0",
     )
 
     op.execute("ALTER VIEW provider_benchmark_performance RENAME TO provider_benchmark_performance_pre_aidy_0055")
@@ -171,6 +178,7 @@ def downgrade() -> None:
     op.execute("ALTER VIEW provider_benchmark_segments_pre_aidy_0055 RENAME TO provider_benchmark_segments")
     op.execute("DROP VIEW IF EXISTS provider_benchmark_performance")
     op.execute("ALTER VIEW provider_benchmark_performance_pre_aidy_0055 RENAME TO provider_benchmark_performance")
+    op.drop_constraint("ck_shadow_aidy_lifecycle_count", "shadow_trades", type_="check")
     op.drop_constraint("ck_shadow_aidy_state_version", "shadow_trades", type_="check")
     op.drop_constraint("ck_shadow_aidy_score_mode", "shadow_trades", type_="check")
     op.execute(
@@ -191,6 +199,7 @@ def downgrade() -> None:
         "aidy_original_geometry",
         "aidy_score_blocked",
         "aidy_terminal",
+        "aidy_lifecycle_applied_count",
         "aidy_lifecycle_watermark",
         "aidy_state_version",
         "aidy_resolution_note",
