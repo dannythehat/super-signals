@@ -16,8 +16,6 @@ from uuid import UUID
 import httpx
 from sqlalchemy import text
 
-from app.aidy_market_client import AidyMarketClient
-from app.aidy_shadow_resolver import AidyShadowResolver
 from app.provider_adaptive_profile import AdaptiveProviderProfileService
 from app.shadow_trading_v2 import _decimal
 from app.shadow_trading_v3 import ShadowTradeManager as _BaseShadowTradeManager
@@ -33,10 +31,6 @@ _AIDY_STYLES = {"intraday", "swing_or_sparse"}
 class ShadowTradeManager(_BaseShadowTradeManager):
     """Resolve Provider Lab without any always-on broker market-data stream."""
 
-    def __init__(self, *args, **kwargs) -> None:
-        super().__init__(*args, **kwargs)
-        self._aidy_task: asyncio.Task[None] | None = None
-
     async def start(self) -> None:
         if self._task is None or self._task.done():
             self._stopping.clear()
@@ -44,48 +38,10 @@ class ShadowTradeManager(_BaseShadowTradeManager):
                 self._run(),
                 name="super-signals-shadow-public-gold",
             )
-        if self._aidy_task is None or self._aidy_task.done():
-            client = AidyMarketClient.from_environment()
-            if client is None:
-                logger.warning("AIDY Provider Lab market client not configured; M1 resolver disabled")
-            else:
-                self._aidy_task = asyncio.create_task(
-                    self._run_aidy(AidyShadowResolver(self._session_factory, client)),
-                    name="super-signals-shadow-aidy-m1",
-                )
         asyncio.create_task(
             self._backfill_adaptive_profiles_once(),
             name="super-signals-adaptive-provider-backfill",
         )
-
-    async def stop(self) -> None:
-        if self._aidy_task is not None and not self._aidy_task.done():
-            self._aidy_task.cancel()
-            try:
-                await self._aidy_task
-            except asyncio.CancelledError:
-                pass
-        self._aidy_task = None
-        await super().stop()
-
-    async def _run_aidy(self, resolver: AidyShadowResolver) -> None:
-        while not self._stopping.is_set():
-            try:
-                processed, failures = await resolver.resolve_once()
-                if processed or failures:
-                    logger.info(
-                        "AIDY Provider Lab M1 resolution processed=%d failures=%d",
-                        processed,
-                        failures,
-                    )
-            except asyncio.CancelledError:
-                raise
-            except Exception:
-                logger.exception("AIDY Provider Lab M1 resolver failed safely")
-            try:
-                await asyncio.wait_for(self._stopping.wait(), timeout=_AIDY_POLL_SECONDS)
-            except TimeoutError:
-                pass
 
     async def _backfill_adaptive_profiles_once(self) -> None:
         try:
