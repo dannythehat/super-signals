@@ -7,6 +7,7 @@ Create Date: 2026-09-05
 
 from collections.abc import Sequence
 
+import sqlalchemy as sa
 from alembic import op
 
 revision: str = "0055_aidy_provider_lab_truth"
@@ -22,6 +23,8 @@ def upgrade() -> None:
         "shadow_trades",
         "quote_mode IN ('unobserved','snapshot_poll','stream_quote','stream_tick','aidy_m1')",
     )
+    op.add_column("shadow_trades", sa.Column("aidy_m1_cursor_at", sa.DateTime(timezone=True), nullable=True))
+    op.add_column("shadow_trades", sa.Column("aidy_resolution_note", sa.String(length=96), nullable=True))
     op.execute(
         """
         UPDATE shadow_trades
@@ -44,6 +47,8 @@ def downgrade() -> None:
         WHERE quote_mode='aidy_m1'
         """
     )
+    op.drop_column("shadow_trades", "aidy_resolution_note")
+    op.drop_column("shadow_trades", "aidy_m1_cursor_at")
     op.drop_constraint("ck_shadow_fair_quote_mode", "shadow_trades", type_="check")
     op.create_check_constraint(
         "ck_shadow_fair_quote_mode",
