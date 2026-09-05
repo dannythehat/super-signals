@@ -49,8 +49,16 @@ class ShadowTradeService(_BaseShadowTradeService):
 
             revision_index = int(row["source_revision_index"] or 0)
             source_status = str(row["source_status"] or "")
+            provider_style = str(row["provider_style"] or "unknown")
             if revision_index > 0:
                 if source_status == "shadow":
+                    # Same-message provider revisions are already represented by the
+                    # append-only `signal_revision` lifecycle event emitted upstream.
+                    # For AIDY-managed styles that immutable event is replayed by the
+                    # deterministic resolver; enrollment must never become a second
+                    # writer of shadow state.
+                    if provider_style in _AIDY_STYLES:
+                        return False
                     updated = session.execute(
                         text(
                             """
@@ -90,7 +98,6 @@ class ShadowTradeService(_BaseShadowTradeService):
             if not isinstance(posted_at, datetime):
                 return False
             posted_at = posted_at.replace(tzinfo=UTC) if posted_at.tzinfo is None else posted_at.astimezone(UTC)
-            provider_style = str(row["provider_style"] or "unknown")
             initial_exclusion = (
                 "unsupported_style_scalper"
                 if provider_style == "scalper"
