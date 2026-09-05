@@ -11,6 +11,7 @@ a broker router is forbidden because it creates silent missed trades.
 
 from __future__ import annotations
 
+import asyncio
 from typing import Any
 
 from app.canonical_signal_ledger import CanonicalSignalLedger
@@ -24,11 +25,12 @@ from app.telegram_listener_canonical import (
 from app.telegram_source_gateway import TelethonTelegramSourceGateway
 
 PRODUCTION_LISTENER_GENERATION = "canonical-v1"
-PRODUCTION_AI_GENERATION = "provider-aware-v2"
+PRODUCTION_AI_GENERATION = "provider-aware-v3-adaptive"
+_ADAPTIVE_PROFILE_REFRESH_SECONDS = 900
 
 
 class ProviderResearchProductionListener(CanonicalProductionTelegramListenerManager):
-    """Lifecycle wrapper: canonical ingress plus non-executing Provider Lab scanner."""
+    """Lifecycle wrapper: canonical ingress plus Provider Lab learning services."""
 
     def __init__(
         self,
@@ -37,6 +39,7 @@ class ProviderResearchProductionListener(CanonicalProductionTelegramListenerMana
     ) -> None:
         self._inner = inner
         self._research = research
+        self._adaptive_refresh_task: asyncio.Task[None] | None = None
 
     def __getattr__(self, name: str) -> Any:
         return getattr(self._inner, name)
@@ -45,15 +48,45 @@ class ProviderResearchProductionListener(CanonicalProductionTelegramListenerMana
         await self._inner.start()
         try:
             await self._research.start()
+            await self._refresh_adaptive_profiles()
+            self._adaptive_refresh_task = asyncio.create_task(
+                self._adaptive_refresh_loop(),
+                name="super-signals-adaptive-provider-profile-refresh",
+            )
         except Exception:
             await self._inner.stop()
             raise
 
     async def stop(self) -> None:
+        if self._adaptive_refresh_task is not None:
+            self._adaptive_refresh_task.cancel()
+            try:
+                await self._adaptive_refresh_task
+            except asyncio.CancelledError:
+                pass
+            self._adaptive_refresh_task = None
         try:
             await self._research.stop()
         finally:
             await self._inner.stop()
+
+    async def _refresh_adaptive_profiles(self) -> None:
+        pipeline = getattr(self._inner, "_ai_pipeline", None)
+        refresh = getattr(pipeline, "refresh_all_provider_profiles", None)
+        if callable(refresh):
+            await asyncio.to_thread(refresh)
+
+    async def _adaptive_refresh_loop(self) -> None:
+        while True:
+            await asyncio.sleep(_ADAPTIVE_PROFILE_REFRESH_SECONDS)
+            try:
+                await self._refresh_adaptive_profiles()
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                # Profile learning is research context. It must never stop Telegram
+                # ingestion or broker routing if one refresh cycle fails.
+                continue
 
 
 def build_production_listener_manager(**kwargs: Any) -> CanonicalProductionTelegramListenerManager:
