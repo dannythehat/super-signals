@@ -15,9 +15,12 @@ from __future__ import annotations
 import asyncio
 import logging
 from decimal import Decimal
+from uuid import UUID
 
 import httpx
+from sqlalchemy import text
 
+from app.provider_adaptive_profile import AdaptiveProviderProfileService
 from app.shadow_trading_v3 import ShadowTradeManager as _BaseShadowTradeManager
 from app.shadow_trading_v2 import _decimal
 
@@ -39,6 +42,42 @@ class ShadowTradeManager(_BaseShadowTradeManager):
                 self._run(),
                 name="super-signals-shadow-public-gold",
             )
+        # Provider-language learning must not depend on the Telegram listener being
+        # enabled at this exact startup. Backfill every monitored provider from the
+        # durable database in an independent worker; failures never affect trading.
+        asyncio.create_task(
+            self._backfill_adaptive_profiles_once(),
+            name="super-signals-adaptive-provider-backfill",
+        )
+
+    async def _backfill_adaptive_profiles_once(self) -> None:
+        try:
+            count = await asyncio.to_thread(self._backfill_adaptive_profiles_sync)
+            logger.info("Adaptive Provider Lab profiles backfilled for %d sources", count)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception("Adaptive Provider Lab startup backfill failed safely")
+
+    def _backfill_adaptive_profiles_sync(self) -> int:
+        service = AdaptiveProviderProfileService(self._session_factory)
+        with self._session_factory() as session:
+            source_ids = session.execute(
+                text(
+                    """
+                    SELECT id FROM sources
+                    WHERE status IN ('testing','shadow','live')
+                    ORDER BY created_at,id
+                    """
+                )
+            ).scalars().all()
+        completed = 0
+        for value in source_ids:
+            source_id = UUID(str(value))
+            service.invalidate(source_id)
+            service.get(source_id)
+            completed += 1
+        return completed
 
     async def poll_once(self) -> int:
         # No active research trades means no market-data request at all.
