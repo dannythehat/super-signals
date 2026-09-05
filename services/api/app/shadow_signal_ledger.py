@@ -41,7 +41,7 @@ class ShadowAwareCanonicalSignalLedger(CanonicalSignalLedger):
             extracted=extracted,
             revision_index=revision_index,
         )
-        if result.created and result.signal_id is not None and revision_index == 0:
+        if result.created and result.signal_id is not None:
             self._mirror_testing_live_signal(message_id, result.signal_id)
         return result
 
