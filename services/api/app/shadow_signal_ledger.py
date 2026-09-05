@@ -45,6 +45,26 @@ class ShadowAwareCanonicalSignalLedger(CanonicalSignalLedger):
             self._mirror_testing_live_signal(message_id, result.signal_id)
         return result
 
+    def revise(
+        self,
+        *,
+        message_id: UUID,
+        extracted: dict[str, Any],
+        revision_index: int,
+        allow_revision: bool,
+        reason: str,
+    ):
+        result = super().revise(
+            message_id=message_id,
+            extracted=extracted,
+            revision_index=revision_index,
+            allow_revision=allow_revision,
+            reason=reason,
+        )
+        if allow_revision and result.signal_id is not None:
+            self._mirror_testing_live_signal(message_id, result.signal_id)
+        return result
+
     def _mirror_testing_live_signal(self, message_id: UUID, signal_id: UUID) -> None:
         """Research failure never blocks or mutates canonical broker execution."""
         try:
