@@ -36,7 +36,7 @@ class ShadowTradeService(_BaseShadowTradeService):
                     JOIN sources src ON src.id=m.source_id
                     LEFT JOIN provider_research_profiles pr ON pr.source_id=m.source_id
                     WHERE s.id=:signal_id AND s.parser_status='accepted'
-                      AND src.status='shadow' AND m.deleted_at IS NULL
+                      AND src.status IN ('shadow','testing','live') AND m.deleted_at IS NULL
                     LIMIT 1
                     """
                 ),
