@@ -26,7 +26,7 @@ def upgrade() -> None:
             SELECT DISTINCT ON (entity_id)
                    entity_id AS signal_id,
                    CASE
-                       WHEN payload->>'execution_entry' ~ '^[0-9]+(?:\.[0-9]+)?$'
+                       WHEN payload->>'execution_entry' ~ '^[0-9]+(\.[0-9]+)?$'
                        THEN (payload->>'execution_entry')::numeric
                        ELSE NULL
                    END AS entry_reference_price,
@@ -251,24 +251,30 @@ def upgrade() -> None:
                 WHERE implied_usd_per_point_per_lot>0
                   AND implied_usd_per_point_per_lot<1000
             ) AS contract_value_samples,
-            percentile_cont(0.50) WITHIN GROUP (
-                ORDER BY implied_usd_per_point_per_lot
-            ) FILTER (
-                WHERE implied_usd_per_point_per_lot>0
-                  AND implied_usd_per_point_per_lot<1000
+            (
+                percentile_cont(0.50) WITHIN GROUP (
+                    ORDER BY implied_usd_per_point_per_lot
+                ) FILTER (
+                    WHERE implied_usd_per_point_per_lot>0
+                      AND implied_usd_per_point_per_lot<1000
+                )
             )::numeric AS usd_per_point_per_lot_p50,
             COUNT(broker_cash_charge_usd_per_lot) FILTER (
                 WHERE broker_cash_charge_usd_per_lot IS NOT NULL
             ) AS cash_charge_samples,
-            percentile_cont(0.50) WITHIN GROUP (
-                ORDER BY GREATEST(broker_cash_charge_usd_per_lot,0)
-            ) FILTER (
-                WHERE broker_cash_charge_usd_per_lot IS NOT NULL
+            (
+                percentile_cont(0.50) WITHIN GROUP (
+                    ORDER BY GREATEST(broker_cash_charge_usd_per_lot,0)
+                ) FILTER (
+                    WHERE broker_cash_charge_usd_per_lot IS NOT NULL
+                )
             )::numeric AS cash_charge_per_lot_p50_usd,
-            percentile_cont(0.95) WITHIN GROUP (
-                ORDER BY GREATEST(broker_cash_charge_usd_per_lot,0)
-            ) FILTER (
-                WHERE broker_cash_charge_usd_per_lot IS NOT NULL
+            (
+                percentile_cont(0.95) WITHIN GROUP (
+                    ORDER BY GREATEST(broker_cash_charge_usd_per_lot,0)
+                ) FILTER (
+                    WHERE broker_cash_charge_usd_per_lot IS NOT NULL
+                )
             )::numeric AS cash_charge_per_lot_p95_usd,
             SUM(commission_usd) AS observed_commission_usd,
             SUM(swap_usd) AS observed_swap_usd,
@@ -376,24 +382,30 @@ def upgrade() -> None:
                         WHERE c.implied_usd_per_point_per_lot>0
                           AND c.implied_usd_per_point_per_lot<1000
                     ) AS contract_samples,
-                    percentile_cont(0.50) WITHIN GROUP (
-                        ORDER BY c.implied_usd_per_point_per_lot
-                    ) FILTER (
-                        WHERE c.implied_usd_per_point_per_lot>0
-                          AND c.implied_usd_per_point_per_lot<1000
+                    (
+                        percentile_cont(0.50) WITHIN GROUP (
+                            ORDER BY c.implied_usd_per_point_per_lot
+                        ) FILTER (
+                            WHERE c.implied_usd_per_point_per_lot>0
+                              AND c.implied_usd_per_point_per_lot<1000
+                        )
                     )::numeric AS contract_p50,
                     COUNT(c.broker_cash_charge_usd_per_lot) FILTER (
                         WHERE c.broker_cash_charge_usd_per_lot IS NOT NULL
                     ) AS charge_samples,
-                    percentile_cont(0.50) WITHIN GROUP (
-                        ORDER BY GREATEST(c.broker_cash_charge_usd_per_lot,0)
-                    ) FILTER (
-                        WHERE c.broker_cash_charge_usd_per_lot IS NOT NULL
+                    (
+                        percentile_cont(0.50) WITHIN GROUP (
+                            ORDER BY GREATEST(c.broker_cash_charge_usd_per_lot,0)
+                        ) FILTER (
+                            WHERE c.broker_cash_charge_usd_per_lot IS NOT NULL
+                        )
                     )::numeric AS charge_p50,
-                    percentile_cont(0.95) WITHIN GROUP (
-                        ORDER BY GREATEST(c.broker_cash_charge_usd_per_lot,0)
-                    ) FILTER (
-                        WHERE c.broker_cash_charge_usd_per_lot IS NOT NULL
+                    (
+                        percentile_cont(0.95) WITHIN GROUP (
+                            ORDER BY GREATEST(c.broker_cash_charge_usd_per_lot,0)
+                        ) FILTER (
+                            WHERE c.broker_cash_charge_usd_per_lot IS NOT NULL
+                        )
                     )::numeric AS charge_p95,
                     MAX(c.closed_at) AS latest_sample_closed_at
                 FROM provider_execution_calibration_samples c
