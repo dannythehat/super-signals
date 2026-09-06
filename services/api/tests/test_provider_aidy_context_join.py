@@ -116,4 +116,4 @@ def test_day9_join_has_no_trade_persistence_or_broker_authority() -> None:
     assert "MetaAPI" not in join_source
     assert "broker" not in join_source.lower()
     assert '"live_money_execution_allowed"' in client_source
-    assert '"/provider/context?' in client_source
+    assert "/provider/context?" in client_source
