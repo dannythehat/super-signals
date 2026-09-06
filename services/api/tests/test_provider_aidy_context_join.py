@@ -11,7 +11,7 @@ from app.provider_aidy_context_join import (
     join_provider_to_aidy_context,
 )
 
-ROOT = Path(__file__).resolve().parents[2]
+ROOT = Path(__file__).resolve().parents[1]
 
 
 class _Client:
