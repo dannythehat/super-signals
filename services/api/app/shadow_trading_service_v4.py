@@ -14,6 +14,11 @@ from app.provider_fairness import (
     BENCHMARK_START_BALANCE_USD,
     session_bucket,
 )
+from app.provider_profile_pit import (
+    PIT_LEGACY_UNRESOLVABLE,
+    PIT_RESOLVED,
+    resolve_provider_profile_as_of,
+)
 from app.shadow_trading_v2 import ShadowTradeService as _BaseShadowTradeService, _decimal
 
 _AIDY_STYLES = {"intraday", "swing_or_sparse"}
@@ -30,13 +35,10 @@ class ShadowTradeService(_BaseShadowTradeService):
                     SELECT s.id AS signal_id,s.source_revision_index,m.id AS message_id,
                            m.source_id,s.source_posted_at AS posted_at,src.status AS source_status,
                            s.symbol,s.side,s.order_type,s.entry_low,s.entry_high,s.stop_loss,
-                           s.take_profits,s.has_open_runner,s.original_text,
-                           COALESCE(pr.style,'unknown') AS provider_style,
-                           COALESCE(pr.interpretation_readiness,0) AS interpretation_readiness
+                           s.take_profits,s.has_open_runner,s.original_text
                     FROM signals s
                     JOIN messages m ON m.id=s.source_message_id
                     JOIN sources src ON src.id=m.source_id
-                    LEFT JOIN provider_research_profiles pr ON pr.source_id=m.source_id
                     WHERE s.id=:signal_id AND s.parser_status='accepted'
                       AND src.status IN ('shadow','testing','live') AND m.deleted_at IS NULL
                     LIMIT 1
@@ -47,9 +49,25 @@ class ShadowTradeService(_BaseShadowTradeService):
             if row is None:
                 return False
 
+            posted_at = row["posted_at"]
+            if not isinstance(posted_at, datetime):
+                return False
+            posted_at = (
+                posted_at.replace(tzinfo=UTC)
+                if posted_at.tzinfo is None
+                else posted_at.astimezone(UTC)
+            )
+            profile = resolve_provider_profile_as_of(
+                session,
+                source_id=UUID(str(row["source_id"])),
+                as_of=posted_at,
+            )
+            pit_status = PIT_RESOLVED if profile is not None else PIT_LEGACY_UNRESOLVABLE
+            provider_style = profile.style if profile is not None else "unknown"
+            readiness = profile.interpretation_readiness if profile is not None else 0.0
+
             revision_index = int(row["source_revision_index"] or 0)
             source_status = str(row["source_status"] or "")
-            provider_style = str(row["provider_style"] or "unknown")
             if revision_index > 0:
                 if source_status == "shadow":
                     # Same-message provider revisions are already represented by the
@@ -91,15 +109,18 @@ class ShadowTradeService(_BaseShadowTradeService):
             )
             runner = bool(row["has_open_runner"])
             entries = self._research_entries(row)
-            if stop is None or not entries or (not targets and not runner) or row["side"] not in {"BUY", "SELL"}:
+            if (
+                stop is None
+                or not entries
+                or (not targets and not runner)
+                or row["side"] not in {"BUY", "SELL"}
+            ):
                 return False
 
-            posted_at = row["posted_at"]
-            if not isinstance(posted_at, datetime):
-                return False
-            posted_at = posted_at.replace(tzinfo=UTC) if posted_at.tzinfo is None else posted_at.astimezone(UTC)
             initial_exclusion = (
-                "unsupported_style_scalper"
+                "legacy_profile_unresolvable"
+                if pit_status == PIT_LEGACY_UNRESOLVABLE
+                else "unsupported_style_scalper"
                 if provider_style == "scalper"
                 else "market_data_not_observed"
             )
@@ -133,13 +154,16 @@ class ShadowTradeService(_BaseShadowTradeService):
                             benchmark_model,benchmark_start_balance_usd,benchmark_risk_per_leg_usd,
                             entry_index,entry_order_type,provider_style,interpretation_readiness_at_entry,
                             signal_posted_at,session_bucket,weekday_iso,target_count,score_eligible,
-                            score_exclusion_reason,quote_mode,aidy_original_geometry,aidy_effective_stop
+                            score_exclusion_reason,quote_mode,aidy_original_geometry,aidy_effective_stop,
+                            provider_profile_version_id,provider_profile_version_no,
+                            provider_profile_effective_at,provider_profile_pit_status
                         ) VALUES (
                             :source_id,:signal_id,:message_id,:symbol,:side,:broad_order_type,:entry_low,
                             :entry_high,:stop,:stop,CAST(:take_profits AS jsonb),'pending',
                             :benchmark_model,:benchmark_balance,:benchmark_risk,:entry_index,:entry_order_type,
                             :provider_style,:readiness,:posted_at,:session_bucket,:weekday_iso,:target_count,
-                            false,:initial_exclusion,'unobserved',CAST(:original_geometry AS jsonb),:stop
+                            false,:initial_exclusion,'unobserved',CAST(:original_geometry AS jsonb),:stop,
+                            :profile_version_id,:profile_version_no,:profile_effective_at,:pit_status
                         )
                         ON CONFLICT (signal_id,entry_index) DO NOTHING
                         RETURNING id
@@ -162,13 +186,17 @@ class ShadowTradeService(_BaseShadowTradeService):
                         "entry_index": entry.entry_index,
                         "entry_order_type": entry.order_type,
                         "provider_style": provider_style,
-                        "readiness": row["interpretation_readiness"],
+                        "readiness": readiness,
                         "posted_at": posted_at,
                         "session_bucket": session_bucket(posted_at),
                         "weekday_iso": posted_at.isoweekday(),
                         "target_count": len(targets) + int(runner),
                         "initial_exclusion": initial_exclusion,
                         "original_geometry": json.dumps(original_geometry, separators=(",", ":")),
+                        "profile_version_id": profile.id if profile is not None else None,
+                        "profile_version_no": profile.version_no if profile is not None else None,
+                        "profile_effective_at": profile.effective_at if profile is not None else None,
+                        "pit_status": pit_status,
                     },
                 ).scalar_one_or_none()
                 if shadow_id is None:

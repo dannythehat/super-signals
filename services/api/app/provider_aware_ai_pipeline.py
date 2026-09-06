@@ -1,7 +1,8 @@
-"""Production AI pipeline enriched with adaptive Provider Lab communication context."""
+"""Production AI pipeline enriched with point-in-time Provider Lab context."""
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from typing import Any
 from uuid import UUID
 
@@ -9,17 +10,18 @@ from sqlalchemy import text
 
 from app.production_ai_pipeline import ProductionAiMessagePipeline
 from app.provider_adaptive_profile import AdaptiveProviderProfileService
+from app.provider_profile_pit import resolve_provider_profile_as_of
 
 
 class ProviderAwareProductionAiPipeline(ProductionAiMessagePipeline):
-    """Add learned provider grammar without donating historical execution numbers."""
+    """Add only provider grammar that was already knowable for this message."""
 
     def __init__(self, *args: Any, **kwargs: Any) -> None:
         super().__init__(*args, **kwargs)
         self._adaptive_profiles = AdaptiveProviderProfileService(self._session_factory)
 
     def refresh_all_provider_profiles(self) -> int:
-        """Immediately bucket every testing/shadow/live provider from stored history."""
+        """Refresh the mutable current-state cache; Day 7 triggers version changes."""
         with self._session_factory() as session:
             source_ids = session.execute(
                 text(
@@ -38,6 +40,12 @@ class ProviderAwareProductionAiPipeline(ProductionAiMessagePipeline):
             refreshed += 1
         return refreshed
 
+    @staticmethod
+    def _utc(value: datetime) -> datetime:
+        if value.tzinfo is None:
+            return value.replace(tzinfo=UTC)
+        return value.astimezone(UTC)
+
     def _source_context(
         self,
         *,
@@ -49,52 +57,53 @@ class ProviderAwareProductionAiPipeline(ProductionAiMessagePipeline):
             telegram_message_id=telegram_message_id,
         )
         with self._session_factory() as session:
-            row = session.execute(
+            posted_at = session.execute(
                 text(
                     """
-                    SELECT style,interpretation_readiness,profile_metadata
-                    FROM provider_research_profiles WHERE source_id=:source_id LIMIT 1
+                    SELECT posted_at
+                    FROM messages
+                    WHERE source_id=:source_id
+                      AND telegram_message_id=:telegram_message_id
+                      AND deleted_at IS NULL
+                    ORDER BY posted_at DESC,id DESC
+                    LIMIT 1
                     """
                 ),
-                {"source_id": source_id},
-            ).mappings().first()
-
-        adaptive = self._adaptive_profiles.get(source_id).language_context
-        metadata = (
-            row["profile_metadata"]
-            if row is not None and isinstance(row["profile_metadata"], dict)
-            else {}
-        )
-        profile_context = {
-            "context_type": "provider_research_profile",
-            "style": (
-                str(row["style"] or "unknown")
-                if row is not None
-                else adaptive.get("cadence_bucket", "unknown")
-            ),
-            "interpretation_readiness": (
-                float(row["interpretation_readiness"] or 0) if row is not None else 0.0
-            ),
-            "adaptive_language_profile": adaptive,
-            "communication_traits": {
-                key: metadata.get(key)
-                for key in (
-                    "sample_signals_per_day",
-                    "pending_signal_messages",
-                    "scalp_language",
-                    "swing_language",
-                    "management_intensity",
-                    "uses_partial_language",
-                    "uses_runner_language",
-                    "uses_breakeven_language",
-                    "uses_layer_language",
-                    "uses_reentry_language",
+                {
+                    "source_id": source_id,
+                    "telegram_message_id": telegram_message_id,
+                },
+            ).scalar_one_or_none()
+            profile = (
+                resolve_provider_profile_as_of(
+                    session,
+                    source_id=source_id,
+                    as_of=self._utc(posted_at),
                 )
-                if key in metadata
-            },
+                if isinstance(posted_at, datetime)
+                else None
+            )
+
+        # Fail closed for legacy/backfilled messages.  Never rebuild a current
+        # adaptive profile here: doing so would leak future provider learning into
+        # an older message.  The current message and direct-reply evidence still
+        # flow through the base context normally.
+        if profile is None:
+            return source_name, context
+
+        profile_context = {
+            "context_type": "provider_research_profile_pit",
+            "provider_profile_version": profile.version_no,
+            "provider_profile_effective_at": profile.effective_at.isoformat(),
+            "provider_profile_fingerprint": profile.snapshot_fingerprint,
+            "style": profile.style,
+            "interpretation_readiness": profile.interpretation_readiness,
+            "adaptive_language_profile": profile.adaptive_language_profile,
+            "communication_traits": profile.communication_traits,
             "safety_note": (
-                "This profile is semantic context only. Historical numeric values are masked. "
-                "Current-message/direct-reply evidence remains mandatory for execution."
+                "This immutable profile was already effective at the message timestamp. "
+                "Historical numeric values remain masked; current-message/direct-reply "
+                "evidence remains mandatory for execution."
             ),
         }
         return source_name, [profile_context, *context]
