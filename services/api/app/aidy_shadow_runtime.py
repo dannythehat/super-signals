@@ -81,8 +81,9 @@ class AidyShadowRuntime:
             self._run(market_resolver, context_resolver),
             name="super-signals-provider-aidy-research",
         )
-        print("AIDY Provider Lab research loop started", flush=True)
-        logger.info("AIDY Provider Lab research loop started")
+        # Keep the established startup log contract for operational monitors/tests.
+        print("AIDY Provider Lab resolver loop started", flush=True)
+        logger.info("AIDY Provider Lab resolver loop started")
         return True
 
     async def stop(self) -> None:
