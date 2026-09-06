@@ -1,7 +1,8 @@
 """Application-owned AIDY Provider Lab replay and context runtime.
 
-This runtime is intentionally independent of broker credentials. It needs only the
-Super Signals database session factory and authenticated read-only AIDY clients.
+This runtime is intentionally independent of broker credentials. M1 replay remains the
+primary research loop; Day 10 context enrichment is optional/fail-flat and may never
+prevent the existing resolver from starting.
 """
 
 from __future__ import annotations
@@ -53,8 +54,7 @@ class AidyShadowRuntime:
         url_configured = bool(os.getenv("AIDY_PROVIDER_MARKET_URL", "").strip())
         token_configured = bool(os.getenv("AIDY_PROVIDER_MARKET_TOKEN", "").strip())
         market_client = AidyMarketClient.from_environment()
-        context_client = AidyContextClient.from_environment()
-        if market_client is None or context_client is None:
+        if market_client is None:
             message = (
                 "AIDY Provider Lab research loop not started "
                 f"url_configured={url_configured} token_configured={token_configured}"
@@ -62,9 +62,21 @@ class AidyShadowRuntime:
             print(message, flush=True)
             logger.warning(message)
             return False
+
+        context_client = AidyContextClient.from_environment()
+        context_resolver: ProviderContextAttachmentResolver | None = None
+        if context_client is not None:
+            context_resolver = ProviderContextAttachmentResolver(
+                self._session_factory,
+                context_client,
+            )
+        else:
+            logger.warning(
+                "AIDY Provider Lab context attachment disabled; M1 research remains active"
+            )
+
         self._stopping.clear()
         market_resolver = AidyShadowResolver(self._session_factory, market_client)
-        context_resolver = ProviderContextAttachmentResolver(self._session_factory, context_client)
         self._task = asyncio.create_task(
             self._run(market_resolver, context_resolver),
             name="super-signals-provider-aidy-research",
@@ -89,7 +101,7 @@ class AidyShadowRuntime:
     async def _run(
         self,
         market_resolver: AidyShadowResolver,
-        context_resolver: ProviderContextAttachmentResolver,
+        context_resolver: ProviderContextAttachmentResolver | None,
     ) -> None:
         draining_startup_backlog = True
         startup_pass = 0
@@ -110,24 +122,28 @@ class AidyShadowRuntime:
             if processed or market_failures:
                 logger.info(market_message)
 
-            # Context attachment is deliberately isolated from M1 replay and from all
-            # broker/member execution. A failed AIDY context request retries later and
-            # cannot block either market resolution or live signal routing.
-            try:
-                attached, context_failures = await context_resolver.resolve_once()
-            except asyncio.CancelledError:
-                raise
-            except Exception:
-                logger.exception("AIDY Provider Lab context attachment loop failed safely")
-                attached, context_failures = 0, 1
+            attached, context_failures = 0, 0
+            if context_resolver is not None:
+                # Context attachment is deliberately isolated from M1 replay and from
+                # all broker/member execution. A failed AIDY context request retries
+                # later and cannot block either market resolution or live signal routing.
+                try:
+                    attached, context_failures = await context_resolver.resolve_once()
+                except asyncio.CancelledError:
+                    raise
+                except Exception:
+                    logger.exception(
+                        "AIDY Provider Lab context attachment loop failed safely"
+                    )
+                    attached, context_failures = 0, 1
 
-            context_message = (
-                "AIDY Provider Lab context attachment "
-                f"attached={attached} failures={context_failures}"
-            )
-            print(context_message, flush=True)
-            if attached or context_failures:
-                logger.info(context_message)
+                context_message = (
+                    "AIDY Provider Lab context attachment "
+                    f"attached={attached} failures={context_failures}"
+                )
+                print(context_message, flush=True)
+                if attached or context_failures:
+                    logger.info(context_message)
 
             if draining_startup_backlog:
                 startup_pass += 1
