@@ -1,7 +1,7 @@
 """Repair Provider Lab lifecycle storage and add Day 11 reconciliation evidence.
 
 Revision ID: 0060_provider_day11_reconciliation
-Revises: 0059_provider_execution_calibration
+Revises: 0059_provider_exec_calibration
 Create Date: 2026-09-07
 
 All new surfaces are research-only. They cannot place trades, change member sizing,
@@ -15,7 +15,7 @@ from alembic import op
 from sqlalchemy.dialects import postgresql
 
 revision: str = "0060_provider_day11_reconciliation"
-down_revision: str | None = "0059_provider_execution_calibration"
+down_revision: str | None = "0059_provider_exec_calibration"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
