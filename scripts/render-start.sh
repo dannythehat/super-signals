@@ -14,4 +14,8 @@ python -m app.bootstrap
   python -m app.provider_day13_runtime &&
   python -m app.provider_day14_governance
 ) &
+# Day 15 is a separate fail-safe monthly audit sidecar. It waits for a completed
+# Day 14 governance run from this exact deploy SHA before persisting candidates.
+# It cannot mutate provider state or acquire broker/live-money authority.
+python -m app.provider_day15_monthly_audit &
 exec uvicorn app.main:app --host 0.0.0.0 --port "${PORT:-10000}"
