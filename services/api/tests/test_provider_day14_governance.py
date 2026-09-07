@@ -150,7 +150,7 @@ def test_day14_source_is_shadow_only_and_broker_isolated() -> None:
     assert "metaapi" not in source.casefold()
     assert "aidy_market_client" not in source
     assert "httpx" not in source
-    assert "live_money_execution_allowed": False if False else True
+    assert '"live_money_execution_allowed": False' in source
 
 
 def test_day14_migration_hard_walls_research_state_from_live_authority() -> None:
