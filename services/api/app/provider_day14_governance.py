@@ -388,10 +388,10 @@ def run() -> dict[str, Any]:
                     positive_candidate_count=positive,
                     negative_candidate_count=negative,
                 )
-                transition = decision.proposed_stage != current_stage and decision.proposed_action in {"PROMOTE", "DEMOTE"}
-                # A research-stage transition is permitted only from separately statistically validated,
-                # owner-approved evidence. The present Day 13 schema is structurally WAITING/unapproved,
-                # so production Day 14 cannot cross this gate today.
+                transition = decision.proposed_stage != current_stage and decision.proposed_action in {"PROMOTE", "DEMOTE", "RETEST"}
+                # Promotion/demotion require separately validated and owner-approved statistics;
+                # duplicate/drift re-tests may only move the research stage back toward shadow.
+                # No transition here can change sources.status or create broker authority.
                 if transition:
                     session.execute(
                         text(
