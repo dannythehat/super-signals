@@ -43,7 +43,7 @@ def test_broker_truth_uses_final_position_stop_for_lifecycle_only() -> None:
     source = (ROOT / "app" / "provider_day11_replay.py").read_text(encoding="utf-8")
     broker = source.split("def _broker_leg_truth(", 1)[1].split("def _broker_truth(", 1)[0]
     assert "p.stop_loss" in broker
-    assert "final_stop = _decimal(row["stop_loss"])" in broker
+    assert 'final_stop = _decimal(row["stop_loss"])' in broker
     assert "abs(exit_price - final_stop)" in broker
     assert "risk = abs(entry - initial_stop)" in broker
 
