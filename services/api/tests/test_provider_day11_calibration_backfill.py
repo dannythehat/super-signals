@@ -40,7 +40,6 @@ def test_calibration_bar_is_explicitly_retrospective_and_never_pit_eligible() ->
     end = BASE + timedelta(minutes=1)
     bar = AidyMarketClient._calibration_bar(_calibration_bar(), start=BASE, end=end)
     assert bar.first_observed_at > end
-
     for field, invalid in (
         ("pit_eligible", True),
         ("research_only", False),
@@ -49,19 +48,14 @@ def test_calibration_bar_is_explicitly_retrospective_and_never_pit_eligible() ->
         ("source_provider", "other"),
     ):
         with pytest.raises(ValueError):
-            AidyMarketClient._calibration_bar(
-                _calibration_bar(**{field: invalid}), start=BASE, end=end
-            )
+            AidyMarketClient._calibration_bar(_calibration_bar(**{field: invalid}), start=BASE, end=end)
 
 
 def test_live_pit_bar_parser_still_rejects_late_observation() -> None:
     end = BASE + timedelta(minutes=1)
     row = _calibration_bar()
-    row.pop("source_kind")
-    row.pop("source_provider")
-    row.pop("pit_eligible")
-    row.pop("research_only")
-    row.pop("live_money_execution_allowed")
+    for field in ("source_kind", "source_provider", "pit_eligible", "research_only", "live_money_execution_allowed"):
+        row.pop(field)
     with pytest.raises(ValueError, match="first_observed_after_pit_cutoff"):
         AidyMarketClient._bar(row, start=BASE, end=end)
 
@@ -69,9 +63,7 @@ def test_live_pit_bar_parser_still_rejects_late_observation() -> None:
 def test_acceptance_is_hard_bound_to_original_56_signal_production_run() -> None:
     assert str(DAY11_BASELINE_RUN_ID) == "c5fae236-a63f-4340-99e7-7890e08f782a"
     assert DAY11_FROZEN_SIGNAL_COUNT == 56
-    source = (
-        ROOT / "app" / "provider_day11_calibration_acceptance.py"
-    ).read_text(encoding="utf-8")
+    source = (ROOT / "app" / "provider_day11_calibration_acceptance.py").read_text(encoding="utf-8")
     assert "provider_execution_reconciliation_samples" in source
     assert "WHERE run_id=:baseline_run_id" in source
     assert "DAY11_FROZEN_SIGNAL_COUNT = 56" in source
@@ -79,19 +71,16 @@ def test_acceptance_is_hard_bound_to_original_56_signal_production_run() -> None
 
 
 def test_calibration_replay_never_calls_normal_pit_fetch_path() -> None:
-    source = (ROOT / "app" / "provider_day11_calibration_replay.py").read_text(
-        encoding="utf-8"
-    )
+    source = (ROOT / "app" / "provider_day11_calibration_replay.py").read_text(encoding="utf-8")
     assert CALIBRATION_EVIDENCE_DOMAIN == "calibration_backfill:twelve_data"
     assert "fetch_calibration_m1" in source
     assert ".fetch_m1(" not in source
     assert "live_money_execution_allowed" in source
 
 
-def test_runtime_starts_only_widened_diagnostic_during_step1() -> None:
-    startup = (ROOT.parents[1] / "scripts" / "render-start.sh").read_text(
-        encoding="utf-8"
-    )
-    assert "app.provider_day11_widened_diagnostic" in startup
+def test_runtime_retires_day11_replay_after_verified_closure() -> None:
+    startup = (ROOT.parents[1] / "scripts" / "render-start.sh").read_text(encoding="utf-8")
+    assert "app.provider_day12_fingerprint" in startup
+    assert "app.provider_day11_widened_diagnostic" not in startup
     assert "app.provider_day11_calibration_acceptance" not in startup
     assert "python -m app.provider_day11_acceptance" not in startup
