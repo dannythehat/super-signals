@@ -18,7 +18,12 @@ def test_shared_allocation_matches_canonical_two_entry_plan() -> None:
     entries = (_Entry(1), _Entry(2))
     targets = (Decimal("1"), Decimal("2"), Decimal("3"), None)
     plan = allocate_entry_targets(entries, targets)
-    assert [(x.entry.entry_index, x.tp_index) for x in plan] == [(1, 1), (2, 2), (1, 3), (2, 4)]
+    assert [(x.entry.entry_index, x.tp_index) for x in plan] == [
+        (1, 1),
+        (2, 2),
+        (1, 3),
+        (2, 4),
+    ]
 
 
 def test_live_executors_delegate_to_shared_allocation_helper() -> None:
@@ -31,13 +36,20 @@ def test_live_executors_delegate_to_shared_allocation_helper() -> None:
 
 
 def test_calibration_replay_is_leg_keyed_and_independent() -> None:
-    source = (ROOT / "app" / "provider_day11_calibration_replay.py").read_text(encoding="utf-8")
+    source = (ROOT / "app" / "provider_day11_calibration_replay.py").read_text(
+        encoding="utf-8"
+    )
     assert "allocate_entry_targets(entries, tuple(all_targets))" in source
     assert "_broker_leg_truth" in source
     assert "paper_broker_leg_key_mismatch" in source
     assert "abs_r_delta = max(leg_deltas.values()" in source
     assert "uuid5" in source
     assert "uuid4" not in source
+    paper_done = source.index("paper_legs: dict[tuple[int, int], Decimal]")
+    broker_read = source.index(
+        "broker_legs, broker_lifecycle, broker_deals, broker_error = _broker_leg_truth("
+    )
+    assert paper_done < broker_read
 
 
 def test_broker_truth_uses_final_position_stop_for_lifecycle_only() -> None:
