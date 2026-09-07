@@ -15,6 +15,7 @@ from uuid import UUID
 
 from sqlalchemy.orm import Session, sessionmaker
 
+from app.benchmarking_execution_dispatch import BenchmarkingCanonicalExecutionDispatcher
 from app.execution_dispatch_canonical import CanonicalExecutionDispatcher
 from app.graceful_market_targets import (
     GracefulCaptureReliableCanonicalTradingExecutionService,
@@ -109,7 +110,7 @@ def build_canonical_execution_router(
             read_gateway=member_read,
             trade_gateway=trade,
         )
-        return CanonicalExecutionDispatcher(
+        return BenchmarkingCanonicalExecutionDispatcher(
             session_factory=session_factory,
             owner_user_id=owner_user_id,
             execution_service=owner_execution,

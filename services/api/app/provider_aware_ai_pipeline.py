@@ -1,4 +1,4 @@
-"""Production AI pipeline enriched with non-numeric Provider Lab communication context."""
+"""Production AI pipeline enriched with adaptive Provider Lab communication context."""
 
 from __future__ import annotations
 
@@ -8,10 +8,35 @@ from uuid import UUID
 from sqlalchemy import text
 
 from app.production_ai_pipeline import ProductionAiMessagePipeline
+from app.provider_adaptive_profile_v2 import SignalLevelAdaptiveProviderProfileService
 
 
 class ProviderAwareProductionAiPipeline(ProductionAiMessagePipeline):
-    """Add learned provider style/traits without donating execution numbers to the model."""
+    """Add learned provider grammar without donating historical execution numbers."""
+
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        super().__init__(*args, **kwargs)
+        self._adaptive_profiles = SignalLevelAdaptiveProviderProfileService(self._session_factory)
+
+    def refresh_all_provider_profiles(self) -> int:
+        """Build adaptive buckets immediately for every monitored provider source."""
+        with self._session_factory() as session:
+            source_ids = session.execute(
+                text(
+                    """
+                    SELECT id FROM sources
+                    WHERE status IN ('testing','shadow','live')
+                    ORDER BY created_at,id
+                    """
+                )
+            ).scalars().all()
+        refreshed = 0
+        for value in source_ids:
+            source_id = UUID(str(value))
+            self._adaptive_profiles.invalidate(source_id)
+            self._adaptive_profiles.get(source_id)
+            refreshed += 1
+        return refreshed
 
     def _source_context(
         self,
@@ -33,16 +58,24 @@ class ProviderAwareProductionAiPipeline(ProductionAiMessagePipeline):
                 ),
                 {"source_id": source_id},
             ).mappings().first()
-        if row is None:
-            return source_name, context
 
-        metadata = row["profile_metadata"] if isinstance(row["profile_metadata"], dict) else {}
+        adaptive = self._adaptive_profiles.get(source_id).language_context
+        metadata = (
+            row["profile_metadata"]
+            if row is not None and isinstance(row["profile_metadata"], dict)
+            else {}
+        )
         profile_context = {
             "context_type": "provider_research_profile",
-            "style": str(row["style"] or "unknown"),
-            "interpretation_readiness": float(row["interpretation_readiness"] or 0),
-            # Only behavioural labels/counts are supplied. Never pass historical prices,
-            # inferred SL/TP values or performance outcomes into semantic execution input.
+            "style": (
+                str(row["style"] or "unknown")
+                if row is not None
+                else adaptive.get("cadence_bucket", "unknown")
+            ),
+            "interpretation_readiness": (
+                float(row["interpretation_readiness"] or 0) if row is not None else 0.0
+            ),
+            "adaptive_language_profile": adaptive,
             "communication_traits": {
                 key: metadata.get(key)
                 for key in (
@@ -59,6 +92,10 @@ class ProviderAwareProductionAiPipeline(ProductionAiMessagePipeline):
                 )
                 if key in metadata
             },
+            "safety_note": (
+                "This profile is semantic context only. Masked examples contain no usable historical "
+                "prices. Current-message/direct-reply evidence remains mandatory for execution."
+            ),
         }
         return source_name, [profile_context, *context]
 
