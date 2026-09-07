@@ -131,5 +131,5 @@ def test_day13_migration_hard_walls_preregistration_and_authority() -> None:
 
 def test_day13_replaces_completed_day12_startup_runner() -> None:
     startup = (ROOT.parents[1] / "scripts" / "render-start.sh").read_text(encoding="utf-8")
-    assert "python -m app.provider_day13_conditional" in startup
+    assert "python -m app.provider_day13_runtime" in startup
     assert "python -m app.provider_day12_fingerprint" not in startup
