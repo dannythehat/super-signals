@@ -1,3 +1,5 @@
+import os
+
 from fastapi.testclient import TestClient
 
 from app.main import app
@@ -13,7 +15,7 @@ def test_health_endpoint_returns_service_state() -> None:
         "status": "healthy",
         "service": "super-signals-api",
         "version": "0.1.0",
-        "environment": "development",
+        "environment": os.getenv("APP_ENV", "development"),
     }
 
 
