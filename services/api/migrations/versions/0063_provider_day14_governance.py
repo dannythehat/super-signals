@@ -39,22 +39,10 @@ def upgrade() -> None:
         sa.Column("research_only", sa.Boolean(), nullable=False, server_default=sa.true()),
         sa.Column("live_money_execution_allowed", sa.Boolean(), nullable=False, server_default=sa.false()),
         sa.CheckConstraint("minimum_oos_n >= 1", name="ck_provider_governance_policy_min_n"),
-        sa.CheckConstraint(
-            "minimum_tested_fingerprint_cells >= 1",
-            name="ck_provider_governance_policy_min_fingerprint_cells",
-        ),
-        sa.CheckConstraint(
-            "confidence_level > 0 AND confidence_level < 1",
-            name="ck_provider_governance_policy_confidence",
-        ),
-        sa.CheckConstraint(
-            "oos_window_mode = 'since_day13_preregistration'",
-            name="ck_provider_governance_policy_oos_window",
-        ),
-        sa.CheckConstraint(
-            "approval_status IN ('PROPOSED_UNAPPROVED','OWNER_APPROVED')",
-            name="ck_provider_governance_policy_approval",
-        ),
+        sa.CheckConstraint("minimum_tested_fingerprint_cells >= 1", name="ck_provider_governance_policy_min_fingerprint_cells"),
+        sa.CheckConstraint("confidence_level > 0 AND confidence_level < 1", name="ck_provider_governance_policy_confidence"),
+        sa.CheckConstraint("oos_window_mode = 'since_day13_preregistration'", name="ck_provider_governance_policy_oos_window"),
+        sa.CheckConstraint("approval_status IN ('PROPOSED_UNAPPROVED','OWNER_APPROVED')", name="ck_provider_governance_policy_approval"),
         sa.CheckConstraint(
             "(approval_status='PROPOSED_UNAPPROVED' AND owner_approved_at IS NULL) OR "
             "(approval_status='OWNER_APPROVED' AND owner_approved_at IS NOT NULL)",
@@ -98,16 +86,13 @@ def upgrade() -> None:
         sa.Column("paper_qualified_count", sa.Integer(), nullable=False, server_default="0"),
         sa.Column("authoritative_live_transition_count", sa.Integer(), nullable=False, server_default="0"),
         sa.Column("simulation_json", postgresql.JSONB(astext_type=sa.Text()), nullable=False, server_default=sa.text("'{}'::jsonb")),
-        sa.Column("evidence_digest", sa.String(length=64), nullable=True),
+        sa.Column("evidence_digest", sa.String(length=64), nullable=False),
         sa.Column("failure_reason", sa.String(length=200), nullable=True),
         sa.Column("created_at", sa.DateTime(timezone=True), nullable=False, server_default=sa.func.now()),
         sa.Column("research_only", sa.Boolean(), nullable=False, server_default=sa.true()),
         sa.Column("live_money_execution_allowed", sa.Boolean(), nullable=False, server_default=sa.false()),
-        sa.UniqueConstraint("source_conditional_run_id", "policy_version", "model_version", "code_sha", name="uq_provider_governance_run_source_policy_sha"),
-        sa.CheckConstraint(
-            "policy_approval_status IN ('PROPOSED_UNAPPROVED','OWNER_APPROVED')",
-            name="ck_provider_governance_run_policy_approval",
-        ),
+        sa.UniqueConstraint("policy_version", "model_version", "evidence_digest", name="uq_provider_governance_run_evidence"),
+        sa.CheckConstraint("policy_approval_status IN ('PROPOSED_UNAPPROVED','OWNER_APPROVED')", name="ck_provider_governance_run_policy_approval"),
         sa.CheckConstraint(
             "governance_status IN ('WAITING-FOR-FORWARD-EVIDENCE','WAITING-FOR-OWNER-THRESHOLD-APPROVAL','RESEARCH-GOVERNANCE-ACTIVE')",
             name="ck_provider_governance_run_status",
@@ -138,6 +123,7 @@ def upgrade() -> None:
         sa.Column("tested_fingerprint_cell_count", sa.Integer(), nullable=False, server_default="0"),
         sa.Column("positive_candidate_count", sa.Integer(), nullable=False, server_default="0"),
         sa.Column("negative_candidate_count", sa.Integer(), nullable=False, server_default="0"),
+        sa.Column("provider_evidence_digest", sa.String(length=64), nullable=False),
         sa.Column("sustained_decay", sa.Boolean(), nullable=False, server_default=sa.false()),
         sa.Column("duplicate_review", sa.Boolean(), nullable=False, server_default=sa.false()),
         sa.Column("paper_qualified", sa.Boolean(), nullable=False, server_default=sa.false()),
@@ -156,8 +142,7 @@ def upgrade() -> None:
         ),
         sa.CheckConstraint("proposed_action IN ('HOLD','PROMOTE','DEMOTE','RETEST')", name="ck_provider_governance_result_action"),
         sa.CheckConstraint(
-            "evidence_state IN ('WAITING_OWNER_APPROVAL','INSUFFICIENT_OOS','FINGERPRINT_NOT_READY',"
-            "'POSITIVE_CONFIDENT','NEGATIVE_CONFIDENT','UNCERTAIN','DUPLICATE_REVIEW')",
+            "evidence_state IN ('INSUFFICIENT_OOS','FINGERPRINT_NOT_READY','POSITIVE_CONFIDENT','NEGATIVE_CONFIDENT','UNCERTAIN')",
             name="ck_provider_governance_result_evidence",
         ),
         sa.CheckConstraint(
@@ -204,7 +189,7 @@ def upgrade() -> None:
                x.current_research_state,x.proposed_research_state,x.proposed_action,
                x.evidence_state,x.oos_trade_count,x.mean_quality_r,x.lower_95_r,x.upper_95_r,
                x.tested_fingerprint_cell_count,x.positive_candidate_count,
-               x.negative_candidate_count,x.sustained_decay,x.duplicate_review,
+               x.negative_candidate_count,x.provider_evidence_digest,x.sustained_decay,x.duplicate_review,
                x.paper_qualified,x.human_live_gate_required,x.research_state_transitioned,
                false AS authoritative_live_transition,x.reason_json,
                true AS research_only,false AS live_money_execution_allowed
