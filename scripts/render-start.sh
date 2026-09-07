@@ -5,9 +5,13 @@ cd /app/services/api
 alembic -c alembic.ini upgrade head
 python -m app.retire_tdc_provider_once
 python -m app.bootstrap
-# Day 13 dormant Provider Intelligence harness. It preregisters shadow-provider
-# conditional hypotheses before OOS evidence, remains research-only, and cannot
-# grant statistical, provider-routing, sizing or live-money authority. The runtime
-# wrapper binds the canonical aidy_context_as_of_utc production column.
-python -m app.provider_day13_runtime &
+# Provider Intelligence remains broker-isolated. Refresh the frozen Day 13
+# conditional research evidence first, then run Day 14 research governance.
+# Day 14 may only govern provider_research_profiles through learning -> shadow ->
+# qualified. Qualified is paper-research eligibility only; this subsystem cannot
+# mutate sources.status or grant live-money authority.
+(
+  python -m app.provider_day13_runtime &&
+  python -m app.provider_day14_governance
+) &
 exec uvicorn app.main:app --host 0.0.0.0 --port "${PORT:-10000}"
