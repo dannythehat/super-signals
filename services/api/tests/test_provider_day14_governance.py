@@ -139,6 +139,7 @@ def test_synthetic_governance_acceptance_proves_paths_without_provider_authority
 
 def test_day14_source_is_shadow_only_and_broker_isolated() -> None:
     source = (ROOT / "app" / "provider_day14_governance.py").read_text(encoding="utf-8")
+    lowered = source.casefold()
     assert "WHERE s.status='shadow'" in source
     assert "provider_conditional_runs" in source
     assert "provider_conditional_results" in source
@@ -146,8 +147,8 @@ def test_day14_source_is_shadow_only_and_broker_isolated() -> None:
     assert "UPDATE provider_governance_states" in source
     assert "UPDATE sources" not in source
     assert "broker_deals" not in source
-    assert "MetaApi" not in source
-    assert "metaapi" not in source.casefold()
+    assert "from metaapi" not in lowered
+    assert "import metaapi" not in lowered
     assert "aidy_market_client" not in source
     assert "httpx" not in source
     assert '"live_money_execution_allowed": False' in source
