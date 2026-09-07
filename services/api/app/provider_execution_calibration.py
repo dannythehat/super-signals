@@ -1,15 +1,40 @@
-"""Provider Intelligence Day 11 execution-cost calibration helpers.
+"""Provider Intelligence Day 11 execution-cost and reconciliation helpers.
 
 These functions are deliberately pure research math. They do not call MetaAPI, mutate
-positions, change sizing, or grant broker authority. The production calibration views use
-the same sign convention: positive slippage means worse execution for the provider side.
+positions, change sizing, or grant broker authority. Positive slippage means worse
+execution for the provider side. Reconciliation is an engineering gate only: anything
+outside the explicit versioned tolerance remains shadow/WAITING.
 """
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from decimal import Decimal
 
 MIN_CALIBRATION_SAMPLES = 30
+CALIBRATION_TOLERANCE_VERSION = "provider_day11_v1"
+
+
+@dataclass(frozen=True, slots=True)
+class ReconciliationTolerance:
+    """Versioned paper-to-broker engineering tolerance.
+
+    This is not a trading-edge or promotion threshold. It only answers whether the
+    paper instrument is close enough to broker truth to be used by later research.
+    The per-provider floor is intentionally smaller than the global floor because all
+    five established providers must be represented, while the combined corpus must
+    still clear the existing 30-sample engineering minimum.
+    """
+
+    version: str = CALIBRATION_TOLERANCE_VERSION
+    min_provider_signals: int = 5
+    min_total_signals: int = MIN_CALIBRATION_SAMPLES
+    max_median_abs_r_delta: Decimal = Decimal("0.35")
+    max_p95_abs_r_delta: Decimal = Decimal("1.00")
+    min_lifecycle_agreement_rate: Decimal = Decimal("0.80")
+
+
+DEFAULT_RECONCILIATION_TOLERANCE = ReconciliationTolerance()
 
 
 def adverse_slippage_points(*, side: str, reference: Decimal, actual: Decimal) -> Decimal:
@@ -30,11 +55,7 @@ def adverse_slippage_points(*, side: str, reference: Decimal, actual: Decimal) -
 def adverse_exit_slippage_points(
     *, side: str, reference: Decimal, actual: Decimal
 ) -> Decimal:
-    """Return signed adverse slippage for an exit.
-
-    For a BUY, selling below the intended exit is adverse. For a SELL, buying back above
-    the intended exit is adverse.
-    """
+    """Return signed adverse slippage for an exit."""
     normalized = side.strip().upper()
     if normalized == "BUY":
         return reference - actual
@@ -53,12 +74,7 @@ def execution_adjusted_r(
     exit_adverse_points: Decimal,
     cash_charge_r: Decimal = Decimal("0"),
 ) -> Decimal:
-    """Apply modeled broker-layer costs to a spread-aware shadow R result.
-
-    Shadow execution already uses executable bid/ask and therefore already pays spread.
-    This adjustment only subtracts additional broker fill slippage and explicit cash
-    charges, preventing spread from being charged twice.
-    """
+    """Apply modeled broker-layer costs to a spread-aware shadow R result."""
     if risk_distance <= 0:
         raise ValueError("calibration_risk_distance_invalid")
     if target_count < 0 or barrier_exit_count < 0 or barrier_exit_count > target_count:
@@ -79,10 +95,51 @@ def calibration_status(*, entry_samples: int, exit_samples: int, needs_exit: boo
     return "ENGINEERING_CALIBRATED"
 
 
+def reconciliation_status(
+    *,
+    provider_samples: int,
+    total_samples: int,
+    median_abs_r_delta: Decimal,
+    p95_abs_r_delta: Decimal,
+    lifecycle_agreement_rate: Decimal,
+    tolerance: ReconciliationTolerance = DEFAULT_RECONCILIATION_TOLERANCE,
+) -> str:
+    """Return the fail-closed Day 11 paper-to-broker reconciliation status."""
+    if provider_samples < 0 or total_samples < 0:
+        raise ValueError("reconciliation_sample_count_invalid")
+    if median_abs_r_delta < 0 or p95_abs_r_delta < 0:
+        raise ValueError("reconciliation_r_delta_invalid")
+    if not Decimal("0") <= lifecycle_agreement_rate <= Decimal("1"):
+        raise ValueError("reconciliation_lifecycle_rate_invalid")
+    if not tolerance.version.strip():
+        raise ValueError("reconciliation_tolerance_version_required")
+    if provider_samples < tolerance.min_provider_signals:
+        return "WAITING_INSUFFICIENT_PROVIDER_RECONCILIATION_SAMPLES"
+    if total_samples < tolerance.min_total_signals:
+        return "WAITING_INSUFFICIENT_GLOBAL_RECONCILIATION_SAMPLES"
+    if median_abs_r_delta > tolerance.max_median_abs_r_delta:
+        return "WAITING_RECONCILIATION_MEDIAN_R_DIVERGENCE"
+    if p95_abs_r_delta > tolerance.max_p95_abs_r_delta:
+        return "WAITING_RECONCILIATION_P95_R_DIVERGENCE"
+    if lifecycle_agreement_rate < tolerance.min_lifecycle_agreement_rate:
+        return "WAITING_RECONCILIATION_LIFECYCLE_DIVERGENCE"
+    return "RECONCILED"
+
+
+def intelligence_mode_for_calibration(status: str) -> str:
+    """Later intelligence may leave WAITING only after explicit reconciliation."""
+    return "RESEARCH_READY" if status == "RECONCILED" else "SHADOW_WAITING"
+
+
 __all__ = [
+    "CALIBRATION_TOLERANCE_VERSION",
+    "DEFAULT_RECONCILIATION_TOLERANCE",
     "MIN_CALIBRATION_SAMPLES",
+    "ReconciliationTolerance",
     "adverse_exit_slippage_points",
     "adverse_slippage_points",
     "calibration_status",
     "execution_adjusted_r",
+    "intelligence_mode_for_calibration",
+    "reconciliation_status",
 ]
