@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import os
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
@@ -12,6 +13,8 @@ AIDY_QUOTE_MODE = "aidy_m1"
 CALIBRATION_SOURCE_KIND = "calibration_backfill"
 CALIBRATION_SOURCE_PROVIDER = "twelve_data"
 _MAX_WINDOW = timedelta(hours=48)
+_CALIBRATION_RETRY_ATTEMPTS = 3
+_CALIBRATION_RETRY_BASE_SECONDS = 0.2
 
 
 def _utc_strict(value: datetime | str, *, field: str) -> datetime:
@@ -269,12 +272,19 @@ class AidyMarketClient:
             ]
         )
         async with httpx.AsyncClient(timeout=httpx.Timeout(self._timeout_seconds)) as client:
-            response = await client.get(
-                f"{self._base_url}{path}?{raw_query}",
-                headers=self._headers(),
-            )
-            response.raise_for_status()
-            payload = response.json()
+            for attempt in range(_CALIBRATION_RETRY_ATTEMPTS):
+                response = await client.get(
+                    f"{self._base_url}{path}?{raw_query}",
+                    headers=self._headers(),
+                )
+                if response.status_code in {500, 503} and attempt + 1 < _CALIBRATION_RETRY_ATTEMPTS:
+                    await asyncio.sleep(_CALIBRATION_RETRY_BASE_SECONDS * (2 ** attempt))
+                    continue
+                response.raise_for_status()
+                payload = response.json()
+                break
+            else:
+                raise RuntimeError("AIDY calibration retry bound exhausted.")
         if not isinstance(payload, dict) or payload.get("ok") is not True:
             raise RuntimeError("AIDY calibration market provider returned a non-success payload.")
         if str(payload.get("window_id")) != normalized_window_id:

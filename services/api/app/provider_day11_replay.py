@@ -89,15 +89,29 @@ def _targets(signal: dict[str, Any]) -> tuple[Decimal, ...]:
 
 
 def _geometry_for_entry(
-    *, signal: dict[str, Any], entry: Any, targets: tuple[Decimal, ...]
+    *,
+    signal: dict[str, Any],
+    entry: Any,
+    targets: tuple[Decimal, ...],
+    leg_plan: tuple[tuple[int, Decimal | None], ...] | None = None,
 ) -> OriginalGeometry:
     stop = _decimal_required(signal.get("stop_loss"), field="stop_loss")
-    legs: list[dict[str, Any]] = [
-        {"tp_index": index, "target_price": str(target), "is_runner": False}
-        for index, target in enumerate(targets, start=1)
-    ]
-    if bool(signal.get("has_open_runner")):
-        legs.append({"tp_index": len(legs) + 1, "target_price": None, "is_runner": True})
+    if leg_plan is None:
+        legs: list[dict[str, Any]] = [
+            {"tp_index": index, "target_price": str(target), "is_runner": False}
+            for index, target in enumerate(targets, start=1)
+        ]
+        if bool(signal.get("has_open_runner")):
+            legs.append({"tp_index": len(legs) + 1, "target_price": None, "is_runner": True})
+    else:
+        legs = [
+            {
+                "tp_index": int(tp_index),
+                "target_price": None if target is None else str(target),
+                "is_runner": target is None,
+            }
+            for tp_index, target in leg_plan
+        ]
     payload = {
         "side": str(signal["side"]),
         "entry_order_type": str(entry.order_type),
@@ -167,7 +181,9 @@ def _paper_lifecycle(states: list[Any]) -> str:
     return "paper_other"
 
 
-def _broker_truth(session: Any, signal: dict[str, Any]) -> tuple[Decimal | None, str | None, int, str | None]:
+def _broker_leg_truth(
+    session: Any, signal: dict[str, Any]
+) -> tuple[dict[tuple[int, int], Decimal] | None, str | None, int, str | None]:
     rows = list(
         session.execute(
             text(
@@ -191,7 +207,8 @@ def _broker_truth(session: Any, signal: dict[str, Any]) -> tuple[Decimal | None,
                       AND UPPER(COALESCE(symbol,''))='XAUUSD'
                     GROUP BY position_id
                 )
-                SELECT p.id,p.close_reason,p.take_profit,p.status,d.entry_vwap,d.exit_vwap,d.deal_count
+                SELECT p.id,p.close_reason,p.take_profit,p.stop_loss,p.status,
+                       p.entry_index,p.tp_index,d.entry_vwap,d.exit_vwap,d.deal_count
                 FROM positions p
                 LEFT JOIN deals d ON d.position_id=p.id
                 WHERE p.signal_id=:signal_id
@@ -210,26 +227,36 @@ def _broker_truth(session: Any, signal: dict[str, Any]) -> tuple[Decimal | None,
     if any(row["entry_vwap"] is None or row["exit_vwap"] is None for row in rows):
         return None, None, sum(int(row["deal_count"] or 0) for row in rows), "broker_vwap_incomplete"
 
-    stop = _decimal_required(signal.get("stop_loss"), field="broker_initial_stop")
+    initial_stop = _decimal_required(signal.get("stop_loss"), field="broker_initial_stop")
     side = str(signal["side"]).upper()
     direction = Decimal("1") if side == "BUY" else Decimal("-1")
-    total_r = Decimal("0")
+    leg_r: dict[tuple[int, int], Decimal] = {}
     position_classes: list[str] = []
     total_deals = 0
     for row in rows:
+        entry_index = int(row["entry_index"] or 0)
+        tp_index = int(row["tp_index"] or 0)
+        if entry_index < 1 or tp_index < 1:
+            return None, None, total_deals, "broker_leg_key_invalid"
+        key = (entry_index, tp_index)
+        if key in leg_r:
+            return None, None, total_deals, "broker_leg_key_duplicate"
         entry = _decimal_required(row["entry_vwap"], field="broker_entry")
         exit_price = _decimal_required(row["exit_vwap"], field="broker_exit")
-        risk = abs(entry - stop)
+        risk = abs(entry - initial_stop)
         if risk <= 0:
             return None, None, total_deals, "broker_risk_distance_invalid"
-        total_r += ((exit_price - entry) * direction) / risk
+        leg_r[key] = ((exit_price - entry) * direction) / risk
         total_deals += int(row["deal_count"] or 0)
         target = _decimal(row["take_profit"])
+        final_stop = _decimal(row["stop_loss"])
         if str(row["close_reason"]) == "provider_close":
             position_classes.append("provider_managed")
         elif target is not None and abs(exit_price - target) <= Decimal("0.75"):
             position_classes.append("profit_target")
-        elif abs(exit_price - stop) <= Decimal("0.75"):
+        elif final_stop is not None and abs(exit_price - final_stop) <= Decimal("0.75"):
+            position_classes.append("stop_loss")
+        elif abs(exit_price - initial_stop) <= Decimal("0.75"):
             position_classes.append("stop_loss")
         else:
             position_classes.append("broker_external")
@@ -242,7 +269,16 @@ def _broker_truth(session: Any, signal: dict[str, Any]) -> tuple[Decimal | None,
         lifecycle = "profit_target"
     else:
         lifecycle = "broker_external"
-    return total_r, lifecycle, total_deals, None
+    return leg_r, lifecycle, total_deals, None
+
+
+def _broker_truth(
+    session: Any, signal: dict[str, Any]
+) -> tuple[Decimal | None, str | None, int, str | None]:
+    legs, lifecycle, total_deals, error = _broker_leg_truth(session, signal)
+    if error is not None or legs is None or lifecycle is None:
+        return None, None, total_deals, error or "broker_leg_truth_unavailable"
+    return sum(legs.values(), Decimal("0")), lifecycle, total_deals, None
 
 
 def _candidate_signals(session: Any) -> dict[UUID, list[dict[str, Any]]]:

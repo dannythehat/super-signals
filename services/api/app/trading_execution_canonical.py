@@ -41,6 +41,7 @@ from app.bare_gold_now_policy import (
     bare_now_side,
 )
 from app.critical_entry_policy import CriticalEntry, parse_critical_entries
+from app.layer_allocation import allocate_entry_targets
 from app.metaapi_gateway import MetaApiGatewayError
 from app.metaapi_read_gateway import MetaApiReadGateway
 from app.mt5_crypto import BrokerCredentialDecryptionError
@@ -288,6 +289,23 @@ class CanonicalTradingExecutionService(PaperExecutionPriorityService):
         return super()._provider_zone(signal_id)
 
     @staticmethod
+    def _allocation_pairs(
+        entries: tuple[CriticalEntry, ...],
+        targets: tuple[Decimal | None, ...],
+    ) -> tuple[AtomicLayerAllocation, ...]:
+        try:
+            shared = allocate_entry_targets(entries, targets)
+        except ValueError as exc:
+            raise Day26ExecutionError(str(exc)) from exc
+        return tuple(
+            AtomicLayerAllocation(
+                entry=item.entry,
+                tp_index=item.tp_index,
+                take_profit=item.take_profit,
+            )
+            for item in shared
+        )
+
     def _allocation_pairs(
         entries: tuple[CriticalEntry, ...],
         targets: tuple[Decimal | None, ...],
