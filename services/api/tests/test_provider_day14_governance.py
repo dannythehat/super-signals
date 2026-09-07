@@ -1,9 +1,8 @@
 from pathlib import Path
 
 from app.provider_day14_governance import (
-    LIVE_GATE,
-    OWNER_APPROVED_THRESHOLDS,
-    STATISTICALLY_VALIDATED,
+    OWNER_APPROVED,
+    classify_performance,
     decide_governance,
     simulated_governance_acceptance,
 )
@@ -11,140 +10,155 @@ from app.provider_day14_governance import (
 ROOT = Path(__file__).resolve().parents[1]
 
 
-def test_waiting_forward_evidence_cannot_promote_even_with_candidate_counts() -> None:
+def test_unapproved_policy_is_fail_closed() -> None:
     result = decide_governance(
-        current_stage="shadow",
-        research_profile_state="learning",
-        source_statistical_status="WAITING-FOR-FORWARD-EVIDENCE",
-        source_threshold_approval_status="PROPOSED_UNAPPROVED",
-        positive_candidate_count=99,
-        negative_candidate_count=0,
+        current_research_state="learning",
+        policy_approval_status="PROPOSED_UNAPPROVED",
+        evidence_state="POSITIVE_CONFIDENT",
+        sustained_decay=False,
+        duplicate_review=False,
+        fresh_evidence_since_transition=True,
     )
     assert result.proposed_action == "HOLD"
-    assert result.proposed_stage == "shadow"
-    assert result.evidence_state == "WAITING_FORWARD_EVIDENCE"
-    assert result.eligible_for_human_review is False
+    assert result.proposed_research_state == "learning"
+    assert result.paper_qualified is False
 
 
-def test_unapproved_statistical_thresholds_are_fail_closed() -> None:
+def test_positive_evidence_advances_existing_research_states_one_step() -> None:
+    learning = decide_governance(
+        current_research_state="learning",
+        policy_approval_status=OWNER_APPROVED,
+        evidence_state="POSITIVE_CONFIDENT",
+        sustained_decay=False,
+        duplicate_review=False,
+        fresh_evidence_since_transition=True,
+    )
+    assert learning.proposed_action == "PROMOTE"
+    assert learning.proposed_research_state == "shadow"
+    assert learning.paper_qualified is False
+
+    shadow = decide_governance(
+        current_research_state="shadow",
+        policy_approval_status=OWNER_APPROVED,
+        evidence_state="POSITIVE_CONFIDENT",
+        sustained_decay=False,
+        duplicate_review=False,
+        fresh_evidence_since_transition=True,
+    )
+    assert shadow.proposed_action == "PROMOTE"
+    assert shadow.proposed_research_state == "qualified"
+    assert shadow.paper_qualified is True
+
+
+def test_qualified_is_terminal_for_automatic_governance() -> None:
     result = decide_governance(
-        current_stage="supervised",
-        research_profile_state="learning",
-        source_statistical_status=STATISTICALLY_VALIDATED,
-        source_threshold_approval_status="PROPOSED_UNAPPROVED",
-        positive_candidate_count=3,
-        negative_candidate_count=0,
+        current_research_state="qualified",
+        policy_approval_status=OWNER_APPROVED,
+        evidence_state="POSITIVE_CONFIDENT",
+        sustained_decay=False,
+        duplicate_review=False,
+        fresh_evidence_since_transition=True,
     )
     assert result.proposed_action == "HOLD"
-    assert result.proposed_stage == "supervised"
-    assert result.evidence_state == "WAITING_THRESHOLD_APPROVAL"
+    assert result.proposed_research_state == "qualified"
+    assert result.paper_qualified is True
 
 
-def test_validated_positive_evidence_moves_only_one_research_stage() -> None:
-    result = decide_governance(
-        current_stage="supervised",
-        research_profile_state="learning",
-        source_statistical_status=STATISTICALLY_VALIDATED,
-        source_threshold_approval_status=OWNER_APPROVED_THRESHOLDS,
-        positive_candidate_count=2,
-        negative_candidate_count=0,
+def test_adverse_evidence_retests_before_sustained_demotion() -> None:
+    first_bad = decide_governance(
+        current_research_state="qualified",
+        policy_approval_status=OWNER_APPROVED,
+        evidence_state="NEGATIVE_CONFIDENT",
+        sustained_decay=False,
+        duplicate_review=False,
+        fresh_evidence_since_transition=True,
     )
-    assert result.proposed_action == "PROMOTE"
-    assert result.proposed_stage == "paper_candidate"
-    assert result.eligible_for_human_review is False
+    assert first_bad.proposed_action == "RETEST"
+    assert first_bad.proposed_research_state == "qualified"
 
-
-def test_validated_adverse_evidence_demotes_one_stage_and_shadow_retests() -> None:
-    demote = decide_governance(
-        current_stage="paper_candidate",
-        research_profile_state="qualified",
-        source_statistical_status=STATISTICALLY_VALIDATED,
-        source_threshold_approval_status=OWNER_APPROVED_THRESHOLDS,
-        positive_candidate_count=0,
-        negative_candidate_count=1,
+    sustained = decide_governance(
+        current_research_state="qualified",
+        policy_approval_status=OWNER_APPROVED,
+        evidence_state="NEGATIVE_CONFIDENT",
+        sustained_decay=True,
+        duplicate_review=False,
+        fresh_evidence_since_transition=True,
     )
-    assert demote.proposed_action == "DEMOTE"
-    assert demote.proposed_stage == "supervised"
-
-    retest = decide_governance(
-        current_stage="shadow",
-        research_profile_state="learning",
-        source_statistical_status=STATISTICALLY_VALIDATED,
-        source_threshold_approval_status=OWNER_APPROVED_THRESHOLDS,
-        positive_candidate_count=0,
-        negative_candidate_count=1,
-    )
-    assert retest.proposed_action == "RETEST"
-    assert retest.proposed_stage == "shadow"
+    assert sustained.proposed_action == "DEMOTE"
+    assert sustained.proposed_research_state == "shadow"
+    assert sustained.paper_qualified is False
 
 
-def test_duplicate_and_drift_states_never_promote() -> None:
+def test_duplicate_review_and_same_evidence_never_promote() -> None:
     duplicate = decide_governance(
-        current_stage="supervised",
-        research_profile_state="duplicate_review",
-        source_statistical_status=STATISTICALLY_VALIDATED,
-        source_threshold_approval_status=OWNER_APPROVED_THRESHOLDS,
-        positive_candidate_count=5,
-        negative_candidate_count=0,
+        current_research_state="duplicate_review",
+        policy_approval_status=OWNER_APPROVED,
+        evidence_state="POSITIVE_CONFIDENT",
+        sustained_decay=False,
+        duplicate_review=True,
+        fresh_evidence_since_transition=True,
     )
     assert duplicate.proposed_action == "RETEST"
-    assert duplicate.proposed_stage == "shadow"
+    assert duplicate.proposed_research_state == "duplicate_review"
 
-    drift = decide_governance(
-        current_stage="paper_candidate",
-        research_profile_state="qualified",
-        source_statistical_status=STATISTICALLY_VALIDATED,
-        source_threshold_approval_status=OWNER_APPROVED_THRESHOLDS,
-        positive_candidate_count=5,
-        negative_candidate_count=0,
-        drifted=True,
+    replayed = decide_governance(
+        current_research_state="shadow",
+        policy_approval_status=OWNER_APPROVED,
+        evidence_state="POSITIVE_CONFIDENT",
+        sustained_decay=False,
+        duplicate_review=False,
+        fresh_evidence_since_transition=False,
     )
-    assert drift.proposed_action == "DEMOTE"
-    assert drift.proposed_stage == "supervised"
+    assert replayed.proposed_action == "HOLD"
+    assert replayed.proposed_research_state == "shadow"
 
 
-def test_tiny_live_candidate_is_terminal_and_requires_separate_owner_gate() -> None:
-    candidate = decide_governance(
-        current_stage="paper_candidate",
-        research_profile_state="qualified",
-        source_statistical_status=STATISTICALLY_VALIDATED,
-        source_threshold_approval_status=OWNER_APPROVED_THRESHOLDS,
-        positive_candidate_count=3,
-        negative_candidate_count=0,
+def test_performance_gate_requires_minimum_forward_sample_and_tested_fingerprint() -> None:
+    state, mean, lower, upper = classify_performance(
+        [0.5] * 29,
+        minimum_oos_n=30,
+        tested_fingerprint_cells=1,
+        minimum_tested_fingerprint_cells=1,
     )
-    assert candidate.proposed_stage == "tiny_live_candidate"
-    assert candidate.human_gate_status == LIVE_GATE
-    assert candidate.eligible_for_human_review is True
+    assert state == "INSUFFICIENT_OOS"
+    assert mean == 0.5
+    assert lower is None and upper is None
 
-    terminal = decide_governance(
-        current_stage="tiny_live_candidate",
-        research_profile_state="qualified",
-        source_statistical_status=STATISTICALLY_VALIDATED,
-        source_threshold_approval_status=OWNER_APPROVED_THRESHOLDS,
-        positive_candidate_count=10,
-        negative_candidate_count=0,
+    state, _, _, _ = classify_performance(
+        [0.5] * 30,
+        minimum_oos_n=30,
+        tested_fingerprint_cells=0,
+        minimum_tested_fingerprint_cells=1,
     )
-    assert terminal.proposed_action == "HOLD"
-    assert terminal.proposed_stage == "tiny_live_candidate"
-    assert terminal.human_gate_status == LIVE_GATE
+    assert state == "FINGERPRINT_NOT_READY"
+
+    state, mean, lower, upper = classify_performance(
+        [0.5] * 30,
+        minimum_oos_n=30,
+        tested_fingerprint_cells=1,
+        minimum_tested_fingerprint_cells=1,
+    )
+    assert state == "POSITIVE_CONFIDENT"
+    assert mean == 0.5
+    assert lower is not None and lower > 0
+    assert upper is not None and upper > 0
 
 
-def test_synthetic_governance_acceptance_proves_paths_without_provider_authority() -> None:
+def test_synthetic_governance_acceptance_proves_paths_without_live_authority() -> None:
     result = simulated_governance_acceptance()
     assert result["synthetic_only"] is True
     assert result["acceptance_passed"] is True
-    assert result["statistical_authority_granted"] is False
     assert result["live_money_authority_granted"] is False
 
 
-def test_day14_source_is_shadow_only_and_broker_isolated() -> None:
+def test_day14_source_uses_shadow_profiles_and_is_broker_isolated() -> None:
     source = (ROOT / "app" / "provider_day14_governance.py").read_text(encoding="utf-8")
     lowered = source.casefold()
     assert "WHERE s.status='shadow'" in source
     assert "provider_conditional_runs" in source
     assert "provider_conditional_results" in source
     assert "provider_research_profiles" in source
-    assert "UPDATE provider_governance_states" in source
+    assert "UPDATE provider_research_profiles" in source
     assert "UPDATE sources" not in source
     assert "broker_deals" not in source
     assert "from metaapi" not in lowered
@@ -154,18 +168,26 @@ def test_day14_source_is_shadow_only_and_broker_isolated() -> None:
     assert '"live_money_execution_allowed": False' in source
 
 
-def test_day14_migration_hard_walls_research_state_from_live_authority() -> None:
+def test_day14_migration_hard_walls_research_governance_from_live_authority() -> None:
     migration = (
         ROOT / "migrations" / "versions" / "0063_provider_day14_governance.py"
     ).read_text(encoding="utf-8")
-    assert "tiny_live_candidate" in migration
-    assert "authoritative_transition_count = 0" in migration
-    assert "NOT authoritative_transition" in migration
-    assert "ck_provider_governance_state_no_live_money" in migration
+    assert "provider_day14_policy_v1" in migration
+    assert "PROPOSED_UNAPPROVED" in migration
+    assert "OWNER_APPROVED" in migration
+    assert "human_live_gate_required" in migration
+    assert "authoritative_live_transition_count = 0" in migration
+    assert "NOT authoritative_live_transition" in migration
+    assert "ck_provider_governance_policy_no_live_money" in migration
     assert "ck_provider_governance_run_no_live_money" in migration
     assert "ck_provider_governance_result_no_live_money" in migration
-    assert "provider governance state is shadow-provider research only" in migration
     assert "provider governance result evidence is append-only" in migration
+
+
+def test_research_scanner_preserves_governance_owned_states() -> None:
+    scanner = (ROOT / "app" / "provider_research.py").read_text(encoding="utf-8")
+    assert "provider_research_profiles.research_state IN ('shadow','qualified','rejected')" in scanner
+    assert "THEN provider_research_profiles.research_state" in scanner
 
 
 def test_day14_startup_keeps_day13_forward_refresh_and_runs_governance_after_it() -> None:
