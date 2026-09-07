@@ -279,7 +279,11 @@ class ProviderResearchService:
                             :duplicate_score,CAST(:metadata AS jsonb),now(),now()
                         )
                         ON CONFLICT (source_id) DO UPDATE SET
-                            research_state=EXCLUDED.research_state,
+                            research_state=CASE
+                                WHEN provider_research_profiles.research_state IN ('shadow','qualified','rejected')
+                                THEN provider_research_profiles.research_state
+                                ELSE EXCLUDED.research_state
+                            END,
                             style=EXCLUDED.style,
                             observed_messages=EXCLUDED.observed_messages,
                             signal_like_messages=EXCLUDED.signal_like_messages,
@@ -429,8 +433,6 @@ class ProviderResearchService:
                 score = duplicate_similarity(left, right)
                 if score < 0.60:
                     continue
-                # Keep the first source canonical for the sample. This is only a research
-                # flag: both channels remain monitored until evidence proves equivalence.
                 existing = flagged.get(right_id)
                 if existing is None or score > existing[1]:
                     flagged[right_id] = (left_id, score)
