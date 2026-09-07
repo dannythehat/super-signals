@@ -21,15 +21,9 @@ depends_on: str | Sequence[str] | None = None
 
 
 def upgrade() -> None:
-    # A legitimate fail-closed reason emitted by shadow_trading_v3 is 46 characters.
-    # VARCHAR(40) could therefore reject truthful lifecycle evidence.
-    op.alter_column(
-        "shadow_trade_legs",
-        "exit_reason",
-        existing_type=sa.String(length=40),
-        type_=sa.String(length=120),
-        existing_nullable=True,
-    )
+    # exit_reason is widened to VARCHAR(120) in migration 0059, BEFORE the
+    # provider_shadow_execution_projection view is created, so the column type
+    # is never altered while a dependent view exists. 0060 no longer alters it.
 
     op.create_table(
         "provider_execution_reconciliation_tolerances",

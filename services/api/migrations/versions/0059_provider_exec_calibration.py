@@ -299,6 +299,15 @@ def upgrade() -> None:
         """
     )
 
+    # Widen exit_reason BEFORE the projection view is created, so the column
+    # type is never altered while a dependent view exists. A legitimate
+    # fail-closed reason (e.g. entry_stop_sequence_ambiguous_same_observation,
+    # 46 chars) exceeds the original VARCHAR(40).
+    op.execute(
+        "ALTER TABLE shadow_trade_legs "
+        "ALTER COLUMN exit_reason TYPE VARCHAR(120)"
+    )
+
     op.execute(
         r"""
         CREATE VIEW provider_shadow_execution_projection AS
