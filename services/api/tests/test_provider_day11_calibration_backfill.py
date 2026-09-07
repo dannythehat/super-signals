@@ -80,7 +80,8 @@ def test_calibration_replay_never_calls_normal_pit_fetch_path() -> None:
 
 def test_runtime_retires_day11_replay_after_verified_closure() -> None:
     startup = (ROOT.parents[1] / "scripts" / "render-start.sh").read_text(encoding="utf-8")
-    assert "app.provider_day12_fingerprint" in startup
+    assert "app.provider_day13_conditional" in startup
+    assert "app.provider_day12_fingerprint" not in startup
     assert "app.provider_day11_widened_diagnostic" not in startup
     assert "app.provider_day11_calibration_acceptance" not in startup
     assert "python -m app.provider_day11_acceptance" not in startup
