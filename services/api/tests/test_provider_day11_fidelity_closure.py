@@ -25,6 +25,7 @@ def test_live_executors_delegate_to_shared_allocation_helper() -> None:
     for filename in ("paper_critical_execution.py", "trading_execution_canonical.py"):
         source = (ROOT / "app" / filename).read_text(encoding="utf-8")
         assert "from app.layer_allocation import allocate_entry_targets" in source
+        assert source.count("def _allocation_pairs(") == 1
         method = source.split("def _allocation_pairs(", 1)[1]
         assert "allocate_entry_targets(entries, targets)" in method
 
