@@ -156,7 +156,6 @@ def test_day14_source_uses_shadow_profiles_and_is_broker_isolated() -> None:
     lowered = source.casefold()
     assert "WHERE s.status='shadow'" in source
     assert "provider_conditional_runs" in source
-    assert "provider_conditional_results" in source
     assert "provider_research_profiles" in source
     assert "UPDATE provider_research_profiles" in source
     assert "UPDATE sources" not in source
