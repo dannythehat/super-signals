@@ -1,13 +1,14 @@
-"""Add Provider Intelligence Day 14 research governance state machine.
+"""Add Provider Intelligence Day 14 promotion/demotion governance.
 
 Revision ID: 0063_provider_day14_governance
 Revises: 0062_provider_day13_conditional
 Create Date: 2026-09-07
 
-Day 14 governs research-stage promotion/demotion/re-test proposals only. It cannot mutate
-source execution status, route trades, size positions, approve statistical thresholds or
-grant live-money authority. The terminal stage in this subsystem is tiny_live_candidate;
-actual live activation requires a separate explicit owner-gated mechanism.
+Day 14 wires evidence-backed governance into the existing provider_research_profiles
+learning -> shadow -> qualified state machine. `qualified` is paper-research eligibility
+only. This migration creates no path to change sources.status or grant live-money authority.
+Promotion thresholds are builder recommendations and remain unapproved until an explicit
+owner decision records approval.
 """
 
 from collections.abc import Sequence
@@ -24,92 +25,97 @@ depends_on: str | Sequence[str] | None = None
 
 def upgrade() -> None:
     op.create_table(
-        "provider_governance_states",
-        sa.Column(
-            "source_id",
-            postgresql.UUID(as_uuid=True),
-            sa.ForeignKey("sources.id", ondelete="CASCADE"),
-            primary_key=True,
-        ),
-        sa.Column("rollout_stage", sa.String(length=32), nullable=False, server_default="shadow"),
-        sa.Column("state_version", sa.Integer(), nullable=False, server_default="1"),
-        sa.Column("last_transition_at", sa.DateTime(timezone=True), nullable=True),
+        "provider_governance_policies",
+        sa.Column("policy_version", sa.String(length=64), primary_key=True),
+        sa.Column("minimum_oos_n", sa.Integer(), nullable=False),
+        sa.Column("minimum_tested_fingerprint_cells", sa.Integer(), nullable=False),
+        sa.Column("confidence_level", sa.Numeric(6, 5), nullable=False),
+        sa.Column("oos_window_mode", sa.String(length=64), nullable=False),
+        sa.Column("approval_status", sa.String(length=40), nullable=False),
+        sa.Column("owner_approved_at", sa.DateTime(timezone=True), nullable=True),
+        sa.Column("human_live_gate_required", sa.Boolean(), nullable=False, server_default=sa.true()),
         sa.Column("created_at", sa.DateTime(timezone=True), nullable=False, server_default=sa.func.now()),
         sa.Column("updated_at", sa.DateTime(timezone=True), nullable=False, server_default=sa.func.now()),
         sa.Column("research_only", sa.Boolean(), nullable=False, server_default=sa.true()),
         sa.Column("live_money_execution_allowed", sa.Boolean(), nullable=False, server_default=sa.false()),
+        sa.CheckConstraint("minimum_oos_n >= 1", name="ck_provider_governance_policy_min_n"),
         sa.CheckConstraint(
-            "rollout_stage IN ('shadow','supervised','paper_candidate','tiny_live_candidate')",
-            name="ck_provider_governance_state_stage",
+            "minimum_tested_fingerprint_cells >= 1",
+            name="ck_provider_governance_policy_min_fingerprint_cells",
         ),
-        sa.CheckConstraint("state_version >= 1", name="ck_provider_governance_state_version"),
-        sa.CheckConstraint("research_only", name="ck_provider_governance_state_research_only"),
-        sa.CheckConstraint("NOT live_money_execution_allowed", name="ck_provider_governance_state_no_live_money"),
+        sa.CheckConstraint(
+            "confidence_level > 0 AND confidence_level < 1",
+            name="ck_provider_governance_policy_confidence",
+        ),
+        sa.CheckConstraint(
+            "oos_window_mode = 'since_day13_preregistration'",
+            name="ck_provider_governance_policy_oos_window",
+        ),
+        sa.CheckConstraint(
+            "approval_status IN ('PROPOSED_UNAPPROVED','OWNER_APPROVED')",
+            name="ck_provider_governance_policy_approval",
+        ),
+        sa.CheckConstraint(
+            "(approval_status='PROPOSED_UNAPPROVED' AND owner_approved_at IS NULL) OR "
+            "(approval_status='OWNER_APPROVED' AND owner_approved_at IS NOT NULL)",
+            name="ck_provider_governance_policy_approval_timestamp",
+        ),
+        sa.CheckConstraint("human_live_gate_required", name="ck_provider_governance_policy_human_gate"),
+        sa.CheckConstraint("research_only", name="ck_provider_governance_policy_research_only"),
+        sa.CheckConstraint("NOT live_money_execution_allowed", name="ck_provider_governance_policy_no_live_money"),
     )
-
     op.execute(
         """
-        CREATE OR REPLACE FUNCTION enforce_provider_governance_shadow_source()
-        RETURNS trigger AS $$
-        BEGIN
-          IF NOT EXISTS (
-            SELECT 1 FROM sources s WHERE s.id = NEW.source_id AND s.status = 'shadow'
-          ) THEN
-            RAISE EXCEPTION 'provider governance state is shadow-provider research only';
-          END IF;
-          RETURN NEW;
-        END;
-        $$ LANGUAGE plpgsql;
-        CREATE TRIGGER trg_provider_governance_shadow_source
-        BEFORE INSERT OR UPDATE ON provider_governance_states
-        FOR EACH ROW EXECUTE FUNCTION enforce_provider_governance_shadow_source();
+        INSERT INTO provider_governance_policies(
+            policy_version,minimum_oos_n,minimum_tested_fingerprint_cells,confidence_level,
+            oos_window_mode,approval_status,human_live_gate_required,research_only,
+            live_money_execution_allowed
+        ) VALUES (
+            'provider_day14_policy_v1',30,1,0.95,'since_day13_preregistration',
+            'PROPOSED_UNAPPROVED',true,true,false
+        )
         """
     )
 
     op.create_table(
         "provider_governance_runs",
         sa.Column("id", postgresql.UUID(as_uuid=True), primary_key=True, server_default=sa.text("gen_random_uuid()")),
-        sa.Column(
-            "source_conditional_run_id",
-            postgresql.UUID(as_uuid=True),
-            sa.ForeignKey("provider_conditional_runs.id"),
-            nullable=False,
-        ),
+        sa.Column("policy_version", sa.String(length=64), sa.ForeignKey("provider_governance_policies.policy_version"), nullable=False),
+        sa.Column("source_conditional_run_id", postgresql.UUID(as_uuid=True), sa.ForeignKey("provider_conditional_runs.id"), nullable=False),
         sa.Column("model_version", sa.String(length=64), nullable=False),
         sa.Column("code_sha", sa.String(length=40), nullable=False),
-        sa.Column("source_statistical_status", sa.String(length=64), nullable=False),
-        sa.Column("source_threshold_approval_status", sa.String(length=40), nullable=False),
+        sa.Column("policy_approval_status", sa.String(length=40), nullable=False),
         sa.Column("started_at", sa.DateTime(timezone=True), nullable=False, server_default=sa.func.now()),
         sa.Column("completed_at", sa.DateTime(timezone=True), nullable=True),
         sa.Column("engineering_status", sa.String(length=48), nullable=False, server_default="RUNNING"),
         sa.Column("governance_status", sa.String(length=64), nullable=False),
         sa.Column("provider_count", sa.Integer(), nullable=False, server_default="0"),
         sa.Column("hold_count", sa.Integer(), nullable=False, server_default="0"),
-        sa.Column("promotion_proposal_count", sa.Integer(), nullable=False, server_default="0"),
-        sa.Column("demotion_proposal_count", sa.Integer(), nullable=False, server_default="0"),
-        sa.Column("retest_proposal_count", sa.Integer(), nullable=False, server_default="0"),
-        sa.Column("research_stage_transition_count", sa.Integer(), nullable=False, server_default="0"),
-        sa.Column("human_review_count", sa.Integer(), nullable=False, server_default="0"),
-        sa.Column("authoritative_transition_count", sa.Integer(), nullable=False, server_default="0"),
+        sa.Column("promotion_count", sa.Integer(), nullable=False, server_default="0"),
+        sa.Column("demotion_count", sa.Integer(), nullable=False, server_default="0"),
+        sa.Column("retest_count", sa.Integer(), nullable=False, server_default="0"),
+        sa.Column("research_state_transition_count", sa.Integer(), nullable=False, server_default="0"),
+        sa.Column("paper_qualified_count", sa.Integer(), nullable=False, server_default="0"),
+        sa.Column("authoritative_live_transition_count", sa.Integer(), nullable=False, server_default="0"),
         sa.Column("simulation_json", postgresql.JSONB(astext_type=sa.Text()), nullable=False, server_default=sa.text("'{}'::jsonb")),
         sa.Column("evidence_digest", sa.String(length=64), nullable=True),
         sa.Column("failure_reason", sa.String(length=200), nullable=True),
         sa.Column("created_at", sa.DateTime(timezone=True), nullable=False, server_default=sa.func.now()),
         sa.Column("research_only", sa.Boolean(), nullable=False, server_default=sa.true()),
         sa.Column("live_money_execution_allowed", sa.Boolean(), nullable=False, server_default=sa.false()),
-        sa.UniqueConstraint(
-            "source_conditional_run_id", "model_version", "code_sha",
-            name="uq_provider_governance_run_source_model_sha",
+        sa.UniqueConstraint("source_conditional_run_id", "policy_version", "model_version", "code_sha", name="uq_provider_governance_run_source_policy_sha"),
+        sa.CheckConstraint(
+            "policy_approval_status IN ('PROPOSED_UNAPPROVED','OWNER_APPROVED')",
+            name="ck_provider_governance_run_policy_approval",
         ),
         sa.CheckConstraint(
-            "governance_status IN ('WAITING-FOR-FORWARD-EVIDENCE','WAITING-FOR-THRESHOLD-APPROVAL','RESEARCH-PROPOSALS-READY')",
+            "governance_status IN ('WAITING-FOR-FORWARD-EVIDENCE','WAITING-FOR-OWNER-THRESHOLD-APPROVAL','RESEARCH-GOVERNANCE-ACTIVE')",
             name="ck_provider_governance_run_status",
         ),
         sa.CheckConstraint(
-            "provider_count >= 0 AND hold_count >= 0 AND promotion_proposal_count >= 0 "
-            "AND demotion_proposal_count >= 0 AND retest_proposal_count >= 0 "
-            "AND research_stage_transition_count >= 0 AND human_review_count >= 0 "
-            "AND authoritative_transition_count = 0",
+            "provider_count >= 0 AND hold_count >= 0 AND promotion_count >= 0 "
+            "AND demotion_count >= 0 AND retest_count >= 0 AND research_state_transition_count >= 0 "
+            "AND paper_qualified_count >= 0 AND authoritative_live_transition_count = 0",
             name="ck_provider_governance_run_counts",
         ),
         sa.CheckConstraint("research_only", name="ck_provider_governance_run_research_only"),
@@ -119,64 +125,52 @@ def upgrade() -> None:
     op.create_table(
         "provider_governance_results",
         sa.Column("id", postgresql.UUID(as_uuid=True), primary_key=True, server_default=sa.text("gen_random_uuid()")),
-        sa.Column(
-            "run_id",
-            postgresql.UUID(as_uuid=True),
-            sa.ForeignKey("provider_governance_runs.id", ondelete="CASCADE"),
-            nullable=False,
-        ),
+        sa.Column("run_id", postgresql.UUID(as_uuid=True), sa.ForeignKey("provider_governance_runs.id", ondelete="CASCADE"), nullable=False),
         sa.Column("source_id", postgresql.UUID(as_uuid=True), sa.ForeignKey("sources.id"), nullable=False),
-        sa.Column("research_profile_state", sa.String(length=24), nullable=False),
-        sa.Column("current_rollout_stage", sa.String(length=32), nullable=False),
-        sa.Column("proposed_rollout_stage", sa.String(length=32), nullable=False),
+        sa.Column("current_research_state", sa.String(length=24), nullable=False),
+        sa.Column("proposed_research_state", sa.String(length=24), nullable=False),
         sa.Column("proposed_action", sa.String(length=16), nullable=False),
         sa.Column("evidence_state", sa.String(length=40), nullable=False),
+        sa.Column("oos_trade_count", sa.Integer(), nullable=False, server_default="0"),
+        sa.Column("mean_quality_r", sa.Numeric(14, 8), nullable=True),
+        sa.Column("lower_95_r", sa.Numeric(14, 8), nullable=True),
+        sa.Column("upper_95_r", sa.Numeric(14, 8), nullable=True),
+        sa.Column("tested_fingerprint_cell_count", sa.Integer(), nullable=False, server_default="0"),
         sa.Column("positive_candidate_count", sa.Integer(), nullable=False, server_default="0"),
         sa.Column("negative_candidate_count", sa.Integer(), nullable=False, server_default="0"),
-        sa.Column("human_gate_status", sa.String(length=40), nullable=False),
-        sa.Column("eligible_for_human_review", sa.Boolean(), nullable=False, server_default=sa.false()),
-        sa.Column("research_stage_transitioned", sa.Boolean(), nullable=False, server_default=sa.false()),
-        sa.Column("authoritative_transition", sa.Boolean(), nullable=False, server_default=sa.false()),
+        sa.Column("sustained_decay", sa.Boolean(), nullable=False, server_default=sa.false()),
+        sa.Column("duplicate_review", sa.Boolean(), nullable=False, server_default=sa.false()),
+        sa.Column("paper_qualified", sa.Boolean(), nullable=False, server_default=sa.false()),
+        sa.Column("human_live_gate_required", sa.Boolean(), nullable=False, server_default=sa.true()),
+        sa.Column("research_state_transitioned", sa.Boolean(), nullable=False, server_default=sa.false()),
+        sa.Column("authoritative_live_transition", sa.Boolean(), nullable=False, server_default=sa.false()),
         sa.Column("reason_json", postgresql.JSONB(astext_type=sa.Text()), nullable=False),
         sa.Column("created_at", sa.DateTime(timezone=True), nullable=False, server_default=sa.func.now()),
         sa.Column("research_only", sa.Boolean(), nullable=False, server_default=sa.true()),
         sa.Column("live_money_execution_allowed", sa.Boolean(), nullable=False, server_default=sa.false()),
         sa.UniqueConstraint("run_id", "source_id", name="uq_provider_governance_result_source"),
         sa.CheckConstraint(
-            "research_profile_state IN ('learning','shadow','duplicate_review','qualified','rejected')",
-            name="ck_provider_governance_result_profile_state",
+            "current_research_state IN ('learning','shadow','duplicate_review','qualified','rejected') "
+            "AND proposed_research_state IN ('learning','shadow','duplicate_review','qualified','rejected')",
+            name="ck_provider_governance_result_states",
         ),
+        sa.CheckConstraint("proposed_action IN ('HOLD','PROMOTE','DEMOTE','RETEST')", name="ck_provider_governance_result_action"),
         sa.CheckConstraint(
-            "current_rollout_stage IN ('shadow','supervised','paper_candidate','tiny_live_candidate') "
-            "AND proposed_rollout_stage IN ('shadow','supervised','paper_candidate','tiny_live_candidate')",
-            name="ck_provider_governance_result_stages",
-        ),
-        sa.CheckConstraint(
-            "proposed_action IN ('HOLD','PROMOTE','DEMOTE','RETEST')",
-            name="ck_provider_governance_result_action",
-        ),
-        sa.CheckConstraint(
-            "evidence_state IN ('WAITING_FORWARD_EVIDENCE','WAITING_THRESHOLD_APPROVAL','DUPLICATE_REVIEW',"
-            "'VALIDATED_POSITIVE','VALIDATED_NEGATIVE','CONFLICTING_EVIDENCE','NO_VALIDATED_EDGE','DRIFTED')",
+            "evidence_state IN ('WAITING_OWNER_APPROVAL','INSUFFICIENT_OOS','FINGERPRINT_NOT_READY',"
+            "'POSITIVE_CONFIDENT','NEGATIVE_CONFIDENT','UNCERTAIN','DUPLICATE_REVIEW')",
             name="ck_provider_governance_result_evidence",
         ),
         sa.CheckConstraint(
-            "human_gate_status IN ('NOT_ELIGIBLE','REQUIRED_BEFORE_LIVE')",
-            name="ck_provider_governance_result_human_gate",
+            "oos_trade_count >= 0 AND tested_fingerprint_cell_count >= 0 "
+            "AND positive_candidate_count >= 0 AND negative_candidate_count >= 0",
+            name="ck_provider_governance_result_counts",
         ),
-        sa.CheckConstraint(
-            "positive_candidate_count >= 0 AND negative_candidate_count >= 0",
-            name="ck_provider_governance_result_candidate_counts",
-        ),
-        sa.CheckConstraint("NOT authoritative_transition", name="ck_provider_governance_result_no_authority"),
+        sa.CheckConstraint("human_live_gate_required", name="ck_provider_governance_result_human_gate"),
+        sa.CheckConstraint("NOT authoritative_live_transition", name="ck_provider_governance_result_no_live_authority"),
         sa.CheckConstraint("research_only", name="ck_provider_governance_result_research_only"),
         sa.CheckConstraint("NOT live_money_execution_allowed", name="ck_provider_governance_result_no_live_money"),
     )
-    op.create_index(
-        "ix_provider_governance_results_source",
-        "provider_governance_results",
-        ["source_id", "run_id"],
-    )
+    op.create_index("ix_provider_governance_results_source", "provider_governance_results", ["source_id", "run_id"])
 
     op.execute(
         """
@@ -200,18 +194,20 @@ def upgrade() -> None:
           WHERE completed_at IS NOT NULL
           ORDER BY completed_at DESC,id DESC LIMIT 1
         )
-        SELECT r.id AS run_id,r.model_version,r.code_sha,r.source_conditional_run_id,
-               r.source_statistical_status,r.source_threshold_approval_status,
-               r.engineering_status,r.governance_status,r.provider_count,r.hold_count,
-               r.promotion_proposal_count,r.demotion_proposal_count,r.retest_proposal_count,
-               r.research_stage_transition_count,r.human_review_count,
-               0 AS authoritative_transition_count,r.simulation_json,r.evidence_digest,
-               x.source_id,COALESCE(s.chat_title,s.source_alias) AS provider_title,
-               x.research_profile_state,x.current_rollout_stage,x.proposed_rollout_stage,
-               x.proposed_action,x.evidence_state,x.positive_candidate_count,
-               x.negative_candidate_count,x.human_gate_status,x.eligible_for_human_review,
-               x.research_stage_transitioned,false AS authoritative_transition,
-               x.reason_json,true AS research_only,false AS live_money_execution_allowed
+        SELECT r.id AS run_id,r.model_version,r.code_sha,r.policy_version,
+               r.source_conditional_run_id,r.policy_approval_status,r.engineering_status,
+               r.governance_status,r.provider_count,r.hold_count,r.promotion_count,
+               r.demotion_count,r.retest_count,r.research_state_transition_count,
+               r.paper_qualified_count,0 AS authoritative_live_transition_count,
+               r.simulation_json,r.evidence_digest,x.source_id,
+               COALESCE(s.chat_title,s.source_alias) AS provider_title,
+               x.current_research_state,x.proposed_research_state,x.proposed_action,
+               x.evidence_state,x.oos_trade_count,x.mean_quality_r,x.lower_95_r,x.upper_95_r,
+               x.tested_fingerprint_cell_count,x.positive_candidate_count,
+               x.negative_candidate_count,x.sustained_decay,x.duplicate_review,
+               x.paper_qualified,x.human_live_gate_required,x.research_state_transitioned,
+               false AS authoritative_live_transition,x.reason_json,
+               true AS research_only,false AS live_money_execution_allowed
         FROM latest l
         JOIN provider_governance_runs r ON r.id=l.id
         LEFT JOIN provider_governance_results x ON x.run_id=r.id
@@ -227,6 +223,4 @@ def downgrade() -> None:
     op.drop_index("ix_provider_governance_results_source", table_name="provider_governance_results")
     op.drop_table("provider_governance_results")
     op.drop_table("provider_governance_runs")
-    op.execute("DROP TRIGGER IF EXISTS trg_provider_governance_shadow_source ON provider_governance_states")
-    op.execute("DROP FUNCTION IF EXISTS enforce_provider_governance_shadow_source()")
-    op.drop_table("provider_governance_states")
+    op.drop_table("provider_governance_policies")
