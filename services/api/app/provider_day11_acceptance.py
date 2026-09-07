@@ -11,7 +11,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from statistics import median
 from uuid import UUID
@@ -19,7 +19,7 @@ from uuid import UUID
 from sqlalchemy import text
 
 from app.aidy_market_client import AidyMarketClient
-from app.db import get_session_factory
+from app.db import get_engine, get_session_factory
 from app.provider_day11_replay import (
     MAX_SIGNALS_PER_PROVIDER,
     _evidence_digest,
@@ -123,16 +123,25 @@ async def run() -> dict:
     tolerance = DEFAULT_RECONCILIATION_TOLERANCE
     now = datetime.now(UTC)
 
-    # PostgreSQL advisory lock prevents duplicate startup workers from racing the same run.
-    with session_factory() as session:
-        locked = bool(
-            session.execute(
-                text("SELECT pg_try_advisory_lock(hashtext('provider_day11_acceptance_v1'))")
-            ).scalar_one()
-        )
-        if not locked:
-            return {"status": "SKIPPED_LOCK_HELD", "research_only": True}
-        try:
+    # Hold the PostgreSQL session-level advisory lock on a dedicated connection for the
+    # complete run. SQLAlchemy Session.commit() may return pooled connections, so the lock
+    # must not be owned by the mutable ORM session used for evidence commits.
+    lock_connection = get_engine().connect()
+    locked = bool(
+        lock_connection.execute(
+            text("SELECT pg_try_advisory_lock(hashtext('provider_day11_acceptance_v1'))")
+        ).scalar_one()
+    )
+    if not locked:
+        lock_connection.close()
+        return {
+            "status": "SKIPPED_LOCK_HELD",
+            "research_only": True,
+            "live_money_execution_allowed": False,
+        }
+
+    try:
+        with session_factory() as session:
             existing = _existing_run(session, code_sha=code_sha)
             if existing is not None:
                 return {
@@ -143,6 +152,7 @@ async def run() -> dict:
                     "research_only": True,
                     "live_money_execution_allowed": False,
                 }
+
             run_id = session.execute(
                 text(
                     """
@@ -154,139 +164,145 @@ async def run() -> dict:
             ).scalar_one()
             session.commit()
 
-            candidates = _clean_candidates(session)
-            if len(candidates) != 5:
-                raise RuntimeError(f"day11_established_provider_count_invalid:{len(candidates)}")
-            insufficient = {
-                str(source_id): len(rows)
-                for source_id, rows in candidates.items()
-                if len(rows) < tolerance.min_provider_signals
-            }
-            if insufficient:
-                raise RuntimeError(f"day11_clean_provider_samples_insufficient:{insufficient}")
+            try:
+                candidates = _clean_candidates(session)
+                if len(candidates) != 5:
+                    raise RuntimeError(f"day11_established_provider_count_invalid:{len(candidates)}")
+                insufficient = {
+                    str(source_id): len(rows)
+                    for source_id, rows in candidates.items()
+                    if len(rows) < tolerance.min_provider_signals
+                }
+                if insufficient:
+                    raise RuntimeError(f"day11_clean_provider_samples_insufficient:{insufficient}")
 
-            attempted: list[dict] = []
-            for source_id, signals in candidates.items():
-                for signal in signals:
-                    try:
-                        result = await _replay_signal(
-                            session=session,
-                            client=client,
-                            signal=signal,
-                            now=now,
+                attempted: list[dict] = []
+                for source_id, signals in candidates.items():
+                    for signal in signals:
+                        try:
+                            result = await _replay_signal(
+                                session=session,
+                                client=client,
+                                signal=signal,
+                                now=now,
+                            )
+                        except Exception as exc:
+                            # Never convert a replay failure into a synthetic paper outcome.
+                            posted = signal["source_posted_at"].astimezone(UTC)
+                            result = {
+                                "replay_from": posted.replace(second=0, microsecond=0),
+                                "replay_to": posted.replace(second=0, microsecond=0)
+                                + timedelta(minutes=1),
+                                "broker_deal_count": 0,
+                                "exclusion_reason": f"replay_error:{type(exc).__name__}:{exc}"[:160],
+                            }
+                        _persist_sample(session, run_id=run_id, signal=signal, result=result)
+                        attempted.append(
+                            {"source_id": source_id, "signal_id": signal["id"], **result}
                         )
-                    except Exception as exc:
-                        # Never convert a replay failure into a synthetic paper outcome.
-                        posted = signal["source_posted_at"].astimezone(UTC)
-                        result = {
-                            "replay_from": posted.replace(second=0, microsecond=0),
-                            "replay_to": posted.replace(second=0, microsecond=0)
-                            + __import__("datetime").timedelta(minutes=1),
-                            "broker_deal_count": 0,
-                            "exclusion_reason": f"replay_error:{type(exc).__name__}:{exc}"[:160],
-                        }
-                    _persist_sample(session, run_id=run_id, signal=signal, result=result)
-                    attempted.append({"source_id": source_id, "signal_id": signal["id"], **result})
-                    session.commit()
+                        session.commit()
 
-            comparable = [row for row in attempted if row.get("abs_r_delta") is not None]
-            total_comparable = len(comparable)
-            summaries: list[dict] = []
-            for source_id in sorted(candidates, key=str):
-                rows = [row for row in comparable if row["source_id"] == source_id]
-                deltas = [Decimal(str(row["abs_r_delta"])) for row in rows]
-                med = Decimal(str(median(deltas))) if deltas else Decimal("0")
-                p95 = _percentile_cont(deltas, Decimal("0.95")) if deltas else Decimal("0")
-                lifecycle_rate = (
-                    Decimal(sum(bool(row.get("lifecycle_matches")) for row in rows))
-                    / Decimal(len(rows))
-                    if rows
-                    else Decimal("0")
+                comparable = [row for row in attempted if row.get("abs_r_delta") is not None]
+                total_comparable = len(comparable)
+                summaries: list[dict] = []
+                for source_id in sorted(candidates, key=str):
+                    rows = [row for row in comparable if row["source_id"] == source_id]
+                    deltas = [Decimal(str(row["abs_r_delta"])) for row in rows]
+                    med = Decimal(str(median(deltas))) if deltas else Decimal("0")
+                    p95 = _percentile_cont(deltas, Decimal("0.95")) if deltas else Decimal("0")
+                    lifecycle_rate = (
+                        Decimal(sum(bool(row.get("lifecycle_matches")) for row in rows))
+                        / Decimal(len(rows))
+                        if rows
+                        else Decimal("0")
+                    )
+                    status = reconciliation_status(
+                        provider_samples=len(rows),
+                        total_samples=total_comparable,
+                        median_abs_r_delta=med,
+                        p95_abs_r_delta=p95,
+                        lifecycle_agreement_rate=lifecycle_rate,
+                        tolerance=tolerance,
+                    )
+                    mode = intelligence_mode_for_calibration(status)
+                    session.execute(
+                        text(
+                            """
+                            INSERT INTO provider_execution_reconciliation_provider_results(
+                                run_id,source_id,sample_count,median_abs_r_delta,p95_abs_r_delta,
+                                lifecycle_agreement_rate,status,intelligence_mode
+                            ) VALUES (
+                                :run_id,:source_id,:sample_count,:median,:p95,:lifecycle,:status,:mode
+                            )
+                            """
+                        ),
+                        {
+                            "run_id": run_id,
+                            "source_id": source_id,
+                            "sample_count": len(rows),
+                            "median": med,
+                            "p95": p95,
+                            "lifecycle": lifecycle_rate,
+                            "status": status,
+                            "mode": mode,
+                        },
+                    )
+                    summaries.append(
+                        {
+                            "source_id": str(source_id),
+                            "sample_count": len(rows),
+                            "median_abs_r_delta": str(med),
+                            "p95_abs_r_delta": str(p95),
+                            "lifecycle_agreement_rate": str(lifecycle_rate),
+                            "status": status,
+                            "intelligence_mode": mode,
+                        }
+                    )
+
+                run_status = (
+                    "RECONCILED"
+                    if len(summaries) == 5
+                    and all(row["status"] == "RECONCILED" for row in summaries)
+                    else "WAITING_RECONCILIATION"
                 )
-                status = reconciliation_status(
-                    provider_samples=len(rows),
-                    total_samples=total_comparable,
-                    median_abs_r_delta=med,
-                    p95_abs_r_delta=p95,
-                    lifecycle_agreement_rate=lifecycle_rate,
-                    tolerance=tolerance,
-                )
-                mode = intelligence_mode_for_calibration(status)
+                digest = _evidence_digest(attempted)
                 session.execute(
                     text(
                         """
-                        INSERT INTO provider_execution_reconciliation_provider_results(
-                            run_id,source_id,sample_count,median_abs_r_delta,p95_abs_r_delta,
-                            lifecycle_agreement_rate,status,intelligence_mode
-                        ) VALUES (
-                            :run_id,:source_id,:sample_count,:median,:p95,:lifecycle,:status,:mode
-                        )
+                        UPDATE provider_execution_reconciliation_runs
+                        SET completed_at=now(),status=:status,provider_count=:provider_count,
+                            total_attempted_signals=:attempted,total_comparable_signals=:comparable,
+                            evidence_digest=:digest
+                        WHERE id=:run_id
                         """
                     ),
                     {
                         "run_id": run_id,
-                        "source_id": source_id,
-                        "sample_count": len(rows),
-                        "median": med,
-                        "p95": p95,
-                        "lifecycle": lifecycle_rate,
-                        "status": status,
-                        "mode": mode,
+                        "status": run_status,
+                        "provider_count": len(summaries),
+                        "attempted": len(attempted),
+                        "comparable": total_comparable,
+                        "digest": digest,
                     },
                 )
-                summaries.append(
-                    {
-                        "source_id": str(source_id),
-                        "sample_count": len(rows),
-                        "median_abs_r_delta": str(med),
-                        "p95_abs_r_delta": str(p95),
-                        "lifecycle_agreement_rate": str(lifecycle_rate),
-                        "status": status,
-                        "intelligence_mode": mode,
-                    }
-                )
-
-            run_status = (
-                "RECONCILED"
-                if len(summaries) == 5 and all(row["status"] == "RECONCILED" for row in summaries)
-                else "WAITING_RECONCILIATION"
-            )
-            digest = _evidence_digest(attempted)
-            session.execute(
-                text(
-                    """
-                    UPDATE provider_execution_reconciliation_runs
-                    SET completed_at=now(),status=:status,provider_count=:provider_count,
-                        total_attempted_signals=:attempted,total_comparable_signals=:comparable,
-                        evidence_digest=:digest
-                    WHERE id=:run_id
-                    """
-                ),
-                {
-                    "run_id": run_id,
+                session.commit()
+                summary = {
+                    "run_id": str(run_id),
                     "status": run_status,
-                    "provider_count": len(summaries),
+                    "tolerance_version": CALIBRATION_TOLERANCE_VERSION,
                     "attempted": len(attempted),
                     "comparable": total_comparable,
-                    "digest": digest,
-                },
-            )
-            session.commit()
-            summary = {
-                "run_id": str(run_id),
-                "status": run_status,
-                "tolerance_version": CALIBRATION_TOLERANCE_VERSION,
-                "attempted": len(attempted),
-                "comparable": total_comparable,
-                "evidence_digest": digest,
-                "providers": summaries,
-                "research_only": True,
-                "live_money_execution_allowed": False,
-            }
-            print("PROVIDER_DAY11_ACCEPTANCE=" + json.dumps(summary, sort_keys=True), flush=True)
-            return summary
-        except Exception as exc:
-            if "run_id" in locals():
+                    "evidence_digest": digest,
+                    "providers": summaries,
+                    "research_only": True,
+                    "live_money_execution_allowed": False,
+                }
+                print(
+                    "PROVIDER_DAY11_ACCEPTANCE=" + json.dumps(summary, sort_keys=True),
+                    flush=True,
+                )
+                return summary
+            except Exception as exc:
                 session.execute(
                     text(
                         """
@@ -298,12 +314,14 @@ async def run() -> dict:
                     {"run_id": run_id, "reason": f"{type(exc).__name__}:{exc}"[:160]},
                 )
                 session.commit()
-            raise
-        finally:
-            session.execute(
+                raise
+    finally:
+        try:
+            lock_connection.execute(
                 text("SELECT pg_advisory_unlock(hashtext('provider_day11_acceptance_v1'))")
             )
-            session.commit()
+        finally:
+            lock_connection.close()
 
 
 if __name__ == "__main__":
