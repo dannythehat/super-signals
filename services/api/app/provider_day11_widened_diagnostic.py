@@ -1,8 +1,9 @@
-"""Day 11 full-history diagnostic over the frozen 82-trade corpus.
+"""Day 11 full-history fidelity closure over the frozen 82-trade corpus.
 
-This is diagnostic scaffolding only. It does not alter paper replay mechanics, broker truth,
-reconciliation tolerances, provider/member routing, sizing, or live-money authority. The paper
-side is reconstructed exclusively by the existing calibration-only Twelve M1 replay.
+This runner applies only the diagnosed Day 11 paper-reconciliation fidelity corrections.
+It does not alter reconciliation tolerances, sample floors, provider/member routing, sizing,
+or live-money authority. The paper side is reconstructed exclusively from the isolated
+retrospective Twelve M1 calibration path and is completed before broker truth is compared.
 
 The corpus is frozen at the completion timestamp of the original Day 11 baseline run and is
 limited to the same five source IDs that existed in that run. Eligibility uses only signal shape,
@@ -317,8 +318,9 @@ async def run() -> dict:
                 summary = {
                     "run_id": str(run_id),
                     "status": run_status,
-                    "diagnostic_only": True,
-                    "replay_mechanics_changed": False,
+                    "fidelity_closure": True,
+                    "replay_mechanics_changed": True,
+                    "fidelity_mode": "canonical_allocation_keyed_leg_m1",
                     "tolerance_version": CALIBRATION_TOLERANCE_VERSION,
                     "baseline_run_id": str(DAY11_BASELINE_RUN_ID),
                     "frozen_cutoff_utc": cutoff.isoformat(),
@@ -334,7 +336,7 @@ async def run() -> dict:
                     "live_money_execution_allowed": False,
                 }
                 print(
-                    "PROVIDER_DAY11_WIDENED_DIAGNOSTIC="
+                    "PROVIDER_DAY11_FIDELITY_CLOSURE="
                     + json.dumps(summary, sort_keys=True),
                     flush=True,
                 )
