@@ -41,6 +41,7 @@ from app.bare_gold_now_policy import (
     bare_now_side,
 )
 from app.critical_entry_policy import CriticalEntry, parse_critical_entries
+from app.layer_allocation import allocate_entry_targets
 from app.metaapi_gateway import MetaApiGatewayError
 from app.metaapi_read_gateway import MetaApiReadGateway
 from app.mt5_crypto import BrokerCredentialDecryptionError
@@ -292,52 +293,18 @@ class CanonicalTradingExecutionService(PaperExecutionPriorityService):
         entries: tuple[CriticalEntry, ...],
         targets: tuple[Decimal | None, ...],
     ) -> tuple[AtomicLayerAllocation, ...]:
-        if not entries:
-            raise Day26ExecutionError("critical_entry_plan_missing")
-        if not targets:
-            raise Day26ExecutionError("position_count_invalid")
-        slot_count = max(len(entries), len(targets))
-        has_runner = targets[-1] is None
-        target_indexes = list(range(1, len(targets) + 1))
-        if slot_count > len(targets):
-            repeatable = list(range(1, len(targets) if has_runner else len(targets) + 1))
-            if not repeatable:
-                raise Day26ExecutionError("position_count_invalid")
-            for offset in range(slot_count - len(targets)):
-                target_indexes.append(repeatable[offset % len(repeatable)])
-        allocations = [
+        try:
+            shared = allocate_entry_targets(entries, targets)
+        except ValueError as exc:
+            raise Day26ExecutionError(str(exc)) from exc
+        return tuple(
             AtomicLayerAllocation(
-                entry=entries[index % len(entries)],
-                tp_index=target_index,
-                take_profit=targets[target_index - 1],
+                entry=item.entry,
+                tp_index=item.tp_index,
+                take_profit=item.take_profit,
             )
-            for index, target_index in enumerate(target_indexes)
-        ]
-        if has_runner:
-            runner_slot = next(
-                index for index, item in enumerate(allocations) if item.take_profit is None
-            )
-            best_entry = entries[-1]
-            if allocations[runner_slot].entry.entry_index != best_entry.entry_index:
-                best_slot = next(
-                    index
-                    for index, item in enumerate(allocations)
-                    if item.entry.entry_index == best_entry.entry_index
-                    and item.take_profit is not None
-                )
-                runner_item = allocations[runner_slot]
-                best_item = allocations[best_slot]
-                allocations[runner_slot] = AtomicLayerAllocation(
-                    entry=best_item.entry,
-                    tp_index=runner_item.tp_index,
-                    take_profit=runner_item.take_profit,
-                )
-                allocations[best_slot] = AtomicLayerAllocation(
-                    entry=runner_item.entry,
-                    tp_index=best_item.tp_index,
-                    take_profit=best_item.take_profit,
-                )
-        return tuple(allocations)
+            for item in shared
+        )
 
     async def _margin_preflight(
         self,
