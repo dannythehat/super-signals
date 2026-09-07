@@ -237,10 +237,9 @@ def downgrade() -> None:
     op.drop_index("ix_provider_recon_runs_completed", table_name="provider_execution_reconciliation_runs")
     op.drop_table("provider_execution_reconciliation_runs")
     op.drop_table("provider_execution_reconciliation_tolerances")
-    op.alter_column(
-        "shadow_trade_legs",
-        "exit_reason",
-        existing_type=sa.String(length=120),
-        type_=sa.String(length=40),
-        existing_nullable=True,
-    )
+    # Intentionally retain VARCHAR(120) for shadow_trade_legs.exit_reason.
+    # Day 10 legitimately emits `entry_stop_sequence_ambiguous_same_observation`
+    # (46 characters). Narrowing back to VARCHAR(40) is destructive and already
+    # fails the migration cycle when truthful lifecycle evidence is present.
+    # A Day 11 feature downgrade therefore removes only Day 11 feature surfaces;
+    # the independent data-integrity repair survives the downgrade.
