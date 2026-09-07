@@ -88,9 +88,10 @@ def test_calibration_replay_never_calls_normal_pit_fetch_path() -> None:
     assert "live_money_execution_allowed" in source
 
 
-def test_runtime_starts_only_calibration_acceptance() -> None:
+def test_runtime_starts_only_widened_diagnostic_during_step1() -> None:
     startup = (ROOT.parents[1] / "scripts" / "render-start.sh").read_text(
         encoding="utf-8"
     )
-    assert "app.provider_day11_calibration_acceptance" in startup
+    assert "app.provider_day11_widened_diagnostic" in startup
+    assert "app.provider_day11_calibration_acceptance" not in startup
     assert "python -m app.provider_day11_acceptance" not in startup
