@@ -1,0 +1,310 @@
+"""Automatic, idempotent Day 11 five-provider reconciliation acceptance.
+
+This module is research-only. It never calls MetaAPI or changes positions, member risk,
+provider routing/status, or AIDY authority. It selects only clean, fully closed broker
+signals whose live position count matches the paper TP/runner leg geometry, then delegates
+paper replay to the immutable AIDY M1 replay implementation.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import json
+import os
+from datetime import UTC, datetime
+from decimal import Decimal
+from statistics import median
+from uuid import UUID
+
+from sqlalchemy import text
+
+from app.aidy_market_client import AidyMarketClient
+from app.db import get_session_factory
+from app.provider_day11_replay import (
+    MAX_SIGNALS_PER_PROVIDER,
+    _evidence_digest,
+    _percentile_cont,
+    _persist_sample,
+    _replay_signal,
+)
+from app.provider_execution_calibration import (
+    CALIBRATION_TOLERANCE_VERSION,
+    DEFAULT_RECONCILIATION_TOLERANCE,
+    intelligence_mode_for_calibration,
+    reconciliation_status,
+)
+
+
+def _code_sha() -> str:
+    return (os.getenv("RENDER_GIT_COMMIT") or os.getenv("GIT_COMMIT") or "unknown")[:40]
+
+
+def _clean_candidates(session) -> dict[UUID, list[dict]]:
+    """Return up to 15 recent clean broker-ground-truth signals per established provider.
+
+    Selection uses no realised P/L or direction outcome. It only requires auditable
+    execution/lifecycle completeness and exact paper-vs-live leg cardinality so R sums
+    compare the same economic object.
+    """
+    rows = [
+        dict(row)
+        for row in session.execute(
+            text(
+                """
+                WITH eligible AS (
+                    SELECT
+                        s.id,s.source_id,s.source_message_id,s.symbol,s.side,s.order_type,
+                        s.entry_low,s.entry_high,s.stop_loss,s.take_profits,s.has_open_runner,
+                        s.original_text,s.source_posted_at,
+                        COALESCE(src.chat_title,src.source_alias) AS provider_title,
+                        COUNT(p.id)::integer AS position_count,
+                        (jsonb_array_length(COALESCE(s.take_profits,'[]'::jsonb))
+                           + CASE WHEN s.has_open_runner THEN 1 ELSE 0 END)::integer AS paper_leg_count
+                    FROM signals s
+                    JOIN sources src ON src.id=s.source_id
+                    JOIN positions p ON p.signal_id=s.id
+                    WHERE src.status='testing'
+                      AND s.parser_status='accepted'
+                      AND UPPER(COALESCE(s.symbol,''))='XAUUSD'
+                      AND s.side IN ('BUY','SELL')
+                      AND s.stop_loss IS NOT NULL
+                      AND s.source_posted_at IS NOT NULL
+                    GROUP BY s.id,s.source_id,src.id
+                    HAVING BOOL_AND(p.status='closed')
+                       AND BOOL_AND(p.close_reason IN ('external_close','provider_close','broker_settled'))
+                       AND EXISTS (
+                           SELECT 1 FROM broker_deals bd
+                           WHERE bd.signal_id=s.id
+                             AND UPPER(COALESCE(bd.symbol,''))='XAUUSD'
+                       )
+                ), ranked AS (
+                    SELECT *,ROW_NUMBER() OVER(
+                        PARTITION BY source_id ORDER BY source_posted_at DESC,id DESC
+                    ) AS rn
+                    FROM eligible
+                    WHERE position_count=paper_leg_count
+                )
+                SELECT * FROM ranked
+                WHERE rn<=:limit
+                ORDER BY source_id,source_posted_at DESC,id DESC
+                """
+            ),
+            {"limit": MAX_SIGNALS_PER_PROVIDER},
+        ).mappings()
+    ]
+    grouped: dict[UUID, list[dict]] = {}
+    for row in rows:
+        grouped.setdefault(row["source_id"], []).append(row)
+    return grouped
+
+
+def _existing_run(session, *, code_sha: str):
+    return session.execute(
+        text(
+            """
+            SELECT id,status,completed_at,evidence_digest
+            FROM provider_execution_reconciliation_runs
+            WHERE tolerance_version=:version AND code_sha=:code_sha
+              AND completed_at IS NOT NULL
+            ORDER BY completed_at DESC,id DESC LIMIT 1
+            """
+        ),
+        {"version": CALIBRATION_TOLERANCE_VERSION, "code_sha": code_sha},
+    ).mappings().first()
+
+
+async def run() -> dict:
+    client = AidyMarketClient.from_environment()
+    if client is None:
+        raise RuntimeError("day11_aidy_market_credentials_missing")
+
+    session_factory = get_session_factory()
+    code_sha = _code_sha()
+    tolerance = DEFAULT_RECONCILIATION_TOLERANCE
+    now = datetime.now(UTC)
+
+    # PostgreSQL advisory lock prevents duplicate startup workers from racing the same run.
+    with session_factory() as session:
+        locked = bool(
+            session.execute(
+                text("SELECT pg_try_advisory_lock(hashtext('provider_day11_acceptance_v1'))")
+            ).scalar_one()
+        )
+        if not locked:
+            return {"status": "SKIPPED_LOCK_HELD", "research_only": True}
+        try:
+            existing = _existing_run(session, code_sha=code_sha)
+            if existing is not None:
+                return {
+                    "run_id": str(existing["id"]),
+                    "status": str(existing["status"]),
+                    "evidence_digest": existing["evidence_digest"],
+                    "skipped_existing_code_sha": True,
+                    "research_only": True,
+                    "live_money_execution_allowed": False,
+                }
+            run_id = session.execute(
+                text(
+                    """
+                    INSERT INTO provider_execution_reconciliation_runs(tolerance_version,code_sha)
+                    VALUES (:version,:code_sha) RETURNING id
+                    """
+                ),
+                {"version": CALIBRATION_TOLERANCE_VERSION, "code_sha": code_sha},
+            ).scalar_one()
+            session.commit()
+
+            candidates = _clean_candidates(session)
+            if len(candidates) != 5:
+                raise RuntimeError(f"day11_established_provider_count_invalid:{len(candidates)}")
+            insufficient = {
+                str(source_id): len(rows)
+                for source_id, rows in candidates.items()
+                if len(rows) < tolerance.min_provider_signals
+            }
+            if insufficient:
+                raise RuntimeError(f"day11_clean_provider_samples_insufficient:{insufficient}")
+
+            attempted: list[dict] = []
+            for source_id, signals in candidates.items():
+                for signal in signals:
+                    try:
+                        result = await _replay_signal(
+                            session=session,
+                            client=client,
+                            signal=signal,
+                            now=now,
+                        )
+                    except Exception as exc:
+                        # Never convert a replay failure into a synthetic paper outcome.
+                        posted = signal["source_posted_at"].astimezone(UTC)
+                        result = {
+                            "replay_from": posted.replace(second=0, microsecond=0),
+                            "replay_to": posted.replace(second=0, microsecond=0)
+                            + __import__("datetime").timedelta(minutes=1),
+                            "broker_deal_count": 0,
+                            "exclusion_reason": f"replay_error:{type(exc).__name__}:{exc}"[:160],
+                        }
+                    _persist_sample(session, run_id=run_id, signal=signal, result=result)
+                    attempted.append({"source_id": source_id, "signal_id": signal["id"], **result})
+                    session.commit()
+
+            comparable = [row for row in attempted if row.get("abs_r_delta") is not None]
+            total_comparable = len(comparable)
+            summaries: list[dict] = []
+            for source_id in sorted(candidates, key=str):
+                rows = [row for row in comparable if row["source_id"] == source_id]
+                deltas = [Decimal(str(row["abs_r_delta"])) for row in rows]
+                med = Decimal(str(median(deltas))) if deltas else Decimal("0")
+                p95 = _percentile_cont(deltas, Decimal("0.95")) if deltas else Decimal("0")
+                lifecycle_rate = (
+                    Decimal(sum(bool(row.get("lifecycle_matches")) for row in rows))
+                    / Decimal(len(rows))
+                    if rows
+                    else Decimal("0")
+                )
+                status = reconciliation_status(
+                    provider_samples=len(rows),
+                    total_samples=total_comparable,
+                    median_abs_r_delta=med,
+                    p95_abs_r_delta=p95,
+                    lifecycle_agreement_rate=lifecycle_rate,
+                    tolerance=tolerance,
+                )
+                mode = intelligence_mode_for_calibration(status)
+                session.execute(
+                    text(
+                        """
+                        INSERT INTO provider_execution_reconciliation_provider_results(
+                            run_id,source_id,sample_count,median_abs_r_delta,p95_abs_r_delta,
+                            lifecycle_agreement_rate,status,intelligence_mode
+                        ) VALUES (
+                            :run_id,:source_id,:sample_count,:median,:p95,:lifecycle,:status,:mode
+                        )
+                        """
+                    ),
+                    {
+                        "run_id": run_id,
+                        "source_id": source_id,
+                        "sample_count": len(rows),
+                        "median": med,
+                        "p95": p95,
+                        "lifecycle": lifecycle_rate,
+                        "status": status,
+                        "mode": mode,
+                    },
+                )
+                summaries.append(
+                    {
+                        "source_id": str(source_id),
+                        "sample_count": len(rows),
+                        "median_abs_r_delta": str(med),
+                        "p95_abs_r_delta": str(p95),
+                        "lifecycle_agreement_rate": str(lifecycle_rate),
+                        "status": status,
+                        "intelligence_mode": mode,
+                    }
+                )
+
+            run_status = (
+                "RECONCILED"
+                if len(summaries) == 5 and all(row["status"] == "RECONCILED" for row in summaries)
+                else "WAITING_RECONCILIATION"
+            )
+            digest = _evidence_digest(attempted)
+            session.execute(
+                text(
+                    """
+                    UPDATE provider_execution_reconciliation_runs
+                    SET completed_at=now(),status=:status,provider_count=:provider_count,
+                        total_attempted_signals=:attempted,total_comparable_signals=:comparable,
+                        evidence_digest=:digest
+                    WHERE id=:run_id
+                    """
+                ),
+                {
+                    "run_id": run_id,
+                    "status": run_status,
+                    "provider_count": len(summaries),
+                    "attempted": len(attempted),
+                    "comparable": total_comparable,
+                    "digest": digest,
+                },
+            )
+            session.commit()
+            summary = {
+                "run_id": str(run_id),
+                "status": run_status,
+                "tolerance_version": CALIBRATION_TOLERANCE_VERSION,
+                "attempted": len(attempted),
+                "comparable": total_comparable,
+                "evidence_digest": digest,
+                "providers": summaries,
+                "research_only": True,
+                "live_money_execution_allowed": False,
+            }
+            print("PROVIDER_DAY11_ACCEPTANCE=" + json.dumps(summary, sort_keys=True), flush=True)
+            return summary
+        except Exception as exc:
+            if "run_id" in locals():
+                session.execute(
+                    text(
+                        """
+                        UPDATE provider_execution_reconciliation_runs
+                        SET completed_at=now(),status='FAILED',failure_reason=:reason
+                        WHERE id=:run_id
+                        """
+                    ),
+                    {"run_id": run_id, "reason": f"{type(exc).__name__}:{exc}"[:160]},
+                )
+                session.commit()
+            raise
+        finally:
+            session.execute(
+                text("SELECT pg_advisory_unlock(hashtext('provider_day11_acceptance_v1'))")
+            )
+            session.commit()
+
+
+if __name__ == "__main__":
+    asyncio.run(run())
