@@ -8,7 +8,7 @@ owner's MetaAPI connection; the runtime uses the shared public XAUUSD research f
 
 from app.shadow_trading_service_v4 import ShadowTradeService
 from app.shadow_trading_v2 import _benchmark_pnl_usd, _decimal, _leg_r
-from app.shadow_trading_v4 import ShadowTradeManager
+from app.shadow_trading_v6 import ShadowTradeManager
 
 __all__ = [
     "ShadowTradeManager",
