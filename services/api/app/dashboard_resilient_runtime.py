@@ -5,6 +5,11 @@ exact account values that were displayed. Dashboard requests are intentionally
 stale-while-revalidate: the last confirmed view is returned immediately and broker
 refreshes are heavily rate-limited so observability can never compete with trade
 execution for MetaAPI capacity.
+
+Dashboard observability is deliberately non-destructive. A successful-but-partial MetaAPI
+position snapshot must never be allowed to close a real broker position or make it vanish
+from the app. Durable locally mapped open positions remain visible until broker settlement
+or an explicit trading action confirms that they are closed.
 """
 
 from __future__ import annotations
@@ -49,6 +54,69 @@ class ResilientDashboardRuntimeService(CanonicalDashboardRuntimeService):
             self._refresh_tasks = {}
         if not hasattr(self, "_refresh_not_before"):
             self._refresh_not_before = {}
+
+    def _reconcile_missing_open_positions(
+        self,
+        *,
+        user_id: UUID,
+        broker_position_ids: set[str],
+        now: datetime,
+    ) -> int:
+        """Never mutate trade state from a dashboard position snapshot.
+
+        MetaAPI's active-position endpoint can briefly omit a position immediately after
+        execution or during propagation. The old Day32 read path treated one such omission
+        as proof of closure and updated the local position to ``closed``. That is unsafe:
+        dashboard reads are observability, not settlement authority. Canonical broker
+        settlement/history or an explicit close action is the only path allowed to remove
+        an open trade from durable state.
+        """
+        del user_id, broker_position_ids, now
+        return 0
+
+    def _mapped_open_positions(self, user_id: UUID, broker_positions):  # noqa: ANN001
+        """Merge live broker detail onto the complete durable local open-position set.
+
+        If the latest broker snapshot is partial, the missing mapped leg remains visible
+        with its last durable entry/SL/TP and unknown live price/P&L. Conversely, a stale
+        cached/live item is not shown after canonical settlement has changed the durable
+        local status away from ``open``.
+        """
+        live = super()._mapped_open_positions(user_id, broker_positions)
+        durable = self._durable_mapped_open_positions(user_id)
+        live_by_broker_id = {item.broker_position_id: item for item in live}
+        return tuple(
+            live_by_broker_id.get(item.broker_position_id, item)
+            for item in durable
+        )
+
+    def _overlay_current_open_positions(
+        self,
+        user_id: UUID,
+        view: Day32DashboardView,
+    ) -> Day32DashboardView:
+        """Make cached first-paint views reflect the current durable open-position ledger."""
+        durable = self._durable_mapped_open_positions(user_id)
+        cached_by_broker_id = {
+            item.broker_position_id: item for item in view.open_positions
+        }
+        merged = tuple(
+            cached_by_broker_id.get(item.broker_position_id, item)
+            for item in durable
+        )
+        if not merged:
+            open_profit: float | None = 0.0
+        elif any(item.profit is None for item in merged):
+            open_profit = None
+        else:
+            open_profit = sum(float(item.profit or 0.0) for item in merged)
+        return replace(
+            view,
+            open_positions=merged,
+            open_profit=open_profit,
+            # Dashboard reads no longer perform destructive reconciliation.
+            reconciled_external_positions=0,
+        )
 
     @staticmethod
     def _now_ts() -> float:
@@ -99,7 +167,9 @@ class ResilientDashboardRuntimeService(CanonicalDashboardRuntimeService):
             return view
 
         self._ensure_live_refresh(user_id)
-        return cached
+        # Account/pricing detail may be intentionally cached for broker-read capacity,
+        # but open-trade existence is cheap local state and must be current on every poll.
+        return self._overlay_current_open_positions(user_id, cached)
 
     async def _read_live_and_cache(self, user_id: UUID) -> Day32DashboardView:
         self._ensure_runtime_state()
