@@ -81,7 +81,7 @@ def test_soft_and_hard_resource_limits_are_distinct_and_never_touch_execution():
 
 
 def test_day19_migration_chains_and_is_append_only():
-    text = Path("migrations/versions/0068_provider_day19_resource_usage.py").read_text()
+    text = Path("services/api/migrations/versions/0068_provider_day19_resource_usage.py").read_text()
     assert 'down_revision: str | None = "0067_provider_day16_veto"' in text
     assert "BEFORE UPDATE OR DELETE" in text
     assert "CHECK (NOT live_execution_affected)" in text
