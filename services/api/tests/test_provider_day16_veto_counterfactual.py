@@ -114,7 +114,7 @@ def test_engineering_acceptance_snapshot_is_green_but_authority_waits():
 def test_migration_is_append_only_and_chained_from_0066():
     from pathlib import Path
 
-    migration = Path("migrations/versions/0067_provider_day16_veto.py").read_text()
+    migration = Path("services/api/migrations/versions/0067_provider_day16_veto.py").read_text()
     assert 'down_revision: str | None = "0066_shadow_enrollment_audit"' in migration
     assert "provider_day16_append_only" in migration
     assert "BEFORE UPDATE OR DELETE" in migration
