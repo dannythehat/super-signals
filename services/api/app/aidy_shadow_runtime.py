@@ -127,8 +127,8 @@ class AidyShadowRuntime:
             if context_resolver is not None:
                 # Context attachment is deliberately isolated from M1 replay and from
                 # all broker/member execution. Transient AIDY failures retry later;
-                # terminal PIT-stale outcomes are persisted once. Neither path can
-                # block either market resolution or live signal routing.
+                # terminal PIT-stale outcomes are persisted once.
+                # They cannot block either market resolution or live signal routing.
                 try:
                     attached, context_failures = await context_resolver.resolve_once()
                     terminal_misses = context_resolver.last_terminal_misses
