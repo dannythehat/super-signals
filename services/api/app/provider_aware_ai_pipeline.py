@@ -10,18 +10,20 @@ from sqlalchemy import text
 
 from app.production_ai_pipeline import ProductionAiMessagePipeline
 from app.provider_adaptive_profile import AdaptiveProviderProfileService
+from app.provider_footprint_v1 import ProviderFootprintService
 from app.provider_profile_pit import resolve_provider_profile_as_of
 
 
 class ProviderAwareProductionAiPipeline(ProductionAiMessagePipeline):
-    """Add only provider grammar that was already knowable for this message."""
+    """Add only provider grammar/behaviour that was already knowable for this message."""
 
     def __init__(self, *args: Any, **kwargs: Any) -> None:
         super().__init__(*args, **kwargs)
         self._adaptive_profiles = AdaptiveProviderProfileService(self._session_factory)
+        self._provider_footprints = ProviderFootprintService(self._session_factory)
 
     def refresh_all_provider_profiles(self) -> int:
-        """Refresh the mutable current-state cache; Day 7 triggers version changes."""
+        """Refresh adaptive grammar plus the semantic-stable Provider Footprint."""
         with self._session_factory() as session:
             source_ids = session.execute(
                 text(
@@ -37,6 +39,7 @@ class ProviderAwareProductionAiPipeline(ProductionAiMessagePipeline):
             source_id = UUID(str(value))
             self._adaptive_profiles.invalidate(source_id)
             self._adaptive_profiles.get(source_id)
+            self._provider_footprints.refresh(source_id)
             refreshed += 1
         return refreshed
 
@@ -45,6 +48,18 @@ class ProviderAwareProductionAiPipeline(ProductionAiMessagePipeline):
         if value.tzinfo is None:
             return value.replace(tzinfo=UTC)
         return value.astimezone(UTC)
+
+    @staticmethod
+    def _footprint_context(profile_snapshot: dict[str, Any]) -> dict[str, Any]:
+        """Expose only the sanitised behavioural subset, never historical geometry."""
+        metadata = profile_snapshot.get("profile_metadata")
+        if not isinstance(metadata, dict):
+            return {}
+        footprint = metadata.get("footprint_v1")
+        if not isinstance(footprint, dict):
+            return {}
+        context = footprint.get("interpretation_context")
+        return dict(context) if isinstance(context, dict) else {}
 
     def _source_context(
         self,
@@ -84,10 +99,8 @@ class ProviderAwareProductionAiPipeline(ProductionAiMessagePipeline):
                 else None
             )
 
-        # Fail closed for legacy/backfilled messages.  Never rebuild a current
-        # adaptive profile here: doing so would leak future provider learning into
-        # an older message.  The current message and direct-reply evidence still
-        # flow through the base context normally.
+        # Fail closed for legacy/backfilled messages. Never rebuild current provider
+        # learning here: doing so would leak future behaviour into an older message.
         if profile is None:
             return source_name, context
 
@@ -99,10 +112,12 @@ class ProviderAwareProductionAiPipeline(ProductionAiMessagePipeline):
             "style": profile.style,
             "interpretation_readiness": profile.interpretation_readiness,
             "adaptive_language_profile": profile.adaptive_language_profile,
+            "provider_footprint": self._footprint_context(profile.profile_snapshot),
             "communication_traits": profile.communication_traits,
             "safety_note": (
                 "This immutable profile was already effective at the message timestamp. "
-                "Historical numeric values remain masked; current-message/direct-reply "
+                "Provider Footprint supplies behavioural descriptors only. Historical "
+                "numeric values are not execution evidence; current-message/direct-reply "
                 "evidence remains mandatory for execution."
             ),
         }
