@@ -135,7 +135,31 @@ class Day32DashboardView:
 
 
 class QuietDay23Mt5ReadService(Day23Mt5ReadService):
-    """Reuse the proven Day 23 terminal reader without creating poll-noise audits."""
+    """Reuse the proven Day 23 reader and select the member's active MT5 account."""
+
+    def _load_row(self, owner_user_id: UUID) -> Any | None:
+        with self._session_factory() as session:
+            return session.execute(
+                text(
+                    """
+                    SELECT m.*
+                    FROM mt5_accounts AS m
+                    LEFT JOIN user_trading_controls AS utc
+                      ON utc.user_id=m.owner_user_id
+                    WHERE m.owner_user_id=:owner_user_id
+                      AND m.status!='revoked'
+                    ORDER BY
+                      CASE
+                        WHEN utc.active_account_environment IS NOT NULL
+                         AND m.account_environment=utc.active_account_environment THEN 0
+                        ELSE 1
+                      END,
+                      m.created_at DESC
+                    LIMIT 1
+                    """
+                ),
+                {"owner_user_id": owner_user_id},
+            ).mappings().first()
 
     def _audit_success(self, state: Day23LiveState) -> None:  # noqa: ARG002
         return
@@ -240,8 +264,6 @@ class Day32DashboardService:
             account=Day32Account(
                 currency=live.account.currency,
                 balance=live.account.balance,
-                # Equity differs from the effective balance only while broker
-                # positions carry floating profit or loss.
                 equity=(live.account.equity if broker_positions else live.account.balance),
                 margin=live.account.margin,
                 free_margin=live.account.free_margin,
@@ -285,10 +307,20 @@ class Day32DashboardService:
             return session.execute(
                 text(
                     """
-                    SELECT id, login, server, status, account_environment, last_error_code
-                    FROM mt5_accounts
-                    WHERE owner_user_id=:user_id AND status!='revoked'
-                    ORDER BY created_at DESC
+                    SELECT m.id, m.login, m.server, m.status,
+                           m.account_environment, m.last_error_code
+                    FROM mt5_accounts AS m
+                    LEFT JOIN user_trading_controls AS utc
+                      ON utc.user_id=m.owner_user_id
+                    WHERE m.owner_user_id=:user_id
+                      AND m.status!='revoked'
+                    ORDER BY
+                      CASE
+                        WHEN utc.active_account_environment IS NOT NULL
+                         AND m.account_environment=utc.active_account_environment THEN 0
+                        ELSE 1
+                      END,
+                      m.created_at DESC
                     LIMIT 1
                     """
                 ),
