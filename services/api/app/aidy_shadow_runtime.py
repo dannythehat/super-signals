@@ -123,38 +123,44 @@ class AidyShadowRuntime:
             if processed or market_failures:
                 logger.info(market_message)
 
-            attached, context_failures = 0, 0
+            attached, context_failures, terminal_misses = 0, 0, 0
             if context_resolver is not None:
                 # Context attachment is deliberately isolated from M1 replay and from
-                # all broker/member execution. A failed AIDY context request retries
-                # later and cannot block either market resolution or live signal routing.
+                # all broker/member execution. Transient AIDY failures retry later;
+                # terminal PIT-stale outcomes are persisted once.
+                # They cannot block either market resolution or live signal routing.
                 try:
                     attached, context_failures = await context_resolver.resolve_once()
+                    terminal_misses = context_resolver.last_terminal_misses
                 except asyncio.CancelledError:
                     raise
                 except Exception:
                     logger.exception(
                         "AIDY Provider Lab context attachment loop failed safely"
                     )
-                    attached, context_failures = 0, 1
+                    attached, context_failures, terminal_misses = 0, 1, 0
 
                 context_message = (
                     "AIDY Provider Lab context attachment "
-                    f"attached={attached} failures={context_failures}"
+                    f"attached={attached} terminal_misses={terminal_misses} "
+                    f"failures={context_failures}"
                 )
                 print(context_message, flush=True)
-                if attached or context_failures:
+                if attached or terminal_misses or context_failures:
                     logger.info(context_message)
 
             if draining_startup_backlog:
                 startup_pass += 1
-                if (processed > 0 or attached > 0) and startup_pass < self._startup_pass_limit:
+                if (
+                    processed > 0 or attached > 0 or terminal_misses > 0
+                ) and startup_pass < self._startup_pass_limit:
                     await asyncio.sleep(0)
                     continue
                 drain_message = (
                     "AIDY Provider Lab startup research drain complete "
                     f"passes={startup_pass} last_m1_processed={processed} "
                     f"last_context_attached={attached} "
+                    f"last_context_terminal_misses={terminal_misses} "
                     f"m1_failures={market_failures} context_failures={context_failures}"
                 )
                 print(drain_message, flush=True)

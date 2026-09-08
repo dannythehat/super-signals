@@ -1,8 +1,9 @@
 """Immutable per-signal Provider Intelligence context attachment.
 
 Day 10 persists only research provenance. It never calls broker/member execution paths and
-never mutates the shadow trade after enrollment. AIDY lookup failure is retryable on the
-next research poll and cannot delay live signal execution.
+never mutates the shadow trade after enrollment. Transient AIDY lookup failures remain
+retryable; a proven historical `pit_context_stale` miss is persisted once and excluded
+from future polls because it cannot become PIT-valid later without rewriting history.
 """
 
 from __future__ import annotations
@@ -18,12 +19,13 @@ from uuid import UUID, uuid4
 from sqlalchemy import text
 from sqlalchemy.orm import Session, sessionmaker
 
-from app.aidy_context_client import AidyContextClient
+from app.aidy_context_client import AidyContextClient, AidyContextTerminalMiss
 from app.provider_aidy_context_join import ProviderContextJoinBlocked, join_provider_to_aidy_context
 
 logger = logging.getLogger(__name__)
 
 CONTRACT_VERSION = "provider_aidy_context_attachment_v1"
+TERMINAL_MISS_CONTRACT_VERSION = "provider_aidy_context_terminal_miss_v1"
 _DEFAULT_BATCH_LIMIT = 50
 
 
@@ -67,6 +69,11 @@ class ProviderContextAttachmentResolver:
         self._session_factory = session_factory
         self._client = client
         self._batch_limit = batch_limit
+        self._last_terminal_misses = 0
+
+    @property
+    def last_terminal_misses(self) -> int:
+        return self._last_terminal_misses
 
     def _candidates(self) -> list[ContextAttachmentCandidate]:
         with self._session_factory() as session:
@@ -84,6 +91,11 @@ class ProviderContextAttachmentResolver:
                           SELECT 1
                           FROM provider_signal_context_attachments a
                           WHERE a.signal_id=t.signal_id
+                      )
+                      AND NOT EXISTS (
+                          SELECT 1
+                          FROM provider_signal_context_terminal_misses m
+                          WHERE m.signal_id=t.signal_id
                       )
                     ORDER BY t.signal_id,t.entry_index
                     LIMIT :limit
@@ -202,9 +214,50 @@ class ProviderContextAttachmentResolver:
             session.commit()
         return inserted is not None
 
+    def _persist_terminal_miss(
+        self,
+        candidate: ContextAttachmentCandidate,
+        miss: AidyContextTerminalMiss,
+    ) -> bool:
+        if miss.reason != "pit_context_stale":
+            raise ValueError("provider_context_terminal_miss_reason_invalid")
+        response_payload = dict(miss.payload)
+        response_payload["error"] = miss.reason
+        with self._session_factory() as session:
+            inserted = session.execute(
+                text(
+                    """
+                    INSERT INTO provider_signal_context_terminal_misses(
+                        id,signal_id,source_id,message_id,signal_posted_at,
+                        reason,response_payload,contract_version,
+                        research_only,live_money_execution_allowed
+                    ) VALUES (
+                        :id,:signal_id,:source_id,:message_id,:signal_posted_at,
+                        :reason,CAST(:response_payload AS jsonb),:contract_version,
+                        true,false
+                    )
+                    ON CONFLICT (signal_id) DO NOTHING
+                    RETURNING id
+                    """
+                ),
+                {
+                    "id": uuid4(),
+                    "signal_id": candidate.signal_id,
+                    "source_id": candidate.source_id,
+                    "message_id": candidate.message_id,
+                    "signal_posted_at": candidate.signal_posted_at,
+                    "reason": miss.reason,
+                    "response_payload": _canonical(response_payload),
+                    "contract_version": TERMINAL_MISS_CONTRACT_VERSION,
+                },
+            ).scalar_one_or_none()
+            session.commit()
+        return inserted is not None
+
     async def resolve_once(self) -> tuple[int, int]:
         attached = 0
         failures = 0
+        self._last_terminal_misses = 0
         for candidate in self._candidates():
             try:
                 joined = await join_provider_to_aidy_context(
@@ -217,6 +270,14 @@ class ProviderContextAttachmentResolver:
                 )
                 if self._persist(candidate, joined):
                     attached += 1
+            except AidyContextTerminalMiss as exc:
+                if self._persist_terminal_miss(candidate, exc):
+                    self._last_terminal_misses += 1
+                logger.info(
+                    "Provider context terminal miss recorded signal_id=%s reason=%s",
+                    candidate.signal_id,
+                    exc.reason,
+                )
             except ProviderContextJoinBlocked as exc:
                 failures += 1
                 logger.warning(
@@ -235,6 +296,7 @@ class ProviderContextAttachmentResolver:
 
 __all__ = [
     "CONTRACT_VERSION",
+    "TERMINAL_MISS_CONTRACT_VERSION",
     "ContextAttachmentCandidate",
     "ProviderContextAttachmentResolver",
 ]
