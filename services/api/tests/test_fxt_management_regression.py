@@ -114,3 +114,17 @@ def test_gtmo_set_breakeven_nowww_remains_actionable() -> None:
         "target": "all",
         "value": None,
     } in allowed.extracted["management_actions"]
+
+
+def test_fxt_close_gold_sells_counter_trade_message_is_explicit_close_all() -> None:
+    raw = "Close your gold sells.\n\nOpen gold buys.\n\nDouble lotsize."
+    result = day27.extract_day27_management_actions(raw)
+    assert result.actions == (
+        {"type": "close", "target": "all", "value": None},
+    )
+    allowed = apply_v1_message_policy(_decision(), raw_text=raw)
+    assert allowed.decision == "trade_update"
+    assert allowed.action == "apply_update"
+    assert allowed.extracted["management_actions"] == [
+        {"type": "close", "target": "all", "value": None},
+    ]
