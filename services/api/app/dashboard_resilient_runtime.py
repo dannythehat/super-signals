@@ -2,9 +2,9 @@
 
 This layer never invents broker state. A successful canonical dashboard read stores the
 exact account values that were displayed. Dashboard requests are intentionally
-stale-while-revalidate: the last confirmed view is returned immediately and one bounded
-broker refresh runs in the background. This keeps app startup independent from MetaAPI
-latency while preserving broker truth as the next confirmed state.
+stale-while-revalidate: the last confirmed view is returned immediately and broker
+refreshes are heavily rate-limited so observability can never compete with trade
+execution for MetaAPI capacity.
 """
 
 from __future__ import annotations
@@ -22,6 +22,13 @@ from app.dashboard_runtime import CanonicalDashboardRuntimeService
 
 logger = logging.getLogger(__name__)
 
+# The mobile UI polls local dashboard endpoints frequently. Broker reads are observability
+# only and must never consume MetaAPI capacity needed for signal execution/management.
+# Healthy refreshes are therefore capped at once per minute per user. Any failed broker
+# refresh backs off for ten minutes while local/durable dashboard state remains available.
+_HEALTHY_REFRESH_COOLDOWN_SECONDS = 60.0
+_FAILED_REFRESH_BACKOFF_SECONDS = 600.0
+
 
 class ResilientDashboardRuntimeService(CanonicalDashboardRuntimeService):
     """Canonical dashboard with durable and in-memory last-confirmed snapshots."""
@@ -30,6 +37,7 @@ class ResilientDashboardRuntimeService(CanonicalDashboardRuntimeService):
         super().__init__(*args, **kwargs)
         self._last_views: dict[UUID, Day32DashboardView] = {}
         self._refresh_tasks: dict[UUID, asyncio.Task[None]] = {}
+        self._refresh_not_before: dict[UUID, float] = {}
 
     def _ensure_runtime_state(self) -> None:
         # A few focused unit tests construct this service with object.__new__ and
@@ -39,17 +47,32 @@ class ResilientDashboardRuntimeService(CanonicalDashboardRuntimeService):
             self._last_views = {}
         if not hasattr(self, "_refresh_tasks"):
             self._refresh_tasks = {}
+        if not hasattr(self, "_refresh_not_before"):
+            self._refresh_not_before = {}
+
+    @staticmethod
+    def _now_ts() -> float:
+        return datetime.now(UTC).timestamp()
+
+    def _refresh_allowed(self, user_id: UUID) -> bool:
+        return self._now_ts() >= self._refresh_not_before.get(user_id, 0.0)
+
+    def _defer_refresh(self, user_id: UUID, seconds: float) -> None:
+        self._refresh_not_before[user_id] = self._now_ts() + seconds
 
     async def read(self, user_id: UUID) -> Day32DashboardView:
-        """Return immediately from confirmed state and refresh broker state once.
+        """Return immediately from confirmed state and refresh broker state sparingly.
 
-        A connected account must not make first paint wait on an external broker call.
-        The latest in-memory view is preferred. After a process restart, the durable
-        account snapshot plus local position ledger provides the immediate fallback.
+        A connected account must not make first paint repeatedly wait on an external
+        broker call. The latest in-memory view is preferred. After a process restart,
+        the durable account snapshot plus local position ledger provides the immediate
+        fallback. If no durable account snapshot exists yet and MetaAPI is unavailable,
+        a local reconnecting view is served during the backoff window instead of making
+        another broker request every 15 seconds from the mobile UI.
         """
         self._ensure_runtime_state()
 
-        # Preserve the isolated fallback tests which intentionally construct the object
+        # Preserve isolated fallback tests which intentionally construct the object
         # without a database session factory. Real application instances always have it.
         if not hasattr(self, "_session_factory"):
             return await self._read_live_and_cache(user_id)
@@ -65,10 +88,15 @@ class ResilientDashboardRuntimeService(CanonicalDashboardRuntimeService):
                 self._last_views[user_id] = cached
 
         if cached is None:
-            # This only happens before the first ever confirmed broker read for an
-            # account. There is no honest snapshot to display yet, so one bounded live
-            # read remains necessary.
-            return await self._read_live_and_cache(user_id)
+            if not self._refresh_allowed(user_id):
+                return self._local_reconnecting_snapshot(user_id, account_row=account_row)
+            self._defer_refresh(user_id, _HEALTHY_REFRESH_COOLDOWN_SECONDS)
+            view = await self._read_live_and_cache(user_id)
+            if view.connection.status == "connected" and view.account is not None:
+                self._defer_refresh(user_id, _HEALTHY_REFRESH_COOLDOWN_SECONDS)
+            else:
+                self._defer_refresh(user_id, _FAILED_REFRESH_BACKOFF_SECONDS)
+            return view
 
         self._ensure_live_refresh(user_id)
         return cached
@@ -99,6 +127,11 @@ class ResilientDashboardRuntimeService(CanonicalDashboardRuntimeService):
         current = self._refresh_tasks.get(user_id)
         if current is not None and not current.done():
             return
+        if not self._refresh_allowed(user_id):
+            return
+        # Reserve the healthy cooldown before scheduling so simultaneous dashboard
+        # requests cannot race into duplicate background broker reads.
+        self._defer_refresh(user_id, _HEALTHY_REFRESH_COOLDOWN_SECONDS)
         self._refresh_tasks[user_id] = asyncio.create_task(
             self._refresh_live(user_id),
             name=f"dashboard-live-refresh-{user_id}",
@@ -109,14 +142,42 @@ class ResilientDashboardRuntimeService(CanonicalDashboardRuntimeService):
             view = await self._read_live_and_cache(user_id)
             if view.connection.status == "connected" and view.account is not None:
                 self._last_views[user_id] = view
+                self._defer_refresh(user_id, _HEALTHY_REFRESH_COOLDOWN_SECONDS)
+            else:
+                self._defer_refresh(user_id, _FAILED_REFRESH_BACKOFF_SECONDS)
         except asyncio.CancelledError:
             raise
         except Exception:
-            # Dashboard freshness must never take down the app shell. The previously
-            # confirmed view remains available and the next request will retry.
+            # Dashboard freshness must never take down the app shell or repeatedly
+            # pressure MetaAPI during an outage. Keep the last confirmed view and back
+            # off while execution/management retain broker-read priority.
+            self._defer_refresh(user_id, _FAILED_REFRESH_BACKOFF_SECONDS)
             logger.exception("Background MT5 dashboard refresh failed safely")
         finally:
             self._refresh_tasks.pop(user_id, None)
+
+    def _local_reconnecting_snapshot(
+        self,
+        user_id: UUID,
+        *,
+        account_row,
+    ) -> Day32DashboardView:  # noqa: ANN001
+        now = datetime.now(UTC)
+        connection = Day32Connection(
+            configured=True,
+            status="reconnecting",
+            account_environment=str(account_row["account_environment"]),
+            login_masked=self._mask_login(str(account_row["login"])),
+            server=str(account_row["server"]),
+            error_code=None,
+            read_at=None,
+        )
+        return self._without_live_state(
+            connection=connection,
+            trading=self._trading(user_id),
+            user_id=user_id,
+            now=now,
+        )
 
     def _durable_dashboard_snapshot(
         self,
