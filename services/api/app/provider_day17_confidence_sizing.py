@@ -277,7 +277,8 @@ def allocate_research_heat(
     """
     candidate.validate()
     caps.validate()
-    summary = summarize_heat(open_legs)
+    materialized_legs = list(open_legs)
+    summary = summarize_heat(materialized_legs)
 
     signed_net = float(summary["signed_net_heat_fraction"])
     gross = float(summary["gross_heat_fraction"])
@@ -314,7 +315,7 @@ def allocate_research_heat(
             limiting.append("requested_risk_fits_caps")
 
     proposed = HeatLeg(candidate.direction, max(0.0, allowed), candidate.cluster_id)
-    post_summary = summarize_heat([*list(open_legs), proposed])
+    post_summary = summarize_heat([*materialized_legs, proposed])
     return {
         "model_version": MODEL_VERSION,
         "research_only": True,
