@@ -35,6 +35,15 @@ class AidyCanonicalContext:
     provenance: dict[str, Any]
 
 
+class AidyContextTerminalMiss(RuntimeError):
+    """A fail-closed PIT miss that cannot become valid on a later retry."""
+
+    def __init__(self, reason: str, *, payload: dict[str, Any]) -> None:
+        self.reason = reason
+        self.payload = dict(payload)
+        super().__init__(reason)
+
+
 class AidyContextClient:
     """Read-only client for AIDY's canonical point-in-time Provider Intelligence context."""
 
@@ -69,6 +78,19 @@ class AidyContextClient:
                 f"{self._base_url}/provider/context?{query}",
                 headers=self._headers(),
             )
+            if response.status_code == 409:
+                try:
+                    terminal_payload = response.json()
+                except ValueError:
+                    terminal_payload = {}
+                if (
+                    isinstance(terminal_payload, dict)
+                    and terminal_payload.get("error") == "pit_context_stale"
+                ):
+                    raise AidyContextTerminalMiss(
+                        "pit_context_stale",
+                        payload=terminal_payload,
+                    )
             response.raise_for_status()
             payload = response.json()
         if not isinstance(payload, dict) or payload.get("ok") is not True:
