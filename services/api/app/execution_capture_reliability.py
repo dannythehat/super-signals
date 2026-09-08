@@ -38,8 +38,15 @@ _TRANSIENT_READ_OR_ROUTE_ERRORS = {
     "price_stale",
     "price_unavailable",
 }
-_MAX_CAPTURE_ATTEMPTS = 4
+# Four attempts is retained as the isolated/test fallback. Production executors also
+# carry the fresh-signal age guard, so they can safely keep capture attempts alive for
+# that whole window instead of giving up while the signal is still eligible. The
+# executor's paper_signal_stale_by_time guard remains authoritative and stops mutation
+# once the allowed fresh window expires.
+_FALLBACK_CAPTURE_ATTEMPTS = 4
+_PRODUCTION_CAPTURE_ATTEMPTS = 30
 _RETRY_DELAY_SECONDS = 0.5
+_MAX_RETRY_DELAY_SECONDS = 3.0
 _SIZING_USER_ID: ContextVar[UUID | None] = ContextVar(
     "super_signals_sizing_user_id",
     default=None,
@@ -48,6 +55,14 @@ _SIZING_USER_ID: ContextVar[UUID | None] = ContextVar(
 
 class _CaptureRetryMixin:
     _supersession_account_environment = "demo"
+
+    def _capture_attempt_limit(self) -> int:
+        # PaperExecutionPriorityService installs this attribute and enforces the actual
+        # signal-age deadline before any broker mutation. Keeping the fallback at four
+        # preserves bounded behaviour for isolated harnesses/non-production subclasses.
+        if getattr(self, "_paper_max_signal_age_seconds", None) is not None:
+            return _PRODUCTION_CAPTURE_ATTEMPTS
+        return _FALLBACK_CAPTURE_ATTEMPTS
 
     async def execute_owner_demo_signal(
         self,
@@ -72,9 +87,10 @@ class _CaptureRetryMixin:
             account_environment=self._supersession_account_environment,
         )
 
+        max_attempts = self._capture_attempt_limit()
         context_token = _SIZING_USER_ID.set(owner_user_id)
         try:
-            for attempt in range(1, _MAX_CAPTURE_ATTEMPTS + 1):
+            for attempt in range(1, max_attempts + 1):
                 try:
                     return await super().execute_owner_demo_signal(
                         owner_user_id=owner_user_id,
@@ -85,7 +101,7 @@ class _CaptureRetryMixin:
                 except Day26ExecutionError as exc:
                     if (
                         exc.code not in _TRANSIENT_READ_OR_ROUTE_ERRORS
-                        or attempt >= _MAX_CAPTURE_ATTEMPTS
+                        or attempt >= max_attempts
                         or not self._prepare_clean_retry(owner_user_id, signal_id)
                     ):
                         raise
@@ -100,9 +116,12 @@ class _CaptureRetryMixin:
                             "broker_mutation_present": False,
                             "automatic_retry": True,
                             "capture_first": True,
+                            "capture_attempt_limit": max_attempts,
                         },
                     )
-                    await asyncio.sleep(_RETRY_DELAY_SECONDS * attempt)
+                    await asyncio.sleep(
+                        min(_RETRY_DELAY_SECONDS * attempt, _MAX_RETRY_DELAY_SECONDS)
+                    )
 
             raise Day26ExecutionError("canonical_execution_retry_exhausted")
         finally:
