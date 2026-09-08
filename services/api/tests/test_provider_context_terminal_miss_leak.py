@@ -53,6 +53,18 @@ def test_candidate_query_excludes_both_successes_and_terminal_misses() -> None:
     assert "LIMIT :limit" in source
 
 
+def test_candidate_query_uses_canonical_signal_message_provenance() -> None:
+    source = inspect.getsource(ProviderContextAttachmentResolver._candidates)
+    assert "JOIN signals s ON s.id=t.signal_id" in source
+    assert "JOIN messages m ON m.id=s.source_message_id" in source
+    assert "m.source_id AS source_id" in source
+    assert "s.source_message_id AS message_id" in source
+    assert "s.source_posted_at AS signal_posted_at" in source
+    assert "t.source_id=m.source_id" in source
+    assert "t.message_id=s.source_message_id" in source
+    assert "t.provider_profile_effective_at <= s.source_posted_at" in source
+
+
 def test_pit_stale_is_classified_before_generic_http_error(monkeypatch: pytest.MonkeyPatch) -> None:
     class FakeResponse:
         status_code = 409
