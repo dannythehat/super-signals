@@ -45,9 +45,10 @@ def upgrade() -> None:
         "ON provider_shadow_enrollment_audit(source_id,status,provider_signal_posted_at)"
     )
 
-    # Existing benchmark rows are already complete.  Existing accepted signals without
-    # a shadow row are classified conservatively: complete geometry is repairable by the
-    # forward runtime, while historical bare NOW calls cannot be assigned today's quote.
+    # Existing benchmark rows are complete. Every accepted shadow signal without a
+    # benchmark row starts PENDING so the runtime can make the evidence-dependent choice:
+    # repair complete geometry, enroll a genuinely fresh bare NOW profile from a fresh
+    # quote, or persist an explicit exclusion. This avoids a deployment-time race.
     op.execute(
         """
         INSERT INTO provider_shadow_enrollment_audit(
@@ -56,19 +57,13 @@ def upgrade() -> None:
         )
         SELECT
             s.id,s.source_id,s.source_message_id,
-            CASE
-                WHEN st.signal_id IS NOT NULL THEN 'enrolled'
-                WHEN s.entry_low IS NOT NULL AND s.entry_high IS NOT NULL
-                     AND s.stop_loss IS NOT NULL
-                     AND jsonb_array_length(s.take_profits) > 0 THEN 'pending'
-                ELSE 'excluded'
-            END,
+            CASE WHEN st.signal_id IS NOT NULL THEN 'enrolled' ELSE 'pending' END,
             CASE
                 WHEN st.signal_id IS NOT NULL THEN 'existing_shadow_trade'
                 WHEN s.entry_low IS NOT NULL AND s.entry_high IS NOT NULL
                      AND s.stop_loss IS NOT NULL
                      AND jsonb_array_length(s.take_profits) > 0 THEN 'structured_repair_pending'
-                ELSE 'legacy_bare_profile_no_fresh_quote'
+                ELSE 'evidence_review_pending'
             END,
             s.source_posted_at,
             CASE WHEN st.signal_id IS NOT NULL THEN st.created_at ELSE NULL END,
