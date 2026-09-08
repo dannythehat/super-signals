@@ -45,11 +45,17 @@ def test_terminal_miss_migration_is_forward_only_research_evidence() -> None:
     assert "terminal misses are immutable" in source
 
 
-def test_candidate_query_excludes_both_successes_and_terminal_misses() -> None:
+def test_candidate_query_excludes_outcomes_and_uses_canonical_signal_message() -> None:
     source = inspect.getsource(ProviderContextAttachmentResolver._candidates)
     assert "provider_signal_context_attachments" in source
     assert "provider_signal_context_terminal_misses" in source
     assert source.count("NOT EXISTS") >= 2
+    assert "JOIN signals s ON s.id=t.signal_id" in source
+    assert "JOIN messages m ON m.id=s.source_message_id" in source
+    assert "s.source_message_id AS message_id" in source
+    assert "s.source_posted_at AS signal_posted_at" in source
+    assert "t.source_id=m.source_id" in source
+    assert "t.message_id" not in source
     assert "LIMIT :limit" in source
 
 
