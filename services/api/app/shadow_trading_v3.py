@@ -28,6 +28,23 @@ from app.shadow_trading_v2 import (
 logger = logging.getLogger(__name__)
 
 
+def _pit_safe_score_eligibility(row: Any, *, quote_mode: str) -> tuple[bool, str | None]:
+    """Apply market-resolution scoring only to PIT-resolved provider profiles.
+
+    Legacy rows are intentionally unresolvable at their historical signal timestamp.
+    They may continue through shadow lifecycle research, but they can never regain score
+    eligibility. Preserve an existing exclusion reason when one is already recorded.
+    """
+    pit_status = str(row["provider_profile_pit_status"] or "").strip()
+    if pit_status != "resolved":
+        existing_reason = str(row["score_exclusion_reason"] or "").strip()
+        return False, existing_reason or "legacy_profile_unresolvable"
+    return score_eligibility(
+        style=str(row["provider_style"]),
+        quote_mode=quote_mode,
+    )
+
+
 class _FairGoldQuoteListener(SynchronizationListener):
     def __init__(self, manager: "ShadowTradeManager") -> None:
         self._manager = manager
@@ -239,8 +256,8 @@ class ShadowTradeManager(_BaseShadowTradeManager):
             # Use the actual observed executable side, not the provider's prettier
             # advertised entry, so spread/gaps/slippage cannot be hidden.
             entry = entry_executable
-            eligible, reason = score_eligibility(
-                style=str(row["provider_style"]),
+            eligible, reason = _pit_safe_score_eligibility(
+                row,
                 quote_mode=quote_mode,
             )
             posted_at = row["signal_posted_at"]
