@@ -55,7 +55,10 @@ export function ManualMt5ActivityDay36({ apiBaseUrl }: Props) {
 
   useEffect(() => {
     void refresh();
-    const interval = window.setInterval(() => void refresh(), 30000);
+    // This endpoint performs broker-authoritative reconciliation. It is observability
+    // only, so do not poll MetaAPI every 30 seconds and compete with signal execution.
+    // Five minutes plus focus/ledger events is sufficient for manual-action display.
+    const interval = window.setInterval(() => void refresh(), 300000);
     const onFocus = () => void refresh();
     const onLedgerSynced = () => void refresh();
     window.addEventListener('focus', onFocus);
