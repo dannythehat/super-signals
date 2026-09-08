@@ -26,6 +26,7 @@ from telethon.sessions import StringSession
 from app.models import AuditEvent, Message, Source
 from app.telegram_crypto import TelegramSessionCipher
 from app.telegram_listener import (
+    LISTENABLE_SOURCE_STATES,
     CapturedTelegramMessage,
     ReaderListeningPlan,
     TelegramListenerManager,
@@ -89,7 +90,7 @@ class Day13TelegramListenerManager(TelegramListenerManager):
             if chat_id is None:
                 # Telegram can omit chat identity on deletion updates. Resolve a
                 # deletion only when an incoming message ID maps uniquely to one
-                # currently selected Testing/Live source for this exact reader.
+                # currently selected listenable source for this exact reader.
                 # Message IDs are chat-local, so collisions across selected chats
                 # are deliberately treated as ambiguous and ignored.
                 targets = await asyncio.to_thread(
@@ -229,7 +230,7 @@ class Day13TelegramListenerManager(TelegramListenerManager):
                 select(Source).where(
                     Source.id == captured.source_id,
                     Source.chat_id == captured.chat_id,
-                    Source.status.in_({"testing", "live"}),
+                    Source.status.in_(LISTENABLE_SOURCE_STATES),
                 )
             )
             if source is None:
@@ -365,7 +366,7 @@ class Day13TelegramListenerManager(TelegramListenerManager):
                 .where(
                     Message.source_id.in_(source_ids),
                     Message.telegram_message_id.in_(telegram_message_ids),
-                    Source.status.in_({"testing", "live"}),
+                    Source.status.in_(LISTENABLE_SOURCE_STATES),
                 )
             ).all()
 
@@ -400,7 +401,7 @@ class Day13TelegramListenerManager(TelegramListenerManager):
                 select(Source).where(
                     Source.id == source_id,
                     Source.chat_id == chat_id,
-                    Source.status.in_({"testing", "live"}),
+                    Source.status.in_(LISTENABLE_SOURCE_STATES),
                 )
             )
             if source is None:
