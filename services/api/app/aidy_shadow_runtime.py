@@ -1,8 +1,8 @@
 """Application-owned AIDY Provider Lab replay and context runtime.
 
 This runtime is intentionally independent of broker credentials. M1 replay remains the
-primary research loop; Day 10 context enrichment is optional/fail-flat and may never
-prevent the existing resolver from starting.
+primary research loop; context and Day 21 enrichment are optional/fail-flat and may
+never prevent the existing resolver from starting or block live signal routing.
 """
 
 from __future__ import annotations
@@ -17,6 +17,7 @@ from app.aidy_context_client import AidyContextClient
 from app.aidy_market_client import AidyMarketClient
 from app.aidy_shadow_resolver import AidyShadowResolver
 from app.provider_context_attachment import ProviderContextAttachmentResolver
+from app.provider_day21_full_chain import ProviderDay21ChainResolver
 
 logger = logging.getLogger(__name__)
 
@@ -77,8 +78,9 @@ class AidyShadowRuntime:
 
         self._stopping.clear()
         market_resolver = AidyShadowResolver(self._session_factory, market_client)
+        day21_resolver = ProviderDay21ChainResolver(self._session_factory)
         self._task = asyncio.create_task(
-            self._run(market_resolver, context_resolver),
+            self._run(market_resolver, context_resolver, day21_resolver),
             name="super-signals-provider-aidy-research",
         )
         # Keep the established startup log contract for operational monitors/tests.
@@ -103,6 +105,7 @@ class AidyShadowRuntime:
         self,
         market_resolver: AidyShadowResolver,
         context_resolver: ProviderContextAttachmentResolver | None,
+        day21_resolver: ProviderDay21ChainResolver,
     ) -> None:
         draining_startup_backlog = True
         startup_pass = 0
@@ -128,7 +131,6 @@ class AidyShadowRuntime:
                 # Context attachment is deliberately isolated from M1 replay and from
                 # all broker/member execution. Transient AIDY failures retry later;
                 # terminal PIT-stale outcomes are persisted once.
-                # They cannot block either market resolution or live signal routing.
                 try:
                     attached, context_failures = await context_resolver.resolve_once()
                     terminal_misses = context_resolver.last_terminal_misses
@@ -149,10 +151,33 @@ class AidyShadowRuntime:
                 if attached or terminal_misses or context_failures:
                     logger.info(context_message)
 
+            day21_processed, day21_failures = 0, 0
+            try:
+                # Day 21 is a DB-only append-only research observer. Running it after
+                # context attachment means newly attached PIT context is visible in the
+                # same pass. It contains no broker call and cannot block routing.
+                day21_processed, day21_failures = day21_resolver.resolve_once()
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.exception("Provider Day21 full-chain loop failed safely")
+                day21_processed, day21_failures = 0, 1
+
+            day21_message = (
+                "Provider Day21 full-chain "
+                f"processed={day21_processed} failures={day21_failures}"
+            )
+            print(day21_message, flush=True)
+            if day21_processed or day21_failures:
+                logger.info(day21_message)
+
             if draining_startup_backlog:
                 startup_pass += 1
                 if (
-                    processed > 0 or attached > 0 or terminal_misses > 0
+                    processed > 0
+                    or attached > 0
+                    or terminal_misses > 0
+                    or day21_processed > 0
                 ) and startup_pass < self._startup_pass_limit:
                     await asyncio.sleep(0)
                     continue
@@ -161,7 +186,9 @@ class AidyShadowRuntime:
                     f"passes={startup_pass} last_m1_processed={processed} "
                     f"last_context_attached={attached} "
                     f"last_context_terminal_misses={terminal_misses} "
-                    f"m1_failures={market_failures} context_failures={context_failures}"
+                    f"last_day21_processed={day21_processed} "
+                    f"m1_failures={market_failures} context_failures={context_failures} "
+                    f"day21_failures={day21_failures}"
                 )
                 print(drain_message, flush=True)
                 logger.info(drain_message)
