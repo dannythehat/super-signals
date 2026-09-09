@@ -94,10 +94,16 @@ class CanonicalProductionTelegramListenerManager(Day21TelegramListenerManager):
         self._dispatch_lock = Lock()
 
     async def start(self) -> None:
+        """Start only the canonical runtime, never inherited Day-numbered backfills.
+
+        The historical listener classes remain temporary implementation dependencies
+        for reader mechanics, but their start hooks include parser/review/signal/lifecycle
+        backfills from earlier build generations. Production must not run those hooks.
+        """
         if self._canonical_pending_reconciler is not None:
             await self._canonical_pending_reconciler.start()
         try:
-            await super().start()
+            await TelegramListenerManager.start(self)
         except Exception:
             if self._canonical_pending_reconciler is not None:
                 await self._canonical_pending_reconciler.stop()
@@ -105,7 +111,7 @@ class CanonicalProductionTelegramListenerManager(Day21TelegramListenerManager):
 
     async def stop(self) -> None:
         try:
-            await super().stop()
+            await TelegramListenerManager.stop(self)
         finally:
             if self._canonical_pending_reconciler is not None:
                 await self._canonical_pending_reconciler.stop()
@@ -215,14 +221,13 @@ class CanonicalProductionTelegramListenerManager(Day21TelegramListenerManager):
     def _process_saved_edit(self, captured: Any, revision_index: int) -> Any:
         pipeline = getattr(self, "_ai_pipeline", None)
         exact_processor = getattr(pipeline, "_process_revision", None) if pipeline is not None else None
-        if callable(exact_processor):
-            result = exact_processor(
-                captured.source_id,
-                int(captured.telegram_message_id),
-                revision_index=revision_index,
-            )
-        else:
-            result = Day21TelegramListenerManager._persist_edit(self, captured)
+        if not callable(exact_processor):
+            raise RuntimeError("canonical_ai_revision_processor_missing")
+        result = exact_processor(
+            captured.source_id,
+            int(captured.telegram_message_id),
+            revision_index=revision_index,
+        )
         self._dispatch_sync(
             source_id=captured.source_id,
             telegram_message_id=int(captured.telegram_message_id),
@@ -440,8 +445,6 @@ class CanonicalProductionTelegramListenerManager(Day21TelegramListenerManager):
             )
 
             inserted_original = await asyncio.to_thread(self._persist_recovered_original, captured)
-            # Existing persisted rows are never replayed. A genuinely missing fresh row
-            # may be dispatched exactly once after recovery discovers it.
             if inserted_original:
                 await self._dispatch_recovered_if_required(
                     source_id=source.source_id,
