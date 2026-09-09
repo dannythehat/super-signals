@@ -6,6 +6,7 @@ import app.trading_execution_canonical as canonical_module
 from app.critical_entry_policy import parse_critical_entries
 from app.mt5_execution_day26 import Day26Mt5ExecutionService, _SignalInput
 from app.paper_critical_execution import PaperCriticalExecutionService
+from app.provider_risk_policy import provider_risk_profile
 from app.trading_execution_canonical import (
     CanonicalTradingExecutionService,
     MemberTradingExecutionService,
@@ -28,7 +29,7 @@ def _signal() -> _SignalInput:
     )
 
 
-def test_tdc_six_entries_keep_six_atomic_positions_not_twenty_four() -> None:
+def test_six_entries_and_four_targets_keep_four_risk_legs_not_twenty_four() -> None:
     raw = (
         "BUY GOLD @ 4398/4393\n\n"
         "TP 4400\nTP 4403\nTP 4407\nTP OPEN\nSL 4392\n\nHIGH RISK TRADE"
@@ -44,13 +45,11 @@ def test_tdc_six_entries_keep_six_atomic_positions_not_twenty_four() -> None:
         (Decimal("4400"), Decimal("4403"), Decimal("4407"), None),
     )
     assert len(entries) == 6
-    assert len(allocations) == 6
-    assert {item.entry.entry_index for item in allocations} == {1, 2, 3, 4, 5, 6}
+    assert len(allocations) == 4
+    assert [item.tp_index for item in allocations] == [1, 2, 3, 4]
 
 
 def test_demo_and_live_share_one_unmodified_risk_sizer() -> None:
-    # There is one sizing implementation for normal, layered/pending, demo and LIVE.
-    # No execution subclass may scale account balance by entry/TP count.
     assert "_full_risk_section_count" not in vars(canonical_module)
     assert "_size_signal" not in CanonicalTradingExecutionService.__dict__
     assert "_size_signal" not in MemberTradingExecutionService.__dict__
@@ -60,8 +59,14 @@ def test_demo_and_live_share_one_unmodified_risk_sizer() -> None:
     assert PaperCriticalExecutionService._size_signal is Day26Mt5ExecutionService._size_signal
 
 
-def test_six_entry_signal_uses_real_balance_once_for_each_atomic_leg() -> None:
+def test_one_target_uses_one_percent_of_real_balance() -> None:
     service = object.__new__(CanonicalTradingExecutionService)
+    profile = provider_risk_profile(
+        source_name="TIG’s Asia Trades",
+        side="BUY",
+        position_count=4,
+    )
+    assert profile is not None
     actual = CanonicalTradingExecutionService._size_signal(
         service,
         signal=_signal(),
@@ -74,7 +79,7 @@ def test_six_entry_signal_uses_real_balance_once_for_each_atomic_leg() -> None:
             "volumeStep": 0.01,
             "tickSize": 0.01,
         },
-        risk_percent=Decimal("1"),
+        risk_percent=profile[0],
         double_lot_approved=False,
     )
 
@@ -85,10 +90,16 @@ def test_six_entry_signal_uses_real_balance_once_for_each_atomic_leg() -> None:
     assert actual.actual_risk_per_position == Decimal("18.00")
 
 
-def test_double_signal_uses_two_percent_of_real_balance_only() -> None:
+def test_double_lot_wording_cannot_turn_one_percent_target_into_two_percent() -> None:
     service = object.__new__(CanonicalTradingExecutionService)
     signal = _signal()
     object.__setattr__(signal, "signal_requests_double_lot", True)
+    profile = provider_risk_profile(
+        source_name="Another Provider",
+        side="BUY",
+        position_count=4,
+    )
+    assert profile is not None
 
     actual = CanonicalTradingExecutionService._size_signal(
         service,
@@ -102,11 +113,10 @@ def test_double_signal_uses_two_percent_of_real_balance_only() -> None:
             "volumeStep": 0.01,
             "tickSize": 0.01,
         },
-        risk_percent=Decimal("1"),
+        risk_percent=profile[0],
         double_lot_approved=True,
     )
 
-    assert actual.effective_risk_percent == Decimal("2")
-    assert actual.risk_budget_per_position == Decimal("30.0")
-    assert actual.volume == Decimal("0.05")
-    assert actual.actual_risk_per_position == Decimal("30.00")
+    assert actual.effective_risk_percent == Decimal("1")
+    assert actual.risk_budget_per_position == Decimal("15.0")
+    assert not actual.double_lot_applied
