@@ -3,6 +3,7 @@ from decimal import Decimal
 import pytest
 
 from app.provider_risk_policy import (
+    POLICY_GENERATION,
     is_fxtradingvision_buy,
     is_gtmo_buy,
     is_tig_buy,
@@ -22,7 +23,11 @@ def _rules() -> BrokerVolumeRules:
     return BrokerVolumeRules.from_values(minimum="0.01", maximum="100", step="0.01")
 
 
-def test_fxtradingvision_buy_is_best_tier_and_sell_is_medium_tier() -> None:
+def test_provider_policy_generation_is_current_owner_authority() -> None:
+    assert POLICY_GENERATION == "owner-authority-2026-09-09-v1"
+
+
+def test_fxtradingvision_buy_and_sell_use_current_owner_profile() -> None:
     source = "FXTradingVision l Forex & Crypto Signals 🚀"
     assert is_fxtradingvision_buy(source_name=source, side="BUY")
     assert provider_side_enabled(source_name=source, side="BUY")
@@ -31,10 +36,10 @@ def test_fxtradingvision_buy_is_best_tier_and_sell_is_medium_tier() -> None:
     assert provider_tp_limit(source_name=source, side="SELL") == 3
     assert provider_risk_profile(
         source_name=source, side="BUY", position_count=3
-    ) == (Decimal("2"), Decimal("2"), Decimal("0.5"))
+    ) == (Decimal("5"), Decimal("5"), Decimal("1"))
     assert provider_risk_profile(
         source_name=source, side="SELL", position_count=3
-    ) == (Decimal("1"), Decimal("1"), Decimal("0.5"))
+    ) == (Decimal("5"), Decimal("5"), Decimal("1"))
 
 
 def test_gtmo_buy_is_medium_tier_with_half_percent_tail() -> None:
@@ -129,7 +134,7 @@ def test_fx_never_creates_a_fourth_tp_leg_for_buy_or_sell() -> None:
             provider_risk_profile(source_name="FXTradingVision", side=side, position_count=4)
 
 
-def test_fx_buy_profile_totals_four_and_a_half_percent() -> None:
+def test_fx_buy_profile_totals_eleven_percent() -> None:
     profile = provider_risk_profile(
         source_name="FXTradingVision", side="BUY", position_count=3
     )
@@ -144,12 +149,12 @@ def test_fx_buy_profile_totals_four_and_a_half_percent() -> None:
         volume_rules=_rules(),
     )
     assert [item.risk_budget for item in result.positions] == [
-        Decimal("30"), Decimal("30"), Decimal("7.5")
+        Decimal("75"), Decimal("75"), Decimal("15")
     ]
-    assert result.total_risk_budget == Decimal("67.5")
+    assert result.total_risk_budget == Decimal("165")
 
 
-def test_fx_sell_profile_totals_two_and_a_half_percent() -> None:
+def test_fx_sell_profile_totals_eleven_percent() -> None:
     profile = provider_risk_profile(
         source_name="FXTradingVision", side="SELL", position_count=3
     )
@@ -164,9 +169,9 @@ def test_fx_sell_profile_totals_two_and_a_half_percent() -> None:
         volume_rules=_rules(),
     )
     assert [item.risk_budget for item in result.positions] == [
-        Decimal("15"), Decimal("15"), Decimal("7.5")
+        Decimal("75"), Decimal("75"), Decimal("15")
     ]
-    assert result.total_risk_budget == Decimal("37.5")
+    assert result.total_risk_budget == Decimal("165")
 
 
 def test_gtmo_five_leg_profile_totals_three_and_a_half_percent() -> None:
