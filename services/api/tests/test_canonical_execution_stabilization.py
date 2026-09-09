@@ -27,19 +27,18 @@ def test_tig_two_entries_four_targets_use_four_atomic_positions_not_eight() -> N
     assert runner.entry.entry_index == 2
 
 
-def test_tdc_six_layers_four_targets_use_six_atomic_positions_not_twenty_four() -> None:
+def test_tdc_six_layers_four_targets_still_use_four_target_risk_legs() -> None:
     entries = tuple(
         _entry(index, "buy_limit", str(4385 - index))
         for index in range(1, 7)
     )
     targets = (Decimal("4386"), Decimal("4389"), Decimal("4393"), None)
     plan = CanonicalTradingExecutionService._allocation_pairs(entries, targets)
-    assert len(plan) == 6
-    assert {item.entry.entry_index for item in plan} == {1, 2, 3, 4, 5, 6}
+    assert len(plan) == 4
     assert {item.tp_index for item in plan} == {1, 2, 3, 4}
     assert sum(1 for item in plan if item.take_profit is None) == 1
-    runner = next(item for item in plan if item.take_profit is None)
-    assert runner.entry.entry_index == 6
+    # Entry layers choose placement only; they cannot manufacture two extra 1% legs.
+    assert len({item.entry.entry_index for item in plan}) <= len(targets)
 
 
 class _FakeTransport(MetaApiTradeGateway):
