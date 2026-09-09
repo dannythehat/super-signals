@@ -63,13 +63,21 @@ def test_tig_buy_is_medium_tier_and_stops_at_tp3() -> None:
     ) == (Decimal("1"), Decimal("1"), Decimal("0.5"))
 
 
-def test_tig_sell_is_disabled_and_fails_closed() -> None:
+def test_tig_sell_is_enabled_with_owner_approved_two_leg_profile() -> None:
     source = "TIG’s Asia Trades"
     assert is_tig_sell(source_name=source, side="SELL")
-    assert not provider_side_enabled(source_name=source, side="SELL")
+    assert provider_side_enabled(source_name=source, side="SELL")
+    assert provider_tp_limit(source_name=source, side="SELL") == 2
     assert provider_risk_profile(
         source_name=source, side="SELL", position_count=2
-    ) == (Decimal("0"), Decimal("0"))
+    ) == (Decimal("5"), Decimal("5"))
+
+
+def test_tig_sell_never_accepts_a_third_funded_leg() -> None:
+    with pytest.raises(ValueError, match="tig_sell_position_count_invalid"):
+        provider_risk_profile(
+            source_name="TIG’s Asia Trades", side="SELL", position_count=3
+        )
 
 
 def test_gtmo_sell_remains_disabled_and_fails_closed() -> None:
@@ -210,6 +218,24 @@ def test_tig_buy_profile_totals_two_and_a_half_percent() -> None:
         volume_rules=_rules(),
     )
     assert result.total_risk_budget == Decimal("37.5")
+
+
+def test_tig_sell_profile_totals_ten_percent_across_two_legs() -> None:
+    profile = provider_risk_profile(
+        source_name="TIG’s Asia Trades", side="SELL", position_count=2
+    )
+    assert profile is not None
+    result = Day24RiskSizer.size_profile(
+        balance=Decimal("1500"),
+        risk_percents=profile,
+        signal_entry_price=Decimal("100"),
+        signal_stop_loss=Decimal("90"),
+        tick_size=Decimal("1"),
+        tick_value=Decimal("1"),
+        volume_rules=_rules(),
+    )
+    assert [item.risk_budget for item in result.positions] == [Decimal("75"), Decimal("75")]
+    assert result.total_risk_budget == Decimal("150")
 
 
 @pytest.mark.parametrize("risk_percent", [Decimal("3"), Decimal("5")])
