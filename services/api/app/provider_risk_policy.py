@@ -21,6 +21,9 @@ _FX_BUY_PROFILE = (_approved("2"), _approved("2"), _approved("0.5"))
 _FX_SELL_PROFILE = (_approved("1"), _approved("1"), _approved("0.5"))
 _MEDIUM_HEAD = (_approved("1"), _approved("1"))
 _DEVELOPING_LEG_RISK = _approved("0.5")
+# Restore the owner-approved TIG Asia SELL allocation that existed before the
+# August 30 direction-ranking change: two funded SELL legs at 5% each.
+_TIG_SELL_PROFILE = (_approved("5"), _approved("5"))
 _DISABLED_PROFILE_RISK = Decimal("0")
 
 
@@ -72,7 +75,9 @@ def provider_side_enabled(*, source_name: str, side: str) -> bool:
     if _is_gtmo(source_name=source_name):
         return normalized_side == "BUY"
     if _is_tig(source_name=source_name):
-        return normalized_side == "BUY"
+        # TIG Asia is explicitly approved in both directions. SELL was accidentally
+        # excluded by the August 30 ranked-direction policy despite its prior lock.
+        return True
     if _is_sureshot(source_name=source_name):
         return normalized_side == "SELL"
     if _is_united_kings(source_name=source_name):
@@ -88,6 +93,8 @@ def provider_tp_limit(*, source_name: str, side: str) -> int | None:
         return 3
     if is_tig_buy(source_name=source_name, side=side):
         return 3
+    if is_tig_sell(source_name=source_name, side=side):
+        return 2
     return None
 
 
@@ -127,6 +134,11 @@ def provider_risk_profile(
         if position_count > 3:
             raise ValueError("tig_buy_position_count_invalid")
         return _head_with_half_percent_tail(position_count)
+
+    if is_tig_sell(source_name=source_name, side=side):
+        if position_count > len(_TIG_SELL_PROFILE):
+            raise ValueError("tig_sell_position_count_invalid")
+        return _TIG_SELL_PROFILE[:position_count]
 
     if _is_sureshot(source_name=source_name) and normalized_side == "SELL":
         return _head_with_half_percent_tail(position_count)
