@@ -45,6 +45,10 @@ class CapturedTelegramEdit:
     reply_to_message_id: int | None
     has_media: bool
     media_type: str | None
+    # Telegram includes the original message timestamp on edit events. Preserve it
+    # so the canonical listener can enforce its freshness gate when an edit beats
+    # the corresponding NewMessage event to persistence.
+    posted_at: datetime | None = None
 
 
 class Day13TelegramListenerManager(TelegramListenerManager):
@@ -211,6 +215,12 @@ class Day13TelegramListenerManager(TelegramListenerManager):
         edited_at = Day13TelegramListenerManager._utc_datetime(
             getattr(message, "edit_date", None)
         )
+        raw_posted_at = getattr(message, "date", None)
+        posted_at = (
+            Day13TelegramListenerManager._utc_datetime(raw_posted_at)
+            if isinstance(raw_posted_at, datetime)
+            else None
+        )
         return CapturedTelegramEdit(
             source_id=source.source_id,
             chat_id=source.chat_id,
@@ -222,6 +232,7 @@ class Day13TelegramListenerManager(TelegramListenerManager):
             ),
             has_media=media is not None,
             media_type=type(media).__name__ if media is not None else None,
+            posted_at=posted_at,
         )
 
     def _persist_edit(self, captured: CapturedTelegramEdit) -> bool:
@@ -245,22 +256,94 @@ class Day13TelegramListenerManager(TelegramListenerManager):
                 .with_for_update()
             )
             if original is None:
-                session.add(
-                    AuditEvent(
-                        actor_user_id=None,
-                        event_type="telegram.message_edit_missing_original",
-                        entity_type="source",
-                        entity_id=captured.source_id,
-                        payload={
-                            "chat_id": captured.chat_id,
-                            "telegram_message_id": captured.telegram_message_id,
-                            "edited_at": captured.edited_at.isoformat(),
-                            "trade_action_created": False,
-                        },
+                # Telegram can deliver MessageEdited milliseconds before NewMessage.
+                # In production that used to drop an otherwise valid live trade and
+                # leave it for the much slower history-recovery sweep. Recover the
+                # full edited message immediately, but only through the canonical
+                # listener's existing freshness guard so a stale edit can never be
+                # turned into a late market order.
+                freshness_check = getattr(self, "_fresh_recovered_entry", None)
+                safe_to_recover = True
+                if callable(freshness_check):
+                    safe_to_recover = (
+                        captured.posted_at is not None
+                        and bool(freshness_check(captured.posted_at))
                     )
-                )
-                session.commit()
-                return False
+
+                if safe_to_recover:
+                    recovered = self._persist_message(
+                        CapturedTelegramMessage(
+                            source_id=captured.source_id,
+                            chat_id=captured.chat_id,
+                            telegram_message_id=captured.telegram_message_id,
+                            raw_text=captured.raw_text,
+                            posted_at=captured.posted_at or captured.edited_at,
+                            reply_to_message_id=captured.reply_to_message_id,
+                            has_media=captured.has_media,
+                            media_type=captured.media_type,
+                        )
+                    )
+                    if recovered:
+                        session.add(
+                            AuditEvent(
+                                actor_user_id=None,
+                                event_type="telegram.message_recovered_from_edit",
+                                entity_type="source",
+                                entity_id=captured.source_id,
+                                payload={
+                                    "chat_id": captured.chat_id,
+                                    "telegram_message_id": captured.telegram_message_id,
+                                    "posted_at": (
+                                        captured.posted_at.isoformat()
+                                        if captured.posted_at is not None
+                                        else None
+                                    ),
+                                    "edited_at": captured.edited_at.isoformat(),
+                                    "recovery_path": "edit_before_original",
+                                },
+                            )
+                        )
+                        session.commit()
+                        # The canonical _persist_message override has already queued
+                        # r0 processing and broker dispatch. Returning False prevents
+                        # this same payload being processed a second time as revision 1.
+                        return False
+
+                    # A concurrent NewMessage insert may have won outside the
+                    # canonical revision lock. Re-read before deciding this edit is
+                    # genuinely orphaned.
+                    original = session.scalar(
+                        select(Message)
+                        .where(
+                            Message.source_id == captured.source_id,
+                            Message.telegram_message_id == captured.telegram_message_id,
+                        )
+                        .with_for_update()
+                    )
+
+                if original is None:
+                    session.add(
+                        AuditEvent(
+                            actor_user_id=None,
+                            event_type="telegram.message_edit_missing_original",
+                            entity_type="source",
+                            entity_id=captured.source_id,
+                            payload={
+                                "chat_id": captured.chat_id,
+                                "telegram_message_id": captured.telegram_message_id,
+                                "posted_at": (
+                                    captured.posted_at.isoformat()
+                                    if captured.posted_at is not None
+                                    else None
+                                ),
+                                "edited_at": captured.edited_at.isoformat(),
+                                "trade_action_created": False,
+                                "recovery_blocked_as_stale_or_unknown": not safe_to_recover,
+                            },
+                        )
+                    )
+                    session.commit()
+                    return False
 
             content_hash = sha256(captured.raw_text.encode("utf-8")).hexdigest()
             latest = session.execute(
