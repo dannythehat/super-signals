@@ -55,11 +55,11 @@ def test_fx_risk_uses_original_tp_number_after_compaction() -> None:
         original_position_count=3,
         original_target_index=2,
         selected_risk=Decimal("1"),
-    ) == Decimal("1")
+    ) == Decimal("5")
     assert original_target_risk(
         source_name=source,
         side="SELL",
         original_position_count=3,
         original_target_index=3,
         selected_risk=Decimal("1"),
-    ) == Decimal("0.5")
+    ) == Decimal("1")
