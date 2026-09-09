@@ -5,9 +5,6 @@ cd /app/services/api
 alembic -c alembic.ini upgrade head
 python -m app.retire_tdc_provider_once
 python -m app.bootstrap
-# Exact one-shot 9 September visibility incident repair. This quarantines only the
-# affected TIG signal from user-facing performance while preserving forensic evidence.
-python -m app.incident_20260909_tig_visibility_quarantine
 # Provider Intelligence remains broker-isolated. Refresh the frozen Day 13
 # conditional research evidence first, then run Day 14 research governance.
 # Day 14 may only govern provider_research_profiles through learning -> shadow ->
