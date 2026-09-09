@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+from datetime import UTC, datetime
 
 from sqlalchemy.orm import Session, sessionmaker
 
@@ -78,7 +79,7 @@ class AidyShadowRuntime:
         self._stopping.clear()
         market_resolver = AidyShadowResolver(self._session_factory, market_client)
         self._task = asyncio.create_task(
-            self._run(market_resolver, context_resolver),
+            self._run(market_resolver, context_resolver, context_client),
             name="super-signals-provider-aidy-research",
         )
         # Keep the established startup log contract for operational monitors/tests.
@@ -99,14 +100,44 @@ class AidyShadowRuntime:
             pass
         self._task = None
 
+    async def _probe_current_context(self, context_client: AidyContextClient) -> bool:
+        """Prove the deployed Super Signals runtime can read fresh canonical AIDY context."""
+        requested_at = datetime.now(UTC)
+        try:
+            context = await context_client.fetch_context(as_of=requested_at)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            message = (
+                "AIDY Provider Context live probe NOT_READY "
+                f"error={type(exc).__name__}"
+            )
+            print(message, flush=True)
+            logger.warning(message)
+            return False
+
+        message = (
+            "AIDY Provider Context live probe READY "
+            f"context_lag_seconds={context.context_lag_seconds} "
+            f"snapshot_id={context.snapshot_id}"
+        )
+        print(message, flush=True)
+        logger.info(message)
+        return True
+
     async def _run(
         self,
         market_resolver: AidyShadowResolver,
         context_resolver: ProviderContextAttachmentResolver | None,
+        context_client: AidyContextClient | None,
     ) -> None:
         draining_startup_backlog = True
         startup_pass = 0
+        context_probe_ready = False
         while not self._stopping.is_set():
+            if context_client is not None and not context_probe_ready:
+                context_probe_ready = await self._probe_current_context(context_client)
+
             try:
                 processed, market_failures = await market_resolver.resolve_once()
             except asyncio.CancelledError:

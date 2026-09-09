@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -19,6 +20,14 @@ class _FakeResolver:
     async def resolve_once(self) -> tuple[int, int]:
         self.calls += 1
         return 0, 0
+
+
+class _FakeContextClient:
+    async def fetch_context(self, *, as_of):
+        return SimpleNamespace(
+            context_lag_seconds=42,
+            snapshot_id="provider-context-snapshot-test",
+        )
 
 
 @pytest.mark.asyncio
@@ -51,6 +60,20 @@ async def test_aidy_runtime_starts_without_broker_credentials(monkeypatch, caplo
         assert "AIDY Provider Lab resolver loop started" in caplog.text
     await runtime.stop()
     assert runtime.running is False
+
+
+@pytest.mark.asyncio
+async def test_aidy_runtime_live_context_probe_reports_ready(caplog) -> None:
+    runtime = AidyShadowRuntime(
+        object(),
+        poll_seconds=60,
+        startup_pass_limit=1,
+    )
+    with caplog.at_level(logging.INFO):
+        assert await runtime._probe_current_context(_FakeContextClient()) is True
+    assert "AIDY Provider Context live probe READY" in caplog.text
+    assert "context_lag_seconds=42" in caplog.text
+    assert "snapshot_id=provider-context-snapshot-test" in caplog.text
 
 
 def test_main_lifespan_starts_aidy_before_broker_gate() -> None:
