@@ -46,6 +46,7 @@ type LivePosition = {
   stop_loss: number | null;
   take_profit: number | null;
   profit: number | null;
+  opened_at: string | null;
 };
 
 type SignalProjection = {
@@ -70,6 +71,7 @@ type Props = {
 };
 
 const TRADE_MARKERS = ['🟣', '🟪', '🔷', '🟧', '🔶', '🔹', '🔸', '💠'] as const;
+const LIVE_REFRESH_MS = 5_000;
 
 async function readJson<T>(response: Response): Promise<T> {
   const body = (await response.json()) as T;
@@ -199,6 +201,61 @@ function buildProjection(signalId: string, balance: number | null, livePositions
   };
 }
 
+function mergeBrokerLiveTrades(data: TimelineData | null, livePositions: LivePosition[]): TimelineTrade[] {
+  const historical = data?.trades ?? [];
+  if (livePositions.length === 0) return historical;
+
+  const grouped = new Map<string, LivePosition[]>();
+  for (const position of livePositions) {
+    const key = String(position.signal_id || '').trim();
+    if (!key) continue;
+    const current = grouped.get(key) ?? [];
+    current.push(position);
+    grouped.set(key, current);
+  }
+
+  if (grouped.size === 0) return historical;
+  const liveIds = new Set(grouped.keys());
+  const liveRows: TimelineTrade[] = [];
+
+  for (const [signalId, positions] of grouped.entries()) {
+    const existing = historical.find((trade) => trade.signal_id === signalId) ?? null;
+    const profits = positions
+      .map((position) => position.profit)
+      .filter((value): value is number => value !== null && Number.isFinite(value));
+    const livePnl = profits.length > 0 ? profits.reduce((sum, value) => sum + value, 0) : null;
+    const openedTimes = positions
+      .map((position) => position.opened_at)
+      .filter((value): value is string => Boolean(value))
+      .sort();
+    const closedAlready = existing?.closed_positions ?? 0;
+
+    liveRows.push({
+      signal_id: signalId,
+      symbol: String(positions[0]?.symbol || existing?.symbol || '').toUpperCase(),
+      side: String(positions[0]?.side || existing?.side || '').toUpperCase(),
+      status: 'open',
+      status_label: 'Open · Broker live',
+      status_color: 'blue',
+      source_label: existing?.source_label ?? null,
+      trader_stream: existing?.trader_stream ?? null,
+      source_color_index: existing?.source_color_index ?? null,
+      opened_at: openedTimes[0] ?? existing?.opened_at ?? null,
+      closed_at: null,
+      position_count: Math.max(existing?.position_count ?? 0, positions.length + closedAlready),
+      open_positions: positions.length,
+      pending_positions: existing?.pending_positions ?? 0,
+      closed_positions: closedAlready,
+      cash_pnl: livePnl,
+      net_pips: null,
+      model_500_pnl: null,
+      close_reason: null,
+    });
+  }
+
+  return [...liveRows, ...historical.filter((trade) => !liveIds.has(trade.signal_id))];
+}
+
 export function TradeTimeline({ apiBaseUrl, currency, balance, livePositions }: Props) {
   const [data, setData] = useState<TimelineData | null>(null);
   const [liveState, setLiveState] = useState<LiveAccountState | null>(null);
@@ -215,7 +272,7 @@ export function TradeTimeline({ apiBaseUrl, currency, balance, livePositions }: 
     try {
       const timezone = Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC';
       const query = new URLSearchParams({ timezone_name: timezone });
-      const [timelineResponse, liveResponse] = await Promise.all([
+      const [timelineResult, liveResult] = await Promise.allSettled([
         fetch(`${apiBaseUrl}/account/mt5/dashboard/performance/timeline?limit=250`, {
           credentials: 'include',
           headers: { Accept: 'application/json' },
@@ -228,18 +285,31 @@ export function TradeTimeline({ apiBaseUrl, currency, balance, livePositions }: 
         }),
       ]);
 
-      const next = await readJson<TimelineData>(timelineResponse);
-      setData(next);
-      setError(null);
-
-      if (liveResponse.ok) {
-        const state = (await liveResponse.json()) as LiveAccountState;
-        setLiveState({ open: state.open, pending: state.pending });
+      if (liveResult.status === 'fulfilled' && liveResult.value.ok) {
+        try {
+          const state = (await liveResult.value.json()) as LiveAccountState;
+          setLiveState({ open: state.open, pending: state.pending });
+        } catch {
+          setLiveState(null);
+        }
       } else {
         setLiveState(null);
       }
+
+      if (timelineResult.status === 'fulfilled') {
+        try {
+          const next = await readJson<TimelineData>(timelineResult.value);
+          setData(next);
+          setError(null);
+        } catch (caught) {
+          setError(caught instanceof Error ? caught.message : 'Trade history is temporarily unavailable.');
+        }
+      } else {
+        setError(timelineResult.reason instanceof Error ? timelineResult.reason.message : 'Trade history is temporarily unavailable.');
+      }
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : 'Trade history is temporarily unavailable.');
+      setLiveState(null);
     } finally {
       setLoading(false);
       setRefreshing(false);
@@ -248,7 +318,7 @@ export function TradeTimeline({ apiBaseUrl, currency, balance, livePositions }: 
 
   useEffect(() => {
     void refresh(true);
-    const interval = window.setInterval(() => void refresh(true), 15_000);
+    const interval = window.setInterval(() => void refresh(true), LIVE_REFRESH_MS);
     const onFocus = () => void refresh(true);
     const onVisibility = () => { if (document.visibilityState === 'visible') void refresh(true); };
     window.addEventListener('focus', onFocus);
@@ -260,18 +330,19 @@ export function TradeTimeline({ apiBaseUrl, currency, balance, livePositions }: 
     };
   }, [refresh]);
 
+  const mergedTrades = useMemo(() => mergeBrokerLiveTrades(data, livePositions), [data, livePositions]);
+
   const sources = useMemo(() => {
     if (!data?.provider_identity_visible) return [];
-    return Array.from(new Set(data.trades.map((trade) => trade.source_label).filter((value): value is string => Boolean(value)))).sort();
-  }, [data]);
+    return Array.from(new Set(mergedTrades.map((trade) => trade.source_label).filter((value): value is string => Boolean(value)))).sort();
+  }, [data, mergedTrades]);
 
   const traders = useMemo(() => {
     if (!data?.provider_identity_visible) return [];
-    return Array.from(new Set(data.trades.map((trade) => trade.trader_stream).filter((value): value is string => Boolean(value)))).sort();
-  }, [data]);
+    return Array.from(new Set(mergedTrades.map((trade) => trade.trader_stream).filter((value): value is string => Boolean(value)))).sort();
+  }, [data, mergedTrades]);
 
   const visibleTrades = useMemo(() => {
-    if (!data) return [];
     const acceptedStatuses: Record<FilterKey, Set<string> | null> = {
       all: null,
       open: new Set(['open']),
@@ -282,18 +353,20 @@ export function TradeTimeline({ apiBaseUrl, currency, balance, livePositions }: 
       breakeven: new Set(['breakeven']),
       skipped: new Set(['skipped']),
     };
-    return data.trades.filter((trade) => {
+    return mergedTrades.filter((trade) => {
       const statuses = acceptedStatuses[statusFilter];
       if (statuses && !statuses.has(trade.status)) return false;
       if (sourceFilter !== 'all' && trade.source_label !== sourceFilter) return false;
       if (traderFilter !== 'all' && trade.trader_stream !== traderFilter) return false;
       return true;
     });
-  }, [data, sourceFilter, statusFilter, traderFilter]);
+  }, [mergedTrades, sourceFilter, statusFilter, traderFilter]);
 
-  if (loading && !data) {
+  if (loading && !data && livePositions.length === 0) {
     return <section className="day33-timeline day33-timeline--loading" aria-label="Loading trade history"><div /><div /><div /></section>;
   }
+
+  const brokerOpenCount = livePositions.length > 0 ? livePositions.length : liveState?.open ?? null;
 
   return <section className="day33-timeline" aria-labelledby="day33-timeline-title">
     <div className="day33-timeline-head">
@@ -301,10 +374,10 @@ export function TradeTimeline({ apiBaseUrl, currency, balance, livePositions }: 
       <button type="button" className="day33-refresh" onClick={() => void refresh()} disabled={refreshing}>{refreshing ? 'Refreshing…' : 'Refresh'}</button>
     </div>
 
-    {error && <div className="day33-sync-note day33-sync-note--error" role="alert">{error}</div>}
+    {error && <div className="day33-sync-note day33-sync-note--error" role="alert">{error} Broker-held open positions are still shown from the live account feed when available.</div>}
 
     <div className="day33-live-strip" aria-label="Current live broker state">
-      <div><span className="day33-live-dot day33-live-dot--open" /><strong>{liveState === null ? '—' : liveState.open}</strong><span>Open</span></div>
+      <div><span className="day33-live-dot day33-live-dot--open" /><strong>{brokerOpenCount === null ? '—' : brokerOpenCount}</strong><span>Open</span></div>
       <div><span className="day33-live-dot day33-live-dot--pending" /><strong>{liveState?.pending === null || liveState === null ? '—' : liveState.pending}</strong><span>Pending</span></div>
       <small>Live account state · Pending from MT5</small>
     </div>
