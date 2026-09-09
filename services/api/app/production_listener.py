@@ -13,7 +13,10 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
+from datetime import UTC, datetime
 from typing import Any
+from uuid import UUID
 
 from sqlalchemy import text
 
@@ -121,6 +124,110 @@ class ProviderResearchProductionListener(CanonicalProductionTelegramListenerMana
             )
         return checked
 
+    async def _dispatch_configured_management_replay(self) -> bool:
+        """Replay one explicitly configured recent management message, then rely on idempotency.
+
+        This is an operator break-glass path for a confirmed missed management instruction.
+        It is disabled unless the environment variable is present, accepts management only,
+        requires the exact provider/message/revision to exist in durable storage, and refuses
+        to execute after the configured age window.  The canonical router remains responsible
+        for target resolution, broker reconciliation and idempotency.
+        """
+        raw = os.getenv("SUPER_SIGNALS_ONE_TIME_MANAGEMENT_REPLAY", "").strip()
+        if not raw:
+            return False
+
+        parts = [item.strip() for item in raw.split(":")]
+        if len(parts) not in {3, 4}:
+            logger.error("One-time management replay configuration malformed")
+            return False
+        try:
+            source_id = UUID(parts[0])
+            telegram_message_id = int(parts[1])
+            revision_index = int(parts[2])
+            max_age_seconds = float(parts[3]) if len(parts) == 4 else 1800.0
+        except (ValueError, TypeError):
+            logger.error("One-time management replay configuration invalid")
+            return False
+        if telegram_message_id <= 0 or revision_index < 0 or not 0 < max_age_seconds <= 3600:
+            logger.error("One-time management replay bounds invalid")
+            return False
+
+        with self._inner._session_factory() as session:
+            row = session.execute(
+                text(
+                    """
+                    SELECT
+                        d.decision,
+                        d.action,
+                        src.status AS source_status,
+                        COALESCE(mr.edited_at,m.posted_at,d.created_at) AS occurred_at
+                    FROM messages AS m
+                    JOIN sources AS src ON src.id=m.source_id
+                    JOIN ai_message_decisions AS d
+                      ON d.message_id=m.id
+                     AND d.revision_index=:revision_index
+                    LEFT JOIN message_revisions AS mr
+                      ON mr.message_id=m.id
+                     AND mr.revision_index=:revision_index
+                    WHERE m.source_id=:source_id
+                      AND m.telegram_message_id=:telegram_message_id
+                      AND m.deleted_at IS NULL
+                      AND (:revision_index=0 OR mr.revision_index IS NOT NULL)
+                    LIMIT 1
+                    """
+                ),
+                {
+                    "source_id": source_id,
+                    "telegram_message_id": telegram_message_id,
+                    "revision_index": revision_index,
+                },
+            ).mappings().first()
+
+        if row is None:
+            logger.error("One-time management replay durable message not found")
+            return False
+        if str(row["source_status"] or "") not in {"testing", "live"}:
+            logger.error("One-time management replay source is not broker-eligible")
+            return False
+        if str(row["decision"] or "") != "trade_update" or str(row["action"] or "") != "apply_update":
+            logger.error("One-time management replay refused non-management decision")
+            return False
+
+        occurred_at = row["occurred_at"]
+        if occurred_at.tzinfo is None:
+            occurred_at = occurred_at.replace(tzinfo=UTC)
+        age_seconds = (datetime.now(UTC) - occurred_at.astimezone(UTC)).total_seconds()
+        if age_seconds < -5 or age_seconds > max_age_seconds:
+            logger.error(
+                "One-time management replay expired age_seconds=%.1f max_age_seconds=%.1f",
+                age_seconds,
+                max_age_seconds,
+            )
+            return False
+
+        router = self._inner._canonical_router
+        if router is None:
+            raise RuntimeError("one_time_management_replay_router_missing")
+        result = await router.dispatch_stored_decision(
+            source_id=source_id,
+            telegram_message_id=telegram_message_id,
+            revision_index=revision_index,
+        )
+        logger.warning(
+            "One-time management replay outcome=%s message=%s revision=%s broker_actions=%s reason=%s",
+            result.outcome,
+            telegram_message_id,
+            revision_index,
+            result.broker_actions_sent,
+            result.error_code or result.reason,
+        )
+        if result.outcome == "blocked":
+            raise RuntimeError(
+                f"one_time_management_replay_blocked:{result.error_code or result.reason}"
+            )
+        return True
+
     async def _refresh_adaptive_profiles(self) -> None:
         pipeline = getattr(self._inner, "_ai_pipeline", None)
         refresh = getattr(pipeline, "refresh_all_provider_profiles", None)
@@ -149,6 +256,10 @@ class ProviderResearchProductionListener(CanonicalProductionTelegramListenerMana
         while not self._stopping.is_set():
             inner_started = False
             try:
+                # A configured operator-approved management replay runs before Telegram
+                # network startup so a confirmed missed protective instruction is not
+                # delayed by provider recovery or Telethon connectivity.
+                await self._dispatch_configured_management_replay()
                 # Recover durable broker work before waiting on Telegram network startup.
                 # This closes the commit->dispatch restart gap without replaying AI.
                 await self._recover_committed_dispatch_gaps()
