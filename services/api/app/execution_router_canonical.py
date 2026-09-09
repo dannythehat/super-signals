@@ -19,6 +19,7 @@ from app.active_account_member_routing import (
     ActiveAccountMemberDistributionService,
     ActiveAccountMemberManagementService,
 )
+from app.collective_execution_dispatch import CollectiveAwareCanonicalExecutionDispatcher
 from app.execution_dispatch_canonical import CanonicalExecutionDispatcher
 from app.graceful_market_targets import GracefulCaptureReliableMemberTradingExecutionService
 from app.metaapi_margin_gateway import MetaApiMarginGateway
@@ -121,7 +122,7 @@ def build_canonical_execution_router(
             trade_gateway=trade,
         )
 
-        return CanonicalExecutionDispatcher(
+        return CollectiveAwareCanonicalExecutionDispatcher(
             session_factory=session_factory,
             owner_user_id=owner_user_id,
             execution_service=owner_execution,
