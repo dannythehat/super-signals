@@ -21,9 +21,7 @@ _FX_BUY_PROFILE = (_approved("2"), _approved("2"), _approved("0.5"))
 _FX_SELL_PROFILE = (_approved("1"), _approved("1"), _approved("0.5"))
 _MEDIUM_HEAD = (_approved("1"), _approved("1"))
 _DEVELOPING_LEG_RISK = _approved("0.5")
-# Restore the owner-approved TIG Asia SELL allocation that existed before the
-# August 30 direction-ranking change: two funded SELL legs at 5% each.
-_TIG_SELL_PROFILE = (_approved("5"), _approved("5"))
+_TIG_ONE_PERCENT_RISK = _approved("1")
 _DISABLED_PROFILE_RISK = Decimal("0")
 
 
@@ -68,15 +66,15 @@ def is_tig_sell(*, source_name: str, side: str) -> bool:
 
 
 def provider_side_enabled(*, source_name: str, side: str) -> bool:
-    """Return whether the audited provider/direction is approved for execution."""
+    """Return whether the currently approved provider/direction may execute."""
     normalized_side = side.strip().upper()
     if normalized_side not in {"BUY", "SELL"}:
         return False
     if _is_gtmo(source_name=source_name):
         return normalized_side == "BUY"
     if _is_tig(source_name=source_name):
-        # TIG Asia is explicitly approved in both directions. SELL was accidentally
-        # excluded by the August 30 ranked-direction policy despite its prior lock.
+        # Until AIDY is explicitly given decision authority, TIG Asia follows both
+        # valid BUY and SELL signals. No historical direction-ranking veto applies.
         return True
     if _is_sureshot(source_name=source_name):
         return normalized_side == "SELL"
@@ -86,15 +84,11 @@ def provider_side_enabled(*, source_name: str, side: str) -> bool:
 
 
 def provider_tp_limit(*, source_name: str, side: str) -> int | None:
-    # Explicit limits remove later numeric targets and any open runner before sizing.
-    # TIG BUY TP4 was negative in the audited history, so only TP1-TP3 are funded.
+    # TIG Asia keeps the provider's valid targets. AIDY may recommend target filtering
+    # in future, but there is no hidden TIG target cap in the current live policy.
     normalized_side = side.strip().upper()
     if _is_fxtradingvision(source_name=source_name) and normalized_side in {"BUY", "SELL"}:
         return 3
-    if is_tig_buy(source_name=source_name, side=side):
-        return 3
-    if is_tig_sell(source_name=source_name, side=side):
-        return 2
     return None
 
 
@@ -130,15 +124,11 @@ def provider_risk_profile(
     if is_gtmo_buy(source_name=source_name, side=side):
         return _head_with_half_percent_tail(position_count)
 
-    if is_tig_buy(source_name=source_name, side=side):
-        if position_count > 3:
-            raise ValueError("tig_buy_position_count_invalid")
-        return _head_with_half_percent_tail(position_count)
-
-    if is_tig_sell(source_name=source_name, side=side):
-        if position_count > len(_TIG_SELL_PROFILE):
-            raise ValueError("tig_sell_position_count_invalid")
-        return _TIG_SELL_PROFILE[:position_count]
+    if _is_tig(source_name=source_name):
+        # Existing Super Signals rule: selected 1% means every atomic provider
+        # position/leg carries 1%. Keep that exact rule for TIG BUY and SELL until
+        # AIDY is deliberately promoted to provider/direction risk authority.
+        return (_TIG_ONE_PERCENT_RISK,) * position_count
 
     if _is_sureshot(source_name=source_name) and normalized_side == "SELL":
         return _head_with_half_percent_tail(position_count)

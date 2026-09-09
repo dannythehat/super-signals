@@ -53,31 +53,24 @@ def test_gtmo_buy_is_medium_tier_with_half_percent_tail() -> None:
     )
 
 
-def test_tig_buy_is_medium_tier_and_stops_at_tp3() -> None:
+def test_tig_buy_uses_one_percent_for_all_positions() -> None:
     source = "TIG’s Asia Trades"
     assert is_tig_buy(source_name=source, side="BUY")
     assert provider_side_enabled(source_name=source, side="BUY")
-    assert provider_tp_limit(source_name=source, side="BUY") == 3
+    assert provider_tp_limit(source_name=source, side="BUY") is None
     assert provider_risk_profile(
-        source_name=source, side="BUY", position_count=3
-    ) == (Decimal("1"), Decimal("1"), Decimal("0.5"))
+        source_name=source, side="BUY", position_count=4
+    ) == (Decimal("1"), Decimal("1"), Decimal("1"), Decimal("1"))
 
 
-def test_tig_sell_is_enabled_with_owner_approved_two_leg_profile() -> None:
+def test_tig_sell_uses_one_percent_for_all_positions() -> None:
     source = "TIG’s Asia Trades"
     assert is_tig_sell(source_name=source, side="SELL")
     assert provider_side_enabled(source_name=source, side="SELL")
-    assert provider_tp_limit(source_name=source, side="SELL") == 2
+    assert provider_tp_limit(source_name=source, side="SELL") is None
     assert provider_risk_profile(
-        source_name=source, side="SELL", position_count=2
-    ) == (Decimal("5"), Decimal("5"))
-
-
-def test_tig_sell_never_accepts_a_third_funded_leg() -> None:
-    with pytest.raises(ValueError, match="tig_sell_position_count_invalid"):
-        provider_risk_profile(
-            source_name="TIG’s Asia Trades", side="SELL", position_count=3
-        )
+        source_name=source, side="SELL", position_count=4
+    ) == (Decimal("1"), Decimal("1"), Decimal("1"), Decimal("1"))
 
 
 def test_gtmo_sell_remains_disabled_and_fails_closed() -> None:
@@ -134,13 +127,6 @@ def test_fx_never_creates_a_fourth_tp_leg_for_buy_or_sell() -> None:
     for side in ("BUY", "SELL"):
         with pytest.raises(ValueError, match="fxtradingvision_position_count_invalid"):
             provider_risk_profile(source_name="FXTradingVision", side=side, position_count=4)
-
-
-def test_tig_buy_never_accepts_a_fourth_leg() -> None:
-    with pytest.raises(ValueError, match="tig_buy_position_count_invalid"):
-        provider_risk_profile(
-            source_name="TIG’s Asia Trades", side="BUY", position_count=4
-        )
 
 
 def test_fx_buy_profile_totals_four_and_a_half_percent() -> None:
@@ -203,7 +189,7 @@ def test_gtmo_five_leg_profile_totals_three_and_a_half_percent() -> None:
     assert result.total_risk_budget == Decimal("52.5")
 
 
-def test_tig_buy_profile_totals_two_and_a_half_percent() -> None:
+def test_tig_buy_profile_is_one_percent_per_leg() -> None:
     profile = provider_risk_profile(
         source_name="TIG’s Asia Trades", side="BUY", position_count=3
     )
@@ -217,12 +203,15 @@ def test_tig_buy_profile_totals_two_and_a_half_percent() -> None:
         tick_value=Decimal("1"),
         volume_rules=_rules(),
     )
-    assert result.total_risk_budget == Decimal("37.5")
+    assert [item.risk_budget for item in result.positions] == [
+        Decimal("15"), Decimal("15"), Decimal("15")
+    ]
+    assert result.total_risk_budget == Decimal("45")
 
 
-def test_tig_sell_profile_totals_ten_percent_across_two_legs() -> None:
+def test_tig_sell_profile_is_one_percent_per_leg() -> None:
     profile = provider_risk_profile(
-        source_name="TIG’s Asia Trades", side="SELL", position_count=2
+        source_name="TIG’s Asia Trades", side="SELL", position_count=3
     )
     assert profile is not None
     result = Day24RiskSizer.size_profile(
@@ -234,8 +223,10 @@ def test_tig_sell_profile_totals_ten_percent_across_two_legs() -> None:
         tick_value=Decimal("1"),
         volume_rules=_rules(),
     )
-    assert [item.risk_budget for item in result.positions] == [Decimal("75"), Decimal("75")]
-    assert result.total_risk_budget == Decimal("150")
+    assert [item.risk_budget for item in result.positions] == [
+        Decimal("15"), Decimal("15"), Decimal("15")
+    ]
+    assert result.total_risk_budget == Decimal("45")
 
 
 @pytest.mark.parametrize("risk_percent", [Decimal("3"), Decimal("5")])
