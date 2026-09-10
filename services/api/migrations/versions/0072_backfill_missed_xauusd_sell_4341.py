@@ -1,16 +1,20 @@
 """Backfill the verified missed 2026-09-10 XAUUSD SELL 4341 winner."""
 from collections.abc import Sequence
 from alembic import op
+
 revision: str = "0072_backfill_xauusd_4341"
 down_revision: str = "0071_merge_reporting_heads"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
+
 USER_ID = "ea604df2-f8ee-47d1-bc51-f0078dbf160d"
 SIGNAL_ID = "ddfbaeb5-34de-4aa0-ab2f-693d7fec784e"
 SOURCE_ID = "1f1f1310-fa03-4fb9-9044-636a1d4a8c21"
 CLOSE_AT = "2026-09-10 12:40:00+00"
 OPEN_AT = "2026-09-10 12:36:07.630226+00"
 REASON = "reviewed_provider_result_all_3_tps_hit_double_lotsize"
+
+
 def upgrade() -> None:
     op.execute(f"""
         UPDATE positions SET status='closed', entry_price=4341.00,
@@ -44,6 +48,8 @@ def upgrade() -> None:
         WHERE user_id=UUID '{USER_ID}' AND ((period_type='daily' AND period_start=TIMESTAMPTZ '2026-09-10 00:00:00+00') OR period_type='all_time')
         AND (dimension_type='portfolio' OR dimension_key='symbol:XAUUSD' OR dimension_key='source:{SOURCE_ID}');
     """)
+
+
 def downgrade() -> None:
     op.execute(f"""DELETE FROM performance_trade_outcomes WHERE signal_id=UUID '{SIGNAL_ID}' AND close_reason='{REASON}';
     UPDATE positions SET status='error',exit_price=NULL,pnl_amount=NULL,pnl_percent=NULL,close_reason='day26_failed_metaapi_trade_rejected',closed_at=NULL,opened_at=NULL,volume=0.01000000,planned_risk_percent=1.00,updated_at=now()
