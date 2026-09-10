@@ -23,7 +23,7 @@ def test_main_has_one_production_listener_entrypoint() -> None:
 
 
 def test_current_owner_provider_policy_cannot_regress_to_old_tig_veto() -> None:
-    assert POLICY_GENERATION == "owner-authority-2026-09-09-v1"
+    assert POLICY_GENERATION == "owner-authority-2026-09-09-v2-one-percent-per-tp"
     source = "TIG’s Asia Trades"
     for side in ("BUY", "SELL"):
         assert provider_side_enabled(source_name=source, side=side)
@@ -37,7 +37,7 @@ def test_current_owner_provider_policy_cannot_regress_to_old_tig_veto() -> None:
 
 def test_current_fx_policy_is_identical_for_buy_and_sell() -> None:
     source = "FXTradingVision l Forex & Crypto Signals 🚀"
-    expected = (Decimal("5"), Decimal("5"), Decimal("1"))
+    expected = (Decimal("1"), Decimal("1"), Decimal("1"))
     for side in ("BUY", "SELL"):
         assert provider_side_enabled(source_name=source, side=side)
         assert provider_tp_limit(source_name=source, side=side) == 3
