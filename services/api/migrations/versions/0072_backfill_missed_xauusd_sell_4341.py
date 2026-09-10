@@ -24,8 +24,8 @@ def upgrade() -> None:
     """)
     op.execute(f"""
         INSERT INTO performance_trade_outcomes
-        (position_id,user_id,signal_id,source_id,trader_stream,symbol,side,status,opened_at,closed_at,entry_price,exit_price,volume,cash_pnl,return_percent,net_pips,pip_size,model_500_pnl,model_500_return_percent,planned_risk_percent,close_reason,broker_deal_count,source_digest,derived_at)
-        SELECT p.id,p.user_id,p.signal_id,s.source_id,p.trader_stream,s.symbol,s.side,'won',p.opened_at,p.closed_at,p.entry_price,p.exit_price,p.volume,
+        (position_id,user_id,signal_id,source_id,symbol,side,status,opened_at,closed_at,entry_price,exit_price,volume,cash_pnl,return_percent,net_pips,pip_size,model_500_pnl,model_500_return_percent,planned_risk_percent,close_reason,broker_deal_count,source_digest,derived_at)
+        SELECT p.id,p.user_id,p.signal_id,s.source_id,s.symbol,s.side,'won',p.opened_at,p.closed_at,p.entry_price,p.exit_price,p.volume,
         CASE p.tp_index WHEN 1 THEN 8.00 WHEN 2 THEN 10.00 WHEN 3 THEN 62.00 END,
         CASE p.tp_index WHEN 1 THEN 0.555474 WHEN 2 THEN 0.694342 WHEN 3 THEN 4.304760 END,
         CASE p.tp_index WHEN 1 THEN 40.00 WHEN 2 THEN 50.00 WHEN 3 THEN 310.00 END,0.1,
