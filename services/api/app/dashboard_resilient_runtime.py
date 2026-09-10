@@ -24,13 +24,10 @@ from sqlalchemy import text
 
 from app.dashboard_day32 import Day32Account, Day32Connection, Day32DashboardView
 from app.dashboard_runtime import CanonicalDashboardRuntimeService
+from app.trading_accounting import CanonicalTradingAccountingService
 
 logger = logging.getLogger(__name__)
 
-# The mobile UI polls local dashboard endpoints frequently. Broker reads are observability
-# only and must never consume MetaAPI capacity needed for signal execution/management.
-# Healthy refreshes are therefore capped at once per minute per user. Any failed broker
-# refresh backs off for ten minutes while local/durable dashboard state remains available.
 _HEALTHY_REFRESH_COOLDOWN_SECONDS = 60.0
 _FAILED_REFRESH_BACKOFF_SECONDS = 600.0
 
@@ -45,9 +42,6 @@ class ResilientDashboardRuntimeService(CanonicalDashboardRuntimeService):
         self._refresh_not_before: dict[UUID, float] = {}
 
     def _ensure_runtime_state(self) -> None:
-        # A few focused unit tests construct this service with object.__new__ and
-        # monkeypatch the base read method. Keep that compatibility while production
-        # instances still initialise these fields normally through __init__.
         if not hasattr(self, "_last_views"):
             self._last_views = {}
         if not hasattr(self, "_refresh_tasks"):
@@ -55,68 +49,44 @@ class ResilientDashboardRuntimeService(CanonicalDashboardRuntimeService):
         if not hasattr(self, "_refresh_not_before"):
             self._refresh_not_before = {}
 
-    def _reconcile_missing_open_positions(
-        self,
-        *,
-        user_id: UUID,
-        broker_position_ids: set[str],
-        now: datetime,
-    ) -> int:
-        """Never mutate trade state from a dashboard position snapshot.
-
-        MetaAPI's active-position endpoint can briefly omit a position immediately after
-        execution or during propagation. The old Day32 read path treated one such omission
-        as proof of closure and updated the local position to ``closed``. That is unsafe:
-        dashboard reads are observability, not settlement authority. Canonical broker
-        settlement/history or an explicit close action is the only path allowed to remove
-        an open trade from durable state.
-        """
+    def _reconcile_missing_open_positions(self, *, user_id: UUID, broker_position_ids: set[str], now: datetime) -> int:
         del user_id, broker_position_ids, now
         return 0
 
     def _mapped_open_positions(self, user_id: UUID, broker_positions):  # noqa: ANN001
-        """Merge live broker detail onto the complete durable local open-position set.
-
-        If the latest broker snapshot is partial, the missing mapped leg remains visible
-        with its last durable entry/SL/TP and unknown live price/P&L. Conversely, a stale
-        cached/live item is not shown after canonical settlement has changed the durable
-        local status away from ``open``.
-        """
         live = super()._mapped_open_positions(user_id, broker_positions)
         durable = self._durable_mapped_open_positions(user_id)
         live_by_broker_id = {item.broker_position_id: item for item in live}
-        return tuple(
-            live_by_broker_id.get(item.broker_position_id, item)
-            for item in durable
-        )
+        return tuple(live_by_broker_id.get(item.broker_position_id, item) for item in durable)
 
-    def _overlay_current_open_positions(
-        self,
-        user_id: UUID,
-        view: Day32DashboardView,
-    ) -> Day32DashboardView:
-        """Make cached first-paint views reflect the current durable open-position ledger."""
+    def _overlay_current_open_positions(self, user_id: UUID, view: Day32DashboardView) -> Day32DashboardView:
         durable = self._durable_mapped_open_positions(user_id)
-        cached_by_broker_id = {
-            item.broker_position_id: item for item in view.open_positions
-        }
-        merged = tuple(
-            cached_by_broker_id.get(item.broker_position_id, item)
-            for item in durable
-        )
+        cached_by_broker_id = {item.broker_position_id: item for item in view.open_positions}
+        merged = tuple(cached_by_broker_id.get(item.broker_position_id, item) for item in durable)
         if not merged:
             open_profit: float | None = 0.0
         elif any(item.profit is None for item in merged):
             open_profit = None
         else:
             open_profit = sum(float(item.profit or 0.0) for item in merged)
-        return replace(
-            view,
-            open_positions=merged,
-            open_profit=open_profit,
-            # Dashboard reads no longer perform destructive reconciliation.
-            reconciled_external_positions=0,
-        )
+        return replace(view, open_positions=merged, open_profit=open_profit, reconciled_external_positions=0)
+
+    def _refresh_cached_account(self, user_id: UUID, view: Day32DashboardView) -> Day32DashboardView:
+        """Re-apply canonical accounting to cached broker snapshots on every dashboard read.
+
+        The resilient dashboard intentionally caches broker account reads, but Owner demo
+        balance is a derived Super Signals ledger value. A cached broker snapshot therefore
+        must never freeze the displayed demo balance after a reviewed outcome is added.
+        """
+        if view.account is None:
+            return view
+        accounting = CanonicalTradingAccountingService(self._session_factory)
+        balance = float(accounting.displayed_balance(user_id, broker_balance=view.account.balance))
+        floating = sum(float(item.profit) for item in view.open_positions if item.profit is not None)
+        equity = balance + floating
+        free_margin = equity - float(view.account.margin)
+        account = replace(view.account, balance=balance, equity=equity, free_margin=free_margin)
+        return replace(view, account=account)
 
     @staticmethod
     def _now_ts() -> float:
@@ -129,19 +99,7 @@ class ResilientDashboardRuntimeService(CanonicalDashboardRuntimeService):
         self._refresh_not_before[user_id] = self._now_ts() + seconds
 
     async def read(self, user_id: UUID) -> Day32DashboardView:
-        """Return immediately from confirmed state and refresh broker state sparingly.
-
-        A connected account must not make first paint repeatedly wait on an external
-        broker call. The latest in-memory view is preferred. After a process restart,
-        the durable account snapshot plus local position ledger provides the immediate
-        fallback. If no durable account snapshot exists yet and MetaAPI is unavailable,
-        a local reconnecting view is served during the backoff window instead of making
-        another broker request every 15 seconds from the mobile UI.
-        """
         self._ensure_runtime_state()
-
-        # Preserve isolated fallback tests which intentionally construct the object
-        # without a database session factory. Real application instances always have it.
         if not hasattr(self, "_session_factory"):
             return await self._read_live_and_cache(user_id)
 
@@ -164,29 +122,22 @@ class ResilientDashboardRuntimeService(CanonicalDashboardRuntimeService):
                 self._defer_refresh(user_id, _HEALTHY_REFRESH_COOLDOWN_SECONDS)
             else:
                 self._defer_refresh(user_id, _FAILED_REFRESH_BACKOFF_SECONDS)
-            return view
+            return self._refresh_cached_account(user_id, view)
 
         self._ensure_live_refresh(user_id)
-        # Account/pricing detail may be intentionally cached for broker-read capacity,
-        # but open-trade existence is cheap local state and must be current on every poll.
-        return self._overlay_current_open_positions(user_id, cached)
+        current = self._overlay_current_open_positions(user_id, cached)
+        return self._refresh_cached_account(user_id, current)
 
     async def _read_live_and_cache(self, user_id: UUID) -> Day32DashboardView:
         self._ensure_runtime_state()
         view = await super().read(user_id)
         if view.account is not None:
-            self._persist_last_confirmed_account(
-                user_id,
-                view.account,
-                read_at=view.connection.read_at or datetime.now(UTC),
-            )
+            self._persist_last_confirmed_account(user_id, view.account, read_at=view.connection.read_at or datetime.now(UTC))
             if view.connection.status == "connected":
                 self._last_views[user_id] = view
             return view
-
         if not view.connection.configured or view.connection.status != "connection_error":
             return view
-
         cached = self._last_confirmed_account(user_id)
         if cached is None:
             return view
@@ -199,13 +150,8 @@ class ResilientDashboardRuntimeService(CanonicalDashboardRuntimeService):
             return
         if not self._refresh_allowed(user_id):
             return
-        # Reserve the healthy cooldown before scheduling so simultaneous dashboard
-        # requests cannot race into duplicate background broker reads.
         self._defer_refresh(user_id, _HEALTHY_REFRESH_COOLDOWN_SECONDS)
-        self._refresh_tasks[user_id] = asyncio.create_task(
-            self._refresh_live(user_id),
-            name=f"dashboard-live-refresh-{user_id}",
-        )
+        self._refresh_tasks[user_id] = asyncio.create_task(self._refresh_live(user_id), name=f"dashboard-live-refresh-{user_id}")
 
     async def _refresh_live(self, user_id: UUID) -> None:
         try:
@@ -218,20 +164,12 @@ class ResilientDashboardRuntimeService(CanonicalDashboardRuntimeService):
         except asyncio.CancelledError:
             raise
         except Exception:
-            # Dashboard freshness must never take down the app shell or repeatedly
-            # pressure MetaAPI during an outage. Keep the last confirmed view and back
-            # off while execution/management retain broker-read priority.
             self._defer_refresh(user_id, _FAILED_REFRESH_BACKOFF_SECONDS)
             logger.exception("Background MT5 dashboard refresh failed safely")
         finally:
             self._refresh_tasks.pop(user_id, None)
 
-    def _local_reconnecting_snapshot(
-        self,
-        user_id: UUID,
-        *,
-        account_row,
-    ) -> Day32DashboardView:  # noqa: ANN001
+    def _local_reconnecting_snapshot(self, user_id: UUID, *, account_row) -> Day32DashboardView:  # noqa: ANN001
         now = datetime.now(UTC)
         connection = Day32Connection(
             configured=True,
@@ -242,19 +180,9 @@ class ResilientDashboardRuntimeService(CanonicalDashboardRuntimeService):
             error_code=None,
             read_at=None,
         )
-        return self._without_live_state(
-            connection=connection,
-            trading=self._trading(user_id),
-            user_id=user_id,
-            now=now,
-        )
+        return self._without_live_state(connection=connection, trading=self._trading(user_id), user_id=user_id, now=now)
 
-    def _durable_dashboard_snapshot(
-        self,
-        user_id: UUID,
-        *,
-        account_row,
-    ) -> Day32DashboardView | None:  # noqa: ANN001
+    def _durable_dashboard_snapshot(self, user_id: UUID, *, account_row) -> Day32DashboardView | None:  # noqa: ANN001
         snapshot = self._last_confirmed_account_with_time(user_id)
         if snapshot is None:
             return None
@@ -269,58 +197,30 @@ class ResilientDashboardRuntimeService(CanonicalDashboardRuntimeService):
             error_code=None,
             read_at=read_at,
         )
-        view = self._without_live_state(
-            connection=connection,
-            trading=self._trading(user_id),
-            user_id=user_id,
-            now=now,
-        )
+        view = self._without_live_state(connection=connection, trading=self._trading(user_id), user_id=user_id, now=now)
         return replace(view, account=account)
 
     def _last_confirmed_account(self, user_id: UUID) -> Day32Account | None:
         snapshot = self._last_confirmed_account_with_time(user_id)
         return snapshot[0] if snapshot is not None else None
 
-    def _last_confirmed_account_with_time(
-        self,
-        user_id: UUID,
-    ) -> tuple[Day32Account, datetime] | None:
+    def _last_confirmed_account_with_time(self, user_id: UUID) -> tuple[Day32Account, datetime] | None:
         try:
             with self._session_factory() as session:
-                row = session.execute(
-                    text(
-                        """
-                        SELECT
-                            last_confirmed_currency,
-                            last_confirmed_balance,
-                            last_confirmed_equity,
-                            last_confirmed_margin,
-                            last_confirmed_free_margin,
-                            last_confirmed_trade_allowed,
-                            last_confirmed_account_at
-                        FROM mt5_accounts
-                        WHERE owner_user_id=:user_id
-                          AND status<>'revoked'
-                        ORDER BY created_at DESC
-                        LIMIT 1
-                        """
-                    ),
-                    {"user_id": user_id},
-                ).mappings().first()
+                row = session.execute(text("""
+                    SELECT last_confirmed_currency,last_confirmed_balance,last_confirmed_equity,
+                           last_confirmed_margin,last_confirmed_free_margin,last_confirmed_trade_allowed,
+                           last_confirmed_account_at
+                    FROM mt5_accounts
+                    WHERE owner_user_id=:user_id AND status<>'revoked'
+                    ORDER BY created_at DESC LIMIT 1
+                """), {"user_id": user_id}).mappings().first()
         except Exception:
             logger.exception("Last-confirmed MT5 dashboard snapshot read failed")
             return None
-
         if row is None or row["last_confirmed_account_at"] is None:
             return None
-        required = (
-            "last_confirmed_currency",
-            "last_confirmed_balance",
-            "last_confirmed_equity",
-            "last_confirmed_margin",
-            "last_confirmed_free_margin",
-            "last_confirmed_trade_allowed",
-        )
+        required = ("last_confirmed_currency","last_confirmed_balance","last_confirmed_equity","last_confirmed_margin","last_confirmed_free_margin","last_confirmed_trade_allowed")
         if any(row[key] is None for key in required):
             return None
         account = Day32Account(
@@ -333,52 +233,24 @@ class ResilientDashboardRuntimeService(CanonicalDashboardRuntimeService):
         )
         return account, row["last_confirmed_account_at"]
 
-    def _persist_last_confirmed_account(
-        self,
-        user_id: UUID,
-        account: Day32Account,
-        *,
-        read_at: datetime,
-    ) -> None:
+    def _persist_last_confirmed_account(self, user_id: UUID, account: Day32Account, *, read_at: datetime) -> None:
         try:
             with self._session_factory() as session:
-                session.execute(
-                    text(
-                        """
-                        UPDATE mt5_accounts
-                        SET last_confirmed_currency=:currency,
-                            last_confirmed_balance=:balance,
-                            last_confirmed_equity=:equity,
-                            last_confirmed_margin=:margin,
-                            last_confirmed_free_margin=:free_margin,
-                            last_confirmed_trade_allowed=:trade_allowed,
-                            last_confirmed_account_at=:read_at
-                        WHERE id=(
-                            SELECT id
-                            FROM mt5_accounts
-                            WHERE owner_user_id=:user_id
-                              AND status<>'revoked'
-                            ORDER BY created_at DESC
-                            LIMIT 1
-                        )
-                        """
-                    ),
-                    {
-                        "user_id": user_id,
-                        "currency": account.currency,
-                        "balance": account.balance,
-                        "equity": account.equity,
-                        "margin": account.margin,
-                        "free_margin": account.free_margin,
-                        "trade_allowed": account.trade_allowed,
-                        "read_at": read_at,
-                    },
-                )
+                session.execute(text("""
+                    UPDATE mt5_accounts
+                    SET last_confirmed_currency=:currency,last_confirmed_balance=:balance,
+                        last_confirmed_equity=:equity,last_confirmed_margin=:margin,
+                        last_confirmed_free_margin=:free_margin,last_confirmed_trade_allowed=:trade_allowed,
+                        last_confirmed_account_at=:read_at
+                    WHERE id=(SELECT id FROM mt5_accounts WHERE owner_user_id=:user_id
+                              AND status<>'revoked' ORDER BY created_at DESC LIMIT 1)
+                """), {
+                    "user_id": user_id,"currency": account.currency,"balance": account.balance,
+                    "equity": account.equity,"margin": account.margin,"free_margin": account.free_margin,
+                    "trade_allowed": account.trade_allowed,"read_at": read_at,
+                })
                 session.commit()
         except Exception:
-            # Snapshot persistence is observability hardening only. Never turn a
-            # successful broker dashboard read into an application failure because the
-            # cache write itself had a transient database problem.
             logger.exception("Last-confirmed MT5 dashboard snapshot write failed")
 
 
