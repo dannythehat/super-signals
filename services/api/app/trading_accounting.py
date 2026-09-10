@@ -199,7 +199,24 @@ class CanonicalTradingAccountingService:
                 start=start_utc,
                 end=end_utc,
             )
-        return Decimal(str(value or 0)) + reviewed_cash
+            reviewed_provider_cash = session.execute(
+                text(
+                    """
+                    SELECT COALESCE(SUM(o.cash_pnl),0)
+                    FROM performance_trade_outcomes AS o
+                    JOIN sources AS src ON src.id=o.source_id
+                    WHERE o.user_id=:user_id
+                      AND o.closed_at>=:start_at
+                      AND o.closed_at<:end_at
+                      AND o.status IN ('won','lost','breakeven')
+                      AND COALESCE(o.broker_deal_count,0)=0
+                      AND o.close_reason LIKE 'reviewed_provider_result_%'
+                      AND src.status<>'revoked'
+                    """
+                ),
+                {"user_id": user_id, "start_at": start_utc, "end_at": end_utc},
+            ).scalar_one()
+        return Decimal(str(value or 0)) + reviewed_cash + Decimal(str(reviewed_provider_cash or 0))
 
     def realised_between(
         self,
@@ -324,6 +341,32 @@ class CanonicalTradingAccountingService:
                 start=start,
                 end=end,
             )
+            reviewed_provider_rows = session.execute(
+                text(
+                    """
+                    SELECT
+                        timezone(:timezone_name, o.closed_at)::date AS local_day,
+                        COALESCE(SUM(o.cash_pnl),0) AS pnl
+                    FROM performance_trade_outcomes AS o
+                    JOIN sources AS src ON src.id=o.source_id
+                    WHERE o.user_id=:user_id
+                      AND o.closed_at>=:start_at
+                      AND o.closed_at<:end_at
+                      AND o.status IN ('won','lost','breakeven')
+                      AND COALESCE(o.broker_deal_count,0)=0
+                      AND o.close_reason LIKE 'reviewed_provider_result_%'
+                      AND src.status<>'revoked'
+                    GROUP BY 1
+                    ORDER BY 1
+                    """
+                ),
+                {
+                    "user_id": user_id,
+                    "timezone_name": timezone_name,
+                    "start_at": start,
+                    "end_at": end,
+                },
+            ).mappings().all()
         values = {
             row["local_day"]: _money(Decimal(str(row["pnl"] or 0)))
             for row in rows
@@ -331,6 +374,12 @@ class CanonicalTradingAccountingService:
         for reporting_day, reviewed_cash in reviewed_by_day.items():
             values[reporting_day] = _money(
                 values.get(reporting_day, Decimal("0.00")) + reviewed_cash
+            )
+        for row in reviewed_provider_rows:
+            reporting_day = row["local_day"]
+            values[reporting_day] = _money(
+                values.get(reporting_day, Decimal("0.00"))
+                + Decimal(str(row["pnl"] or 0))
             )
         return values
 
