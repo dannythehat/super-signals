@@ -47,19 +47,13 @@ def test_invalid_stop_side_does_not_recover_trade() -> None:
     assert targets == ()
 
 
-def test_fx_risk_uses_original_tp_number_after_compaction() -> None:
+def test_fx_risk_uses_one_percent_per_original_tp_number_after_compaction() -> None:
     source = "FXTradingVision l Forex & Crypto Signals 🚀"
-    assert original_target_risk(
-        source_name=source,
-        side="SELL",
-        original_position_count=3,
-        original_target_index=2,
-        selected_risk=Decimal("1"),
-    ) == Decimal("5")
-    assert original_target_risk(
-        source_name=source,
-        side="SELL",
-        original_position_count=3,
-        original_target_index=3,
-        selected_risk=Decimal("1"),
-    ) == Decimal("1")
+    for target_index in (1, 2, 3):
+        assert original_target_risk(
+            source_name=source,
+            side="SELL",
+            original_position_count=3,
+            original_target_index=target_index,
+            selected_risk=Decimal("1"),
+        ) == Decimal("1")
