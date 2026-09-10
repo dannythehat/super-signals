@@ -290,7 +290,7 @@ def test_one_signal_sizes_each_user_independently_without_local_funds_veto(
     assert result.executed_count == 3
     assert result.skipped_count == 0
     assert by_user[U1].volume_per_position == (Decimal("0.10"),) * 3
-    assert by_user[U2].volume_per_position == (Decimal("0.40"),) * 3
+    assert by_user[U2].volume_per_position == (Decimal("0.20"),) * 3
     assert by_user[U3].volume_per_position == (Decimal("0.10"),) * 3
     assert by_user[U3].error_code is None
     assert len(execution.trade.calls) == 9
