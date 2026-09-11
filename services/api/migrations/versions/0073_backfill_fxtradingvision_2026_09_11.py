@@ -38,8 +38,9 @@ def upgrade() -> None:
                 has_open_runner, parser_status, skip_reason, risk_multiplier, original_text
             )
             SELECT m.id, UUID '{SOURCE_ID}', -1001651583302, {msg_id}, 0, m.posted_at,
-                md5(m.raw_text), 'XAUUSD', 'SELL', 'market', {entry}.0, {entry}.0,
-                {sl}.0, '["{tp1}","{tp2}","{tp3}"]'::jsonb, false, 'accepted', NULL, 1.0, m.raw_text
+                md5(UUID '{SOURCE_ID}'::text || ':' || {msg_id}::text), 'XAUUSD', 'SELL', 'market',
+                {entry}.0, {entry}.0, {sl}.0, '["{tp1}","{tp2}","{tp3}"]'::jsonb,
+                false, 'accepted', NULL, 1.0, m.raw_text
             FROM messages m
             WHERE m.source_id=UUID '{SOURCE_ID}' AND m.telegram_message_id={msg_id}
               AND NOT EXISTS (SELECT 1 FROM signals s WHERE s.source_message_id=m.id);
