@@ -303,6 +303,30 @@ def _public_daily(service: Day33PerformanceLedgerServiceV2, user_id: UUID) -> tu
                 "end_at": now,
             },
         ).mappings().all()
+        reviewed_rows = session.execute(
+            text(
+                """
+                SELECT
+                    timezone(:timezone_name, pto.closed_at)::date AS local_day,
+                    COALESCE(SUM(pto.cash_pnl),0) AS pnl
+                FROM performance_trade_outcomes pto
+                WHERE pto.user_id=:user_id
+                  AND pto.closed_at IS NOT NULL
+                  AND pto.closed_at>=:start_at
+                  AND pto.closed_at<:end_at
+                  AND pto.broker_deal_count=0
+                  AND pto.close_reason LIKE 'reviewed_provider_%'
+                GROUP BY 1
+                ORDER BY 1
+                """
+            ),
+            {
+                "user_id": user_id,
+                "timezone_name": _PUBLIC_TIMEZONE,
+                "start_at": public_start,
+                "end_at": now,
+            },
+        ).mappings().all()
         reviewed_by_day = override_cash_by_day(
             session,
             user_id,
@@ -314,6 +338,9 @@ def _public_daily(service: Day33PerformanceLedgerServiceV2, user_id: UUID) -> tu
         row["local_day"]: Decimal(str(row["pnl"] or 0))
         for row in rows
     }
+    for row in reviewed_rows:
+        reporting_day = row["local_day"]
+        values[reporting_day] = values.get(reporting_day, Decimal("0")) + Decimal(str(row["pnl"] or 0))
     for reporting_day, reviewed_cash in reviewed_by_day.items():
         values[reporting_day] = values.get(reporting_day, Decimal("0")) + reviewed_cash
 
