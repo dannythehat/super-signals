@@ -1,10 +1,4 @@
-"""Backfill verified missed FXTradingVision XAUUSD trades for 2026-09-11.
-
-These messages were present in the raw Telegram ledger but were not promoted
-into canonical signals because the semantic supervisor was unavailable. The
-provider subsequently published explicit TP/SL results. This migration
-reconstructs the user's 1% demo ledger without changing the risk policy.
-"""
+"""Backfill verified missed FXTradingVision XAUUSD trades for 2026-09-11."""
 from collections.abc import Sequence
 from alembic import op
 
@@ -17,9 +11,6 @@ USER_ID = "ea604df2-f8ee-47d1-bc51-f0078dbf160d"
 SOURCE_ID = "1f1f1310-fa03-4fb9-9044-636a1d4a8c21"
 REASON = "reviewed_provider_result_2026_09_11"
 
-# The first three new ideas were explicitly covered by the provider's
-# "first gold sell positions are stopped out" message after the SL was moved
-# to 4390. The following ten ideas each have explicit TP1/TP2 and TP3 hits.
 TRADES = [
     (85010, "2026-09-11 12:36:26+00", 4336, 4332, 4331, 4300, 4365, 4390, "lost"),
     (85013, "2026-09-11 12:40:36+00", 4351, 4347, 4346, 4320, 4380, 4390, "lost"),
@@ -51,22 +42,16 @@ def upgrade() -> None:
                 {sl}.0, '["{tp1}","{tp2}","{tp3}"]'::jsonb, false, 'accepted', NULL, 1.0, m.raw_text
             FROM messages m
             WHERE m.source_id=UUID '{SOURCE_ID}' AND m.telegram_message_id={msg_id}
-              AND NOT EXISTS (
-                SELECT 1 FROM signals s WHERE s.source_message_id=m.id
-              );
+              AND NOT EXISTS (SELECT 1 FROM signals s WHERE s.source_message_id=m.id);
         """)
 
-        # Three provider-managed legs per signal. Double lot size was explicitly
-        # stated in each TP1/TP2 result message, while the account risk policy
-        # remains 1%; volume is therefore 0.02 as the reviewed-provider ledger
-        # convention for these verified results.
         op.execute(f"""
             INSERT INTO positions (
-                id,user_id,signal_id,status,symbol,side,entry_price,exit_price,
-                volume,take_profit,stop_loss,planned_risk_percent,pnl_amount,pnl_percent,
-                opened_at,closed_at,close_reason,created_at,updated_at,tp_index
+                id,user_id,signal_id,status,entry_price,exit_price,volume,take_profit,
+                stop_loss,planned_risk_percent,pnl_amount,pnl_percent,opened_at,closed_at,
+                close_reason,created_at,updated_at,tp_index
             )
-            SELECT gen_random_uuid(), UUID '{USER_ID}', s.id, 'closed', s.symbol, s.side,
+            SELECT gen_random_uuid(), UUID '{USER_ID}', s.id, 'closed',
                 {entry}.0,
                 CASE g.tp_index WHEN 1 THEN {tp1}.0 WHEN 2 THEN {tp2}.0 WHEN 3 THEN {tp3}.0 END,
                 0.02000000,
@@ -81,11 +66,11 @@ def upgrade() -> None:
             FROM signals s CROSS JOIN generate_series(1,3) g(tp_index)
             WHERE s.source_id=UUID '{SOURCE_ID}' AND s.provider_message_id={msg_id}
               AND NOT EXISTS (
-                SELECT 1 FROM positions p WHERE p.signal_id=s.id AND p.user_id=UUID '{USER_ID}' AND p.tp_index=g.tp_index
+                SELECT 1 FROM positions p
+                WHERE p.signal_id=s.id AND p.user_id=UUID '{USER_ID}' AND p.tp_index=g.tp_index
               );
         """)
 
-        # Replace the provisional TP3 exit for losses with the actual moved SL.
         if signal_status == "lost":
             op.execute(f"""
                 UPDATE positions p SET exit_price=4390.0,
@@ -107,9 +92,7 @@ def upgrade() -> None:
             SELECT p.id,p.user_id,p.signal_id,s.source_id,s.symbol,s.side,
                 CASE WHEN '{signal_status}'='lost' THEN 'lost' ELSE 'won' END,
                 p.opened_at,p.closed_at,p.entry_price,p.exit_price,p.volume,p.pnl_amount,
-                p.pnl_percent,
-                (p.entry_price-p.exit_price)*100.0,
-                0.1,
+                p.pnl_percent,(p.entry_price-p.exit_price)*100.0,0.1,
                 ((p.entry_price-p.exit_price)*100.0) / ABS((s.stop_loss-s.entry_low)*100.0) * 5.0,
                 (((p.entry_price-p.exit_price)*100.0) / ABS((s.stop_loss-s.entry_low)*100.0) * 5.0) / 500.0 * 100.0,
                 1.0,'{REASON}',0,md5((p.id::text || '_fxtradingvision_20260911')),now()
@@ -124,5 +107,6 @@ def downgrade() -> None:
     op.execute(f"""
         DELETE FROM performance_trade_outcomes WHERE close_reason='{REASON}';
         DELETE FROM positions WHERE close_reason='{REASON}' AND user_id=UUID '{USER_ID}';
-        DELETE FROM signals WHERE source_id=UUID '{SOURCE_ID}' AND provider_message_id IN ({','.join(str(t[0]) for t in TRADES)});
+        DELETE FROM signals WHERE source_id=UUID '{SOURCE_ID}'
+          AND provider_message_id IN ({','.join(str(t[0]) for t in TRADES)});
     """)
