@@ -28,6 +28,7 @@ from app.reporting_overrides import (
     BROKER_DEAL_NOT_OVERRIDDEN_SQL,
     override_cash_by_day,
 )
+from app.trading_accounting import CanonicalTradingAccountingService
 
 router = APIRouter(prefix="/dashboard", tags=["dashboard-public-data"])
 Identity = Annotated[dict[str, Any], Depends(get_current_identity)]
@@ -239,6 +240,29 @@ def _owner_reference_user_id(service: Day33PerformanceLedgerServiceV2) -> UUID:
     return value
 
 
+def _canonical_displayed_balance(service: Day33PerformanceLedgerServiceV2, user_id: UUID) -> Decimal:
+    accounting = CanonicalTradingAccountingService(service._session_factory)
+    with service._session_factory() as session:
+        row = session.execute(
+            text(
+                """
+                SELECT last_confirmed_balance
+                FROM mt5_accounts
+                WHERE owner_user_id=:user_id
+                  AND status<>'revoked'
+                ORDER BY created_at DESC
+                LIMIT 1
+                """
+            ),
+            {"user_id": user_id},
+        ).mappings().first()
+    broker_balance = row["last_confirmed_balance"] if row is not None else Decimal("0")
+    return accounting.displayed_balance(
+        user_id,
+        broker_balance=broker_balance,
+    )
+
+
 def _public_daily(service: Day33PerformanceLedgerServiceV2, user_id: UUID) -> tuple[PublicDailyPnlResponse, ...]:
     now = datetime.now(UTC)
     public_zone = ZoneInfo(_PUBLIC_TIMEZONE)
@@ -395,8 +419,7 @@ async def public_performance(
     user_id = _owner_reference_user_id(service)
     daily = _public_daily(service, user_id)
     trades = _public_trades(service, user_id)
-    live_pnl = round(sum(item.pnl for item in daily), 2)
-    current = round(_PUBLIC_STARTING_BALANCE + live_pnl, 2)
+    current = round(float(_canonical_displayed_balance(service, user_id)), 2)
     total = round(current - _HISTORICAL_STARTING_BALANCE, 2)
     return_percent = round(total / _HISTORICAL_STARTING_BALANCE * 100, 2)
     response.headers["Cache-Control"] = "public, max-age=5, stale-while-revalidate=30"
