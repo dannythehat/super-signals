@@ -2,7 +2,7 @@
 from collections.abc import Sequence
 from alembic import op
 
-revision: str = "0073_backfill_fxtradingvision_20260911"
+revision: str = "0073_fxvision_20260911"
 down_revision: str = "0072_backfill_xauusd_4341"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
