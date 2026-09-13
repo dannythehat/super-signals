@@ -64,7 +64,7 @@ class ShadowTradeManager(_BaseShadowTradeManager):
     async def poll_once(self) -> int:
         await asyncio.to_thread(self._sync_enrollment_audit_sync)
         repaired = await asyncio.to_thread(self._repair_structured_pending_sync)
-        await asyncio.to_thread(self._enforce_scalper_exclusion_sync)
+        await asyncio.to_thread(self._prepare_scalper_m1_resolution_sync)
 
         bare_candidates = await asyncio.to_thread(self._fresh_bare_candidates_sync)
         rows = await asyncio.to_thread(self._active_rows)
@@ -267,7 +267,7 @@ class ShadowTradeManager(_BaseShadowTradeManager):
             initial_exclusion = (
                 "legacy_profile_unresolvable"
                 if pit_status == PIT_LEGACY_UNRESOLVABLE
-                else "unsupported_style_scalper"
+                else "outcome_pending_aidy_m1"
                 if provider_style == "scalper"
                 else "market_data_not_observed"
             )
@@ -479,7 +479,7 @@ class ShadowTradeManager(_BaseShadowTradeManager):
                 exclusion = (
                     "legacy_profile_unresolvable"
                     if profile is None
-                    else "unsupported_style_scalper"
+                    else "outcome_pending_aidy_m1"
                     if provider_style == "scalper"
                     else "bare_profile_entry_delay_over_scoring_gate"
                     if delay_ms > _MAX_SCORABLE_BARE_ENTRY_DELAY_MS

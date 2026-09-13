@@ -86,7 +86,7 @@ def _event(minute: int, action: dict[str, object], *, seconds: int = 0, key: str
     }
 
 
-def _run(g: OriginalGeometry, bars: list[AidyM1Bar], *, events=None, posted=BASE, state=None, full=True):
+def _run(g: OriginalGeometry, bars: list[AidyM1Bar], *, events=None, posted=BASE, state=None, full=True, strict=False):
     state = state or _state(g, posted=posted)
     return replay_bars(
         state=state,
@@ -96,6 +96,7 @@ def _run(g: OriginalGeometry, bars: list[AidyM1Bar], *, events=None, posted=BASE
         signal_posted_at=posted,
         sibling_entries=[(g.entry_index, g.entry_high if g.side == "BUY" else g.entry_low)],
         full_replay=full,
+        strict_intrabar_ambiguity=strict,
     )
 
 
@@ -318,3 +319,22 @@ def test_architecture_original_truth_and_one_window_continuity() -> None:
     assert "first_observed_after_pit_cutoff" in client
     assert "while cursor < end" not in client
     assert "_MAX_WINDOW = timedelta(hours=1)" in resolver
+
+
+def test_phase_c_scalper_same_bar_tp_sl_is_excluded_not_guessed() -> None:
+    for side, stop, target in (("BUY", "95", "105"), ("SELL", "105", "95")):
+        g = _geometry(side, stop=stop, targets=(target,))
+        state = _run(g, [_bar(0, high="106", low="94")], strict=True)
+        assert state.terminal is True
+        assert state.score_eligible is False
+        assert state.score_block_reason == "aidy_m1_scalper_intrabar_sequence_ambiguous"
+        assert state.legs[0].realized_r == Decimal("0")
+
+
+def test_phase_c_scalper_unambiguous_m1_target_is_scoreable() -> None:
+    g = _geometry("BUY", targets=("105",))
+    state = _run(g, [_bar(0, high="104", low="99"), _bar(1, high="106", low="101")], strict=True)
+    assert state.terminal is True
+    assert state.score_eligible is True
+    assert state.legs[0].exit_reason == "target"
+    assert state.legs[0].realized_r == Decimal("1")

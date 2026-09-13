@@ -19,7 +19,7 @@ from app.aidy_market_client import AIDY_QUOTE_MODE, AidyM1Bar, AidyM1Window, Aid
 from app.shadow_trading_v2 import _benchmark_pnl_usd, _leg_r
 
 logger = logging.getLogger(__name__)
-_SUPPORTED_STYLES = {"intraday", "swing_or_sparse"}
+_SUPPORTED_STYLES = {"scalper", "intraday", "swing_or_sparse"}
 # Bound retry amplification: a continuity gap can reread at most one hour per poll.
 _MAX_WINDOW = timedelta(hours=1)
 _TP_RE = re.compile(r"tp\s*(\d+)", re.IGNORECASE)
@@ -766,6 +766,7 @@ def replay_bars(
     signal_posted_at: datetime,
     sibling_entries: list[tuple[int, Decimal]],
     full_replay: bool,
+    strict_intrabar_ambiguity: bool = False,
 ) -> ResolutionState:
     """Replay contiguous completed M1 evidence and append-only provider lifecycle events."""
     signal_posted_at = _utc(signal_posted_at)
@@ -988,14 +989,23 @@ def replay_bars(
                 )
             ]
             if stop_hit and hit_legs:
-                _close_at_stop(
-                    state,
-                    geometry=geometry,
-                    reason="aidy_m1_ambiguous_worst_case_stop",
-                    when=bar_end,
-                    bar=bar,
-                )
-                state.note = "within_bar_sl_and_tp_touched_stop_assumed_first"
+                if strict_intrabar_ambiguity:
+                    _block(
+                        state,
+                        reason="aidy_m1_scalper_intrabar_sequence_ambiguous",
+                        when=bar_end,
+                        note="scalper_m1_cannot_order_stop_vs_target_inside_same_bar",
+                        bar=bar,
+                    )
+                else:
+                    _close_at_stop(
+                        state,
+                        geometry=geometry,
+                        reason="aidy_m1_ambiguous_worst_case_stop",
+                        when=bar_end,
+                        bar=bar,
+                    )
+                    state.note = "within_bar_sl_and_tp_touched_stop_assumed_first"
                 state.market_cursor = bar_open
                 return state
             if stop_hit:
@@ -1086,12 +1096,13 @@ class AidyShadowResolver:
                 text(
                     """
                     SELECT id FROM shadow_trades
-                    WHERE provider_style IN ('intraday','swing_or_sparse')
+                    WHERE provider_style IN ('scalper','intraday','swing_or_sparse')
                       AND NOT COALESCE(aidy_terminal,false)
                       AND (
                         score_exclusion_reason IN (
                             'market_data_not_observed',
                             'aidy_m1_revalidation_required',
+                            'unsupported_style_scalper',
                             'outcome_pending_aidy_m1'
                         )
                         OR quote_mode='aidy_m1'
@@ -1430,6 +1441,7 @@ class AidyShadowResolver:
         revalidation = trade.get("score_exclusion_reason") in {
             "market_data_not_observed",
             "aidy_m1_revalidation_required",
+            "unsupported_style_scalper",
         }
         full_replay = (
             revalidation
@@ -1480,6 +1492,7 @@ class AidyShadowResolver:
             signal_posted_at=posted_at,
             sibling_entries=sibling_entries,
             full_replay=full_replay,
+            strict_intrabar_ambiguity=(str(trade.get("provider_style")) == "scalper"),
         )
         if first_missing is not None:
             state.note = (

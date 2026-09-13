@@ -35,15 +35,12 @@ def test_r_multiple_is_normalized_by_each_provider_stop_distance():
     ) == Decimal("2")
 
 
-def test_scalpers_are_out_and_intraday_swing_require_aidy_m1():
+def test_scalpers_intraday_and_swing_require_aidy_m1():
     assert score_eligibility(style="scalper", quote_mode="stream_tick") == (
         False,
-        "unsupported_style_scalper",
+        "aidy_m1_required_for_style",
     )
-    assert score_eligibility(style="scalper", quote_mode="aidy_m1") == (
-        False,
-        "unsupported_style_scalper",
-    )
+    assert score_eligibility(style="scalper", quote_mode="aidy_m1") == (True, None)
     assert score_eligibility(style="intraday", quote_mode="stream_quote") == (
         False,
         "aidy_m1_required_for_style",

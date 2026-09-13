@@ -1,9 +1,8 @@
 """Provider Lab runtime with AIDY M1 market truth for intraday/swing providers.
 
-AIDY is an authenticated read-only provider, never a shared database. Intraday and
-swing shadow trades are resolved incrementally from admitted AIDY M1 OHLC. Scalper
-messages continue to be captured by the normal ingestion pipeline, but their shadow
-rows are explicitly excluded from scoring/promotion and need no market-resolution read.
+AIDY is an authenticated read-only provider, never a shared database. Scalper,
+intraday, and swing shadow trades are resolved incrementally from admitted AIDY M1
+OHLC. Scalpers remain score-ineligible whenever M1 cannot prove intrabar ordering.
 """
 
 from __future__ import annotations
@@ -25,7 +24,7 @@ logger = logging.getLogger(__name__)
 _PUBLIC_XAUUSD_URL = "https://biquote.io/api/XAUUSD?allowStale=false"
 _PUBLIC_TIMEOUT_SECONDS = 2.0
 _AIDY_POLL_SECONDS = 300
-_AIDY_STYLES = {"intraday", "swing_or_sparse"}
+_AIDY_STYLES = {"scalper", "intraday", "swing_or_sparse"}
 
 
 class ShadowTradeManager(_BaseShadowTradeManager):
@@ -72,20 +71,22 @@ class ShadowTradeManager(_BaseShadowTradeManager):
             completed += 1
         return completed
 
-    def _enforce_scalper_exclusion_sync(self) -> int:
+    def _prepare_scalper_m1_resolution_sync(self) -> int:
+        """Retire only the old blanket scalper block; never erase other exclusions."""
         with self._session_factory() as session:
             result = session.execute(
                 text(
                     """
                     UPDATE shadow_trades
                     SET score_eligible=false,
-                        score_exclusion_reason='unsupported_style_scalper',
+                        score_exclusion_reason='outcome_pending_aidy_m1',
+                        aidy_score_blocked=false,
                         updated_at=now()
                     WHERE provider_style='scalper'
-                      AND (
-                        score_eligible
-                        OR score_exclusion_reason IS DISTINCT FROM 'unsupported_style_scalper'
-                      )
+                      AND score_exclusion_reason='unsupported_style_scalper'
+                      AND NOT COALESCE(aidy_terminal,false)
+                      AND provider_profile_pit_status='resolved'
+                      AND aidy_original_geometry IS NOT NULL
                     """
                 )
             )
@@ -93,15 +94,15 @@ class ShadowTradeManager(_BaseShadowTradeManager):
             return int(result.rowcount or 0)
 
     async def poll_once(self) -> int:
-        # This is a policy gate, not market inference: future scalper rows are kept for
-        # audit/message observation but cannot silently re-enter scoring or promotion.
-        await asyncio.to_thread(self._enforce_scalper_exclusion_sync)
+        # Move legacy blanket-excluded scalpers into the same PIT-safe AIDY M1
+        # resolution queue. Eligibility is granted only after deterministic closure.
+        await asyncio.to_thread(self._prepare_scalper_m1_resolution_sync)
 
         rows = await asyncio.to_thread(self._active_rows)
         public_rows = [
             row
             for row in rows
-            if str(row["provider_style"]) not in _AIDY_STYLES | {"scalper"}
+            if str(row["provider_style"]) not in _AIDY_STYLES
         ]
         if not public_rows:
             return 0

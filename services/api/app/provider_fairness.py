@@ -2,8 +2,8 @@
 
 These helpers define only research benchmarking rules. They never place orders or alter
 live provider allocations. Every research provider is measured on the same fixed $1,000
-account and $10 cash risk per TP leg. Scalper-style providers remain observed but are
-outside the score/promotion funnel; AIDY M1 is canonical market truth for intraday/swing.
+account and $10 cash risk per TP leg. Scalper, intraday, and swing providers use PIT-safe AIDY M1 as canonical market truth.
+Scalpers additionally fail closed when M1 cannot establish intrabar TP/SL ordering.
 """
 
 from __future__ import annotations
@@ -42,9 +42,7 @@ def session_bucket(posted_at: datetime) -> str:
 
 def required_resolution(style: str) -> str:
     normalized = (style or "unknown").strip().lower()
-    if normalized == "scalper":
-        return "unsupported"
-    if normalized in {"intraday", "swing_or_sparse"}:
+    if normalized in {"scalper", "intraday", "swing_or_sparse"}:
         return "aidy_m1"
     return "quote"
 
@@ -53,9 +51,7 @@ def score_eligibility(*, style: str, quote_mode: str) -> tuple[bool, str | None]
     """Decide whether one shadow trade has sufficient market-data resolution to score."""
     normalized_style = (style or "unknown").strip().lower()
     mode = (quote_mode or "").strip().lower()
-    if normalized_style == "scalper":
-        return False, "unsupported_style_scalper"
-    if normalized_style in {"intraday", "swing_or_sparse"}:
+    if normalized_style in {"scalper", "intraday", "swing_or_sparse"}:
         if mode != "aidy_m1":
             return False, "aidy_m1_required_for_style"
         return True, None
