@@ -37,16 +37,15 @@ jobs:
 
       - name: Install API dependencies and run Phase C tests
         shell: bash
-        working-directory: services/api
         run: |
           set -euo pipefail
-          python -m pip install --disable-pip-version-check --quiet -r requirements.txt pytest pytest-asyncio
-          pytest -q \
-            tests/test_provider_fairness_v2.py \
-            tests/test_aidy_provider_lab_market_truth.py \
-            tests/test_phase_c_scalper_m1_contract.py \
-            tests/test_shadow_legacy_pit_fail_closed.py
-          pytest -q
+          python -m pip install --disable-pip-version-check --quiet -r services/api/requirements.txt pytest pytest-asyncio
+          PYTHONPATH=services/api pytest -q \
+            services/api/tests/test_provider_fairness_v2.py \
+            services/api/tests/test_aidy_provider_lab_market_truth.py \
+            services/api/tests/test_phase_c_scalper_m1_contract.py \
+            services/api/tests/test_shadow_legacy_pit_fail_closed.py
+          PYTHONPATH=services/api pytest -q services/api/tests
 
       - name: Commit actual Phase C code and remove patch scaffolding
         shell: bash
