@@ -27,6 +27,7 @@ from app.broker_settlement_day34 import (
     Day34SettlementPollResult,
 )
 from app.performance_ledger_day33 import Day33LedgerError
+from app.weekend_trading_freeze import market_week_frozen
 
 _FLAT_ACCOUNT_SYNC_SECONDS = 60.0
 _TARGET_PRICE_TOLERANCE = Decimal("0.75")
@@ -51,6 +52,15 @@ class CanonicalBrokerSettlementManager(Day34BrokerSettlementManager):
         self._trade = trade_gateway
 
     async def poll_once(self) -> Day34SettlementPollResult:
+        if market_week_frozen():
+            return Day34SettlementPollResult(
+                synced=False,
+                positions_reconciled=0,
+                position_events_created=0,
+                signal_results_created=0,
+                reason="weekly_market_frozen",
+            )
+
         if self._has_unsettled_mapped_positions():
             result = await super().poll_once()
             await self._apply_profit_protection_ladder()
@@ -101,6 +111,8 @@ class CanonicalBrokerSettlementManager(Day34BrokerSettlementManager):
         Existing protection is never loosened. The next settlement poll retries any
         broker mutation which did not become locally confirmed.
         """
+        if market_week_frozen():
+            return
         if self._cipher is None or self._read is None or self._trade is None:
             return
         account = self._broker_account()
@@ -261,9 +273,6 @@ class CanonicalBrokerSettlementManager(Day34BrokerSettlementManager):
             ).mappings().all()
         for row in rows:
             order_id = str(row["broker_order_id"])
-            # A locally pending row whose order has disappeared may already have
-            # filled. Never falsely mark that row cancelled; the pending reconciler
-            # will map the broker position and the next poll will protect it.
             if order_id not in broker_orders:
                 continue
             await self._trade.cancel_order(
