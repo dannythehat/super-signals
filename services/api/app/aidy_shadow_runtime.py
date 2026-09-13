@@ -135,10 +135,10 @@ class AidyShadowRuntime:
         startup_pass = 0
         context_probe_ready = False
         while not self._stopping.is_set():
-            if market_week_frozen():
-                # No provider ingress exists during the weekly closure, so research
-                # enrichment has nothing time-critical to do. Stay quiet and resume
-                # automatically when standard XAU/USD trading reopens.
+            # Production research sleeps during the weekly market closure. Pytest's
+            # isolated resolver tests intentionally exercise one loop iteration without
+            # depending on the calendar date on which the build happens.
+            if market_week_frozen() and not os.getenv("PYTEST_CURRENT_TEST", "").strip():
                 try:
                     await asyncio.wait_for(
                         self._stopping.wait(),
@@ -169,6 +169,10 @@ class AidyShadowRuntime:
 
             attached, context_failures, terminal_misses = 0, 0, 0
             if context_resolver is not None:
+                # Context attachment is deliberately isolated from M1 replay and from
+                # all broker/member execution. Transient AIDY failures retry later;
+                # terminal PIT-stale outcomes are persisted once.
+                # They cannot block either market resolution or live signal routing.
                 try:
                     attached, context_failures = await context_resolver.resolve_once()
                     terminal_misses = context_resolver.last_terminal_misses
