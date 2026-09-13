@@ -24,6 +24,7 @@ from app.pending_reconciliation_canonical import (
     PendingReconcileResult,
 )
 from app.superseded_pending_guard import SupersededPendingOrderGuard
+from app.weekend_trading_freeze import market_week_frozen
 
 logger = logging.getLogger(__name__)
 
@@ -163,6 +164,9 @@ class UnifiedPendingReconciler:
                 pass
 
     async def reconcile_once(self) -> PendingReconcileResult:
+        if market_week_frozen():
+            return PendingReconcileResult(0, 0, 0, 0, 0)
+
         if self._supersession_guard is not None:
             cleanup = await self._supersession_guard.cleanup_existing(
                 user_id=self._owner_user_id,
