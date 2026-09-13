@@ -297,29 +297,6 @@ class ProductionAiMessagePipeline(CanonicalAiMessagePipeline):
         profile = self._source_profile(source_id)
         policy_text = self._policy_text(raw_text, profile)
 
-        # Explicit, mechanically parseable setups should survive a transient semantic
-        # supervisor outage. This is the same deterministic path used by the canonical
-        # parent pipeline and still passes through the final V1 mechanical policy before
-        # a Signal can be created.
-        deterministic = self._deterministic_fallback(
-            source_id=source_id,
-            telegram_message_id=telegram_message_id,
-            revision_index=revision_index,
-            raw_text=policy_text,
-        )
-        if deterministic.decision == "new_trade" and deterministic.action == "execute":
-            deterministic = self._apply_profile(
-                replace(
-                    deterministic,
-                    model="canonical-deterministic-v1",
-                    source="deterministic_no_ai",
-                    reason="deterministic_known_trade_no_ai",
-                ),
-                profile,
-            )
-            deterministic = self._enforce_locked_risk_semantics(source_id, deterministic)
-            return self._literal_order_type_precedence(deterministic, policy_text)
-
         if self._supervisor is None:
             return self._non_actionable_without_ai(
                 raw_text,
