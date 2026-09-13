@@ -162,8 +162,85 @@ def send_member_complimentary_activated(*, member_email: str, display_name: str)
     )
 
 
+def send_member_live_welcome(
+    *,
+    member_email: str,
+    display_name: str,
+    login_masked: str,
+    server: str,
+) -> EmailDeliveryResult:
+    """Send the polished welcome only after a live Vantage MT5 connection is verified."""
+
+    _api_key, _sender, _admin, public_url = _settings()
+    safe_name = html.escape(display_name)
+    safe_login = html.escape(login_masked)
+    safe_server = html.escape(server)
+    account_url = f"{public_url}/account"
+    safe_account_url = html.escape(account_url, quote=True)
+    safe_logo_url = html.escape(
+        f"{public_url}/assets/logo/smart-signals-approved.webp",
+        quote=True,
+    )
+
+    html_body = f"""
+    <div style="margin:0;padding:0;background:#061019;font-family:Arial,Helvetica,sans-serif;color:#eef6fb">
+      <table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" style="background:#061019;margin:0;padding:0">
+        <tr><td align="center" style="padding:34px 16px">
+          <table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" style="max-width:640px;background:#0a1620;border:1px solid #213746;border-radius:20px;overflow:hidden;box-shadow:0 24px 60px rgba(0,0,0,.35)">
+            <tr><td style="padding:28px 30px 22px;border-bottom:1px solid #1b2e3b">
+              <img src="{safe_logo_url}" alt="Smart Signals" width="190" style="display:block;width:190px;max-width:68%;height:auto;border:0" />
+            </td></tr>
+            <tr><td style="padding:34px 30px 12px">
+              <div style="display:inline-block;padding:7px 11px;border-radius:999px;background:#0e2d24;border:1px solid #1f614d;color:#91e0bd;font-size:11px;font-weight:800;letter-spacing:.9px">LIVE MT5 CONNECTED ✓</div>
+              <h1 style="margin:18px 0 10px;color:#ffffff;font-size:30px;line-height:1.15;font-weight:800">Welcome to Smart Signals</h1>
+              <p style="margin:0;color:#b9cad6;font-size:16px;line-height:1.65">Hi {safe_name}, your Smart Signals account is now connected to your live Vantage MT5 account and ready.</p>
+            </td></tr>
+            <tr><td style="padding:18px 30px">
+              <table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" style="background:#07121b;border:1px solid #1c3341;border-radius:16px">
+                <tr>
+                  <td style="padding:18px;border-bottom:1px solid #172a36;width:50%"><div style="color:#6f899b;font-size:11px;text-transform:uppercase;letter-spacing:.8px">Account status</div><div style="margin-top:6px;color:#9be0c2;font-size:15px;font-weight:800">Active</div></td>
+                  <td style="padding:18px;border-bottom:1px solid #172a36"><div style="color:#6f899b;font-size:11px;text-transform:uppercase;letter-spacing:.8px">Trading account</div><div style="margin-top:6px;color:#e5eef4;font-size:15px;font-weight:800">Vantage MT5 · Live</div></td>
+                </tr>
+                <tr>
+                  <td style="padding:18px"><div style="color:#6f899b;font-size:11px;text-transform:uppercase;letter-spacing:.8px">MT5 login</div><div style="margin-top:6px;color:#e5eef4;font-size:15px;font-weight:800">{safe_login}</div></td>
+                  <td style="padding:18px"><div style="color:#6f899b;font-size:11px;text-transform:uppercase;letter-spacing:.8px">Server</div><div style="margin-top:6px;color:#e5eef4;font-size:15px;font-weight:800">{safe_server}</div></td>
+                </tr>
+              </table>
+            </td></tr>
+            <tr><td style="padding:8px 30px 12px">
+              <p style="margin:0;color:#9fb2c0;font-size:14px;line-height:1.65">Smart Signals will now manage approved gold trades through the connected account while your activity and performance are tracked inside the platform.</p>
+            </td></tr>
+            <tr><td style="padding:18px 30px 34px">
+              <a href="{safe_account_url}" style="display:inline-block;background:#28d3b0;color:#03130f;text-decoration:none;font-weight:900;font-size:14px;padding:14px 20px;border-radius:12px">Open Smart Signals</a>
+            </td></tr>
+            <tr><td style="padding:20px 30px 26px;border-top:1px solid #1b2e3b;background:#07121a">
+              <p style="margin:0 0 8px;color:#9fb2c0;font-size:13px;font-weight:700">Smart Signals</p>
+              <p style="margin:0;color:#607989;font-size:11px;line-height:1.55">Automated gold trading with full trade tracking. Trading involves risk and losses can occur.</p>
+            </td></tr>
+          </table>
+        </td></tr>
+      </table>
+    </div>
+    """
+    text_body = (
+        f"Hi {display_name},\n\n"
+        "Welcome to Smart Signals. Your live Vantage MT5 account is connected and ready.\n\n"
+        f"MT5 login: {login_masked}\nServer: {server}\nStatus: Active\n\n"
+        "Smart Signals will manage approved gold trades through your connected account and track your activity and performance.\n\n"
+        f"Open Smart Signals: {account_url}\n\n"
+        "Trading involves risk and losses can occur."
+    )
+    return _send(
+        to=member_email,
+        subject="Welcome to Smart Signals — you're connected ✓",
+        html_body=html_body,
+        text_body=text_body,
+    )
+
+
 __all__ = [
     "EmailDeliveryResult",
     "send_admin_new_signup",
     "send_member_complimentary_activated",
+    "send_member_live_welcome",
 ]
