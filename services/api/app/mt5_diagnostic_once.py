@@ -81,6 +81,24 @@ async def main() -> None:
         if not isinstance(payload, dict):
             payload = {}
 
+        known_response = await gateway._request(  # noqa: SLF001 - read-only diagnostics
+            "GET",
+            "/known-mt-servers/5/search",
+            token=token,
+            params=[("query", "VantageMarkets-Live 10")],
+        )
+        known_payload = known_response.json() if known_response.content else {}
+        exact_known = False
+        matching_brokers: list[str] = []
+        if isinstance(known_payload, dict):
+            for broker, servers in known_payload.items():
+                if not isinstance(servers, list):
+                    continue
+                normalized = [str(item) for item in servers]
+                if server in normalized:
+                    exact_known = True
+                    matching_brokers.append(str(broker))
+
         connections = payload.get("connections")
         replicas = payload.get("accountReplicas")
         safe_payload = {
@@ -96,6 +114,8 @@ async def main() -> None:
             "replicas_count": len(replicas) if isinstance(replicas, list) else None,
             "resource_slots": payload.get("resourceSlots"),
             "reliability": str(payload.get("reliability") or ""),
+            "exact_server_known": exact_known,
+            "known_broker_matches": matching_brokers[:10],
             "trade_action_created": False,
         }
 
@@ -111,13 +131,14 @@ async def main() -> None:
             )
             session.commit()
         logger.info(
-            "MT5 diagnostic state=%s connection=%s type=%s version=%s region=%s connections=%s",
+            "MT5 diagnostic state=%s connection=%s type=%s version=%s region=%s connections=%s exact_server_known=%s",
             safe_payload["remote_state"],
             safe_payload["remote_connection_status"],
             safe_payload["type"],
             safe_payload["version"],
             safe_payload["region"],
             safe_payload["connections_count"],
+            safe_payload["exact_server_known"],
         )
     except Exception as exc:
         logger.error("MT5 diagnostic failed kind=%s", type(exc).__name__)
