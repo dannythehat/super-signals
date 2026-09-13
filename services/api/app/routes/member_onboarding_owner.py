@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import asyncio
 import secrets
+import time
 from typing import Annotated, Any, Literal
 from uuid import UUID
 
@@ -13,6 +15,7 @@ from sqlalchemy.orm import Session
 
 from app.access_control import require_permission
 from app.db import get_db_session, get_session_factory
+from app.metaapi_gateway import MetaApiGatewayError, SUPER_SIGNALS_MAGIC
 from app.models import AuditEvent, Role, User, UserRole
 from app.mt5_account_profiles import Mt5AccountProfileService
 from app.mt5_connection_service import Mt5ConnectionError
@@ -219,6 +222,98 @@ def _activate_verified_member(session: Session, *, owner_id: UUID, user_id: UUID
     session.commit()
 
 
+async def _refresh_credentials_and_redeploy(
+    *,
+    service: Day30Mt5ConnectionService,
+    session: Session,
+    owner_id: UUID,
+    user_id: UUID,
+    password: str,
+    server: str,
+) -> Any:
+    """Refresh the current MetaAPI terminal using the owner-submitted password.
+
+    This avoids creating duplicate stale terminals when an already-provisioned live
+    account is DEPLOYED but has not established a broker session. The password exists
+    only for this request and is never persisted by Smart Signals.
+    """
+    row = session.execute(
+        text(
+            "SELECT id, metaapi_account_id FROM mt5_accounts WHERE owner_user_id=:user_id LIMIT 1"
+        ),
+        {"user_id": user_id},
+    ).mappings().first()
+    if row is None or not row["metaapi_account_id"]:
+        raise Mt5ConnectionError("mt5_account_not_configured")
+
+    token = service.resolve_platform_token()
+    gateway = service._gateway  # noqa: SLF001 - canonical service owns this gateway
+    remote_account_id = str(row["metaapi_account_id"])
+
+    try:
+        await gateway._request(  # noqa: SLF001 - supported MetaAPI account update API
+            "PUT",
+            f"/users/current/accounts/{remote_account_id}",
+            token=token,
+            json={
+                "password": password,
+                "name": "Smart Signals MT5",
+                "server": server.strip(),
+                "magic": SUPER_SIGNALS_MAGIC,
+            },
+            accepted_statuses={200, 204},
+        )
+        await gateway._request(  # noqa: SLF001 - supported MetaAPI redeploy API
+            "POST",
+            f"/users/current/accounts/{remote_account_id}/redeploy",
+            token=token,
+            accepted_statuses={200, 201, 202, 204},
+        )
+
+        deadline = time.monotonic() + 150
+        remote = None
+        while time.monotonic() < deadline:
+            remote = await gateway.read_account(token=token, account_id=remote_account_id)
+            if remote.state in {"DEPLOY_FAILED", "REDEPLOY_FAILED"}:
+                raise MetaApiGatewayError("metaapi_deploy_failed")
+            if remote.state == "DEPLOYED" and remote.connection_status == "CONNECTED":
+                break
+            await asyncio.sleep(2)
+
+        if remote is None:
+            raise MetaApiGatewayError("metaapi_timeout", retryable=True)
+
+        service._write_remote_state(row["id"], remote)  # noqa: SLF001 - established auditable writer
+        session.add(
+            AuditEvent(
+                actor_user_id=owner_id,
+                event_type="mt5.owner_onboarding_credential_refresh",
+                entity_type="user",
+                entity_id=user_id,
+                payload={
+                    "remote_state": remote.state,
+                    "remote_connection_status": remote.connection_status,
+                    "trade_action_created": False,
+                },
+            )
+        )
+        session.commit()
+    except MetaApiGatewayError as exc:
+        session.add(
+            AuditEvent(
+                actor_user_id=owner_id,
+                event_type="mt5.owner_onboarding_credential_refresh_failed",
+                entity_type="user",
+                entity_id=user_id,
+                payload={"error_code": exc.code, "trade_action_created": False},
+            )
+        )
+        session.commit()
+        raise Mt5ConnectionError(exc.code) from exc
+
+    return service.get_user_status(user_id)
+
+
 @router.post("/members/onboard-live", response_model=OnboardLiveMemberResponse)
 async def onboard_live_member(
     payload: OnboardLiveMemberRequest,
@@ -253,29 +348,21 @@ async def onboard_live_member(
             server=payload.mt5_server,
         )
         if not _is_connected(view):
-            session.add(
-                AuditEvent(
-                    actor_user_id=identity["id"],
-                    event_type="mt5.owner_onboarding_fresh_retry",
-                    entity_type="user",
-                    entity_id=user_id,
-                    payload={
-                        "reason": "first_terminal_not_connected",
-                        "trade_action_created": False,
-                    },
-                )
-            )
-            session.commit()
-            view = await service.connect_user_live(
+            view = await _refresh_credentials_and_redeploy(
+                service=service,
+                session=session,
+                owner_id=identity["id"],
                 user_id=user_id,
-                login=payload.mt5_login,
                 password=password,
                 server=payload.mt5_server,
             )
     except Mt5ConnectionError as exc:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail={"code": exc.code, "message": "The complimentary member account was created safely, but the live Vantage MT5 connection was not verified. Trading remains stopped."},
+            detail={
+                "code": exc.code,
+                "message": "The member is safe but the live Vantage MT5 broker session was not verified. Trading remains stopped.",
+            },
         ) from exc
 
     profiles = Mt5AccountProfileService(
