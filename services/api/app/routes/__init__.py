@@ -10,6 +10,7 @@ from . import auth as _auth  # noqa: F401
 from . import complimentary_access as _complimentary_access
 from . import invitations as _invitations  # noqa: F401
 from . import manual_reconciliation_day36 as _manual_reconciliation_day36
+from . import member_onboarding_owner as _member_onboarding_owner  # noqa: F401
 from . import member_subscription_owner_hotfix as _member_subscription_owner_hotfix
 from . import mt5_approvals_day30 as _mt5_approvals_day30
 from . import owner_manual_close as _owner_manual_close
