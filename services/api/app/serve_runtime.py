@@ -1,9 +1,8 @@
 """Start the API with the live-member MT5 reconnect fix applied in-process.
 
-The owner reconnect endpoint previously sent an unnecessary account setting in the
-MetaAPI update request. MetaAPI was rejecting that request before the broker login was
-ever retried. This launcher replaces only the reconnect helper with the documented
-password/name/server update payload, then starts the normal FastAPI application.
+The owner reconnect flow must refresh credentials on an already configured MetaAPI
+account. MetaAPI exposes a dedicated /credentials endpoint for this purpose. For an
+already deployed account it also performs the required redeploy automatically.
 """
 
 from __future__ import annotations
@@ -34,9 +33,11 @@ async def _refresh_credentials_and_redeploy(
     password: str,
     server: str,
 ) -> Any:
+    del server  # Existing MetaAPI account already owns the canonical server setting.
     row = session.execute(
         text(
-            "SELECT id, metaapi_account_id FROM mt5_accounts WHERE owner_user_id=:user_id LIMIT 1"
+            "SELECT id, login, metaapi_account_id FROM mt5_accounts "
+            "WHERE owner_user_id=:user_id LIMIT 1"
         ),
         {"user_id": user_id},
     ).mappings().first()
@@ -48,24 +49,18 @@ async def _refresh_credentials_and_redeploy(
     remote_account_id = str(row["metaapi_account_id"])
 
     try:
-        # MetaAPI's documented update-account payload for credential refresh. Keep this
-        # deliberately minimal so schema validation cannot block the broker retry.
+        # MetaAPI's dedicated credential configuration endpoint is the supported path
+        # for changing credentials on an already configured account. If the account is
+        # currently deployed MetaAPI redeploys it automatically after the change.
         await gateway._request(  # noqa: SLF001
             "PUT",
-            f"/users/current/accounts/{remote_account_id}",
+            f"/users/current/accounts/{remote_account_id}/credentials",
             token=token,
             json={
+                "login": str(row["login"]),
                 "password": password,
-                "name": "Smart Signals MT5",
-                "server": server.strip(),
             },
-            accepted_statuses={200, 204},
-        )
-        await gateway._request(  # noqa: SLF001
-            "POST",
-            f"/users/current/accounts/{remote_account_id}/redeploy",
-            token=token,
-            accepted_statuses={200, 201, 202, 204},
+            accepted_statuses={200},
         )
 
         deadline = time.monotonic() + 150
@@ -91,6 +86,7 @@ async def _refresh_credentials_and_redeploy(
         payload: dict[str, object] = {
             "remote_state": remote.state,
             "remote_connection_status": remote.connection_status,
+            "credential_method": "credentials_endpoint",
             "trade_action_created": False,
         }
         if not connected:
@@ -116,7 +112,11 @@ async def _refresh_credentials_and_redeploy(
                 event_type="mt5.owner_onboarding_credential_refresh_failed",
                 entity_type="user",
                 entity_id=user_id,
-                payload={"error_code": exc.code, "trade_action_created": False},
+                payload={
+                    "error_code": exc.code,
+                    "credential_method": "credentials_endpoint",
+                    "trade_action_created": False,
+                },
             )
         )
         session.commit()
