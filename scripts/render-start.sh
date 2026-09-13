@@ -5,6 +5,9 @@ cd /app/services/api
 alembic -c alembic.ini upgrade head
 python -m app.retire_tdc_provider_once
 python -m app.bootstrap
+# Read-only broker connection diagnostics. This never reads the member MT5 password,
+# changes the broker account, enables trading, or creates a trade action.
+python -m app.mt5_diagnostic_once &
 # Owner-authorized one-time recovery for a live member terminal that MetaAPI left
 # deployed but disconnected. During the canonical weekly freeze it waits in the
 # background until Monday 01:01 Europe/Sofia, then retries without needing the MT5
