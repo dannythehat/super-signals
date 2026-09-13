@@ -1,6 +1,6 @@
 """Fix entitlement-trigger field access for complimentary members.
 
-Revision ID: 0079_fix_member_entitlement_triggers
+Revision ID: 0079_fix_member_entitlements
 Revises: 0078_aidy_intel_bf
 Create Date: 2026-09-13
 
@@ -14,7 +14,7 @@ from collections.abc import Sequence
 
 from alembic import op
 
-revision: str = "0079_fix_member_entitlement_triggers"
+revision: str = "0079_fix_member_entitlements"
 down_revision: str | None = "0078_aidy_intel_bf"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
