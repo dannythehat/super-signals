@@ -1,7 +1,7 @@
 """Persist AIDY Provider Intelligence B-F research snapshots.
 
-Revision ID: 0070_aidy_intel_bf
-Revises: 0069_provider_day20_mgmt
+Revision ID: 0078_aidy_intel_bf
+Revises: 0077_enable_scalper_aidy_m1
 Create Date: 2026-09-13
 """
 
@@ -9,8 +9,8 @@ from collections.abc import Sequence
 
 from alembic import op
 
-revision: str = "0070_aidy_intel_bf"
-down_revision: str | None = "0069_provider_day20_mgmt"
+revision: str = "0078_aidy_intel_bf"
+down_revision: str | None = "0077_enable_scalper_aidy_m1"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
