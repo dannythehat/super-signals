@@ -40,14 +40,13 @@ jobs:
         working-directory: services/api
         run: |
           set -euo pipefail
-          python -m pip install --disable-pip-version-check --quiet uv
-          uv sync
-          uv run pytest -q \
+          python -m pip install --disable-pip-version-check --quiet -r requirements.txt pytest pytest-asyncio
+          pytest -q \
             tests/test_provider_fairness_v2.py \
             tests/test_aidy_provider_lab_market_truth.py \
             tests/test_phase_c_scalper_m1_contract.py \
             tests/test_shadow_legacy_pit_fail_closed.py
-          uv run pytest -q
+          pytest -q
 
       - name: Commit actual Phase C code and remove patch scaffolding
         shell: bash
