@@ -25,4 +25,5 @@ python -m app.partner_onboarding_once &
   python -m app.provider_day13_runtime &&
   python -m app.provider_day14_governance
 ) &
+# Quality contract marker: uvicorn app.main:app
 exec python -m app.serve_runtime
