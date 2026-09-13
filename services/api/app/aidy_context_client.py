@@ -44,6 +44,20 @@ class AidyContextTerminalMiss(RuntimeError):
         super().__init__(reason)
 
 
+class AidyContextUpstreamError(RuntimeError):
+    """A retryable AIDY context endpoint failure with safe structured diagnostics."""
+
+    def __init__(self, *, status_code: int, payload: dict[str, Any]) -> None:
+        self.status_code = int(status_code)
+        self.payload = dict(payload)
+        error = str(payload.get("error") or "unknown_error")
+        message = str(payload.get("message") or "").strip()
+        detail = f"aidy_context_http_{self.status_code}:{error}"
+        if message:
+            detail = f"{detail}:{message[:500]}"
+        super().__init__(detail)
+
+
 class AidyContextClient:
     """Read-only client for AIDY's canonical point-in-time Provider Intelligence context."""
 
@@ -78,20 +92,25 @@ class AidyContextClient:
                 f"{self._base_url}/provider/context?{query}",
                 headers=self._headers(),
             )
-            if response.status_code == 409:
+            error_payload: dict[str, Any] = {}
+            if response.status_code >= 400:
                 try:
-                    terminal_payload = response.json()
+                    decoded = response.json()
                 except ValueError:
-                    terminal_payload = {}
-                if (
-                    isinstance(terminal_payload, dict)
-                    and terminal_payload.get("error") == "pit_context_stale"
-                ):
+                    decoded = {}
+                if isinstance(decoded, dict):
+                    error_payload = decoded
+            if response.status_code == 409:
+                if error_payload.get("error") == "pit_context_stale":
                     raise AidyContextTerminalMiss(
                         "pit_context_stale",
-                        payload=terminal_payload,
+                        payload=error_payload,
                     )
-            response.raise_for_status()
+            if response.status_code >= 400:
+                raise AidyContextUpstreamError(
+                    status_code=response.status_code,
+                    payload=error_payload,
+                )
             payload = response.json()
         if not isinstance(payload, dict) or payload.get("ok") is not True:
             raise RuntimeError("AIDY context provider returned a non-success payload.")
