@@ -25,4 +25,4 @@ python -m app.partner_onboarding_once &
   python -m app.provider_day13_runtime &&
   python -m app.provider_day14_governance
 ) &
-exec uvicorn app.main:app --host 0.0.0.0 --port "${PORT:-10000}"
+exec python -m app.serve_runtime
