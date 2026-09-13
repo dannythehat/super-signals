@@ -120,7 +120,7 @@ class ShadowTradeService(_BaseShadowTradeService):
             initial_exclusion = (
                 "legacy_profile_unresolvable"
                 if pit_status == PIT_LEGACY_UNRESOLVABLE
-                else "unsupported_style_scalper"
+                else "outcome_pending_aidy_m1"
                 if provider_style == "scalper"
                 else "market_data_not_observed"
             )
