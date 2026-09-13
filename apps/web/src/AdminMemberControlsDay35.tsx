@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 
+import { AdminMemberOnboarding } from './AdminMemberOnboarding';
 import './admin-member-controls-day35.css';
 
 type ManagedUser = {
@@ -185,6 +186,8 @@ export function AdminMemberControlsDay35({ apiBaseUrl }: Props) {
 
   return <section className="day35-members" aria-labelledby="day35-members-title">
     <div className="workspace-page-header"><div><p className="eyebrow">Owner controls</p><h1 id="day35-members-title">Members &amp; account access</h1><p className="intro">Pause a member when payment is due without deleting their MT5 connection, credentials, settings or history. Resume restores the saved setup. Full revocation remains a separate confirmed action.</p></div><span className="workspace-role-pill">OWNER ONLY</span></div>
+
+    <AdminMemberOnboarding apiBaseUrl={apiBaseUrl} onCompleted={load} />
 
     {error && <div className="day35-members-error" role="alert">{error}</div>}
     {notice && <div className="day35-members-result" role="status"><strong>Access updated.</strong><span>{notice}</span></div>}
