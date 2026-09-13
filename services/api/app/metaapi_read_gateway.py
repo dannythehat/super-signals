@@ -18,6 +18,7 @@ from app.metaapi_region_cache import (
     normalize_metaapi_region,
     remember_metaapi_region,
 )
+from app.weekend_trading_freeze import weekend_trading_frozen
 
 DEFAULT_METAAPI_PROVISIONING_URL = (
     "https://mt-provisioning-api-v1.agiliumtrade.agiliumtrade.ai"
@@ -289,6 +290,8 @@ class MetaApiReadGateway:
         return self._json(response)
 
     async def _request(self, method: str, url: str, *, token: str) -> httpx.Response:
+        if weekend_trading_frozen():
+            raise MetaApiGatewayError("metaapi_weekend_frozen")
         try:
             async with httpx.AsyncClient(timeout=self._timeout) as client:
                 response = await client.request(
