@@ -13,7 +13,6 @@ from sqlalchemy.orm import Session
 
 from app.access_control import require_permission
 from app.db import get_db_session, get_session_factory
-from app.member_email import send_member_live_welcome
 from app.models import AuditEvent, Role, User, UserRole
 from app.mt5_account_profiles import Mt5AccountProfileService
 from app.mt5_connection_service import Mt5ConnectionError
@@ -76,6 +75,13 @@ def _normalize_email(value: str) -> str:
     if "@" not in email or email.startswith("@") or email.endswith("@"):
         raise HTTPException(status_code=422, detail="Enter a valid email address.")
     return email
+
+
+def _is_connected(view: Any) -> bool:
+    return (
+        str(view.status).lower() == "connected"
+        and str(view.remote_connection_status or "").lower() == "connected"
+    )
 
 
 def _prepare_member(
@@ -147,8 +153,6 @@ def _prepare_member(
         {"user_id": account.id, "owner_id": owner_id},
     )
 
-    # Fail safe while the broker connection is being verified. The final activation
-    # happens only after MetaAPI reports a connected live account.
     session.execute(
         text(
             """
@@ -241,12 +245,33 @@ async def onboard_live_member(
             login=payload.mt5_login,
             server=payload.mt5_server,
         )
+        password = payload.mt5_password.get_secret_value()
         view = await service.connect_user_live(
             user_id=user_id,
             login=payload.mt5_login,
-            password=payload.mt5_password.get_secret_value(),
+            password=password,
             server=payload.mt5_server,
         )
+        if not _is_connected(view):
+            session.add(
+                AuditEvent(
+                    actor_user_id=identity["id"],
+                    event_type="mt5.owner_onboarding_fresh_retry",
+                    entity_type="user",
+                    entity_id=user_id,
+                    payload={
+                        "reason": "first_terminal_not_connected",
+                        "trade_action_created": False,
+                    },
+                )
+            )
+            session.commit()
+            view = await service.connect_user_live(
+                user_id=user_id,
+                login=payload.mt5_login,
+                password=password,
+                server=payload.mt5_server,
+            )
     except Mt5ConnectionError as exc:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -258,43 +283,9 @@ async def onboard_live_member(
         connection_service=service,
     )
     profiles.sync_active_profile_from_canonical(user_id)
-    ready = str(view.status).lower() == "connected" and str(view.remote_connection_status or "").lower() == "connected"
+    ready = _is_connected(view)
     if ready:
         _activate_verified_member(session, owner_id=identity["id"], user_id=user_id)
-
-    welcome_sent = False
-    welcome_reason: str | None = "mt5_not_connected" if not ready else None
-    if ready:
-        already_sent = bool(
-            session.execute(
-                text(
-                    "SELECT EXISTS(SELECT 1 FROM audit_events WHERE entity_id=:user_id AND event_type='access.live_welcome_email_sent')"
-                ),
-                {"user_id": user_id},
-            ).scalar_one()
-        )
-        if already_sent:
-            welcome_sent = True
-            welcome_reason = "already_sent"
-        else:
-            delivery = send_member_live_welcome(
-                member_email=email,
-                display_name=display_name,
-                login_masked=view.login_masked or "Connected",
-                server=view.server or payload.mt5_server.strip(),
-            )
-            welcome_sent = delivery.sent
-            welcome_reason = delivery.reason
-            session.add(
-                AuditEvent(
-                    actor_user_id=identity["id"],
-                    event_type=("access.live_welcome_email_sent" if delivery.sent else "access.live_welcome_email_not_sent"),
-                    entity_type="user",
-                    entity_id=user_id,
-                    payload={"reason": delivery.reason, "sender": "smart_signals_transactional"},
-                )
-            )
-            session.commit()
 
     response.headers["Cache-Control"] = "no-store"
     response.headers["Pragma"] = "no-cache"
@@ -312,6 +303,6 @@ async def onboard_live_member(
         trading_status="active" if ready else "stopped",
         risk_percent=1.0,
         ready=ready,
-        welcome_email_sent=welcome_sent,
-        welcome_email_reason=welcome_reason,
+        welcome_email_sent=False,
+        welcome_email_reason="owner_test_pending" if ready else "mt5_not_connected",
     )
