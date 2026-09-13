@@ -45,7 +45,7 @@ _OPEN_GOLD_SIDE = re.compile(r"\b(BUY|BUYS|SELL|SELLS)\b", re.IGNORECASE)
 # they do not create or donate any numeric execution values.
 _STRUCTURED_SIDE = re.compile(r"\b(?:BUY(?:S|ING)?|SELL(?:S|ING)?|LONG|SHORT)\b", re.IGNORECASE)
 _STRUCTURED_ENTRY = re.compile(
-    r"\b(?:ENTER|ENTRY(?:\s+ZONE)?|CURRENT\s+PRICE)\b|(?im)^\s*(?:BUY|SELL)\s*:",
+    r"\b(?:ENTER|ENTRY(?:\s+ZONE)?|CURRENT\s+PRICE)\b|^\s*(?:BUY|SELL)\s*:",
     re.IGNORECASE | re.MULTILINE,
 )
 _STRUCTURED_STOP = re.compile(r"\b(?:SL|STOP\s*LOSS)\b", re.IGNORECASE)
