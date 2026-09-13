@@ -18,6 +18,7 @@ from app.aidy_context_client import AidyContextClient
 from app.aidy_market_client import AidyMarketClient
 from app.aidy_shadow_resolver import AidyShadowResolver
 from app.provider_context_attachment import ProviderContextAttachmentResolver
+from app.provider_intelligence_bf import ProviderIntelligenceBuilder
 from app.weekend_trading_freeze import market_week_frozen
 
 logger = logging.getLogger(__name__)
@@ -134,6 +135,7 @@ class AidyShadowRuntime:
         draining_startup_backlog = True
         startup_pass = 0
         context_probe_ready = False
+        intelligence_builder = ProviderIntelligenceBuilder(self._session_factory)
         while not self._stopping.is_set():
             # Production research sleeps during the weekly market closure. Pytest's
             # isolated resolver tests intentionally exercise one loop iteration without
@@ -192,6 +194,31 @@ class AidyShadowRuntime:
                 print(context_message, flush=True)
                 if attached or terminal_misses or context_failures:
                     logger.info(context_message)
+
+            # B-F is a research-only consolidation pass. It writes immutable provider
+            # intelligence/data-hub evidence and has no broker, sizing or routing path.
+            # Skip it inside isolated runtime tests; the pure B-F contracts have their
+            # own unit coverage and production runs after migrations are applied.
+            intelligence_snapshots = 0
+            book_snapshots = 0
+            if not os.getenv("PYTEST_CURRENT_TEST", "").strip():
+                try:
+                    intelligence_snapshots, book_snapshots = await asyncio.to_thread(
+                        intelligence_builder.refresh_once
+                    )
+                except asyncio.CancelledError:
+                    raise
+                except Exception:
+                    logger.exception("AIDY Provider Intelligence B-F refresh failed safely")
+                else:
+                    if intelligence_snapshots or book_snapshots:
+                        intelligence_message = (
+                            "AIDY Provider Intelligence B-F refresh "
+                            f"provider_snapshots={intelligence_snapshots} "
+                            f"book_snapshots={book_snapshots}"
+                        )
+                        print(intelligence_message, flush=True)
+                        logger.info(intelligence_message)
 
             if draining_startup_backlog:
                 startup_pass += 1
