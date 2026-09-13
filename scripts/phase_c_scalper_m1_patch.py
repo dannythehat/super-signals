@@ -61,6 +61,10 @@ for relative in ("app/shadow_trading_v5.py", "app/shadow_trading_service_v4.py")
         '                else "unsupported_style_scalper"\n                if provider_style == "scalper"\n                else "market_data_not_observed"',
         '                else "outcome_pending_aidy_m1"\n                if provider_style == "scalper"\n                else "market_data_not_observed"',
     )
+    text = text.replace(
+        '                    else "unsupported_style_scalper"\n                    if provider_style == "scalper"\n                    else "bare_profile_entry_delay_over_scoring_gate"',
+        '                    else "outcome_pending_aidy_m1"\n                    if provider_style == "scalper"\n                    else "bare_profile_entry_delay_over_scoring_gate"',
+    )
     if relative.endswith("shadow_trading_v5.py"):
         text = text.replace(
             "await asyncio.to_thread(self._enforce_scalper_exclusion_sync)",
