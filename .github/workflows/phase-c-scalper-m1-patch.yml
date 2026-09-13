@@ -1,0 +1,61 @@
+name: Phase C Scalper M1 Patch
+
+on:
+  push:
+    branches: [feature/provider-lab-scalper-m1-20260913]
+    paths:
+      - "scripts/phase_c_scalper_m1_patch.py"
+      - ".github/workflows/phase-c-scalper-m1-patch.yml"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: phase-c-scalper-m1-patch
+  cancel-in-progress: false
+
+jobs:
+  patch-test-commit:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Apply deterministic source patch
+        shell: bash
+        run: |
+          set -euo pipefail
+          python scripts/phase_c_scalper_m1_patch.py
+          git diff --check
+
+      - name: Install API dependencies and run Phase C tests
+        shell: bash
+        working-directory: services/api
+        run: |
+          set -euo pipefail
+          python -m pip install --disable-pip-version-check --quiet uv
+          uv sync
+          uv run pytest -q \
+            tests/test_provider_fairness_v2.py \
+            tests/test_aidy_provider_lab_market_truth.py \
+            tests/test_phase_c_scalper_m1_contract.py \
+            tests/test_shadow_legacy_pit_fail_closed.py
+          uv run pytest -q
+
+      - name: Commit actual Phase C code and remove patch scaffolding
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -f scripts/phase_c_scalper_m1_patch.py .github/workflows/phase-c-scalper-m1-patch.yml
+          git add -A
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -m "Enable PIT-safe AIDY M1 scalper resolution"
+          git push origin HEAD:feature/provider-lab-scalper-m1-20260913
