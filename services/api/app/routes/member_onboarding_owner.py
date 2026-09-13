@@ -1,9 +1,9 @@
-"""Owner-only one-step onboarding for ordinary live Smart Signals members."""
+"""Owner-only one-step onboarding for complimentary live Smart Signals members."""
 
 from __future__ import annotations
 
 import secrets
-from typing import Annotated, Any
+from typing import Annotated, Any, Literal
 from uuid import UUID
 
 from fastapi import Depends, HTTPException, Request, Response, status
@@ -32,7 +32,7 @@ class OnboardLiveMemberRequest(BaseModel):
     mt5_login: str = Field(min_length=1, max_length=32)
     mt5_password: SecretStr
     mt5_server: str = Field(min_length=2, max_length=160)
-    complimentary_access: bool = True
+    complimentary_access: Literal[True] = True
 
 
 class OnboardLiveMemberResponse(BaseModel):
@@ -57,7 +57,7 @@ def _owner(identity: dict[str, Any]) -> None:
     if identity.get("role") != "owner":
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
-            detail={"code": "owner_required", "message": "Only the Owner can onboard a live member."},
+            detail={"code": "owner_required", "message": "Only the Owner can onboard a complimentary live member."},
         )
 
 
@@ -84,7 +84,6 @@ def _prepare_member(
     owner_id: UUID,
     email: str,
     display_name: str,
-    complimentary_access: bool,
 ) -> tuple[UUID, bool]:
     role = session.scalar(select(Role).where(Role.name == "user"))
     if role is None:
@@ -129,25 +128,24 @@ def _prepare_member(
         if "user" not in existing_roles:
             session.add(UserRole(user_id=account.id, role_id=role.id, granted_by_user_id=owner_id))
 
-    if complimentary_access:
-        session.execute(
-            text(
-                """
-                INSERT INTO complimentary_access_grants
-                    (user_id, status, granted_by_user_id, source, granted_at, revoked_at, updated_at)
-                VALUES
-                    (:user_id, 'active', :owner_id, 'owner_one_step_onboarding', now(), NULL, now())
-                ON CONFLICT (user_id) DO UPDATE SET
-                    status='active',
-                    granted_by_user_id=EXCLUDED.granted_by_user_id,
-                    source=EXCLUDED.source,
-                    granted_at=EXCLUDED.granted_at,
-                    revoked_at=NULL,
-                    updated_at=EXCLUDED.updated_at
-                """
-            ),
-            {"user_id": account.id, "owner_id": owner_id},
-        )
+    session.execute(
+        text(
+            """
+            INSERT INTO complimentary_access_grants
+                (user_id, status, granted_by_user_id, source, granted_at, revoked_at, updated_at)
+            VALUES
+                (:user_id, 'active', :owner_id, 'owner_one_step_onboarding', now(), NULL, now())
+            ON CONFLICT (user_id) DO UPDATE SET
+                status='active',
+                granted_by_user_id=EXCLUDED.granted_by_user_id,
+                source=EXCLUDED.source,
+                granted_at=EXCLUDED.granted_at,
+                revoked_at=NULL,
+                updated_at=EXCLUDED.updated_at
+            """
+        ),
+        {"user_id": account.id, "owner_id": owner_id},
+    )
 
     # Fail safe while the broker connection is being verified. The final activation
     # happens only after MetaAPI reports a connected live account.
@@ -178,7 +176,7 @@ def _prepare_member(
                 "email": email,
                 "display_name": display_name,
                 "created": created,
-                "complimentary_access": complimentary_access,
+                "complimentary_access": True,
                 "risk_percent": 1.0,
                 "allow_double_lot": False,
                 "trading_status": "stopped_pending_mt5_verification",
@@ -234,7 +232,6 @@ async def onboard_live_member(
         owner_id=identity["id"],
         email=email,
         display_name=display_name,
-        complimentary_access=payload.complimentary_access,
     )
 
     try:
@@ -253,7 +250,7 @@ async def onboard_live_member(
     except Mt5ConnectionError as exc:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail={"code": exc.code, "message": "The member account was created safely, but the live Vantage MT5 connection was not verified. Trading remains stopped."},
+            detail={"code": exc.code, "message": "The complimentary member account was created safely, but the live Vantage MT5 connection was not verified. Trading remains stopped."},
         ) from exc
 
     profiles = Mt5AccountProfileService(
@@ -306,7 +303,7 @@ async def onboard_live_member(
         email=email,
         display_name=display_name,
         created=created,
-        complimentary_access=payload.complimentary_access,
+        complimentary_access=True,
         mt5_login_masked=view.login_masked,
         mt5_server=view.server,
         mt5_status=view.status,
