@@ -55,6 +55,24 @@ class OnboardLiveMemberResponse(BaseModel):
     welcome_email_reason: str | None = None
 
 
+class ReconnectLiveMemberRequest(BaseModel):
+    mt5_password: SecretStr
+
+
+class ReconnectLiveMemberResponse(BaseModel):
+    user_id: UUID
+    email: str
+    display_name: str
+    mt5_login_masked: str | None
+    mt5_server: str | None
+    mt5_status: str
+    remote_state: str | None
+    remote_connection_status: str | None
+    trading_status: str
+    risk_percent: float
+    ready: bool
+
+
 def _owner(identity: dict[str, Any]) -> None:
     if identity.get("role") != "owner":
         raise HTTPException(
@@ -312,6 +330,107 @@ async def _refresh_credentials_and_redeploy(
         raise Mt5ConnectionError(exc.code) from exc
 
     return service.get_user_status(user_id)
+
+
+@router.post("/members/{user_id}/reconnect-mt5", response_model=ReconnectLiveMemberResponse)
+async def reconnect_live_member_mt5(
+    user_id: UUID,
+    payload: ReconnectLiveMemberRequest,
+    request: Request,
+    response: Response,
+    session: DbSession,
+    identity: OwnerUsers,
+) -> ReconnectLiveMemberResponse:
+    """Reconnect an existing complimentary member without creating another user."""
+    _owner(identity)
+    service = _service(request)
+
+    user = session.scalar(select(User).where(User.id == user_id))
+    if user is None or user.status != "active":
+        raise HTTPException(status_code=404, detail="Active member not found.")
+
+    row = session.execute(
+        text(
+            """
+            SELECT login, server, account_environment
+            FROM mt5_accounts
+            WHERE owner_user_id=:user_id
+            LIMIT 1
+            """
+        ),
+        {"user_id": user_id},
+    ).mappings().first()
+    if row is None:
+        raise HTTPException(status_code=409, detail="This member does not have an MT5 account to reconnect yet.")
+    if str(row["account_environment"]).lower() != "live":
+        raise HTTPException(status_code=409, detail="Only a live Vantage MT5 account can use this reconnect action.")
+
+    session.execute(
+        text(
+            """
+            INSERT INTO user_trading_controls
+                (user_id, risk_percent, allow_double_lot, trading_status, activated_at, stopped_at, updated_at)
+            VALUES (:user_id, 1.0, FALSE, 'stopped', NULL, now(), now())
+            ON CONFLICT (user_id) DO UPDATE SET
+                risk_percent=1.0,
+                allow_double_lot=FALSE,
+                trading_status='stopped',
+                stopped_at=now(),
+                updated_at=now()
+            """
+        ),
+        {"user_id": user_id},
+    )
+    session.commit()
+
+    try:
+        service.approve_user_account(
+            approver_user_id=identity["id"],
+            user_id=user_id,
+            login=str(row["login"]),
+            server=str(row["server"]),
+        )
+        view = await _refresh_credentials_and_redeploy(
+            service=service,
+            session=session,
+            owner_id=identity["id"],
+            user_id=user_id,
+            password=payload.mt5_password.get_secret_value(),
+            server=str(row["server"]),
+        )
+    except Mt5ConnectionError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail={
+                "code": exc.code,
+                "message": "The live Vantage MT5 reconnect did not verify. Trading remains stopped.",
+            },
+        ) from exc
+
+    Mt5AccountProfileService(
+        session_factory=get_session_factory(),
+        connection_service=service,
+    ).sync_active_profile_from_canonical(user_id)
+
+    ready = _is_connected(view)
+    if ready:
+        _activate_verified_member(session, owner_id=identity["id"], user_id=user_id)
+
+    response.headers["Cache-Control"] = "no-store"
+    response.headers["Pragma"] = "no-cache"
+    return ReconnectLiveMemberResponse(
+        user_id=user_id,
+        email=str(user.email),
+        display_name=user.display_name or str(user.email),
+        mt5_login_masked=view.login_masked,
+        mt5_server=view.server,
+        mt5_status=view.status,
+        remote_state=view.remote_state,
+        remote_connection_status=view.remote_connection_status,
+        trading_status="active" if ready else "stopped",
+        risk_percent=1.0,
+        ready=ready,
+    )
 
 
 @router.post("/members/onboard-live", response_model=OnboardLiveMemberResponse)
