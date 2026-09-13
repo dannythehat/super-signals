@@ -23,6 +23,11 @@ from app.mt5_connection_service_day30 import Day30Mt5ConnectionService
 from app.mt5_crypto import MetaApiTokenCipher
 
 logger = logging.getLogger(__name__)
+_TRANSIENT = {
+    "metaapi_timeout",
+    "metaapi_unreachable",
+    "metaapi_temporarily_unavailable",
+}
 
 
 def _keys() -> tuple[str, ...]:
@@ -32,6 +37,27 @@ def _keys() -> tuple[str, ...]:
         or ""
     )
     return tuple(value.strip() for value in raw.split(",") if value.strip())
+
+
+async def _read_with_retries(
+    gateway: MetaApiProvisioningGateway,
+    *,
+    token: str,
+    account_id: str,
+    attempts: int = 4,
+):
+    last_error: MetaApiGatewayError | None = None
+    for _ in range(attempts):
+        try:
+            return await gateway.read_account(token=token, account_id=account_id)
+        except MetaApiGatewayError as exc:
+            last_error = exc
+            if exc.code not in _TRANSIENT:
+                raise
+            await asyncio.sleep(2)
+    if last_error is not None:
+        raise last_error
+    raise MetaApiGatewayError("metaapi_unreachable", retryable=True)
 
 
 async def main() -> None:
@@ -112,7 +138,9 @@ async def main() -> None:
         logger.error("One-time MT5 redeploy failed code=broker_keys_missing")
         return
 
-    gateway = MetaApiProvisioningGateway()
+    # Keep each MetaAPI request short. A single slow provisioning request must not
+    # consume the whole recovery window; transient failures are retried below.
+    gateway = MetaApiProvisioningGateway(timeout_seconds=15.0)
     service = Day30Mt5ConnectionService(
         session_factory=session_factory,
         cipher=MetaApiTokenCipher(keys),
@@ -121,22 +149,48 @@ async def main() -> None:
 
     try:
         token = service.resolve_platform_token()
-        remote = await gateway.read_account(token=token, account_id=remote_account_id)
+        remote = await _read_with_retries(
+            gateway,
+            token=token,
+            account_id=remote_account_id,
+        )
         if not (remote.state == "DEPLOYED" and remote.connection_status == "CONNECTED"):
-            await gateway._request(  # noqa: SLF001 - one-time controlled recovery
-                "POST",
-                f"/users/current/accounts/{remote_account_id}/redeploy",
-                token=token,
-                accepted_statuses={200, 201, 202, 204},
-            )
-            deadline = time.monotonic() + 120
+            try:
+                await gateway._request(  # noqa: SLF001 - one-time controlled recovery
+                    "POST",
+                    f"/users/current/accounts/{remote_account_id}/redeploy",
+                    token=token,
+                    accepted_statuses={200, 201, 202, 204},
+                )
+            except MetaApiGatewayError as exc:
+                # A timeout on the redeploy acknowledgement does not prove MetaAPI
+                # rejected the operation. Keep polling the account because the
+                # redeploy may already be running remotely.
+                if exc.code not in _TRANSIENT:
+                    raise
+                logger.warning("One-time MT5 redeploy acknowledgement transient code=%s", exc.code)
+
+            deadline = time.monotonic() + 180
+            last_remote = remote
             while time.monotonic() < deadline:
-                remote = await gateway.read_account(token=token, account_id=remote_account_id)
+                try:
+                    remote = await gateway.read_account(
+                        token=token,
+                        account_id=remote_account_id,
+                    )
+                    last_remote = remote
+                except MetaApiGatewayError as exc:
+                    if exc.code not in _TRANSIENT:
+                        raise
+                    await asyncio.sleep(3)
+                    continue
                 if remote.state in {"DEPLOY_FAILED", "REDEPLOY_FAILED"}:
                     raise MetaApiGatewayError("metaapi_deploy_failed")
                 if remote.state == "DEPLOYED" and remote.connection_status == "CONNECTED":
                     break
                 await asyncio.sleep(2)
+            else:
+                remote = last_remote
 
         service._write_remote_state(local_account_id, remote)  # noqa: SLF001
         connected = remote.state == "DEPLOYED" and remote.connection_status == "CONNECTED"
