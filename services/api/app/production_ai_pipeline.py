@@ -40,6 +40,22 @@ _LOCKED_RISK_CHAT_IDS = frozenset({-1001640332422, -1002068685216, -100165158330
 _PRECURSOR_REASON = "provider_precursor_wait_for_structured_signal"
 _OPEN_GOLD_SIDE = re.compile(r"\b(BUY|BUYS|SELL|SELLS)\b", re.IGNORECASE)
 
+# A complete new setup must never be swallowed by the management parser merely because
+# its field label says "Take Profit". These expressions identify trade geometry only;
+# they do not create or donate any numeric execution values.
+_STRUCTURED_SIDE = re.compile(r"\b(?:BUY(?:S|ING)?|SELL(?:S|ING)?|LONG|SHORT)\b", re.IGNORECASE)
+_STRUCTURED_ENTRY = re.compile(
+    r"\b(?:ENTER|ENTRY(?:\s+ZONE)?|CURRENT\s+PRICE)\b|(?im)^\s*(?:BUY|SELL)\s*:",
+    re.IGNORECASE | re.MULTILINE,
+)
+_STRUCTURED_STOP = re.compile(r"\b(?:SL|STOP\s*LOSS)\b", re.IGNORECASE)
+_STRUCTURED_TARGET = re.compile(r"\b(?:TP\s*1|TAKE\s*PROFIT)\b", re.IGNORECASE)
+
+# Gold providers commonly format prices as 4,353 or 4,349.841. The canonical ledger
+# stores the same numeric value without visual thousands separators. This normalisation
+# is policy-only: the original Telegram text remains untouched in the audit trail.
+_GROUPED_NUMBER = re.compile(r"(?<![\d.])\d{1,3}(?:,\d{3})+(?:\.\d+)?")
+
 
 class ProductionAiMessagePipeline(CanonicalAiMessagePipeline):
     """Single production AI/semantic pipeline with no legacy trade-parser fallback."""
@@ -134,6 +150,27 @@ class ProductionAiMessagePipeline(CanonicalAiMessagePipeline):
         return chat_id in _LOCKED_RISK_CHAT_IDS if chat_id is not None else False
 
     @staticmethod
+    def _looks_like_structured_trade(raw_text: str) -> bool:
+        """Identify a full trade-shaped message before management interpretation.
+
+        This protects literal new-trade field labels such as ``Take Profit`` from being
+        mistaken for commands to take profit on an older trade. Numeric values are still
+        extracted and verified later by the normal semantic and V1 mechanical gates.
+        """
+        value = raw_text or ""
+        return bool(
+            _STRUCTURED_SIDE.search(value)
+            and _STRUCTURED_ENTRY.search(value)
+            and _STRUCTURED_STOP.search(value)
+            and _STRUCTURED_TARGET.search(value)
+        )
+
+    @staticmethod
+    def _policy_text(raw_text: str, profile: str | None) -> str:
+        value = CanonicalAiMessagePipeline._policy_text(raw_text, profile)
+        return _GROUPED_NUMBER.sub(lambda match: match.group(0).replace(",", ""), value)
+
+    @staticmethod
     def _precursor_side(raw_text: str) -> str | None:
         """Return BUY/SELL only for a bare heads-up lacking trade geometry."""
         text_value = " ".join((raw_text or "").strip().split())
@@ -215,9 +252,13 @@ class ProductionAiMessagePipeline(CanonicalAiMessagePipeline):
         reply_context: str | None,
         previous_text: str | None,
     ) -> AiMessageDecision:
-        management = explicit_management_without_ai(raw_text)
-        if management is not None:
-            return management
+        # New trade definitions often contain the field label "Take Profit". Do not let
+        # the management parser turn those messages into a close/TP update before the
+        # new-trade parser has had a chance to inspect their full geometry.
+        if not self._looks_like_structured_trade(raw_text):
+            management = explicit_management_without_ai(raw_text)
+            if management is not None:
+                return management
 
         precursor_side = self._precursor_side(raw_text)
         if precursor_side is not None and self._is_precursor_source(source_id):
@@ -254,6 +295,31 @@ class ProductionAiMessagePipeline(CanonicalAiMessagePipeline):
             )
 
         profile = self._source_profile(source_id)
+        policy_text = self._policy_text(raw_text, profile)
+
+        # Explicit, mechanically parseable setups should survive a transient semantic
+        # supervisor outage. This is the same deterministic path used by the canonical
+        # parent pipeline and still passes through the final V1 mechanical policy before
+        # a Signal can be created.
+        deterministic = self._deterministic_fallback(
+            source_id=source_id,
+            telegram_message_id=telegram_message_id,
+            revision_index=revision_index,
+            raw_text=policy_text,
+        )
+        if deterministic.decision == "new_trade" and deterministic.action == "execute":
+            deterministic = self._apply_profile(
+                replace(
+                    deterministic,
+                    model="canonical-deterministic-v1",
+                    source="deterministic_no_ai",
+                    reason="deterministic_known_trade_no_ai",
+                ),
+                profile,
+            )
+            deterministic = self._enforce_locked_risk_semantics(source_id, deterministic)
+            return self._literal_order_type_precedence(deterministic, policy_text)
+
         if self._supervisor is None:
             return self._non_actionable_without_ai(
                 raw_text,
@@ -300,7 +366,7 @@ class ProductionAiMessagePipeline(CanonicalAiMessagePipeline):
 
         semantic = self._apply_profile(semantic, profile)
         semantic = self._enforce_locked_risk_semantics(source_id, semantic)
-        return self._literal_order_type_precedence(semantic, raw_text)
+        return self._literal_order_type_precedence(semantic, policy_text)
 
 
 __all__ = ["ProductionAiMessagePipeline"]
