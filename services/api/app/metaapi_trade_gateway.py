@@ -18,14 +18,12 @@ import httpx
 
 from app.metaapi_gateway import MetaApiGatewayError
 from app.metaapi_read_gateway import MetaApiReadGateway
+from app.weekend_trading_freeze import weekend_trading_frozen
 
 _REGION = re.compile(r"^[a-z0-9-]{2,64}$")
 _CLIENT_ID = re.compile(r"^[A-Za-z0-9]+_[A-Za-z0-9]+_[A-Za-z0-9]+$")
 _MAX_CLIENT_ID_LENGTH = 26
 
-# MetaAPI documents these as successful MetaTrader trade return codes. The broker
-# response remains authoritative; this only prevents a broker-accepted command such as
-# PLACED or DONE_PARTIAL from being misreported locally as a rejection.
 _SUCCESS_NUMERIC_CODES = {0, 10008, 10009, 10010, 10025}
 _SUCCESS_STRING_CODES = {
     "ERR_NO_ERROR",
@@ -177,10 +175,6 @@ class MetaApiTradeGateway:
                 stop_loss = current_stop
             if take_profit is None:
                 take_profit = current_tp
-
-            # Every provider trade is required to be protected by SL. A TP-only edit
-            # must therefore fail rather than mutate a broker position whose current SL
-            # cannot be proven. A missing TP is allowed only for a genuine runner.
             if requested_tp_change and stop_loss is None:
                 raise MetaApiGatewayError("broker_stop_loss_missing")
 
@@ -310,6 +304,8 @@ class MetaApiTradeGateway:
         token: str,
         json_body: dict[str, object],
     ) -> httpx.Response:
+        if weekend_trading_frozen():
+            raise MetaApiGatewayError("metaapi_weekend_frozen")
         try:
             async with httpx.AsyncClient(timeout=self._timeout) as client:
                 response = await client.request(
