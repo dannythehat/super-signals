@@ -12,6 +12,7 @@ import re
 import httpx
 
 from app.metaapi_gateway import MetaApiGatewayError
+from app.weekend_trading_freeze import weekend_trading_frozen
 
 _REGION = re.compile(r"^[a-z0-9-]{2,64}$")
 
@@ -87,6 +88,8 @@ class MetaApiMarginGateway:
         token: str,
         json_body: dict[str, object],
     ) -> httpx.Response:
+        if weekend_trading_frozen():
+            raise MetaApiGatewayError("metaapi_weekend_frozen")
         try:
             async with httpx.AsyncClient(timeout=self._timeout) as client:
                 response = await client.request(
