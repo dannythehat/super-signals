@@ -18,6 +18,7 @@ from app.aidy_context_client import AidyContextClient
 from app.aidy_market_client import AidyMarketClient
 from app.aidy_shadow_resolver import AidyShadowResolver
 from app.provider_context_attachment import ProviderContextAttachmentResolver
+from app.weekend_trading_freeze import market_week_frozen
 
 logger = logging.getLogger(__name__)
 
@@ -82,7 +83,6 @@ class AidyShadowRuntime:
             self._run(market_resolver, context_resolver, context_client),
             name="super-signals-provider-aidy-research",
         )
-        # Keep the established startup log contract for operational monitors/tests.
         print("AIDY Provider Lab resolver loop started", flush=True)
         logger.info("AIDY Provider Lab resolver loop started")
         return True
@@ -135,6 +135,19 @@ class AidyShadowRuntime:
         startup_pass = 0
         context_probe_ready = False
         while not self._stopping.is_set():
+            if market_week_frozen():
+                # No provider ingress exists during the weekly closure, so research
+                # enrichment has nothing time-critical to do. Stay quiet and resume
+                # automatically when standard XAU/USD trading reopens.
+                try:
+                    await asyncio.wait_for(
+                        self._stopping.wait(),
+                        timeout=self._poll_seconds,
+                    )
+                except TimeoutError:
+                    pass
+                continue
+
             if context_client is not None and not context_probe_ready:
                 context_probe_ready = await self._probe_current_context(context_client)
 
@@ -156,10 +169,6 @@ class AidyShadowRuntime:
 
             attached, context_failures, terminal_misses = 0, 0, 0
             if context_resolver is not None:
-                # Context attachment is deliberately isolated from M1 replay and from
-                # all broker/member execution. Transient AIDY failures retry later;
-                # terminal PIT-stale outcomes are persisted once.
-                # They cannot block either market resolution or live signal routing.
                 try:
                     attached, context_failures = await context_resolver.resolve_once()
                     terminal_misses = context_resolver.last_terminal_misses
