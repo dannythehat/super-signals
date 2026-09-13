@@ -24,6 +24,7 @@ from telethon.sessions import StringSession
 
 from app.models import Message, Source
 from app.telegram_crypto import TelegramSessionCipher
+from app.weekend_trading_freeze import market_week_frozen
 
 LISTENABLE_SOURCE_STATES = {"testing", "shadow", "live"}
 
@@ -118,7 +119,14 @@ class TelegramListenerManager:
             await self._stop_all_workers()
 
     def _load_plan(self) -> dict[UUID, ReaderListeningPlan]:
-        """Choose exactly one connected private reader for every listenable source."""
+        """Choose exactly one connected private reader for every listenable source.
+
+        During the canonical weekly XAU/USD market closure, return an empty plan.
+        Reconciliation then disconnects every Telethon worker, so provider groups are
+        not watched and no weekend Telegram traffic can reach persistence or AI.
+        """
+        if market_week_frozen():
+            return {}
 
         with self._session_factory() as session:
             rows = session.execute(
@@ -235,8 +243,6 @@ class TelegramListenerManager:
                 return
             source = source_by_chat_id.get(int(chat_id))
             if source is None:
-                # Defence in depth: even if Telethon ever broadens the event filter,
-                # unselected chats can never enter the persistence pipeline.
                 return
 
             message = getattr(event, "message", None)
@@ -285,10 +291,10 @@ class TelegramListenerManager:
 
     def _persist_message(self, captured: CapturedTelegramMessage) -> bool:
         """Persist one raw Telegram message and nothing further down the pipeline."""
+        if market_week_frozen(captured.posted_at):
+            return False
 
         with self._session_factory() as session:
-            # Re-check the source state at write time. A message racing with a PAUSE
-            # transition must not be admitted after the source has been paused.
             source = session.scalar(
                 select(Source).where(
                     Source.id == captured.source_id,
@@ -319,8 +325,6 @@ class TelegramListenerManager:
             try:
                 session.commit()
             except IntegrityError:
-                # Telegram reconnects can replay an already seen update. The unique
-                # source/message key makes that replay harmless.
                 session.rollback()
                 return False
             return True
