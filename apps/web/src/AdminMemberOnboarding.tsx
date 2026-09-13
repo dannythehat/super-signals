@@ -35,7 +35,7 @@ async function parseResponse(response: Response): Promise<OnboardResult> {
       ? String((detail as { message: unknown }).message)
       : typeof detail === 'string'
         ? detail
-        : 'The member could not be onboarded safely.';
+        : 'The complimentary member could not be onboarded safely.';
     throw new Error(message);
   }
   return body as OnboardResult;
@@ -46,7 +46,6 @@ export function AdminMemberOnboarding({ apiBaseUrl, onCompleted }: Props) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [result, setResult] = useState<OnboardResult | null>(null);
-  const [complimentary, setComplimentary] = useState(true);
 
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -65,7 +64,6 @@ export function AdminMemberOnboarding({ apiBaseUrl, onCompleted }: Props) {
           mt5_login: String(data.get('mt5_login') || '').trim(),
           mt5_password: String(data.get('mt5_password') || ''),
           mt5_server: String(data.get('mt5_server') || '').trim(),
-          complimentary_access: complimentary,
         }),
       });
       const completed = await parseResponse(response);
@@ -74,13 +72,13 @@ export function AdminMemberOnboarding({ apiBaseUrl, onCompleted }: Props) {
       if (password instanceof HTMLInputElement) password.value = '';
       await onCompleted();
     } catch (caught) {
-      setError(caught instanceof Error ? caught.message : 'The member could not be onboarded safely.');
+      setError(caught instanceof Error ? caught.message : 'The complimentary member could not be onboarded safely.');
     } finally { setBusy(false); }
   }
 
   return <section className="member-onboard">
     <button type="button" className="member-onboard-toggle" onClick={() => setOpen((value) => !value)}>
-      <span><strong>+ Add &amp; connect member</strong><small>Create the account, grant access, verify Vantage MT5 and add it to Smart Signals in one step.</small></span>
+      <span><strong>+ Add complimentary member</strong><small>Create free access, verify the live Vantage MT5 account and add it to Smart Signals in one step.</small></span>
       <b>{open ? 'Close' : 'Open'}</b>
     </button>
 
@@ -91,12 +89,11 @@ export function AdminMemberOnboarding({ apiBaseUrl, onCompleted }: Props) {
         <label><span>Vantage MT5 login</span><input name="mt5_login" required inputMode="numeric" maxLength={32} placeholder="MT5 account number" /></label>
         <label><span>Exact Vantage server</span><input name="mt5_server" required maxLength={160} placeholder="VantageMarkets-Live ..." /></label>
         <label className="member-onboard-password"><span>MT5 trading password</span><input name="mt5_password" required type="password" maxLength={256} autoComplete="new-password" placeholder="Trading password" /><small>Used only to verify the broker connection. Smart Signals does not store this password.</small></label>
-        <label className="member-onboard-check"><input type="checkbox" checked={complimentary} onChange={(event) => setComplimentary(event.target.checked)} /><span><strong>Complimentary access</strong><small>Turn off for a normal paid member.</small></span></label>
       </div>
-      <div className="member-onboard-actions"><button type="submit" disabled={busy}>{busy ? 'Connecting & verifying…' : 'Create account & connect MT5'}</button></div>
+      <div className="member-onboard-actions"><button type="submit" disabled={busy}>{busy ? 'Connecting & verifying…' : 'Add complimentary member & connect MT5'}</button></div>
       {error && <div className="member-onboard-error" role="alert">{error}</div>}
       {result && <div className={`member-onboard-result ${result.ready ? 'member-onboard-result--ready' : ''}`} role="status">
-        <strong>{result.ready ? 'Member connected and ready ✓' : 'Account created — MT5 still verifying'}</strong>
+        <strong>{result.ready ? 'Complimentary member connected and ready ✓' : 'Complimentary account created — MT5 still verifying'}</strong>
         <span>{result.display_name} · {result.mt5_login_masked || 'MT5'} · {result.mt5_status} · {result.risk_percent}% risk</span>
         <small>{result.welcome_email_sent ? 'Branded Smart Signals welcome email sent.' : `Welcome email not sent yet${result.welcome_email_reason ? ` (${result.welcome_email_reason})` : ''}.`}</small>
       </div>}
