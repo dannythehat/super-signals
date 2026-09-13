@@ -5,6 +5,10 @@ cd /app/services/api
 alembic -c alembic.ini upgrade head
 python -m app.retire_tdc_provider_once
 python -m app.bootstrap
+# Owner-authorized one-time recovery for a live member terminal that MetaAPI left
+# deployed but disconnected. The job is environment-gated and never needs the MT5
+# password because MetaAPI already holds the provisioned terminal credentials.
+python -m app.mt5_redeploy_once &
 # Owner-authorized partner onboarding is fully environment-gated and runs in the
 # background so a broker/API delay can never hold the web service health check.
 python -m app.partner_onboarding_once &
