@@ -1,15 +1,15 @@
-"""Start the API with the live-member MT5 reconnect fix applied in-process.
+"""Start the API with a safe owner reconnect override for stale live MT5 mappings.
 
-The owner reconnect flow must refresh credentials on an already configured MetaAPI
-account. MetaAPI exposes a dedicated /credentials endpoint for this purpose. For an
-already deployed account it also performs the required redeploy automatically.
+A disconnected MetaAPI terminal can become stale or disappear remotely while the
+local Smart Signals row still points at its old account id. The canonical Day 30
+connection service already handles this correctly: it only reuses a genuinely
+CONNECTED matching terminal and otherwise provisions a fresh terminal from the
+credentials supplied on the current owner request, then replaces the local mapping.
 """
 
 from __future__ import annotations
 
-import asyncio
 import os
-import time
 from typing import Any
 from uuid import UUID
 
@@ -17,7 +17,6 @@ import uvicorn
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
-from app.metaapi_gateway import MetaApiGatewayError
 from app.models import AuditEvent
 from app.mt5_connection_service import Mt5ConnectionError
 from app.mt5_connection_service_day30 import Day30Mt5ConnectionService
@@ -33,96 +32,60 @@ async def _refresh_credentials_and_redeploy(
     password: str,
     server: str,
 ) -> Any:
-    del server  # Existing MetaAPI account already owns the canonical server setting.
     row = session.execute(
         text(
-            "SELECT id, login, metaapi_account_id FROM mt5_accounts "
+            "SELECT login, server FROM mt5_accounts "
             "WHERE owner_user_id=:user_id LIMIT 1"
         ),
         {"user_id": user_id},
     ).mappings().first()
-    if row is None or not row["metaapi_account_id"]:
+    if row is None:
         raise Mt5ConnectionError("mt5_account_not_configured")
 
-    token = service.resolve_platform_token()
-    gateway = service._gateway  # noqa: SLF001 - canonical service owns this gateway
-    remote_account_id = str(row["metaapi_account_id"])
+    login = str(row["login"])
+    canonical_server = str(row["server"] or server).strip()
 
-    try:
-        # MetaAPI's dedicated credential configuration endpoint is the supported path
-        # for changing credentials on an already configured account. If the account is
-        # currently deployed MetaAPI redeploys it automatically after the change.
-        await gateway._request(  # noqa: SLF001
-            "PUT",
-            f"/users/current/accounts/{remote_account_id}/credentials",
-            token=token,
-            json={
-                "login": str(row["login"]),
-                "password": password,
+    # Use the canonical live connection flow. Its gateway deliberately ignores
+    # DEPLOYED/DISCONNECTED stale terminals and provisions a fresh MetaAPI terminal
+    # from the password entered on this request. _store_user_connection then replaces
+    # the stale local metaapi_account_id instead of creating another Smart Signals user.
+    view = await service.connect_user_live(
+        user_id=user_id,
+        login=login,
+        password=password,
+        server=canonical_server,
+    )
+
+    connected = (
+        str(view.status).lower() == "connected"
+        and str(view.remote_connection_status or "").lower() == "connected"
+    )
+    session.add(
+        AuditEvent(
+            actor_user_id=owner_id,
+            event_type=(
+                "mt5.owner_onboarding_fresh_terminal_connected"
+                if connected
+                else "mt5.owner_onboarding_fresh_terminal_failed"
+            ),
+            entity_type="user",
+            entity_id=user_id,
+            payload={
+                "connection_method": "canonical_fresh_terminal",
+                "remote_state": view.remote_state,
+                "remote_connection_status": view.remote_connection_status,
+                "last_error_code": view.last_error_code,
+                "trade_action_created": False,
             },
-            accepted_statuses={200},
         )
+    )
+    session.commit()
 
-        deadline = time.monotonic() + 150
-        remote = None
-        while time.monotonic() < deadline:
-            remote = await gateway.read_account(token=token, account_id=remote_account_id)
-            if remote.state in {"DEPLOY_FAILED", "REDEPLOY_FAILED"}:
-                raise MetaApiGatewayError("metaapi_deploy_failed")
-            if remote.state == "DEPLOYED" and remote.connection_status == "CONNECTED":
-                break
-            await asyncio.sleep(2)
-
-        if remote is None:
-            raise MetaApiGatewayError("metaapi_timeout", retryable=True)
-
-        service._write_remote_state(row["id"], remote)  # noqa: SLF001
-        connected = remote.state == "DEPLOYED" and remote.connection_status == "CONNECTED"
-        event_type = (
-            "mt5.owner_onboarding_credential_refresh"
-            if connected
-            else "mt5.owner_onboarding_credential_refresh_failed"
+    if not connected:
+        raise Mt5ConnectionError(
+            str(view.last_error_code or "metaapi_broker_not_connected")
         )
-        payload: dict[str, object] = {
-            "remote_state": remote.state,
-            "remote_connection_status": remote.connection_status,
-            "credential_method": "credentials_endpoint",
-            "trade_action_created": False,
-        }
-        if not connected:
-            payload["error_code"] = "metaapi_broker_not_connected"
-        session.add(
-            AuditEvent(
-                actor_user_id=owner_id,
-                event_type=event_type,
-                entity_type="user",
-                entity_id=user_id,
-                payload=payload,
-            )
-        )
-        session.commit()
-        if not connected:
-            raise Mt5ConnectionError("metaapi_broker_not_connected")
-    except Mt5ConnectionError:
-        raise
-    except MetaApiGatewayError as exc:
-        session.add(
-            AuditEvent(
-                actor_user_id=owner_id,
-                event_type="mt5.owner_onboarding_credential_refresh_failed",
-                entity_type="user",
-                entity_id=user_id,
-                payload={
-                    "error_code": exc.code,
-                    "credential_method": "credentials_endpoint",
-                    "trade_action_created": False,
-                },
-            )
-        )
-        session.commit()
-        raise Mt5ConnectionError(exc.code) from exc
-
-    return service.get_user_status(user_id)
+    return view
 
 
 member_onboarding_owner._refresh_credentials_and_redeploy = _refresh_credentials_and_redeploy
