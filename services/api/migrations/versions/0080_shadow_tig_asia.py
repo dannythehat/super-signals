@@ -10,6 +10,7 @@ member accounts.
 """
 
 from collections.abc import Sequence
+import json
 
 import sqlalchemy as sa
 from alembic import op
@@ -49,6 +50,18 @@ def upgrade() -> None:
     if row is None:
         raise RuntimeError("tig_asia_source_not_found")
 
+    payload = json.dumps(
+        {
+            "source_title": "TIG’s Asia Trades",
+            "previous_status": str(row["previous_status"]),
+            "status": "shadow",
+            "actor_role": "system_migration",
+            "actor_display_name": "Super Signals migration",
+            "monitoring_started": True,
+            "live_trading_enabled": False,
+            "reason": "owner_disabled_after_september_pnl_review",
+        }
+    )
     bind.execute(
         sa.text(
             """
@@ -57,24 +70,11 @@ def upgrade() -> None:
                 'telegram.source_status_changed',
                 'source',
                 :source_id,
-                jsonb_build_object(
-                    'source_title', 'TIG’s Asia Trades',
-                    'previous_status', :previous_status,
-                    'status', 'shadow',
-                    'actor_role', 'system_migration',
-                    'actor_display_name', 'Super Signals migration',
-                    'changed_at', now(),
-                    'monitoring_started', true,
-                    'live_trading_enabled', false,
-                    'reason', 'owner_disabled_after_september_pnl_review'
-                )
+                CAST(:payload AS jsonb)
             )
             """
         ),
-        {
-            "source_id": row["id"],
-            "previous_status": row["previous_status"],
-        },
+        {"source_id": row["id"], "payload": payload},
     )
 
 
