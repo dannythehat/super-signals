@@ -1,8 +1,8 @@
-"""Owner-only manual market close for the paper/demo account.
+"""Owner manual market close for connected Smart Signals MT5 accounts.
 
-This is an explicit human control from the Super Signals UI. It closes only mapped
-Super Signals positions by their immutable broker position IDs. It never closes by
-symbol, never opens/reopens anything, and refuses live-money MT5 accounts.
+This is an explicit human control from the Smart Signals UI. It closes only mapped
+Smart Signals positions by their immutable broker position IDs. It never closes by
+symbol and never opens/reopens anything. Live and demo accounts use the same path.
 
 Manual close is deliberately retry-safe. PostgreSQL advisory locks serialize close
 requests for the same mapped position, local state is re-read after the lock is acquired,
@@ -31,6 +31,7 @@ from app.mt5_crypto import BrokerCredentialDecryptionError, MetaApiTokenCipher
 
 _EXIT_ENTRY_TYPES = {"DEAL_ENTRY_OUT", "DEAL_ENTRY_OUT_BY"}
 _AMBIGUOUS_CLOSE_RECHECK_DELAYS = (0.25, 0.75, 1.5)
+_ALLOWED_ACCOUNT_ENVIRONMENTS = {"demo", "live"}
 
 
 class OwnerManualCloseError(RuntimeError):
@@ -90,7 +91,7 @@ def _broker_time(value: object | None, fallback: datetime) -> datetime:
 
 
 class OwnerManualCloseService:
-    """Close one, one signal, or all mapped positions on the Owner demo account."""
+    """Close one position, one signal, or all mapped positions on a connected MT5 account."""
 
     def __init__(
         self,
@@ -141,8 +142,8 @@ class OwnerManualCloseService:
         if row is None or str(row["status"]) != "connected":
             raise OwnerManualCloseError("owner_manual_mt5_not_connected")
         environment = str(row["account_environment"] or "").strip().lower()
-        if environment != "demo":
-            raise OwnerManualCloseError("owner_manual_close_demo_only")
+        if environment not in _ALLOWED_ACCOUNT_ENVIRONMENTS:
+            raise OwnerManualCloseError("owner_manual_account_environment_invalid")
         return _Account(
             account_id=str(row["metaapi_account_id"]),
             account_environment=environment,
@@ -382,6 +383,7 @@ class OwnerManualCloseService:
                         user_id=user_id,
                         position=position,
                         scope=f"{scope}_reconciled",
+                        account_environment=account.account_environment,
                         exit_price=exit_price,
                         occurred_at=occurred_at,
                     )
@@ -420,6 +422,7 @@ class OwnerManualCloseService:
                     user_id=user_id,
                     position=position,
                     scope=scope,
+                    account_environment=account.account_environment,
                     exit_price=exit_price,
                     occurred_at=occurred_at,
                 )
@@ -448,6 +451,7 @@ class OwnerManualCloseService:
         user_id: UUID,
         position: _Position,
         scope: str,
+        account_environment: str,
         exit_price: Decimal | None,
         occurred_at: datetime,
     ) -> None:
@@ -490,10 +494,10 @@ class OwnerManualCloseService:
                         "scope": scope,
                         "signal_id": str(position.signal_id),
                         "broker_position_id": position.broker_position_id,
-                        "account_environment": "demo",
+                        "account_environment": account_environment,
                         "exit_price": str(exit_price) if exit_price is not None else None,
                         "occurred_at": occurred_at.isoformat(),
-                        "initiated_from": "super_signals_owner_ui",
+                        "initiated_from": "smart_signals_owner_ui",
                         "provider_instruction": False,
                         "retry_safe": True,
                     },
