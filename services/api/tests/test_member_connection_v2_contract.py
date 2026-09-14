@@ -6,6 +6,9 @@ import asyncio
 
 import pytest
 
+# Production starts through app.serve_runtime, which deliberately registers the
+# universal Connection V2 routes before app.main builds the FastAPI application.
+from app.routes import member_connection_v2 as _member_connection_v2  # noqa: F401
 from app.main import create_app
 from app.metaapi_gateway import MetaApiGatewayError
 from app.routes.member_connection_v2 import (
@@ -40,7 +43,7 @@ class _Service:
         self._gateway = _KnownServerGateway(payload)
 
 
-def test_connection_v2_routes_are_registered_in_normal_api() -> None:
+def test_connection_v2_routes_are_registered_in_production_api() -> None:
     application = create_app()
     route_methods = {
         (route.path, method)
