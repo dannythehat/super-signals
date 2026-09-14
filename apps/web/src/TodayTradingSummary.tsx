@@ -85,7 +85,7 @@ export function TodayTradingSummary({ apiBaseUrl, currency, timezoneName }: Prop
 
   if (!summary) {
     return <section className="today-trading-card today-trading-card--loading" aria-label="Today's trading summary" aria-live="polite">
-      <div><span>Today</span><strong>{stale ? 'Live summary temporarily unavailable' : 'Loading today's trades…'}</strong></div>
+      <div><span>Today</span><strong>{stale ? 'Live summary temporarily unavailable' : 'Loading today’s trades…'}</strong></div>
     </section>;
   }
 
