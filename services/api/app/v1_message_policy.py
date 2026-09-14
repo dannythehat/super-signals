@@ -71,12 +71,21 @@ _RESULT_ONLY = re.compile(
     re.IGNORECASE,
 )
 
+# Profile id for a source whose instrument is declared in data rather than in this
+# file. It carries an instrument identity and nothing else: no grammar, and, like every
+# profile, no entry, SL, TP, order type or size.
+DECLARED_XAUUSD_PROFILE = "declared_xauusd"
+
+# Hand-written profiles that supply a gold identity. Kept as they are so no existing
+# source changes behaviour; new sources declare their instrument in the database
+# instead of being added here.
 _XAUUSD_SOURCE_PROFILES = {
     "tgc_xauusd",
     "tdc_xauusd",
     "tig_xauusd",
     "sureshot_xauusd",
     "matthew_xauusd",
+    DECLARED_XAUUSD_PROFILE,
 }
 
 

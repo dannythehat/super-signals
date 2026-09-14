@@ -24,7 +24,7 @@ from app.ai_message_pipeline import AiPipelineResult
 from app.ai_message_supervisor import AiMessageDecision
 from app.ai_source_aware_pipeline import SourceAwareAiMessagePipeline
 from app.provider_language_profiles import execution_profile_id
-from app.v1_message_policy import apply_v1_message_policy
+from app.v1_message_policy import DECLARED_XAUUSD_PROFILE, apply_v1_message_policy
 
 _LITERAL_PENDING = re.compile(
     r"\b(?:BUY|SELL)\s+(?:LIMITS?|STOPS?)(?:\s+ORDER)?\b|\bPENDING\b",
@@ -99,17 +99,34 @@ class CanonicalAiMessagePipeline(SourceAwareAiMessagePipeline):
     """Only production decision transaction for every provider revision."""
 
     def _source_profile(self, source_id: UUID) -> str | None:
+        """Resolve the language profile for a source, or its declared instrument.
+
+        A hand-written profile carries grammar knowledge as well as instrument identity,
+        so it keeps priority. A source with no profile but an owner-set
+        ``declared_instrument`` resolves to DECLARED_XAUUSD_PROFILE, which the execution
+        policy accepts as an instrument identity and nothing else. That is how a group
+        connected after the hardcoded list was written can publish "Buy at 4392.63 SL
+        4377.63" and be understood, without anyone editing a dictionary in code.
+        """
         with self._session_factory() as session:
-            source_name = session.execute(
+            row = session.execute(
                 text(
                     """
-                    SELECT COALESCE(NULLIF(chat_title,''),NULLIF(source_alias,''))
+                    SELECT COALESCE(NULLIF(chat_title,''),NULLIF(source_alias,'')) AS name,
+                           declared_instrument
                     FROM sources WHERE id=:source_id LIMIT 1
                     """
                 ),
                 {"source_id": source_id},
-            ).scalar_one_or_none()
-        return execution_profile_id(str(source_name) if source_name else None)
+            ).mappings().one_or_none()
+        if row is None:
+            return None
+        profile = execution_profile_id(str(row["name"]) if row["name"] else None)
+        if profile is not None:
+            return profile
+        if str(row["declared_instrument"] or "").strip().upper() == "XAUUSD":
+            return DECLARED_XAUUSD_PROFILE
+        return None
 
     @staticmethod
     def _apply_profile(decision: AiMessageDecision, profile: str | None) -> AiMessageDecision:
