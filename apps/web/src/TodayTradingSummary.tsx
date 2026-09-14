@@ -63,14 +63,14 @@ export function TodayTradingSummary({ apiBaseUrl, currency, timezoneName }: Prop
       setSummary(next);
       setStale(false);
     } catch {
+      // Never clear an already-confirmed summary because one refresh failed. The rest
+      // of the app remains fully usable and this card quietly retries later.
       setStale(true);
     }
   }, [apiBaseUrl, timezoneName]);
 
   useEffect(() => {
     void refresh();
-    // This endpoint is ledger-only. Once a minute is enough for background display;
-    // focus/visibility events still refresh immediately when the user returns.
     const readInterval = window.setInterval(() => void refresh(), 60_000);
     const onFocus = () => void refresh();
     const onVisibility = () => { if (document.visibilityState === 'visible') void refresh(); };
@@ -85,7 +85,7 @@ export function TodayTradingSummary({ apiBaseUrl, currency, timezoneName }: Prop
 
   if (!summary) {
     return <section className="today-trading-card today-trading-card--loading" aria-label="Today's trading summary" aria-live="polite">
-      <div><span>Today</span><strong>{stale ? 'Updating…' : 'Loading…'}</strong></div>
+      <div><span>Today</span><strong>{stale ? 'Live summary temporarily unavailable' : 'Loading today's trades…'}</strong></div>
     </section>;
   }
 
@@ -109,7 +109,7 @@ export function TodayTradingSummary({ apiBaseUrl, currency, timezoneName }: Prop
     </div>
     <small>
       {stale
-        ? 'Live values are refreshing — last confirmed values shown'
+        ? 'Last confirmed values shown · live refresh will retry automatically'
         : `Trading day uses your local timezone · ${summary.timezone}`}
     </small>
   </section>;
