@@ -20,7 +20,7 @@ type Props = {
   apiBaseUrl: string;
   currency: string;
   timezoneName: string;
-  active: boolean;
+  active?: boolean;
 };
 
 function money(value: number, currency: string): string {
@@ -47,7 +47,7 @@ function pnlClass(value: number): string {
   return value > 0 ? 'is-positive' : 'is-negative';
 }
 
-export function TodayTradingSummary({ apiBaseUrl, currency, timezoneName, active }: Props) {
+export function TodayTradingSummary({ apiBaseUrl, currency, timezoneName, active = true }: Props) {
   const [summary, setSummary] = useState<TodaySummary | null>(null);
   const [stale, setStale] = useState(false);
 
