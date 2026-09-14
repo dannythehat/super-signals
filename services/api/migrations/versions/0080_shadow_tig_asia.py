@@ -48,7 +48,13 @@ def upgrade() -> None:
         {"chat_id": _TIG_CHAT_ID},
     ).mappings().one_or_none()
     if row is None:
-        raise RuntimeError("tig_asia_source_not_found")
+        # No TIG source to move. On production this migration already ran against the
+        # real row, so this branch only happens where that provider was never ingested
+        # -- a fresh database, a new environment, or the integration suite rebuilding
+        # the schema from base. Raising there made the whole chain unreproducible from
+        # scratch and left every later database test erroring against a half-built
+        # schema. A data migration whose target does not exist has nothing to do.
+        return
 
     payload = json.dumps(
         {
