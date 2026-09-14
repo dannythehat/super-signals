@@ -1,4 +1,4 @@
-"""Owner-only UI controls for manually closing demo MT5 positions at market."""
+"""Owner-only UI controls for manually closing mapped MT5 positions at market."""
 
 from __future__ import annotations
 
@@ -35,7 +35,7 @@ def _owner(identity: dict[str, Any]) -> None:
             status_code=status.HTTP_403_FORBIDDEN,
             detail={
                 "code": "owner_manual_close_owner_only",
-                "message": "Only the Owner Admin can manually close Super Signals positions.",
+                "message": "Only the Owner Admin can manually close Smart Signals positions.",
             },
         )
 
@@ -75,13 +75,13 @@ def _http_error(exc: OwnerManualCloseError) -> HTTPException:
         "owner_manual_all_not_open",
     }:
         code = status.HTTP_409_CONFLICT
-        message = "Those Super Signals positions are no longer open. Refresh the account view."
-    elif exc.code == "owner_manual_close_demo_only":
-        code = status.HTTP_403_FORBIDDEN
-        message = "Manual close from Super Signals is enabled for the Owner demo account only."
+        message = "Those Smart Signals positions are no longer open. Refresh the account view."
     elif exc.code == "owner_manual_mt5_not_connected":
         code = status.HTTP_409_CONFLICT
-        message = "The Owner demo MT5 account is not connected."
+        message = "The MT5 account is not connected."
+    elif exc.code == "owner_manual_account_environment_invalid":
+        code = status.HTTP_409_CONFLICT
+        message = "This MT5 account has an unsupported account environment."
     elif exc.retryable:
         code = status.HTTP_503_SERVICE_UNAVAILABLE
         message = "The broker did not confirm the close. No unconfirmed close is shown as completed."
