@@ -158,7 +158,7 @@ export function OwnerCloseAllButton({ apiBaseUrl, openCount }: CloseAllProps) {
 
   return <div className="owner-close-all">
     <button type="button" disabled={closing} onClick={() => void closeAll()}>{closing ? 'Closing all safely…' : `Close all ${openCount} open positions now`}</button>
-    <small>Owner Admin · Demo only · closes mapped Smart Signals positions at market</small>
+    <small>Owner Admin · connected MT5 · closes only mapped Smart Signals positions at market</small>
     {error && <small className="owner-inline-close__error" role="alert">{error}</small>}
   </div>;
 }
