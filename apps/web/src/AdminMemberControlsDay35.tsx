@@ -55,18 +55,27 @@ type RevokeResult = {
   manual_or_unmapped_positions_touched: boolean;
 };
 
-type ReconnectResult = {
+type ConnectionAccepted = {
   user_id: string;
-  email: string;
-  display_name: string;
-  mt5_login_masked: string | null;
-  mt5_server: string | null;
-  mt5_status: string;
+  attempt_id: string;
+  status: 'connecting';
+  stage: string;
+  mt5_login_masked: string;
+  mt5_server: string;
+};
+
+type ConnectionStatus = {
+  user_id: string;
+  attempt_id: string | null;
+  status: string;
+  stage: string;
+  error_code: string | null;
+  mt5_status: string | null;
   remote_state: string | null;
   remote_connection_status: string | null;
-  trading_status: string;
-  risk_percent: number;
-  ready: boolean;
+  trading_status: string | null;
+  risk_percent: number | null;
+  updated_at: string | null;
 };
 
 type Props = { apiBaseUrl: string };
@@ -102,6 +111,26 @@ async function readJson<T>(response: Response): Promise<T> {
   return body as T;
 }
 
+function wait(ms: number): Promise<void> {
+  return new Promise((resolve) => window.setTimeout(resolve, ms));
+}
+
+function connectionStageLabel(stage: string): string {
+  switch (stage) {
+    case 'queued': return 'Queued securely';
+    case 'server_preflight': return 'Checking exact Vantage server';
+    case 'stale_terminal_cleanup': return 'Cleaning previous connection state';
+    case 'provisioning': return 'Creating secure MT5 terminal';
+    case 'broker_connect': return 'Connecting directly to Vantage';
+    case 'redeploy_verification': return 'Verifying broker session';
+    case 'connected':
+    case 'connected_existing': return 'Connected';
+    case 'failed': return 'Connection failed';
+    case 'interrupted': return 'Connection interrupted';
+    default: return 'Connecting';
+  }
+}
+
 function riskLabel(user: ManagedUser): string {
   if (user.risk_percent === null) return 'Not configured';
   return `${user.risk_percent}%${user.allow_double_lot ? ' · Double-lot enabled' : ''}`;
@@ -128,6 +157,8 @@ export function AdminMemberControlsDay35({ apiBaseUrl }: Props) {
   const [reconnectPassword, setReconnectPassword] = useState('');
   const [reconnectBusy, setReconnectBusy] = useState(false);
   const [reconnectError, setReconnectError] = useState<string | null>(null);
+  const [reconnectAttempt, setReconnectAttempt] = useState<ConnectionAccepted | null>(null);
+  const [reconnectStatus, setReconnectStatus] = useState<ConnectionStatus | null>(null);
 
   const accessByUserId = useMemo(
     () => new Map(memberAccess.map((access) => [access.user_id, access])),
@@ -177,35 +208,84 @@ export function AdminMemberControlsDay35({ apiBaseUrl }: Props) {
     setReconnectUser(user);
     setReconnectPassword('');
     setReconnectError(null);
+    setReconnectAttempt(null);
+    setReconnectStatus(null);
     setNotice(null);
     setError(null);
   }
 
+  async function pollReconnect(user: ManagedUser, started: ConnectionAccepted): Promise<void> {
+    for (let attempt = 0; attempt < 150; attempt += 1) {
+      try {
+        const response = await fetch(`${apiBaseUrl}/admin/accounts/members/${user.user_id}/connection-v2`, {
+          credentials: 'include', headers: { Accept: 'application/json' }, cache: 'no-store',
+        });
+        const current = await readJson<ConnectionStatus>(response);
+        if (current.attempt_id !== started.attempt_id) {
+          await wait(2000);
+          continue;
+        }
+        setReconnectStatus(current);
+        if (current.status === 'connected') {
+          setNotice(`${user.display_name || user.email} MT5 is connected. Automation is active at ${current.risk_percent ?? 1}% risk.`);
+          setReconnectError(null);
+          setReconnectUser(null);
+          setReconnectAttempt(null);
+          setReconnectPassword('');
+          void load();
+          return;
+        }
+        if (current.status === 'failed' || current.status === 'interrupted') {
+          const code = current.error_code || 'mt5_connection_failed';
+          setReconnectError(`MT5 connection failed at ${connectionStageLabel(current.stage)} (${code}). Trading remains stopped.`);
+          void load();
+          return;
+        }
+      } catch (caught) {
+        setReconnectError(caught instanceof Error ? caught.message : 'Could not read the MT5 connection status.');
+      }
+      await wait(2000);
+    }
+    setReconnectError('The MT5 connection is still processing. You can close this window and check the member card again.');
+  }
+
   async function reconnectMt5() {
     if (!reconnectUser || !reconnectPassword) return;
+    const targetUser = reconnectUser;
     setReconnectBusy(true);
     setReconnectError(null);
     setNotice(null);
+    setReconnectStatus(null);
     try {
-      const response = await fetch(`${apiBaseUrl}/admin/accounts/members/${reconnectUser.user_id}/reconnect-mt5`, {
+      const response = await fetch(`${apiBaseUrl}/admin/accounts/members/${targetUser.user_id}/connection-v2`, {
         method: 'POST',
         credentials: 'include',
         cache: 'no-store',
         headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
         body: JSON.stringify({ mt5_password: reconnectPassword }),
       });
-      const completed = await readJson<ReconnectResult>(response);
-      if (completed.ready) {
-        setNotice(`${completed.display_name} MT5 is connected. Automation is active at ${completed.risk_percent}% risk.`);
-        setReconnectUser(null);
-        setReconnectPassword('');
-      } else {
-        setReconnectError(`Broker session is still ${completed.remote_connection_status || completed.mt5_status}. Trading remains stopped.`);
-      }
-      await load();
+      const started = await readJson<ConnectionAccepted>(response);
+      setReconnectAttempt(started);
+      setReconnectStatus({
+        user_id: started.user_id,
+        attempt_id: started.attempt_id,
+        status: 'connecting',
+        stage: started.stage,
+        error_code: null,
+        mt5_status: 'connecting',
+        remote_state: null,
+        remote_connection_status: null,
+        trading_status: 'stopped',
+        risk_percent: 1,
+        updated_at: null,
+      });
+      setReconnectPassword('');
+      setReconnectBusy(false);
+      void load();
+      void pollReconnect(targetUser, started);
+      return;
     } catch (caught) {
       setReconnectError(caught instanceof Error ? caught.message : 'MT5 reconnect failed safely.');
-      await load();
     } finally {
       setReconnectBusy(false);
     }
@@ -237,6 +317,7 @@ export function AdminMemberControlsDay35({ apiBaseUrl }: Props) {
 
   const activeSubscriptions = memberAccess.filter((access) => access.active).length;
   const pausedSubscriptions = memberAccess.filter((access) => access.status === 'suspended').length;
+  const reconnectRunning = reconnectStatus?.status === 'connecting';
 
   return <section className="day35-members" aria-labelledby="day35-members-title">
     <div className="workspace-page-header"><div><p className="eyebrow">Owner controls</p><h1 id="day35-members-title">Members &amp; account access</h1><p className="intro">Pause a member when payment is due without deleting their MT5 connection, credentials, settings or history. Resume restores the saved setup. Full revocation remains a separate confirmed action.</p></div><span className="workspace-role-pill">OWNER ONLY</span></div>
@@ -276,10 +357,11 @@ export function AdminMemberControlsDay35({ apiBaseUrl }: Props) {
     {reconnectUser && <div className="day35-confirm-backdrop" role="presentation"><section className="day35-confirm-card" role="dialog" aria-modal="true" aria-labelledby="day35-reconnect-dialog-title">
       <h2 id="day35-reconnect-dialog-title">Reconnect {reconnectUser.display_name || reconnectUser.email}</h2>
       <p>This reconnects the existing live MT5 profile. It does not create another user. Existing account: <strong>{reconnectUser.mt5_login_masked}</strong>{reconnectUser.mt5_server ? <> · {reconnectUser.mt5_server}</> : null}.</p>
-      <label>MT5 trading password<input type="password" value={reconnectPassword} onChange={(event) => setReconnectPassword(event.target.value)} autoComplete="new-password" /></label>
+      {!reconnectAttempt && <label>MT5 trading password<input type="password" value={reconnectPassword} onChange={(event) => setReconnectPassword(event.target.value)} autoComplete="new-password" /></label>}
+      {reconnectStatus && <div className="day35-members-result" role="status"><strong>{connectionStageLabel(reconnectStatus.stage)}</strong><span>{reconnectStatus.status === 'connecting' ? 'Connection continues securely in the background.' : reconnectStatus.status}</span><small>Automation remains stopped until Vantage is genuinely connected.</small></div>}
       {reconnectError && <div className="day35-members-error" role="alert">{reconnectError}</div>}
-      <div className="day35-confirm-actions"><button type="button" className="button button--quiet" onClick={() => { setReconnectUser(null); setReconnectPassword(''); setReconnectError(null); }} disabled={reconnectBusy}>Cancel</button><button type="button" className="day35-resume-button" disabled={reconnectBusy || !reconnectPassword} onClick={() => void reconnectMt5()}>{reconnectBusy ? 'Reconnecting & verifying…' : 'Reconnect MT5'}</button></div>
-      <small className="day35-confirm-footnote">The trading password is used only for this broker reconnect request and is not stored by Smart Signals.</small>
+      <div className="day35-confirm-actions"><button type="button" className="button button--quiet" onClick={() => { setReconnectUser(null); setReconnectPassword(''); setReconnectError(null); setReconnectAttempt(null); setReconnectStatus(null); }}>Close</button>{!reconnectAttempt && <button type="button" className="day35-resume-button" disabled={reconnectBusy || !reconnectPassword} onClick={() => void reconnectMt5()}>{reconnectBusy ? 'Starting secure connection…' : 'Reconnect MT5'}</button>}</div>
+      <small className="day35-confirm-footnote">The password leaves this form once. Connection V2 continues independently, reports each broker stage, and never stores the MT5 password.</small>
     </section></div>}
 
     {preview && <div className="day35-confirm-backdrop" role="presentation"><section className="day35-confirm-card" role="dialog" aria-modal="true" aria-labelledby="day35-revoke-dialog-title"><div className="day35-confirm-danger">!</div><h2 id="day35-revoke-dialog-title">{preview.confirmation_title}</h2><p>{preview.confirmation_message}</p><div className="day35-confirm-facts"><span><small>Mapped broker positions</small><strong>{preview.mapped_positions_to_close}</strong></span><span><small>Manual/unmapped MT5 positions</small><strong>Excluded</strong></span><span><small>Access after completion</small><strong>Blocked</strong></span></div><label>Type exactly <code>{preview.confirmation_text}</code><input value={confirmation} onChange={(event) => setConfirmation(event.target.value)} autoComplete="off" /></label><div className="day35-confirm-actions"><button type="button" className="button button--quiet" onClick={() => { setPreview(null); setConfirmation(''); }} disabled={executing}>Cancel</button><button type="button" className="day35-danger-action" disabled={executing || confirmation !== preview.confirmation_text} onClick={() => void confirmRevoke()}>{executing ? 'Stopping & revoking…' : 'Stop mapped trades & revoke'}</button></div><small className="day35-confirm-footnote">If broker closure fails, automation stays stopped and the account is not falsely reported as fully revoked.</small></section></div>}
