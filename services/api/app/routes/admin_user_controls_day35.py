@@ -13,6 +13,7 @@ from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from pydantic import BaseModel, Field
+from sqlalchemy import text
 
 from app.access_control import require_permission
 from app.admin_user_controls_day35 import (
@@ -146,9 +147,38 @@ def managed_users(
     actor: OwnerUsers,
 ) -> tuple[ManagedUserResponse, ...]:
     del actor
-    rows = _service(request).list_users()
+    service = _service(request)
+    rows = service.list_users()
+
+    # A first-time Connection V2 attempt can fail before a remote MetaAPI terminal is
+    # persisted. The Owner must still be able to retry from the existing member card,
+    # so fall back to the approved live MT5 login/server instead of making the member
+    # disappear from reconnect controls.
+    with service._session_factory() as session:  # noqa: SLF001 - same route-owned service
+        approval_rows = session.execute(
+            text(
+                """
+                SELECT user_id, login, server
+                FROM mt5_account_approvals
+                WHERE status='active' AND account_environment='live'
+                """
+            )
+        ).mappings().all()
+    approvals = {item["user_id"]: item for item in approval_rows}
+
+    payloads: list[ManagedUserResponse] = []
+    for item in rows:
+        data = asdict(item)
+        approval = approvals.get(item.user_id)
+        if data["mt5_login_masked"] is None and approval is not None:
+            login = str(approval["login"])
+            data["mt5_login_masked"] = f"••••{login[-4:]}" if len(login) >= 4 else "••••"
+            data["mt5_server"] = str(approval["server"])
+            data["mt5_status"] = "approved"
+        payloads.append(ManagedUserResponse(**data))
+
     _no_store(response)
-    return tuple(ManagedUserResponse(**asdict(item)) for item in rows)
+    return tuple(payloads)
 
 
 @router.get("/users/{user_id}/revoke-preview", response_model=RevokePreviewResponse)
