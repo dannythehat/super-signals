@@ -223,7 +223,7 @@ export function App() {
         {activeView === 'setup' && account.role === 'trading_admin' && canManageTelegram && <TradingAdminOnboarding apiBaseUrl={apiBaseUrl} displayName={displayName} onComplete={() => { void refreshSharedSources(); navigate('overview'); }} />}
 
         <div hidden={activeView !== 'overview'} aria-hidden={activeView !== 'overview'}>
-          <MobileDashboard apiBaseUrl={apiBaseUrl} displayName={displayName} roleLabel={visibleRoleLabel} onOpenSettings={() => navigate('settings')} />
+          <MobileDashboard apiBaseUrl={apiBaseUrl} displayName={displayName} roleLabel={visibleRoleLabel} active={activeView === 'overview'} onOpenSettings={() => navigate('settings')} />
         </div>
         {activeView === 'users' && canManageUsers && <AdminMemberControlsDay35 apiBaseUrl={apiBaseUrl} />}
 
