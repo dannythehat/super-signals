@@ -20,6 +20,7 @@ type Props = {
   apiBaseUrl: string;
   currency: string;
   timezoneName: string;
+  active: boolean;
 };
 
 function money(value: number, currency: string): string {
@@ -46,7 +47,7 @@ function pnlClass(value: number): string {
   return value > 0 ? 'is-positive' : 'is-negative';
 }
 
-export function TodayTradingSummary({ apiBaseUrl, currency, timezoneName }: Props) {
+export function TodayTradingSummary({ apiBaseUrl, currency, timezoneName, active }: Props) {
   const [summary, setSummary] = useState<TodaySummary | null>(null);
   const [stale, setStale] = useState(false);
 
@@ -70,6 +71,7 @@ export function TodayTradingSummary({ apiBaseUrl, currency, timezoneName }: Prop
   }, [apiBaseUrl, timezoneName]);
 
   useEffect(() => {
+    if (!active) return;
     void refresh();
     const readInterval = window.setInterval(() => void refresh(), 60_000);
     const onFocus = () => void refresh();
@@ -81,7 +83,7 @@ export function TodayTradingSummary({ apiBaseUrl, currency, timezoneName }: Prop
       window.removeEventListener('focus', onFocus);
       document.removeEventListener('visibilitychange', onVisibility);
     };
-  }, [refresh]);
+  }, [active, refresh]);
 
   if (!summary) {
     return <section className="today-trading-card today-trading-card--loading" aria-label="Today's trading summary" aria-live="polite">
