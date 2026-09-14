@@ -38,3 +38,10 @@ _day27_management_policy._EXIT_NOW = re.compile(
 # patches so LIVE broker account values remain authoritative and every connected
 # account's realised performance ledger stays synchronised.
 from app import member_metrics_hotfix as _member_metrics_hotfix  # noqa: F401,E402
+
+
+# Owner/master mirror invariant. Imported after the metrics patch so the final
+# settlement runtime keeps the metrics hardening and additionally enforces that no
+# mapped member account (demo/paper or live) can retain exposure absent on the Owner
+# reference account.
+from app import master_mirror_guard as _master_mirror_guard  # noqa: F401,E402
