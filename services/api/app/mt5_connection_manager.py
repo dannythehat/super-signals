@@ -1,4 +1,4 @@
-"""Background MetaAPI connection-state monitor for Day 22."""
+"""Background MetaAPI connection-state monitor for Day 22+ MT5 accounts."""
 
 from __future__ import annotations
 
@@ -12,9 +12,6 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_REFRESH_SECONDS = 3600
 MINIMUM_REFRESH_SECONDS = 300
-
-# Upper bound on the first reconciliation attempt performed by the background
-# monitor. It must never delay FastAPI from opening its HTTP port.
 _STARTUP_RECONCILE_TIMEOUT_SECONDS = 30.0
 
 
@@ -40,7 +37,15 @@ def _configured_refresh_seconds() -> int:
 
 
 class Mt5ConnectionManager:
-    """Reconcile stored MetaAPI accounts after restart and at a bounded cadence."""
+    """Reconcile stored MetaAPI accounts without ever freezing the web service.
+
+    The production Day22/Day30 reconciliation code contains synchronous SQLAlchemy
+    work around asynchronous MetaAPI calls. Running that coroutine directly on
+    Uvicorn's event loop can therefore stall /health and every browser request while
+    PostgreSQL or MetaAPI is slow. Production reconciliation is executed in a worker
+    thread with its own event loop. Test doubles and the original base service keep
+    the normal async path, preserving the small unit-test contract.
+    """
 
     def __init__(
         self,
@@ -59,13 +64,6 @@ class Mt5ConnectionManager:
         self._stopping = asyncio.Event()
 
     async def start(self) -> None:
-        """Start reconciliation without blocking the web application's HTTP startup.
-
-        Broker availability is an external dependency. A slow MetaAPI reconciliation
-        must never prevent /health, the dashboard, or static app assets from becoming
-        reachable. The monitor performs the same bounded reconciliation immediately in
-        its own task and then continues at the normal idle cadence.
-        """
         if self._task is not None and not self._task.done():
             return
         self._stopping.clear()
@@ -86,10 +84,25 @@ class Mt5ConnectionManager:
         finally:
             self._task = None
 
+    @staticmethod
+    def _run_coroutine_in_worker(service: Mt5DemoConnectionService) -> int:
+        """Run one production reconciliation in an isolated event-loop thread."""
+        return asyncio.run(service.reconcile_all())
+
+    async def _reconcile_once(self) -> int:
+        # Import lazily so this monitor stays independent of the Day22/Day30 modules
+        # during module initialization. Day30 subclasses Day22, so both production
+        # services take the isolated worker path.
+        from app.mt5_connection_service_day22 import Day22Mt5DemoConnectionService
+
+        if isinstance(self._service, Day22Mt5DemoConnectionService):
+            return await asyncio.to_thread(self._run_coroutine_in_worker, self._service)
+        return await self._service.reconcile_all()
+
     async def _startup_reconcile(self) -> None:
         try:
             checked = await asyncio.wait_for(
-                self._service.reconcile_all(),
+                self._reconcile_once(),
                 timeout=_STARTUP_RECONCILE_TIMEOUT_SECONDS,
             )
             logger.info(
@@ -99,8 +112,8 @@ class Mt5ConnectionManager:
             )
         except TimeoutError:
             logger.error(
-                "MT5 background startup reconciliation exceeded %ds; web remains available "
-                "and reconciliation will retry on the idle interval",
+                "MT5 background startup reconciliation exceeded %ds; isolated worker may finish "
+                "later but web traffic remains independent",
                 _STARTUP_RECONCILE_TIMEOUT_SECONDS,
             )
         except asyncio.CancelledError:
@@ -110,9 +123,6 @@ class Mt5ConnectionManager:
 
     async def _run(self) -> None:
         try:
-            # Reconcile immediately after the monitor is scheduled, but outside the
-            # FastAPI startup critical path. Nothing is assumed on failure: account
-            # state remains unreconciled until the next bounded pass.
             await self._startup_reconcile()
 
             while not self._stopping.is_set():
@@ -124,7 +134,7 @@ class Mt5ConnectionManager:
                 except TimeoutError:
                     pass
                 try:
-                    await self._service.reconcile_all()
+                    await self._reconcile_once()
                 except asyncio.CancelledError:
                     raise
                 except Exception:
