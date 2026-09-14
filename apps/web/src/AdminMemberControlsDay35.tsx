@@ -20,6 +20,31 @@ type ManagedUser = {
   push_devices_enabled: number;
 };
 
+type AccountOverview = {
+  user_id: string;
+  display_name: string | null;
+  email: string;
+  role_name: string;
+  account_environment: string | null;
+  mt5_status: string | null;
+  remote_connection_status: string | null;
+  trading_status: string | null;
+  risk_percent: number | null;
+  login_masked: string | null;
+  server: string | null;
+  currency: string | null;
+  balance: number | null;
+  equity: number | null;
+  free_margin: number | null;
+  open_profit: number | null;
+  realised_today: number | null;
+  realised_month: number | null;
+  realised_all_time: number | null;
+  mapped_open_positions: number;
+  mapped_pending_positions: number;
+  account_read_at: string | null;
+};
+
 type MemberAccessState = {
   user_id: string;
   email: string;
@@ -109,6 +134,34 @@ function wait(ms: number): Promise<void> {
   return new Promise((resolve) => window.setTimeout(resolve, ms));
 }
 
+function detectedTimeZone(): string {
+  try { return Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC'; } catch { return 'UTC'; }
+}
+
+function money(value: number | null, currency: string | null): string {
+  if (value === null || !Number.isFinite(value)) return '—';
+  const code = currency || 'USD';
+  try {
+    return new Intl.NumberFormat(undefined, {
+      style: 'currency', currency: code, minimumFractionDigits: 2, maximumFractionDigits: 2,
+    }).format(value);
+  } catch {
+    return `${code} ${value.toFixed(2)}`;
+  }
+}
+
+function pnlClass(value: number | null): string {
+  if (value === null || value === 0) return 'is-flat';
+  return value > 0 ? 'is-positive' : 'is-negative';
+}
+
+function refreshedLabel(value: string | null): string {
+  if (!value) return 'Waiting for first broker snapshot';
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) return 'Last broker snapshot available';
+  return `Updated ${new Intl.DateTimeFormat(undefined, { hour: '2-digit', minute: '2-digit', second: '2-digit' }).format(parsed)}`;
+}
+
 function connectionStageLabel(stage: string): string {
   switch (stage) {
     case 'queued': return 'Queued securely';
@@ -139,6 +192,9 @@ function accessLabel(access: MemberAccessState | undefined): string {
 export function AdminMemberControlsDay35({ apiBaseUrl }: Props) {
   const [users, setUsers] = useState<ManagedUser[]>([]);
   const [memberAccess, setMemberAccess] = useState<MemberAccessState[]>([]);
+  const [accounts, setAccounts] = useState<AccountOverview[]>([]);
+  const [accountsLoading, setAccountsLoading] = useState(true);
+  const [accountsError, setAccountsError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
@@ -153,11 +209,29 @@ export function AdminMemberControlsDay35({ apiBaseUrl }: Props) {
   const [reconnectError, setReconnectError] = useState<string | null>(null);
   const [reconnectAttempt, setReconnectAttempt] = useState<ConnectionAccepted | null>(null);
   const [reconnectStatus, setReconnectStatus] = useState<ConnectionStatus | null>(null);
+  const timezoneName = useMemo(() => detectedTimeZone(), []);
 
   const accessByUserId = useMemo(
     () => new Map(memberAccess.map((access) => [access.user_id, access])),
     [memberAccess],
   );
+
+  const loadAccounts = useCallback(async (showLoading = true) => {
+    if (showLoading) setAccountsLoading(true);
+    try {
+      const query = new URLSearchParams({ timezone_name: timezoneName });
+      const response = await fetch(`${apiBaseUrl}/access/day35/user-controls/accounts-overview?${query.toString()}`, {
+        credentials: 'include', headers: { Accept: 'application/json' }, cache: 'no-store',
+      });
+      const next = await readJson<AccountOverview[]>(response);
+      setAccounts(next);
+      setAccountsError(null);
+    } catch (caught) {
+      setAccountsError(caught instanceof Error ? caught.message : 'Account balances are temporarily unavailable.');
+    } finally {
+      setAccountsLoading(false);
+    }
+  }, [apiBaseUrl, timezoneName]);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -183,6 +257,11 @@ export function AdminMemberControlsDay35({ apiBaseUrl }: Props) {
   }, [apiBaseUrl]);
 
   useEffect(() => { void load(); }, [load]);
+  useEffect(() => {
+    void loadAccounts();
+    const interval = window.setInterval(() => void loadAccounts(false), 15_000);
+    return () => window.clearInterval(interval);
+  }, [loadAccounts]);
 
   async function updateMemberAccess(user: ManagedUser, action: 'pause' | 'resume') {
     setAccessBusyUserId(user.user_id); setError(null); setNotice(null); setResult(null);
@@ -193,6 +272,7 @@ export function AdminMemberControlsDay35({ apiBaseUrl }: Props) {
       const completed = await readJson<MemberAccessMutation>(response);
       setNotice(completed.message);
       await load();
+      void loadAccounts(false);
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : `Subscription ${action} failed.`);
     } finally { setAccessBusyUserId(null); }
@@ -227,12 +307,14 @@ export function AdminMemberControlsDay35({ apiBaseUrl }: Props) {
           setReconnectAttempt(null);
           setReconnectPassword('');
           void load();
+          void loadAccounts(false);
           return;
         }
         if (current.status === 'failed' || current.status === 'interrupted') {
           const code = current.error_code || 'mt5_connection_failed';
           setReconnectError(`MT5 connection failed at ${connectionStageLabel(current.stage)} (${code}). Trading remains stopped.`);
           void load();
+          void loadAccounts(false);
           return;
         }
       } catch (caught) {
@@ -276,6 +358,7 @@ export function AdminMemberControlsDay35({ apiBaseUrl }: Props) {
       setReconnectPassword('');
       setReconnectBusy(false);
       void load();
+      void loadAccounts(false);
       void pollReconnect(targetUser, started);
       return;
     } catch (caught) {
@@ -304,7 +387,7 @@ export function AdminMemberControlsDay35({ apiBaseUrl }: Props) {
         body: JSON.stringify({ confirmed: true, confirmation_text: confirmation }),
       });
       const completed = await readJson<RevokeResult>(response);
-      setResult(completed); setPreview(null); setConfirmation(''); await load();
+      setResult(completed); setPreview(null); setConfirmation(''); await load(); void loadAccounts(false);
     } catch (caught) { setError(caught instanceof Error ? caught.message : 'Revoke did not complete safely.'); }
     finally { setExecuting(false); }
   }
@@ -315,13 +398,27 @@ export function AdminMemberControlsDay35({ apiBaseUrl }: Props) {
   return <section className="day35-members" aria-labelledby="day35-members-title">
     <div className="workspace-page-header"><div><p className="eyebrow">Owner controls</p><h1 id="day35-members-title">Members &amp; account access</h1><p className="intro">Pause a member when payment is due without deleting their MT5 connection, credentials, settings or history. Resume restores the saved setup. Full revocation remains a separate confirmed action.</p></div><span className="workspace-role-pill">OWNER ONLY</span></div>
 
-    <AdminMemberOnboarding apiBaseUrl={apiBaseUrl} onCompleted={load} />
+    <AdminMemberOnboarding apiBaseUrl={apiBaseUrl} onCompleted={() => { void load(); void loadAccounts(false); }} />
 
     {error && <div className="day35-members-error" role="alert">{error}</div>}
     {notice && <div className="day35-members-result" role="status"><strong>Update complete.</strong><span>{notice}</span></div>}
     {result && <div className="day35-members-result" role="status"><strong>Account revoked safely.</strong><span>{result.mapped_positions_closed} mapped position(s) closed · {result.sessions_revoked} session(s) revoked · {result.approvals_revoked} MT5 approval(s) revoked · manual/unmapped positions touched: no.</span></div>}
 
     <div className="day35-members-summary"><article><span>Managed users</span><strong>{users.length}</strong></article><article><span>Subscriptions active</span><strong>{activeSubscriptions}</strong></article><article><span>Subscriptions paused</span><strong>{pausedSubscriptions}</strong></article><article><span>Automation active</span><strong>{users.filter((user) => user.trading_status === 'active').length}</strong></article></div>
+
+    <section className="day35-portfolio" aria-labelledby="day35-portfolio-title">
+      <div className="day35-portfolio-head"><div><span>All connected MT5 accounts</span><h2 id="day35-portfolio-title">Account balances &amp; P/L</h2><p>Owner view of each account. Trading P/L excludes deposits and withdrawals.</p></div><button type="button" onClick={() => void loadAccounts()} disabled={accountsLoading}>{accountsLoading ? 'Refreshing…' : 'Refresh accounts'}</button></div>
+      {accountsError && <div className="day35-members-error" role="alert">{accountsError}</div>}
+      {accountsLoading && !accounts.length ? <div className="day35-portfolio-loading">Reading connected accounts…</div> : accounts.length === 0 ? <div className="day35-portfolio-empty">No connected MT5 accounts yet.</div> : <div className="day35-portfolio-grid">{accounts.map((account) => {
+        const connected = account.mt5_status === 'connected' || account.remote_connection_status === 'CONNECTED';
+        return <article className="day35-account-card" key={account.user_id}>
+          <div className="day35-account-head"><div><strong>{account.display_name || account.email}</strong><small>{account.email}</small></div><div className="day35-account-badges"><span>{account.role_name === 'owner' ? 'Owner' : account.account_environment === 'live' ? 'Live' : 'Demo'}</span><span className={connected ? 'is-connected' : 'is-attention'}>{connected ? 'Connected' : account.mt5_status || 'Not connected'}</span></div></div>
+          <div className="day35-account-money"><span><small>Balance</small><strong>{money(account.balance, account.currency)}</strong></span><span><small>Equity</small><strong>{money(account.equity, account.currency)}</strong></span><span><small>Open P/L</small><strong className={pnlClass(account.open_profit)}>{money(account.open_profit, account.currency)}</strong></span></div>
+          <div className="day35-account-pnl"><span><small>Today</small><strong className={pnlClass(account.realised_today)}>{money(account.realised_today, account.currency)}</strong></span><span><small>This month</small><strong className={pnlClass(account.realised_month)}>{money(account.realised_month, account.currency)}</strong></span><span><small>All-time realised</small><strong className={pnlClass(account.realised_all_time)}>{money(account.realised_all_time, account.currency)}</strong></span></div>
+          <div className="day35-account-foot"><span>{account.login_masked || 'MT5'} · {account.account_environment || 'account'} · Risk {account.risk_percent ?? '—'}%</span><span>{account.mapped_open_positions} open · {account.mapped_pending_positions} pending</span><span>{refreshedLabel(account.account_read_at)}</span></div>
+        </article>;
+      })}</div>}
+    </section>
 
     {loading && !users.length ? <div className="day35-members-loading"><div /><div /></div> : <div className="day35-member-list">{users.map((user) => {
       const access = accessByUserId.get(user.user_id);
