@@ -110,6 +110,7 @@ type Props = {
   apiBaseUrl: string;
   displayName: string;
   roleLabel: string;
+  active: boolean;
   onOpenSettings: () => void;
 };
 
@@ -212,7 +213,7 @@ function writeCachedAccount(key: string, account: DashboardAccount): void {
   }
 }
 
-export function MobileDashboard({ apiBaseUrl, displayName, roleLabel, onOpenSettings }: Props) {
+export function MobileDashboard({ apiBaseUrl, displayName, roleLabel, active, onOpenSettings }: Props) {
   const [data, setData] = useState<DashboardData | null>(null);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
@@ -261,6 +262,7 @@ export function MobileDashboard({ apiBaseUrl, displayName, roleLabel, onOpenSett
   }, [apiBaseUrl, timezoneName]);
 
   useEffect(() => {
+    if (!active) return;
     void refresh(true);
     const interval = window.setInterval(() => void refresh(true), 15_000);
     const onFocus = () => void refresh(true);
@@ -275,7 +277,7 @@ export function MobileDashboard({ apiBaseUrl, displayName, roleLabel, onOpenSett
       document.removeEventListener('visibilitychange', onVisibility);
       window.removeEventListener('super-signals-ledger-synced', onLedgerSynced);
     };
-  }, [refresh]);
+  }, [active, refresh]);
 
   const currency = data?.account?.currency || 'USD';
   const connection = useMemo(() => data ? connectionCopy(data.connection) : null, [data]);
@@ -318,7 +320,7 @@ export function MobileDashboard({ apiBaseUrl, displayName, roleLabel, onOpenSett
       <button className="day32-settings-button" type="button" onClick={onOpenSettings} aria-label="Open Settings">⚙</button>
     </div>
 
-    <GoldPriceStrip apiBaseUrl={apiBaseUrl} />
+    {active && <GoldPriceStrip apiBaseUrl={apiBaseUrl} />}
 
     {error && <div className="day32-inline-warning" role="status"><span>Live refresh paused</span><strong>{error}</strong><button type="button" onClick={() => void refresh()} disabled={refreshing}>{refreshing ? 'Refreshing…' : 'Retry'}</button></div>}
 
@@ -334,7 +336,7 @@ export function MobileDashboard({ apiBaseUrl, displayName, roleLabel, onOpenSett
       <button className="day32-refresh" type="button" onClick={() => void refresh()} disabled={refreshing}>{refreshing ? 'Refreshing…' : 'Refresh'}</button>
     </section>
 
-    <TodayTradingSummary apiBaseUrl={apiBaseUrl} currency={currency} timezoneName={timezoneName} />
+    {active && <TodayTradingSummary apiBaseUrl={apiBaseUrl} currency={currency} timezoneName={timezoneName} />}
 
     <div className="day32-performance-grid" aria-label="Performance summary">
       {data.performance.map((period) => {
@@ -353,7 +355,7 @@ export function MobileDashboard({ apiBaseUrl, displayName, roleLabel, onOpenSett
       ownerDemo={isOwnerDemo}
     />
 
-    <TradeTimeline apiBaseUrl={apiBaseUrl} currency={currency} balance={data.account?.balance ?? null} livePositions={data.open_positions} />
+    {active && <TradeTimeline apiBaseUrl={apiBaseUrl} currency={currency} balance={data.account?.balance ?? null} livePositions={data.open_positions} />}
 
     <section className="day32-risk-strip" aria-label="Selected trading risk">
       <div><span>Selected risk</span><strong>{riskText}</strong>{doubleLotText && <small>{doubleLotText}</small>}</div>
@@ -380,7 +382,7 @@ export function MobileDashboard({ apiBaseUrl, displayName, roleLabel, onOpenSett
 
     <section className="day32-section" aria-labelledby="recent-trades-title"><div className="day32-section-head"><div><span>Account history</span><h2 id="recent-trades-title">Recent completed positions</h2></div></div>{data.recent_completed.length === 0 ? <div className="day32-empty day32-empty--compact"><strong>No completed Smart Signals positions yet</strong></div> : <div className="day32-completed-list">{data.recent_completed.map((item) => <article key={item.position_id}><div><span className={`day32-side day32-side--${item.side.toLowerCase()}`}>{item.side}</span><strong>{item.symbol}</strong><small>TP{item.tp_index} · {shortTime(item.closed_at)}</small></div><strong className={pnlClass(item.pnl_amount)}>{item.pnl_amount === null ? 'Closed' : money(item.pnl_amount, currency)}</strong></article>)}</div>}</section>
 
-    <ManualMt5ActivityDay36 apiBaseUrl={apiBaseUrl} />
+    {active && <ManualMt5ActivityDay36 apiBaseUrl={apiBaseUrl} />}
 
     <section className="day32-section" aria-labelledby="activity-title"><div className="day32-section-head"><div><span>Smart Signals</span><h2 id="activity-title">Recent activity</h2></div></div>{data.activity.length === 0 ? <div className="day32-empty day32-empty--compact"><strong>No account activity to show yet</strong></div> : <ol className="day32-activity-list">{data.activity.map((item, index) => <li key={`${item.event_type}-${item.created_at}-${index}`}><i className={`day32-activity-dot day32-activity-dot--${item.tone}`} /><div><strong>{item.label}</strong><small>{shortTime(item.created_at)}</small></div></li>)}</ol>}</section>
 
