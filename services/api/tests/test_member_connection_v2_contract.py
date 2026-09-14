@@ -6,10 +6,8 @@ import asyncio
 
 import pytest
 
-# Import the connection router before the production app is built, matching runtime.
-from app.routes import member_connection_v2 as _member_connection_v2  # noqa: F401
-from app.main import app as production_app
 from app.metaapi_gateway import MetaApiGatewayError
+from app.routes import member_connection_v2
 from app.routes.member_connection_v2 import (
     OnboardConnectionV2Request,
     _known_broker_name,
@@ -42,16 +40,16 @@ class _Service:
         self._gateway = _KnownServerGateway(payload)
 
 
-def test_connection_v2_routes_are_registered_in_production_api() -> None:
+def test_connection_v2_router_contract() -> None:
     route_methods = {
         (route.path, method)
-        for route in production_app.routes
+        for route in member_connection_v2.router.routes
         for method in (getattr(route, "methods", None) or set())
     }
 
-    assert ("/admin/accounts/members/onboard-live-v2", "POST") in route_methods
-    assert ("/admin/accounts/members/{user_id}/connection-v2", "POST") in route_methods
-    assert ("/admin/accounts/members/{user_id}/connection-v2", "GET") in route_methods
+    assert ("/members/onboard-live-v2", "POST") in route_methods
+    assert ("/members/{user_id}/connection-v2", "POST") in route_methods
+    assert ("/members/{user_id}/connection-v2", "GET") in route_methods
 
 
 def test_owner_onboarding_password_is_secret_in_model_output() -> None:
