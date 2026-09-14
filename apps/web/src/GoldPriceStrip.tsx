@@ -16,11 +16,14 @@ type GoldQuote = {
 
 type Props = {
   apiBaseUrl: string;
+  active?: boolean;
 };
 
-const LIVE_REFRESH_MS = 1000;
-const ERROR_REFRESH_MS = 2000;
-const HIDDEN_REFRESH_MS = 30000;
+// The quote strip is display-only. Five-second updates are plenty for the UI and cut
+// per-user request pressure by 80% versus the old one-second polling loop.
+const LIVE_REFRESH_MS = 5_000;
+const ERROR_REFRESH_MS = 10_000;
+const HIDDEN_REFRESH_MS = 60_000;
 
 function goldPrice(value: number | null): string {
   if (value === null || !Number.isFinite(value)) return '—';
@@ -40,11 +43,13 @@ function compactPrice(value: number | null): string {
   }).format(value);
 }
 
-export function GoldPriceStrip({ apiBaseUrl }: Props) {
+export function GoldPriceStrip({ apiBaseUrl, active = true }: Props) {
   const [quote, setQuote] = useState<GoldQuote | null>(null);
   const [feedError, setFeedError] = useState(false);
 
   useEffect(() => {
+    if (!active) return;
+
     let cancelled = false;
     let timer: number | null = null;
     let controller: AbortController | null = null;
@@ -98,7 +103,7 @@ export function GoldPriceStrip({ apiBaseUrl }: Props) {
       controller?.abort();
       document.removeEventListener('visibilitychange', onVisibilityChange);
     };
-  }, [apiBaseUrl]);
+  }, [active, apiBaseUrl]);
 
   const live = Boolean(quote?.available && !quote.stale && !feedError);
   const delayed = Boolean(quote?.price !== null && quote?.price !== undefined && !live);

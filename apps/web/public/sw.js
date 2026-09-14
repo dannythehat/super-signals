@@ -1,5 +1,5 @@
-const CACHE_NAME = 'smart-signals-static-v7';
-const PREVIOUS_CACHE_NAME = 'smart-signals-static-v6';
+const CACHE_NAME = 'smart-signals-static-v8';
+const PREVIOUS_CACHE_NAME = 'smart-signals-static-v7';
 const APP_SHELL = '/';
 const STATIC_ASSETS = [APP_SHELL, '/manifest.webmanifest', '/smart-signals-app-icon.png', '/super-signals-logo.png'];
 const PRIVATE_PREFIXES = ['/api/', '/auth/', '/account/', '/admin/', '/owner/', '/notifications'];
@@ -10,7 +10,7 @@ async function primeStaticAsset(cache, asset) {
     const response = await fetch(asset, { cache: 'reload' });
     if (response.ok) await cache.put(asset, response.clone());
   } catch {
-    // Installation must not fail just because Render is between instances.
+    // Installation must not fail just because the API origin is between instances.
   }
 }
 
@@ -18,7 +18,9 @@ self.addEventListener('install', (event) => {
   event.waitUntil(
     caches.open(CACHE_NAME).then((cache) => Promise.all(STATIC_ASSETS.map((asset) => primeStaticAsset(cache, asset)))),
   );
-  self.skipWaiting();
+  // Do not call skipWaiting(). A freshly deployed frontend must never seize control
+  // from an already-open trading session. It will activate after all current clients
+  // have naturally closed/reloaded.
 });
 
 self.addEventListener('activate', (event) => {
@@ -29,7 +31,8 @@ self.addEventListener('activate', (event) => {
         .map((key) => caches.delete(key)),
     )),
   );
-  self.clients.claim();
+  // Do not call clients.claim(). Existing app windows remain on the build they opened
+  // with until the user naturally starts a new session.
 });
 
 async function networkFirstWithFallback(request, fallbackPath = null) {
@@ -42,8 +45,8 @@ async function networkFirstWithFallback(request, fallbackPath = null) {
       return networkResponse;
     }
   } catch {
-    // A Render restart can temporarily remove the only origin instance. Fall through
-    // to the last healthy app shell rather than exposing Render's transition page.
+    // A backend restart can temporarily remove the only origin instance. Fall through
+    // to the last healthy app shell rather than exposing the hosting transition page.
   }
 
   const cached = await cache.match(request);
@@ -53,7 +56,7 @@ async function networkFirstWithFallback(request, fallbackPath = null) {
     if (fallback) return fallback;
   }
   if (networkResponse) return networkResponse;
-  return new Response('Smart Signals is reconnecting. Please try again shortly.', {
+  return new Response('Smart Signals is temporarily offline. Please retry shortly.', {
     status: 503,
     headers: { 'Content-Type': 'text/plain; charset=utf-8', 'Cache-Control': 'no-store' },
   });
@@ -73,7 +76,7 @@ async function cachedBuildAsset(request) {
     if (response.ok) await currentCache.put(request, response.clone());
     return response;
   } catch {
-    return new Response('Smart Signals asset is reconnecting.', {
+    return new Response('Smart Signals asset is temporarily unavailable.', {
       status: 503,
       headers: { 'Content-Type': 'text/plain; charset=utf-8', 'Cache-Control': 'no-store' },
     });
@@ -89,9 +92,8 @@ self.addEventListener('fetch', (event) => {
   if (PRIVATE_PREFIXES.some((prefix) => url.pathname.startsWith(prefix))) return;
 
   // Authenticated API/account reads remain strictly live and uncached. Navigation is
-  // network-first so a new deployment replaces the shell immediately. Hashed JS/CSS
-  // is immutable and cache-first, which keeps an already-open build alive while the
-  // next Render instance is replacing the old one.
+  // network-first with a cached shell fallback; hashed JS/CSS remains cache-first so
+  // an already-open build stays usable during backend deploys or brief outages.
   if (request.mode === 'navigate') {
     event.respondWith(networkFirstWithFallback(request, APP_SHELL));
     return;

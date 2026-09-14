@@ -23,67 +23,19 @@ ReactDOM.createRoot(document.getElementById('root')!).render(
   </React.StrictMode>,
 );
 
-const BUILD_CHECK_INTERVAL_MS = 30_000;
-let reloadStarted = false;
-
-function currentModuleScript(): string | null {
-  const script = document.querySelector<HTMLScriptElement>('script[type="module"][src]');
-  return script?.src || null;
-}
-
-async function reloadForNewBuild(): Promise<void> {
-  if (reloadStarted) return;
-  const current = currentModuleScript();
-  if (!current) return;
-
-  try {
-    const response = await fetch(`/?__super_signals_build=${Date.now()}`, {
-      cache: 'no-store',
-      headers: { Accept: 'text/html' },
-    });
-    if (!response.ok) return;
-    const html = await response.text();
-    const parsed = new DOMParser().parseFromString(html, 'text/html');
-    const latestPath = parsed.querySelector<HTMLScriptElement>('script[type="module"][src]')?.getAttribute('src');
-    if (!latestPath) return;
-    const latest = new URL(latestPath, window.location.origin).href;
-    if (latest !== current) {
-      reloadStarted = true;
-      window.location.reload();
-    }
-  } catch {
-    // A deployment or brief network interruption is not an authentication failure.
-    // Keep the current app running and try the build check again later.
-  }
-}
-
 function requestCanonicalAccountSync(): void {
   if (document.visibilityState !== 'visible') return;
   window.dispatchEvent(new Event('super-signals-ledger-synced'));
 }
 
-void reloadForNewBuild();
-window.setInterval(() => void reloadForNewBuild(), BUILD_CHECK_INTERVAL_MS);
-window.addEventListener('focus', () => void reloadForNewBuild());
-
-// MobileDashboard already owns its bounded 15-second refresh cadence. Do not add a
-// second global timer here: overlapping broker-backed reads can queue behind MetaAPI
-// retries and make the single web worker appear unavailable to Render. Focus and
-// visibility changes still request an immediate refresh for a returning user.
+// Keep an already-open trading session on its current frontend build. New releases are
+// picked up naturally on the next clean app launch/reload instead of forcing the app to
+// reload while the user is viewing or managing trades.
 window.addEventListener('focus', requestCanonicalAccountSync);
 document.addEventListener('visibilitychange', requestCanonicalAccountSync);
 
 if ('serviceWorker' in navigator) {
   window.addEventListener('load', () => {
-    void navigator.serviceWorker.register('/sw.js', { updateViaCache: 'none' }).then((registration) => {
-      void registration.update();
-      window.setInterval(() => void registration.update(), BUILD_CHECK_INTERVAL_MS);
-    });
-  });
-
-  navigator.serviceWorker.addEventListener('controllerchange', () => {
-    if (reloadStarted) return;
-    reloadStarted = true;
-    window.location.reload();
+    void navigator.serviceWorker.register('/sw.js', { updateViaCache: 'none' });
   });
 }

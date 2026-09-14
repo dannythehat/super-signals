@@ -25,7 +25,7 @@ interface SharedSignalSource { source_id: string; chat_id: number; title: string
 interface TelegramAccountSummary { id: string; status: string; }
 interface TelegramSetupSource { selected: boolean; managed_by_this_reader?: boolean; }
 
-const apiBaseUrl = import.meta.env.VITE_API_BASE_URL ?? '/api';
+const apiBaseUrl = (import.meta.env.VITE_API_BASE_URL || '/api').trim() || '/api';
 const SESSION_RETRY_MS = 1500;
 const SERVICE_RECONNECT_MESSAGE = 'Reconnecting to the secure service…';
 const SERVICE_RESPONSE_ERROR = 'The secure service is reconnecting. Please try again in a moment.';
@@ -222,7 +222,9 @@ export function App() {
         {activeView !== 'overview' && activeView !== 'settings' && activeView !== 'setup' && activeView !== 'users' && <button className="workspace-back-button" type="button" onClick={() => navigate('settings')}><span aria-hidden="true">←</span> Back to Settings</button>}
         {activeView === 'setup' && account.role === 'trading_admin' && canManageTelegram && <TradingAdminOnboarding apiBaseUrl={apiBaseUrl} displayName={displayName} onComplete={() => { void refreshSharedSources(); navigate('overview'); }} />}
 
-        {activeView === 'overview' && <MobileDashboard apiBaseUrl={apiBaseUrl} displayName={displayName} roleLabel={visibleRoleLabel} onOpenSettings={() => navigate('settings')} />}
+        <div hidden={activeView !== 'overview'} aria-hidden={activeView !== 'overview'}>
+          <MobileDashboard apiBaseUrl={apiBaseUrl} displayName={displayName} roleLabel={visibleRoleLabel} active={activeView === 'overview'} onOpenSettings={() => navigate('settings')} />
+        </div>
         {activeView === 'users' && canManageUsers && <AdminMemberControlsDay35 apiBaseUrl={apiBaseUrl} />}
 
         {activeView === 'settings' && <section className="settings-page" aria-labelledby="settings-page-title">
