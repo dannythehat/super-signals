@@ -32,3 +32,9 @@ _day27_management_policy._EXIT_NOW = re.compile(
     + r"|\bCLOSE\s+(?:(?:YOUR|MY|OUR|THE|ALL)\s+)?(?:(?:GOLD|XAU\s*(?:/\s*)?USD)\s+)(?:BUYS?|SELLS?)\b",
     re.IGNORECASE,
 )
+
+
+# Connected member metrics hardening. Imported for its deliberately narrow runtime
+# patches so LIVE broker account values remain authoritative and every connected
+# account's realised performance ledger stays synchronised.
+from app import member_metrics_hotfix as _member_metrics_hotfix  # noqa: F401,E402
