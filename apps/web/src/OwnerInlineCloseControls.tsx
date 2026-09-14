@@ -20,24 +20,91 @@ type CloseAllProps = {
   openCount: number;
 };
 
-function apiError(body: unknown, fallback: string): string {
-  if (typeof body !== 'object' || body === null || !('detail' in body)) return fallback;
-  const detail = (body as { detail: unknown }).detail;
-  if (typeof detail === 'object' && detail !== null && 'message' in detail) {
-    return String((detail as { message: unknown }).message);
-  }
-  return fallback;
+type ApiDetail = { code?: unknown; message?: unknown };
+
+const TRANSIENT_CLOSE_STATUSES = new Set([502, 503, 504]);
+const CLOSE_RETRY_DELAYS_MS = [500, 1200, 2500, 4500];
+const ALREADY_CLOSED_CODES = new Set([
+  'owner_manual_position_not_open',
+  'owner_manual_trade_not_open',
+  'owner_manual_all_not_open',
+]);
+
+function wait(milliseconds: number): Promise<void> {
+  return new Promise((resolve) => window.setTimeout(resolve, milliseconds));
 }
 
+function detailFrom(body: unknown): ApiDetail | null {
+  if (typeof body !== 'object' || body === null || !('detail' in body)) return null;
+  const detail = (body as { detail: unknown }).detail;
+  return typeof detail === 'object' && detail !== null ? detail as ApiDetail : null;
+}
+
+function apiError(body: unknown, fallback: string): string {
+  const detail = detailFrom(body);
+  return detail && typeof detail.message === 'string' ? detail.message : fallback;
+}
+
+function apiErrorCode(body: unknown): string | null {
+  const detail = detailFrom(body);
+  return detail && typeof detail.code === 'string' ? detail.code : null;
+}
+
+function alreadyClosedResult(): CloseResponse {
+  return {
+    requested_count: 0,
+    closed_count: 0,
+    already_closed_count: 1,
+    failed_count: 0,
+  };
+}
+
+/**
+ * Manual close is the one mutation allowed to retry through a transient Render edge
+ * failure. The backend serializes each mapped broker position with PostgreSQL advisory
+ * locks and re-checks local + broker state before every mutation, so a lost HTTP response
+ * cannot turn a retry into a second independent close.
+ */
 async function closeAtMarket(apiBaseUrl: string, endpoint: string): Promise<CloseResponse> {
-  const response = await fetch(`${apiBaseUrl}${endpoint}`, {
-    method: 'POST',
-    credentials: 'include',
-    headers: { Accept: 'application/json' },
-  });
-  const body = (await response.json()) as CloseResponse | unknown;
-  if (!response.ok) throw new Error(apiError(body, 'The broker did not confirm the close.'));
-  return body as CloseResponse;
+  for (let attempt = 0; attempt <= CLOSE_RETRY_DELAYS_MS.length; attempt += 1) {
+    try {
+      const response = await fetch(`${apiBaseUrl}${endpoint}`, {
+        method: 'POST',
+        credentials: 'include',
+        cache: 'no-store',
+        headers: { Accept: 'application/json' },
+      });
+      const body = (await response.json().catch(() => null)) as CloseResponse | unknown;
+      const code = apiErrorCode(body);
+
+      if (response.ok) return body as CloseResponse;
+      if (code && ALREADY_CLOSED_CODES.has(code)) return alreadyClosedResult();
+
+      const transient = TRANSIENT_CLOSE_STATUSES.has(response.status)
+        || code === 'api_temporarily_unavailable';
+      if (transient && attempt < CLOSE_RETRY_DELAYS_MS.length) {
+        await wait(CLOSE_RETRY_DELAYS_MS[attempt]);
+        continue;
+      }
+      if (transient) {
+        throw new Error('The close could not be confirmed after safe retries. Check MT5 before pressing Close now again.');
+      }
+      throw new Error(apiError(body, 'The broker did not confirm the close.'));
+    } catch (caught) {
+      const isOurError = caught instanceof Error
+        && (
+          caught.message === 'The close could not be confirmed after safe retries. Check MT5 before pressing Close now again.'
+          || caught.message === 'The broker did not confirm the close.'
+        );
+      if (isOurError) throw caught;
+      if (attempt < CLOSE_RETRY_DELAYS_MS.length) {
+        await wait(CLOSE_RETRY_DELAYS_MS[attempt]);
+        continue;
+      }
+      throw new Error('The close could not reach Smart Signals after safe retries. Check MT5 before pressing Close now again.');
+    }
+  }
+  throw new Error('The close could not be confirmed. Check MT5 before trying again.');
 }
 
 export function OwnerPositionCloseButton({ apiBaseUrl, positionId, symbol, tpIndex, disabled = false }: PositionProps) {
@@ -63,7 +130,7 @@ export function OwnerPositionCloseButton({ apiBaseUrl, positionId, symbol, tpInd
   };
 
   return <div className="owner-inline-close">
-    <button type="button" className="owner-inline-close__position" disabled={disabled || closing} onClick={() => void close()}>{closing ? 'Closing…' : 'Close now'}</button>
+    <button type="button" className="owner-inline-close__position" disabled={disabled || closing} onClick={() => void close()}>{closing ? 'Closing safely…' : 'Close now'}</button>
     {error && <small className="owner-inline-close__error" role="alert">{error}</small>}
   </div>;
 }
@@ -90,7 +157,7 @@ export function OwnerCloseAllButton({ apiBaseUrl, openCount }: CloseAllProps) {
   };
 
   return <div className="owner-close-all">
-    <button type="button" disabled={closing} onClick={() => void closeAll()}>{closing ? 'Closing all…' : `Close all ${openCount} open positions now`}</button>
+    <button type="button" disabled={closing} onClick={() => void closeAll()}>{closing ? 'Closing all safely…' : `Close all ${openCount} open positions now`}</button>
     <small>Owner Admin · Demo only · closes mapped Smart Signals positions at market</small>
     {error && <small className="owner-inline-close__error" role="alert">{error}</small>}
   </div>;
