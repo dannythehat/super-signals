@@ -16,7 +16,7 @@ type GoldQuote = {
 
 type Props = {
   apiBaseUrl: string;
-  active: boolean;
+  active?: boolean;
 };
 
 // The quote strip is display-only. Five-second updates are plenty for the UI and cut
@@ -43,7 +43,7 @@ function compactPrice(value: number | null): string {
   }).format(value);
 }
 
-export function GoldPriceStrip({ apiBaseUrl, active }: Props) {
+export function GoldPriceStrip({ apiBaseUrl, active = true }: Props) {
   const [quote, setQuote] = useState<GoldQuote | null>(null);
   const [feedError, setFeedError] = useState(false);
 
