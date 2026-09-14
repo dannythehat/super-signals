@@ -1,5 +1,4 @@
 from datetime import UTC, datetime
-from types import SimpleNamespace
 from uuid import uuid4
 
 import pytest
@@ -45,10 +44,18 @@ class _TradeGateway:
         self.closed.append(position_id)
 
 
+class _LockSession:
+    def rollback(self) -> None:
+        return None
+
+    def close(self) -> None:
+        return None
+
+
 def _service(monkeypatch, *, broker_ids: list[str], failing: set[str] | None = None):
     trade = _TradeGateway(failing)
     service = OwnerManualCloseService(
-        session_factory=SimpleNamespace(),
+        session_factory=lambda: _LockSession(),
         cipher=_Cipher(),
         read_gateway=_ReadGateway(broker_ids),
         trade_gateway=trade,
@@ -61,6 +68,12 @@ def _service(monkeypatch, *, broker_ids: list[str], failing: set[str] | None = N
             account_environment="demo",
             token_ciphertext=b"ciphertext",
         ),
+    )
+    monkeypatch.setattr(service, "_acquire_position_locks", lambda session, positions: None)
+    monkeypatch.setattr(
+        service,
+        "_open_after_lock",
+        lambda session, *, user_id, positions: (positions, ()),
     )
     recorded: list[tuple[str, str]] = []
     monkeypatch.setattr(
@@ -111,7 +124,7 @@ async def test_close_all_addresses_every_mapped_position_by_exact_broker_id(monk
 
 
 @pytest.mark.asyncio
-async def test_close_position_does_not_retry_a_position_already_absent_at_broker(monkeypatch) -> None:
+async def test_close_position_reconciles_a_position_already_absent_at_broker(monkeypatch) -> None:
     user_id = uuid4()
     position = manual_close._Position(id=uuid4(), signal_id=uuid4(), broker_position_id="already-gone")
     service, trade, recorded = _service(monkeypatch, broker_ids=[])
@@ -120,7 +133,7 @@ async def test_close_position_does_not_retry_a_position_already_absent_at_broker
     result = await service.close_position(user_id, position.id)
 
     assert trade.closed == []
-    assert recorded == []
+    assert recorded == [(str(position.id), "position_reconciled")]
     assert result.closed_count == 0
     assert result.already_closed_count == 1
 
