@@ -1,9 +1,13 @@
-"""Production-stable asynchronous MT5 member connection flow.
+"""Asynchronous, production-safe MT5 onboarding for every Smart Signals member.
 
-Connection V2 separates the browser request from MetaAPI provisioning. The Owner
-submits the MT5 password once; it lives only in the in-process background task and is
-never persisted. Sanitized progress is written to audit_events so the UI can poll a
-fast local endpoint instead of holding a multi-minute HTTP request open.
+The browser request never waits for broker provisioning. A submitted MT5 password is
+kept only in the in-process background task, never persisted. Progress is written to
+sanitized audit events and the UI polls a fast local status endpoint.
+
+The onboarding happy path deliberately does not enumerate every MetaAPI terminal.
+A stale remote inventory call must never block a valid new customer connection. We use
+the member's canonical local terminal id for best-effort cleanup, then provision one
+fresh terminal from the credentials supplied for this attempt.
 """
 
 from __future__ import annotations
@@ -14,7 +18,7 @@ from datetime import UTC, datetime
 from typing import Annotated, Any, Literal
 from uuid import UUID, uuid4
 
-from fastapi import BackgroundTasks, Depends, HTTPException, Request, Response, status
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request, Response, status
 from pydantic import BaseModel, Field, SecretStr
 from sqlalchemy import select, text
 from sqlalchemy.orm import Session
@@ -27,16 +31,20 @@ from app.mt5_account_profiles import Mt5AccountProfileService
 from app.mt5_connection_service import Mt5ConnectionError
 from app.mt5_connection_service_day30 import Day30Mt5ConnectionService
 from app.mt5_runtime import require_mt5_service
-from app.routes.admin_accounts import router
 from app.routes.member_onboarding_owner import _activate_verified_member, _normalize_email, _prepare_member
 
+router = APIRouter(tags=["member mt5 connection"])
 DbSession = Annotated[Session, Depends(get_db_session)]
 OwnerUsers = Annotated[dict[str, Any], Depends(require_permission("users.manage"))]
 
-_ATTEMPT_TTL_SECONDS = 300
-_CREATE_DEADLINE_SECONDS = 120
-_FIRST_CONNECT_WAIT_SECONDS = 45
+_ATTEMPT_TTL_SECONDS = 240
+_SERVER_PREFLIGHT_TIMEOUT_SECONDS = 15
+_STALE_CLEANUP_TIMEOUT_SECONDS = 8
+_CREATE_DEADLINE_SECONDS = 90
+_CREATE_REQUEST_TIMEOUT_SECONDS = 20
+_FIRST_CONNECT_WAIT_SECONDS = 50
 _REDEPLOY_CONNECT_WAIT_SECONDS = 30
+_REMOTE_READ_TIMEOUT_SECONDS = 10
 
 
 class ConnectionV2Request(BaseModel):
@@ -134,7 +142,7 @@ def _mark_local_failure(user_id: UUID, error_code: str) -> None:
                 UPDATE mt5_accounts
                 SET status='error', last_error_code=:error_code,
                     last_checked_at=now(), updated_at=now()
-                WHERE owner_user_id=:user_id
+                WHERE owner_user_id=:user_id AND status<>'revoked'
                 """
             ),
             {"user_id": user_id, "error_code": error_code},
@@ -179,7 +187,6 @@ def _ensure_no_live_attempt(session: Session, user_id: UUID) -> None:
 
 
 def _linked_or_approved_account(session: Session, user_id: UUID) -> Any | None:
-    """Return canonical login/server even if the first remote connection never persisted."""
     return session.execute(
         text(
             """
@@ -201,13 +208,36 @@ def _linked_or_approved_account(session: Session, user_id: UUID) -> Any | None:
     ).mappings().first()
 
 
+def _local_remote_snapshot(user_id: UUID) -> Any | None:
+    with get_session_factory()() as session:
+        return session.execute(
+            text(
+                """
+                SELECT metaapi_account_id, status, remote_state, remote_connection_status
+                FROM mt5_accounts
+                WHERE owner_user_id=:user_id AND status<>'revoked'
+                ORDER BY updated_at DESC
+                LIMIT 1
+                """
+            ),
+            {"user_id": user_id},
+        ).mappings().first()
+
+
 async def _known_broker_name(service: Day30Mt5ConnectionService, token: str, server: str) -> str:
-    response = await service._gateway._request(  # noqa: SLF001 - provisioning preflight
-        "GET",
-        "/known-mt-servers/5/search",
-        token=token,
-        params=[("query", server)],
-    )
+    try:
+        response = await asyncio.wait_for(
+            service._gateway._request(  # noqa: SLF001
+                "GET",
+                "/known-mt-servers/5/search",
+                token=token,
+                params=[("query", server)],
+            ),
+            timeout=_SERVER_PREFLIGHT_TIMEOUT_SECONDS,
+        )
+    except asyncio.TimeoutError as exc:
+        raise MetaApiGatewayError("metaapi_server_preflight_timeout", retryable=True) from exc
+
     payload = response.json() if response.content else {}
     if isinstance(payload, dict):
         target = server.casefold()
@@ -217,47 +247,107 @@ async def _known_broker_name(service: Day30Mt5ConnectionService, token: str, ser
     raise MetaApiGatewayError("metaapi_server_not_known")
 
 
-async def _matching_remote_accounts(
-    service: Day30Mt5ConnectionService,
-    token: str,
-    *,
-    login: str,
-    server: str,
-) -> list[MetaApiAccountState]:
-    response = await service._gateway._request(  # noqa: SLF001 - provisioning inventory
-        "GET",
-        "/users/current/accounts",
-        token=token,
-        params=[("version", "5")],
-    )
-    payload = response.json() if response.content else []
-    rows = payload.get("items", []) if isinstance(payload, dict) else payload
-    if not isinstance(rows, list):
-        raise MetaApiGatewayError("metaapi_invalid_response")
-    matches: list[MetaApiAccountState] = []
-    for item in rows:
-        if not isinstance(item, dict):
-            continue
-        if str(item.get("login") or "") != login:
-            continue
-        if str(item.get("server") or "").casefold() != server.casefold():
-            continue
-        matches.append(service._gateway._account_state(item))  # noqa: SLF001
-    return matches
-
-
 async def _delete_remote(service: Day30Mt5ConnectionService, token: str, account_id: str) -> None:
     try:
-        await service._gateway._request(  # noqa: SLF001 - documented account deletion API
+        await service._gateway._request(  # noqa: SLF001
             "DELETE",
             f"/users/current/accounts/{account_id}",
             token=token,
             params=[("executeForAllReplicas", "true")],
-            accepted_statuses={204},
+            accepted_statuses={200, 202, 204},
         )
     except MetaApiGatewayError as exc:
         if exc.code != "metaapi_account_not_found":
             raise
+
+
+async def _reuse_or_cleanup_local_remote(
+    *,
+    service: Day30Mt5ConnectionService,
+    token: str,
+    user_id: UUID,
+    owner_id: UUID,
+    attempt_id: UUID,
+) -> MetaApiAccountState | None:
+    snapshot = _local_remote_snapshot(user_id)
+    if snapshot is None or not snapshot["metaapi_account_id"]:
+        return None
+
+    account_id = str(snapshot["metaapi_account_id"])
+    locally_connected = (
+        str(snapshot["status"] or "").lower() == "connected"
+        and str(snapshot["remote_state"] or "").upper() == "DEPLOYED"
+        and str(snapshot["remote_connection_status"] or "").upper() == "CONNECTED"
+    )
+    if locally_connected:
+        try:
+            remote = await asyncio.wait_for(
+                service._gateway.read_account(token=token, account_id=account_id),
+                timeout=_REMOTE_READ_TIMEOUT_SECONDS,
+            )
+            if remote.state == "DEPLOYED" and remote.connection_status == "CONNECTED":
+                return remote
+        except (asyncio.TimeoutError, MetaApiGatewayError):
+            raise MetaApiGatewayError("metaapi_existing_connection_unverifiable", retryable=True)
+
+    try:
+        await asyncio.wait_for(
+            _delete_remote(service, token, account_id),
+            timeout=_STALE_CLEANUP_TIMEOUT_SECONDS,
+        )
+        _audit(
+            user_id,
+            owner_id,
+            "mt5.connection_v2.stage",
+            attempt_id=str(attempt_id),
+            stage="stale_terminal_removed",
+            status="connecting",
+        )
+    except asyncio.TimeoutError:
+        _audit(
+            user_id,
+            owner_id,
+            "mt5.connection_v2.stage",
+            attempt_id=str(attempt_id),
+            stage="stale_cleanup_skipped",
+            status="connecting",
+            cleanup_error="cleanup_timeout",
+        )
+    except MetaApiGatewayError as exc:
+        _audit(
+            user_id,
+            owner_id,
+            "mt5.connection_v2.stage",
+            attempt_id=str(attempt_id),
+            stage="stale_cleanup_skipped",
+            status="connecting",
+            cleanup_error=exc.code,
+        )
+    return None
+
+
+async def _read_created_account(
+    service: Day30Mt5ConnectionService,
+    token: str,
+    account_id: str,
+    *,
+    deadline: float,
+) -> MetaApiAccountState:
+    last_error: MetaApiGatewayError | None = None
+    while time.monotonic() < deadline:
+        try:
+            return await asyncio.wait_for(
+                service._gateway.read_account(token=token, account_id=account_id),
+                timeout=_REMOTE_READ_TIMEOUT_SECONDS,
+            )
+        except asyncio.TimeoutError:
+            last_error = MetaApiGatewayError("metaapi_read_timeout", retryable=True)
+        except MetaApiGatewayError as exc:
+            last_error = exc
+            if not exc.retryable and exc.code != "metaapi_account_not_found":
+                raise
+        await asyncio.sleep(2)
+    raise last_error or MetaApiGatewayError("metaapi_read_timeout", retryable=True)
 
 
 async def _create_remote(
@@ -285,25 +375,40 @@ async def _create_remote(
         "keywords": [broker_name],
     }
 
-    while True:
-        response = await service._gateway._request(  # noqa: SLF001 - documented create API
-            "POST",
-            "/users/current/accounts",
-            token=token,
-            transaction_id=transaction_id,
-            json=body,
-            accepted_statuses={201, 202},
-        )
+    while time.monotonic() < deadline:
+        try:
+            response = await asyncio.wait_for(
+                service._gateway._request(  # noqa: SLF001
+                    "POST",
+                    "/users/current/accounts",
+                    token=token,
+                    transaction_id=transaction_id,
+                    json=body,
+                    accepted_statuses={201, 202},
+                ),
+                timeout=_CREATE_REQUEST_TIMEOUT_SECONDS,
+            )
+        except asyncio.TimeoutError:
+            await asyncio.sleep(2)
+            continue
+
         if response.status_code == 201:
             payload = response.json() if response.content else {}
             if not isinstance(payload, dict) or not payload.get("id"):
                 raise MetaApiGatewayError("metaapi_invalid_response")
-            return await service._gateway.read_account(token=token, account_id=str(payload["id"]))
+            return await _read_created_account(
+                service,
+                token,
+                str(payload["id"]),
+                deadline=deadline,
+            )
 
         retry_after = service._gateway._retry_after_seconds(response)  # noqa: SLF001
         if time.monotonic() + retry_after >= deadline:
-            raise MetaApiGatewayError("metaapi_provisioning_timeout", retryable=True)
+            break
         await asyncio.sleep(retry_after)
+
+    raise MetaApiGatewayError("metaapi_provisioning_timeout", retryable=True)
 
 
 async def _poll_connected(
@@ -314,11 +419,25 @@ async def _poll_connected(
     seconds: int,
 ) -> MetaApiAccountState:
     if remote.state != "DEPLOYED":
-        await service._gateway.deploy_account(token=token, account_id=remote.account_id)
+        try:
+            await asyncio.wait_for(
+                service._gateway.deploy_account(token=token, account_id=remote.account_id),
+                timeout=15,
+            )
+        except asyncio.TimeoutError:
+            pass
+
     deadline = time.monotonic() + seconds
     latest = remote
     while time.monotonic() < deadline:
-        latest = await service._gateway.read_account(token=token, account_id=remote.account_id)
+        try:
+            latest = await asyncio.wait_for(
+                service._gateway.read_account(token=token, account_id=remote.account_id),
+                timeout=_REMOTE_READ_TIMEOUT_SECONDS,
+            )
+        except asyncio.TimeoutError:
+            await asyncio.sleep(2)
+            continue
         if latest.state in {"DEPLOY_FAILED", "REDEPLOY_FAILED"}:
             raise MetaApiGatewayError("metaapi_deploy_failed")
         if latest.state == "DEPLOYED" and latest.connection_status == "CONNECTED":
@@ -337,6 +456,22 @@ def _activate_and_sync(
     ).sync_active_profile_from_canonical(user_id)
 
 
+async def _cleanup_new_remote(
+    service: Day30Mt5ConnectionService,
+    token: str,
+    remote: MetaApiAccountState | None,
+) -> None:
+    if not token or remote is None:
+        return
+    try:
+        await asyncio.wait_for(
+            _delete_remote(service, token, remote.account_id),
+            timeout=_STALE_CLEANUP_TIMEOUT_SECONDS,
+        )
+    except Exception:
+        pass
+
+
 async def _run_connection_attempt(
     *,
     service: Day30Mt5ConnectionService,
@@ -351,37 +486,61 @@ async def _run_connection_attempt(
     new_remote: MetaApiAccountState | None = None
     try:
         _audit(
-            user_id, owner_id, "mt5.connection_v2.stage",
-            attempt_id=str(attempt_id), stage="server_preflight", status="connecting",
+            user_id,
+            owner_id,
+            "mt5.connection_v2.stage",
+            attempt_id=str(attempt_id),
+            stage="server_preflight",
+            status="connecting",
         )
         token = service.resolve_platform_token()
         broker_name = await _known_broker_name(service, token, server)
 
         _audit(
-            user_id, owner_id, "mt5.connection_v2.stage",
-            attempt_id=str(attempt_id), stage="stale_terminal_cleanup", status="connecting",
+            user_id,
+            owner_id,
+            "mt5.connection_v2.stage",
+            attempt_id=str(attempt_id),
+            stage="stale_terminal_cleanup",
+            status="connecting",
             exact_broker_match=broker_name,
         )
-        matches = await _matching_remote_accounts(service, token, login=login, server=server)
-        for existing in matches:
-            if existing.state == "DEPLOYED" and existing.connection_status == "CONNECTED":
-                service._store_user_connection(  # noqa: SLF001 - canonical auditable writer
-                    user_id=user_id, token=token, login=login, server=server, remote=existing,
-                )
-                _activate_and_sync(service=service, owner_id=owner_id, user_id=user_id)
-                _audit(
-                    user_id, owner_id, "mt5.connection_v2.connected",
-                    attempt_id=str(attempt_id), stage="connected_existing", status="connected",
-                    remote_state=existing.state,
-                    remote_connection_status=existing.connection_status,
-                    broker_name=broker_name,
-                )
-                return
-            await _delete_remote(service, token, existing.account_id)
+        existing = await _reuse_or_cleanup_local_remote(
+            service=service,
+            token=token,
+            user_id=user_id,
+            owner_id=owner_id,
+            attempt_id=attempt_id,
+        )
+        if existing is not None:
+            service._store_user_connection(  # noqa: SLF001
+                user_id=user_id,
+                token=token,
+                login=login,
+                server=server,
+                remote=existing,
+            )
+            _activate_and_sync(service=service, owner_id=owner_id, user_id=user_id)
+            _audit(
+                user_id,
+                owner_id,
+                "mt5.connection_v2.connected",
+                attempt_id=str(attempt_id),
+                stage="connected_existing",
+                status="connected",
+                remote_state=existing.state,
+                remote_connection_status=existing.connection_status,
+                broker_name=broker_name,
+            )
+            return
 
         _audit(
-            user_id, owner_id, "mt5.connection_v2.stage",
-            attempt_id=str(attempt_id), stage="provisioning", status="connecting",
+            user_id,
+            owner_id,
+            "mt5.connection_v2.stage",
+            attempt_id=str(attempt_id),
+            stage="provisioning",
+            status="connecting",
             exact_broker_match=broker_name,
         )
         new_remote = await _create_remote(
@@ -394,30 +553,50 @@ async def _run_connection_attempt(
         )
 
         _audit(
-            user_id, owner_id, "mt5.connection_v2.stage",
-            attempt_id=str(attempt_id), stage="broker_connect", status="connecting",
+            user_id,
+            owner_id,
+            "mt5.connection_v2.stage",
+            attempt_id=str(attempt_id),
+            stage="broker_connect",
+            status="connecting",
             remote_state=new_remote.state,
             remote_connection_status=new_remote.connection_status,
         )
         remote = await _poll_connected(
-            service, token, new_remote, seconds=_FIRST_CONNECT_WAIT_SECONDS
+            service,
+            token,
+            new_remote,
+            seconds=_FIRST_CONNECT_WAIT_SECONDS,
         )
 
         if remote.connection_status != "CONNECTED":
             _audit(
-                user_id, owner_id, "mt5.connection_v2.stage",
-                attempt_id=str(attempt_id), stage="redeploy_verification", status="connecting",
+                user_id,
+                owner_id,
+                "mt5.connection_v2.stage",
+                attempt_id=str(attempt_id),
+                stage="redeploy_verification",
+                status="connecting",
                 remote_state=remote.state,
                 remote_connection_status=remote.connection_status,
             )
-            await service._gateway._request(  # noqa: SLF001 - documented redeploy API
-                "POST",
-                f"/users/current/accounts/{remote.account_id}/redeploy",
-                token=token,
-                accepted_statuses={200, 201, 202, 204},
-            )
+            try:
+                await asyncio.wait_for(
+                    service._gateway._request(  # noqa: SLF001
+                        "POST",
+                        f"/users/current/accounts/{remote.account_id}/redeploy",
+                        token=token,
+                        accepted_statuses={200, 201, 202, 204},
+                    ),
+                    timeout=15,
+                )
+            except asyncio.TimeoutError:
+                pass
             remote = await _poll_connected(
-                service, token, remote, seconds=_REDEPLOY_CONNECT_WAIT_SECONDS
+                service,
+                token,
+                remote,
+                seconds=_REDEPLOY_CONNECT_WAIT_SECONDS,
             )
 
         if not (remote.state == "DEPLOYED" and remote.connection_status == "CONNECTED"):
@@ -428,42 +607,49 @@ async def _run_connection_attempt(
             )
             raise MetaApiGatewayError(error_code)
 
-        service._store_user_connection(  # noqa: SLF001 - canonical auditable writer
-            user_id=user_id, token=token, login=login, server=server, remote=remote,
+        service._store_user_connection(  # noqa: SLF001
+            user_id=user_id,
+            token=token,
+            login=login,
+            server=server,
+            remote=remote,
         )
         _activate_and_sync(service=service, owner_id=owner_id, user_id=user_id)
         _audit(
-            user_id, owner_id, "mt5.connection_v2.connected",
-            attempt_id=str(attempt_id), stage="connected", status="connected",
+            user_id,
+            owner_id,
+            "mt5.connection_v2.connected",
+            attempt_id=str(attempt_id),
+            stage="connected",
+            status="connected",
             remote_state=remote.state,
             remote_connection_status=remote.connection_status,
             broker_name=broker_name,
         )
     except (MetaApiGatewayError, Mt5ConnectionError) as exc:
-        error_code = exc.code
-        if token and new_remote is not None:
-            try:
-                await _delete_remote(service, token, new_remote.account_id)
-            except Exception:
-                pass
+        await _cleanup_new_remote(service, token, new_remote)
         _stop_trading(user_id)
-        _mark_local_failure(user_id, error_code)
+        _mark_local_failure(user_id, exc.code)
         _audit(
-            user_id, owner_id, "mt5.connection_v2.failed",
-            attempt_id=str(attempt_id), stage="failed", status="failed",
-            error_code=error_code,
+            user_id,
+            owner_id,
+            "mt5.connection_v2.failed",
+            attempt_id=str(attempt_id),
+            stage="failed",
+            status="failed",
+            error_code=exc.code,
         )
     except Exception as exc:
-        if token and new_remote is not None:
-            try:
-                await _delete_remote(service, token, new_remote.account_id)
-            except Exception:
-                pass
+        await _cleanup_new_remote(service, token, new_remote)
         _stop_trading(user_id)
         _mark_local_failure(user_id, "mt5_connection_internal_error")
         _audit(
-            user_id, owner_id, "mt5.connection_v2.failed",
-            attempt_id=str(attempt_id), stage="failed", status="failed",
+            user_id,
+            owner_id,
+            "mt5.connection_v2.failed",
+            attempt_id=str(attempt_id),
+            stage="failed",
+            status="failed",
             error_code="mt5_connection_internal_error",
             error_kind=type(exc).__name__,
         )
@@ -500,19 +686,30 @@ async def start_member_connection_v2(
 
     row = _linked_or_approved_account(session, user_id)
     if row is None or str(row["account_environment"]).lower() != "live":
-        raise HTTPException(status_code=409, detail="This member does not have an approved live MT5 account to reconnect.")
+        raise HTTPException(
+            status_code=409,
+            detail="This member does not have an approved live MT5 account to reconnect.",
+        )
     _ensure_no_live_attempt(session, user_id)
 
     login, server = service.validate_live_vantage_account(str(row["login"]), str(row["server"]))
     service.approve_user_account(
-        approver_user_id=identity["id"], user_id=user_id, login=login, server=server
+        approver_user_id=identity["id"],
+        user_id=user_id,
+        login=login,
+        server=server,
     )
     _stop_trading(user_id)
     attempt_id = uuid4()
     _audit(
-        user_id, identity["id"], "mt5.connection_v2.started",
-        attempt_id=str(attempt_id), stage="queued", status="connecting",
-        login_last4=login[-4:], server=server,
+        user_id,
+        identity["id"],
+        "mt5.connection_v2.started",
+        attempt_id=str(attempt_id),
+        stage="queued",
+        status="connecting",
+        login_last4=login[-4:],
+        server=server,
     )
     background_tasks.add_task(
         _run_connection_attempt,
@@ -552,14 +749,22 @@ async def onboard_live_member_v2(
     _ensure_no_live_attempt(session, user_id)
     login, server = service.validate_live_vantage_account(payload.mt5_login, payload.mt5_server)
     service.approve_user_account(
-        approver_user_id=identity["id"], user_id=user_id, login=login, server=server
+        approver_user_id=identity["id"],
+        user_id=user_id,
+        login=login,
+        server=server,
     )
     _stop_trading(user_id)
     attempt_id = uuid4()
     _audit(
-        user_id, identity["id"], "mt5.connection_v2.started",
-        attempt_id=str(attempt_id), stage="queued", status="connecting",
-        login_last4=login[-4:], server=server,
+        user_id,
+        identity["id"],
+        "mt5.connection_v2.started",
+        attempt_id=str(attempt_id),
+        stage="queued",
+        status="connecting",
+        login_last4=login[-4:],
+        server=server,
     )
     background_tasks.add_task(
         _run_connection_attempt,
@@ -609,9 +814,17 @@ def member_connection_v2_status(
             error_code=None,
             mt5_status=str(row["mt5_status"]) if row and row["mt5_status"] else None,
             remote_state=str(row["remote_state"]) if row and row["remote_state"] else None,
-            remote_connection_status=str(row["remote_connection_status"]) if row and row["remote_connection_status"] else None,
+            remote_connection_status=(
+                str(row["remote_connection_status"])
+                if row and row["remote_connection_status"]
+                else None
+            ),
             trading_status=str(row["trading_status"]) if row and row["trading_status"] else None,
-            risk_percent=float(row["risk_percent"]) if row and row["risk_percent"] is not None else None,
+            risk_percent=(
+                float(row["risk_percent"])
+                if row and row["risk_percent"] is not None
+                else None
+            ),
             updated_at=None,
         )
 
@@ -645,11 +858,23 @@ def member_connection_v2_status(
         mt5_status=(
             str(row["mt5_status"])
             if row and row["mt5_status"]
-            else ("connecting" if current_status == "connecting" else "error" if current_status in {"failed", "interrupted"} else None)
+            else (
+                "connecting"
+                if current_status == "connecting"
+                else "error" if current_status in {"failed", "interrupted"} else None
+            )
         ),
         remote_state=str(row["remote_state"]) if row and row["remote_state"] else None,
-        remote_connection_status=str(row["remote_connection_status"]) if row and row["remote_connection_status"] else None,
+        remote_connection_status=(
+            str(row["remote_connection_status"])
+            if row and row["remote_connection_status"]
+            else None
+        ),
         trading_status=str(row["trading_status"]) if row and row["trading_status"] else None,
-        risk_percent=float(row["risk_percent"]) if row and row["risk_percent"] is not None else None,
+        risk_percent=(
+            float(row["risk_percent"])
+            if row and row["risk_percent"] is not None
+            else None
+        ),
         updated_at=latest["created_at"],
     )
