@@ -106,6 +106,7 @@ class Day24RiskSizingResult:
     position_count: int
     total_risk_budget: Decimal
     total_actual_risk: Decimal
+    broker_minimum_applied: bool
     positions: tuple[Day24PositionSize, ...]
 
 
@@ -126,6 +127,7 @@ class Day24RiskSizer:
         volume_rules: BrokerVolumeRules,
         signal_requests_double_lot: bool = False,
         double_lot_approved: bool = False,
+        allow_broker_minimum_overshoot: bool = False,
         _allow_profile_risk: bool = False,
     ) -> Day24RiskSizingResult:
         balance_value = _decimal(balance)
@@ -170,13 +172,21 @@ class Day24RiskSizer:
         actual_risk = volume * loss_per_lot
 
         # Normal broker-step rounding must never increase risk above the selected
-        # per-leg target. The one intentional exception is the broker's hard minimum
-        # trade size: if the calculated volume is smaller, use the minimum lot instead
-        # of locally refusing an otherwise valid provider leg. Actual risk is reported
-        # truthfully; Vantage/MT5 remains the sole funds/margin acceptance authority
-        # when the order is submitted.
-        if actual_risk > risk_budget and not broker_minimum_applied:
-            raise Day24RiskSizingError("risk_budget_exceeded")
+        # per-leg target.
+        #
+        # The broker's hard minimum trade size is the one case where the calculated
+        # volume cannot be honoured at all. Substituting the minimum lot silently
+        # converts a 1% instruction into whatever that lot happens to cost, and on a
+        # small balance that is unbounded: on a 50 EUR account a 17 USD gold stop is
+        # ~30% per leg, and on 2026-09-14 four legs sharing one stop took 92% of the
+        # account in a single tick. Refuse the leg instead of guessing a size the
+        # owner never authorised. A caller that genuinely accepts the overshoot for a
+        # given account tier must opt in explicitly and visibly.
+        if actual_risk > risk_budget:
+            if not broker_minimum_applied:
+                raise Day24RiskSizingError("risk_budget_exceeded")
+            if not allow_broker_minimum_overshoot:
+                raise Day24RiskSizingError("broker_minimum_exceeds_risk_budget")
 
         positions = tuple(
             Day24PositionSize(
@@ -209,6 +219,7 @@ class Day24RiskSizer:
             position_count=position_count,
             total_risk_budget=risk_budget * Decimal(position_count),
             total_actual_risk=actual_risk * Decimal(position_count),
+            broker_minimum_applied=broker_minimum_applied,
             positions=positions,
         )
 
@@ -271,6 +282,7 @@ class Day24RiskSizer:
             position_count=len(positions),
             total_risk_budget=sum((item.risk_budget for item in positions), _ZERO),
             total_actual_risk=sum((item.actual_risk for item in positions), _ZERO),
+            broker_minimum_applied=any(item.broker_minimum_applied for item in sized),
             positions=positions,
         )
 

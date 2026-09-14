@@ -164,7 +164,15 @@ class CanonicalMarketExecutionPolicyService(PaperCriticalExecutionService):
         sizings: tuple[Day24RiskSizingResult, ...],
         tp_count: int,
     ) -> None:
-        """Record broker-minimum sizing overrun; do not invent an account budget veto."""
+        """Enforce the per-leg budget across every entry layer of one signal.
+
+        This previously logged the overrun and continued, which made the name a lie:
+        layered entries sharing one stop could each take the broker minimum lot and
+        compound without any account-level veto. On 2026-09-14 that let four legs of
+        one signal remove 92% of a 50 EUR account in a single tick. The cap now
+        refuses the signal, and the sizer refuses the individual leg, so neither the
+        per-leg nor the aggregate path can exceed the owner's stated risk.
+        """
         if tp_count <= 0:
             raise Day26ExecutionError("position_count_invalid")
         multiplier = Decimal("2") if double_applied else Decimal("1")
@@ -173,12 +181,15 @@ class CanonicalMarketExecutionPolicyService(PaperCriticalExecutionService):
             (item.actual_risk_per_position for item in sizings), Decimal("0")
         )
         if actual_per_tp > per_tp_guide:
-            logger.warning(
-                "Broker minimum-lot risk exceeds sizing guide; continuing "
-                "actual_per_tp=%s guide=%s",
+            logger.error(
+                "Layer risk exceeds per-leg budget; refusing signal "
+                "actual_per_tp=%s guide=%s balance=%s risk_percent=%s",
                 actual_per_tp,
                 per_tp_guide,
+                real_balance,
+                risk_percent,
             )
+            raise Day26ExecutionError("layer_risk_budget_exceeded")
 
 
 __all__ = ["CanonicalMarketExecutionPolicyService", "_live_directionally_valid"]

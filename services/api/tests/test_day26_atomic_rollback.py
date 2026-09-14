@@ -38,10 +38,10 @@ def _live_state() -> Day23LiveState:
         read_at=now,
         account=Day23AccountState(
             currency="USD",
-            balance=1000.0,
-            equity=1000.0,
+            balance=2500.0,
+            equity=2500.0,
             margin=0.0,
-            free_margin=1000.0,
+            free_margin=2500.0,
             margin_level=None,
             leverage=500.0,
             trade_allowed=True,

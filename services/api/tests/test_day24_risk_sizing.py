@@ -175,7 +175,25 @@ def test_broker_volume_step_rounds_down_and_never_exceeds_risk() -> None:
     assert result.actual_risk_per_position <= result.risk_budget_per_position
 
 
-def test_broker_minimum_is_used_when_target_volume_is_smaller() -> None:
+def test_broker_minimum_over_budget_is_refused_not_substituted() -> None:
+    """The minimum lot costs twice the budget here, so the leg is not tradeable."""
+    with pytest.raises(Day24RiskSizingError) as excinfo:
+        Day24RiskSizer.size(
+            balance="1000",
+            risk_percent="0.5",
+            signal_entry_price="4000",
+            signal_stop_loss="4010",
+            tick_size="0.01",
+            tick_value="1",
+            take_profit_count=1,
+            volume_rules=rules(minimum="0.01", step="0.01"),
+        )
+
+    assert excinfo.value.code == "broker_minimum_exceeds_risk_budget"
+
+
+def test_broker_minimum_overshoot_requires_an_explicit_opt_in() -> None:
+    """The old behaviour stays reachable, but only when a caller asks for it."""
     result = Day24RiskSizer.size(
         balance="1000",
         risk_percent="0.5",
@@ -185,33 +203,55 @@ def test_broker_minimum_is_used_when_target_volume_is_smaller() -> None:
         tick_value="1",
         take_profit_count=1,
         volume_rules=rules(minimum="0.01", step="0.01"),
+        allow_broker_minimum_overshoot=True,
     )
 
     assert result.raw_volume == Decimal("0.005")
     assert result.volume == Decimal("0.01")
-    assert result.risk_budget_per_position == Decimal("5")
+    assert result.broker_minimum_applied is True
     assert result.actual_risk_per_position == Decimal("10.00")
 
 
-def test_live_small_account_shape_uses_broker_minimum_instead_of_blocking() -> None:
+def test_live_small_account_shape_is_refused_rather_than_oversized() -> None:
+    """Regression for the 2026-09-14 pattern at the balance that first showed it.
+
+    1025.35 at 2% budgets 20.51 per leg. The minimum lot costs 23.68, and three legs
+    share one stop, so accepting it risked 71.04 -- 6.9% of the account on one signal.
+    """
+    with pytest.raises(Day24RiskSizingError) as excinfo:
+        Day24RiskSizer.size(
+            balance="1025.35",
+            risk_percent="1",
+            signal_entry_price="4348.68",
+            signal_stop_loss="4325",
+            tick_size="0.01",
+            tick_value="1",
+            take_profit_count=3,
+            volume_rules=rules(minimum="0.01", step="0.01"),
+            signal_requests_double_lot=True,
+            double_lot_approved=True,
+        )
+
+    assert excinfo.value.code == "broker_minimum_exceeds_risk_budget"
+
+
+def test_adequately_funded_account_is_unaffected() -> None:
+    """The guard must only bite where the minimum lot cannot fit the budget."""
     result = Day24RiskSizer.size(
-        balance="1025.35",
+        balance="2000",
         risk_percent="1",
-        signal_entry_price="4348.68",
-        signal_stop_loss="4325",
+        signal_entry_price="4271.26",
+        signal_stop_loss="4254.00",
         tick_size="0.01",
         tick_value="1",
-        take_profit_count=3,
+        take_profit_count=4,
         volume_rules=rules(minimum="0.01", step="0.01"),
-        signal_requests_double_lot=True,
-        double_lot_approved=True,
     )
 
-    assert result.effective_risk_percent == Decimal("2")
-    assert result.raw_volume < Decimal("0.01")
     assert result.volume == Decimal("0.01")
-    assert result.position_count == 3
-    assert result.actual_risk_per_position == Decimal("23.68")
+    assert result.broker_minimum_applied is False
+    assert result.actual_risk_per_position == Decimal("17.26")
+    assert result.actual_risk_per_position <= result.risk_budget_per_position
 
 
 def test_broker_maximum_caps_volume_without_exceeding_risk() -> None:

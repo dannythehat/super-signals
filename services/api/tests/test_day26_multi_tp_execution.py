@@ -42,8 +42,8 @@ def _live_state(*, bid: float = 4000.0, ask: float = 4000.0) -> Day23LiveState:
     return Day23LiveState(
         local_account_id=UUID(int=99), metaapi_account_id="metaapi-account", login_masked="****1913",
         server="VantageMarkets-Demo", region="london", read_at=now,
-        account=Day23AccountState(currency="USD", balance=1000.0, equity=1000.0, margin=0.0,
-            free_margin=1000.0, margin_level=None, leverage=500.0, trade_allowed=True),
+        account=Day23AccountState(currency="USD", balance=2500.0, equity=2500.0, margin=0.0,
+            free_margin=2500.0, margin_level=None, leverage=500.0, trade_allowed=True),
         price=Day23PriceState(symbol="XAUUSD", bid=bid, ask=ask, buy_price=ask, sell_price=bid,
             quote_time=now, quote_age_seconds=0.1, available=True, stale=False,
             execution_ready=True, block_reason=None, profit_tick_value=1.0, loss_tick_value=1.0),
