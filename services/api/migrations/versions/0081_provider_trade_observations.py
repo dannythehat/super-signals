@@ -49,7 +49,7 @@ def upgrade() -> None:
                 action IN ('execute','skip','ignore','apply_update')
             ),
             executable boolean NOT NULL,
-            outcome_reason varchar(64) NOT NULL,
+            outcome_reason varchar(200) NOT NULL,
             symbol varchar(24),
             side varchar(8) CHECK (side IS NULL OR side IN ('BUY','SELL')),
             order_type varchar(24),
