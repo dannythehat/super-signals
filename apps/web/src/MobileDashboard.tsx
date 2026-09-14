@@ -303,7 +303,11 @@ export function MobileDashboard({ apiBaseUrl, displayName, roleLabel, onOpenSett
   const riskText = data.trading.risk_percent === null ? 'Not configured' : `${data.trading.risk_percent}% per TP position`;
   const doubleLotText = data.trading.allow_double_lot === null ? null : data.trading.allow_double_lot ? `Double-lot ON · ${data.trading.effective_double_lot_risk_percent}% effective` : 'Double-lot OFF';
   const memberKicker = roleLabel.toLowerCase().includes('user') ? 'Your account' : roleLabel;
-  const isOwnerDemo = roleLabel.toLowerCase().includes('owner') && data.connection.account_environment === 'demo';
+  const isOwner = roleLabel.toLowerCase().includes('owner');
+  const isOwnerDemo = isOwner && data.connection.account_environment === 'demo';
+  const ownerCanControlPositions = isOwner
+    && data.connection.status === 'connected'
+    && (data.connection.account_environment === 'demo' || data.connection.account_environment === 'live');
   const currentMonthPnl = data.performance.find((period) => period.key === 'month')?.amount ?? null;
   const allTimePnl = data.performance.find((period) => period.key === 'all')?.amount ?? null;
   const usingLastConfirmedAccount = data.account !== null && data.connection.status === 'connection_error';
@@ -362,9 +366,9 @@ export function MobileDashboard({ apiBaseUrl, displayName, roleLabel, onOpenSett
         <div className="day32-position-list">{data.open_positions.map((position) => <article className="day32-position-card" key={position.position_id}>
           <div className="day32-position-title"><div><span className={`day32-side day32-side--${position.side.toLowerCase()}`}>{position.side}</span><strong>{position.symbol}</strong><small>TP{position.tp_index} · {position.volume} lots</small></div><strong className={pnlClass(position.profit)}>{money(position.profit, currency)}</strong></div>
           <dl><div><dt>Entry</dt><dd>{price(position.entry_price)}</dd></div><div><dt>Now</dt><dd>{price(position.current_price)}</dd></div><div><dt>SL</dt><dd>{price(position.stop_loss)}</dd></div><div><dt>TP</dt><dd>{price(position.take_profit)}</dd></div></dl>
-          <div className="owner-position-card-footer"><small className="day32-position-risk">Risk {position.planned_risk_percent}% · Opened {shortTime(position.opened_at)}</small>{isOwnerDemo && <OwnerPositionCloseButton apiBaseUrl={apiBaseUrl} positionId={position.position_id} symbol={position.symbol} tpIndex={position.tp_index} />}</div>
+          <div className="owner-position-card-footer"><small className="day32-position-risk">Risk {position.planned_risk_percent}% · Opened {shortTime(position.opened_at)}</small>{ownerCanControlPositions && <OwnerPositionCloseButton apiBaseUrl={apiBaseUrl} positionId={position.position_id} symbol={position.symbol} tpIndex={position.tp_index} />}</div>
         </article>)}</div>
-        {isOwnerDemo && <OwnerCloseAllButton apiBaseUrl={apiBaseUrl} openCount={data.open_positions.length} />}
+        {ownerCanControlPositions && <OwnerCloseAllButton apiBaseUrl={apiBaseUrl} openCount={data.open_positions.length} />}
       </>}
     </section>
 
