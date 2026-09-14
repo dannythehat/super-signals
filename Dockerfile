@@ -16,7 +16,7 @@ COPY packages ./packages
 RUN npm run typecheck \
     && npm run lint:web \
     && npm run test:web \
-    && VITE_API_BASE_URL= npm run build:web \
+    && VITE_API_BASE_URL=. npm run build:web \
     && touch /build/.day40-web-quality-passed
 
 FROM python:3.13-slim AS api-quality
