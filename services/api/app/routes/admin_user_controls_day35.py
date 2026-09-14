@@ -6,7 +6,9 @@ Owner locked the product to per-user Stop & Close plus Owner member revoke.
 
 from __future__ import annotations
 
+import asyncio
 from dataclasses import asdict
+from datetime import datetime
 from decimal import Decimal
 from typing import Annotated, Any
 from uuid import UUID
@@ -20,10 +22,14 @@ from app.admin_user_controls_day35 import (
     Day35AdminControlError,
     Day35AdminUserControlService,
 )
+from app.dashboard_day32 import QuietDay23Mt5ReadService
+from app.dashboard_resilient_runtime import ResilientDashboardRuntimeService
 from app.metaapi_read_gateway import MetaApiReadGateway
 from app.metaapi_trade_gateway import MetaApiTradeGateway
 from app.mt5_connection_service_day30 import Day30Mt5ConnectionService
 from app.mt5_runtime import require_mt5_service
+from app.paper_resilient_read_gateway import ResilientMetaApiReadGateway
+from app.trading_accounting import CanonicalTradingAccountingService
 from app.trading_controls_day31 import Day31TradingControlService
 
 router = APIRouter(prefix="/user-controls", tags=["day35-admin-controls"])
@@ -45,6 +51,31 @@ class ManagedUserResponse(BaseModel):
     mapped_pending_positions: int
     active_sessions: int
     push_devices_enabled: int
+
+
+class ManagedAccountOverviewResponse(BaseModel):
+    user_id: UUID
+    display_name: str | None
+    email: str
+    role_name: str
+    account_environment: str | None
+    mt5_status: str | None
+    remote_connection_status: str | None
+    trading_status: str | None
+    risk_percent: Decimal | None
+    login_masked: str | None
+    server: str | None
+    currency: str | None
+    balance: float | None
+    equity: float | None
+    free_margin: float | None
+    open_profit: float | None
+    realised_today: float | None
+    realised_month: float | None
+    realised_all_time: float | None
+    mapped_open_positions: int
+    mapped_pending_positions: int
+    account_read_at: datetime | None
 
 
 class RevokePreviewResponse(BaseModel):
@@ -100,6 +131,33 @@ def _service(request: Request) -> Day35AdminUserControlService:
         trading_service=trading,
     )
     request.app.state.day35_admin_user_control_service = service
+    return service
+
+
+def _portfolio_service(request: Request) -> ResilientDashboardRuntimeService:
+    existing = getattr(request.app.state, "owner_account_portfolio_service", None)
+    if isinstance(existing, ResilientDashboardRuntimeService):
+        return existing
+
+    base = require_mt5_service(request)
+    if not isinstance(base, Day30Mt5ConnectionService):
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail={
+                "code": "owner_account_portfolio_unavailable",
+                "message": "Account balances are temporarily unavailable.",
+            },
+        )
+    read_service = QuietDay23Mt5ReadService(
+        session_factory=base._session_factory,
+        cipher=base._cipher,
+        gateway=ResilientMetaApiReadGateway(timeout_seconds=2.5, attempts=1),
+    )
+    service = ResilientDashboardRuntimeService(
+        session_factory=base._session_factory,
+        read_service=read_service,
+    )
+    request.app.state.owner_account_portfolio_service = service
     return service
 
 
@@ -177,6 +235,162 @@ def managed_users(
             data["mt5_status"] = "approved"
         payloads.append(ManagedUserResponse(**data))
 
+    _no_store(response)
+    return tuple(payloads)
+
+
+@router.get("/accounts-overview", response_model=tuple[ManagedAccountOverviewResponse, ...])
+async def managed_accounts_overview(
+    request: Request,
+    response: Response,
+    actor: OwnerUsers,
+    timezone_name: str = "UTC",
+) -> tuple[ManagedAccountOverviewResponse, ...]:
+    """Owner-only portfolio view across every active connected/configured MT5 account.
+
+    Account reads reuse the same stale-while-revalidate service as the member dashboard:
+    confirmed balances render immediately, while broker refreshes happen sparingly in the
+    background. A newly connected account without a snapshot gets one bounded first read.
+    """
+    del actor
+    dashboard = _portfolio_service(request)
+    accounting = CanonicalTradingAccountingService(dashboard._session_factory)  # noqa: SLF001
+
+    with dashboard._session_factory() as session:  # noqa: SLF001
+        rows = session.execute(
+            text(
+                """
+                WITH latest_accounts AS (
+                    SELECT DISTINCT ON (owner_user_id)
+                        owner_user_id,id,account_environment,status,remote_connection_status,
+                        login,server,last_confirmed_currency,last_confirmed_balance,
+                        last_confirmed_equity,last_confirmed_free_margin,last_confirmed_account_at
+                    FROM mt5_accounts
+                    WHERE status<>'revoked'
+                    ORDER BY owner_user_id,created_at DESC
+                )
+                SELECT
+                    u.id AS user_id,u.display_name,u.email,
+                    COALESCE((
+                        SELECT r.name
+                        FROM user_roles ur
+                        JOIN roles r ON r.id=ur.role_id
+                        WHERE ur.user_id=u.id AND r.name IN ('owner','user')
+                        ORDER BY CASE WHEN r.name='owner' THEN 0 ELSE 1 END
+                        LIMIT 1
+                    ),'user') AS role_name,
+                    m.account_environment,m.status AS mt5_status,m.remote_connection_status,
+                    m.login,m.server,m.last_confirmed_currency,m.last_confirmed_balance,
+                    m.last_confirmed_equity,m.last_confirmed_free_margin,m.last_confirmed_account_at,
+                    utc.trading_status,utc.risk_percent,
+                    (SELECT COUNT(*)::int FROM positions p WHERE p.user_id=u.id AND p.status='open') AS mapped_open_positions,
+                    (SELECT COUNT(*)::int FROM positions p WHERE p.user_id=u.id AND p.status='pending') AS mapped_pending_positions
+                FROM users u
+                JOIN latest_accounts m ON m.owner_user_id=u.id
+                LEFT JOIN user_trading_controls utc ON utc.user_id=u.id
+                WHERE u.status='active'
+                ORDER BY CASE WHEN EXISTS (
+                    SELECT 1 FROM user_roles ur JOIN roles r ON r.id=ur.role_id
+                    WHERE ur.user_id=u.id AND r.name='owner'
+                ) THEN 0 ELSE 1 END,
+                lower(COALESCE(u.display_name,u.email))
+                """
+            )
+        ).mappings().all()
+
+    semaphore = asyncio.Semaphore(4)
+
+    async def read_one(row: Any) -> ManagedAccountOverviewResponse:
+        user_id = UUID(str(row["user_id"]))
+        view = None
+        try:
+            async with semaphore:
+                view = await dashboard.read(user_id)
+        except Exception:
+            # Portfolio observability must never break the whole Owner page because one
+            # broker account is temporarily unavailable. Durable confirmed values below
+            # remain the fallback and no trading mutation is ever sent from this endpoint.
+            view = None
+
+        try:
+            windows = accounting.windows(user_id, timezone_name=timezone_name)
+            realised_today = float(windows.today)
+            realised_month = float(windows.month)
+            realised_all_time = float(windows.all_time)
+        except Exception:
+            realised_today = None
+            realised_month = None
+            realised_all_time = None
+
+        live_account = view.account if view is not None else None
+        balance = (
+            float(live_account.balance)
+            if live_account is not None
+            else float(row["last_confirmed_balance"])
+            if row["last_confirmed_balance"] is not None
+            else None
+        )
+        equity = (
+            float(live_account.equity)
+            if live_account is not None
+            else float(row["last_confirmed_equity"])
+            if row["last_confirmed_equity"] is not None
+            else None
+        )
+        free_margin = (
+            float(live_account.free_margin)
+            if live_account is not None
+            else float(row["last_confirmed_free_margin"])
+            if row["last_confirmed_free_margin"] is not None
+            else None
+        )
+        currency = (
+            str(live_account.currency)
+            if live_account is not None
+            else str(row["last_confirmed_currency"])
+            if row["last_confirmed_currency"] is not None
+            else None
+        )
+        login = str(row["login"] or "")
+        connection_status = (
+            view.connection.status if view is not None else str(row["mt5_status"] or "") or None
+        )
+        account_read_at = (
+            view.connection.read_at
+            if view is not None and view.connection.read_at is not None
+            else row["last_confirmed_account_at"]
+        )
+
+        return ManagedAccountOverviewResponse(
+            user_id=user_id,
+            display_name=(str(row["display_name"]) if row["display_name"] else None),
+            email=str(row["email"]),
+            role_name=str(row["role_name"]),
+            account_environment=str(row["account_environment"] or "") or None,
+            mt5_status=connection_status,
+            remote_connection_status=(
+                str(row["remote_connection_status"])
+                if row["remote_connection_status"] is not None
+                else None
+            ),
+            trading_status=(str(row["trading_status"]) if row["trading_status"] else None),
+            risk_percent=(Decimal(str(row["risk_percent"])) if row["risk_percent"] is not None else None),
+            login_masked=(f"••••{login[-4:]}" if len(login) >= 4 else "••••" if login else None),
+            server=(str(row["server"]) if row["server"] else None),
+            currency=currency,
+            balance=balance,
+            equity=equity,
+            free_margin=free_margin,
+            open_profit=(float(view.open_profit) if view is not None and view.open_profit is not None else None),
+            realised_today=realised_today,
+            realised_month=realised_month,
+            realised_all_time=realised_all_time,
+            mapped_open_positions=int(row["mapped_open_positions"] or 0),
+            mapped_pending_positions=int(row["mapped_pending_positions"] or 0),
+            account_read_at=account_read_at,
+        )
+
+    payloads = await asyncio.gather(*(read_one(row) for row in rows))
     _no_store(response)
     return tuple(payloads)
 
