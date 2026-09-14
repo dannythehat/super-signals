@@ -86,11 +86,7 @@ async function readJson<T>(response: Response): Promise<T> {
   let body: unknown = null;
   const contentType = response.headers.get('content-type') || '';
   if (contentType.toLowerCase().includes('json')) {
-    try {
-      body = await response.json();
-    } catch {
-      body = null;
-    }
+    try { body = await response.json(); } catch { body = null; }
   }
   if (!response.ok) {
     const detail = typeof body === 'object' && body !== null && 'detail' in body
@@ -105,9 +101,7 @@ async function readJson<T>(response: Response): Promise<T> {
           : 'The member control could not be completed safely.';
     throw new Error(message);
   }
-  if (body === null) {
-    throw new Error('Member controls returned an invalid response. Please refresh in a moment.');
-  }
+  if (body === null) throw new Error('Member controls returned an invalid response. Please refresh in a moment.');
   return body as T;
 }
 
@@ -317,7 +311,6 @@ export function AdminMemberControlsDay35({ apiBaseUrl }: Props) {
 
   const activeSubscriptions = memberAccess.filter((access) => access.active).length;
   const pausedSubscriptions = memberAccess.filter((access) => access.status === 'suspended').length;
-  const reconnectRunning = reconnectStatus?.status === 'connecting';
 
   return <section className="day35-members" aria-labelledby="day35-members-title">
     <div className="workspace-page-header"><div><p className="eyebrow">Owner controls</p><h1 id="day35-members-title">Members &amp; account access</h1><p className="intro">Pause a member when payment is due without deleting their MT5 connection, credentials, settings or history. Resume restores the saved setup. Full revocation remains a separate confirmed action.</p></div><span className="workspace-role-pill">OWNER ONLY</span></div>
@@ -325,7 +318,7 @@ export function AdminMemberControlsDay35({ apiBaseUrl }: Props) {
     <AdminMemberOnboarding apiBaseUrl={apiBaseUrl} onCompleted={load} />
 
     {error && <div className="day35-members-error" role="alert">{error}</div>}
-    {notice && <div className="day35-members-result" role="status"><strong>Access updated.</strong><span>{notice}</span></div>}
+    {notice && <div className="day35-members-result" role="status"><strong>Update complete.</strong><span>{notice}</span></div>}
     {result && <div className="day35-members-result" role="status"><strong>Account revoked safely.</strong><span>{result.mapped_positions_closed} mapped position(s) closed · {result.sessions_revoked} session(s) revoked · {result.approvals_revoked} MT5 approval(s) revoked · manual/unmapped positions touched: no.</span></div>}
 
     <div className="day35-members-summary"><article><span>Managed users</span><strong>{users.length}</strong></article><article><span>Subscriptions active</span><strong>{activeSubscriptions}</strong></article><article><span>Subscriptions paused</span><strong>{pausedSubscriptions}</strong></article><article><span>Automation active</span><strong>{users.filter((user) => user.trading_status === 'active').length}</strong></article></div>
@@ -342,13 +335,7 @@ export function AdminMemberControlsDay35({ apiBaseUrl }: Props) {
         <div className="day35-member-grid"><span><small>Subscription</small><strong>{accessLabel(access)}</strong></span><span><small>Automation</small><strong>{user.trading_status || 'Not configured'}</strong></span><span><small>Risk</small><strong>{riskLabel(user)}</strong></span><span><small>MT5</small><strong>{user.mt5_status || 'Not linked'}</strong></span><span><small>MT5 login</small><strong>{user.mt5_login_masked || '—'}</strong></span><span><small>Mapped open</small><strong>{user.mapped_open_positions}</strong></span><span><small>Mapped pending</small><strong>{user.mapped_pending_positions}</strong></span><span><small>Active sessions</small><strong>{user.active_sessions}</strong></span><span><small>Push devices</small><strong>{user.push_devices_enabled}</strong></span></div>
         <div className="day35-member-actions">
           {canReconnectMt5 && <button type="button" className="day35-resume-button" onClick={() => openReconnect(user)}>Reconnect MT5</button>}
-          <button
-            type="button"
-            className={isPaused ? 'day35-resume-button' : 'day35-pause-button'}
-            disabled={accessBusy || (isPaused ? !canResume : !canPause)}
-            title={!access ? 'Subscription state unavailable' : !canPause && !canResume ? `Nothing to pause while access is ${access.status}.` : undefined}
-            onClick={() => void updateMemberAccess(user, isPaused ? 'resume' : 'pause')}
-          >{accessBusy ? 'Updating…' : isPaused ? 'Resume subscription' : 'Pause subscription'}</button>
+          <button type="button" className={isPaused ? 'day35-resume-button' : 'day35-pause-button'} disabled={accessBusy || (isPaused ? !canResume : !canPause)} title={!access ? 'Subscription state unavailable' : !canPause && !canResume ? `Nothing to pause while access is ${access.status}.` : undefined} onClick={() => void updateMemberAccess(user, isPaused ? 'resume' : 'pause')}>{accessBusy ? 'Updating…' : isPaused ? 'Resume subscription' : 'Pause subscription'}</button>
           {user.status === 'active' && <button type="button" className="day35-revoke-button" onClick={() => void openRevoke(user)}>Review revoke action</button>}
         </div>
       </article>;
