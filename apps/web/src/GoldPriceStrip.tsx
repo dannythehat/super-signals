@@ -18,9 +18,11 @@ type Props = {
   apiBaseUrl: string;
 };
 
-const LIVE_REFRESH_MS = 1000;
-const ERROR_REFRESH_MS = 2000;
-const HIDDEN_REFRESH_MS = 30000;
+// The quote strip is display-only. Five-second updates are plenty for the UI and cut
+// per-user request pressure by 80% versus the old one-second polling loop.
+const LIVE_REFRESH_MS = 5_000;
+const ERROR_REFRESH_MS = 10_000;
+const HIDDEN_REFRESH_MS = 60_000;
 
 function goldPrice(value: number | null): string {
   if (value === null || !Number.isFinite(value)) return '—';
