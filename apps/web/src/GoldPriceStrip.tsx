@@ -16,6 +16,7 @@ type GoldQuote = {
 
 type Props = {
   apiBaseUrl: string;
+  active: boolean;
 };
 
 // The quote strip is display-only. Five-second updates are plenty for the UI and cut
@@ -42,11 +43,13 @@ function compactPrice(value: number | null): string {
   }).format(value);
 }
 
-export function GoldPriceStrip({ apiBaseUrl }: Props) {
+export function GoldPriceStrip({ apiBaseUrl, active }: Props) {
   const [quote, setQuote] = useState<GoldQuote | null>(null);
   const [feedError, setFeedError] = useState(false);
 
   useEffect(() => {
+    if (!active) return;
+
     let cancelled = false;
     let timer: number | null = null;
     let controller: AbortController | null = null;
@@ -100,7 +103,7 @@ export function GoldPriceStrip({ apiBaseUrl }: Props) {
       controller?.abort();
       document.removeEventListener('visibilitychange', onVisibilityChange);
     };
-  }, [apiBaseUrl]);
+  }, [active, apiBaseUrl]);
 
   const live = Boolean(quote?.available && !quote.stale && !feedError);
   const delayed = Boolean(quote?.price !== null && quote?.price !== undefined && !live);
