@@ -94,14 +94,26 @@ class AidyMarketClient:
         }
 
     @staticmethod
-    def _bar(item: dict[str, object], *, start: datetime, end: datetime) -> AidyM1Bar:
+    def _bar(
+        item: dict[str, object],
+        *,
+        start: datetime,
+        end: datetime,
+        enforce_pit_cutoff: bool = True,
+    ) -> AidyM1Bar:
         opened = _utc_strict(item.get("open_time_utc"), field="open_time_utc")
         observed = _utc_strict(item.get("first_observed_at"), field="first_observed_at")
         if opened.second or opened.microsecond:
             raise ValueError("aidy_m1_open_not_minute_aligned")
         if opened < start or opened >= end:
             raise ValueError("aidy_m1_open_outside_window")
-        if observed > end:
+        # The decision path must never read a bar observed after its window closed.
+        # Research is the one caller for which that is the normal case rather than a
+        # violation: it asks what the market did, over history fetched long afterwards,
+        # so every retrospective bar is observed later than the window it describes.
+        # The default stays closed, and only the research path opts out -- by name, so
+        # it cannot be relaxed for a decision by accident.
+        if enforce_pit_cutoff and observed > end:
             raise ValueError("aidy_m1_first_observed_after_pit_cutoff")
         open_price = _price(item.get("open"), field="open")
         high = _price(item.get("high"), field="high")
@@ -305,7 +317,11 @@ class AidyMarketClient:
         raw_bars = payload.get("bars")
         if not isinstance(raw_bars, list):
             raise TypeError("AIDY research continuity payload is invalid.")
-        bars = [self._bar(raw, start=start, end=end) for raw in raw_bars if isinstance(raw, dict)]
+        bars = [
+            self._bar(raw, start=start, end=end, enforce_pit_cutoff=False)
+            for raw in raw_bars
+            if isinstance(raw, dict)
+        ]
         expected = tuple(
             _utc_strict(value, field="expected_open_time")
             for value in (payload.get("expected_open_times") or [])
