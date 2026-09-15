@@ -23,6 +23,12 @@ them stay fair:
   at the edge least favourable to the trader. It is never assumed to fill at the good
   edge, and a range price never appears as an immediate fill just because the message
   also said "now".
+* **A bar that touches both the stop and a target is read as the stop.** M1 cannot order
+  two touches inside one minute, and the live resolver refuses to score such a bar for
+  scalpers rather than guess. Refusing is right when the figure will promote a provider
+  and wrong here, where the question is what the trades were worth, so this takes the
+  worse of the two readings instead. It never flatters a provider and it is applied to
+  all of them.
 * **Management is not modelled.** Providers post stop moves and early closes as separate
   messages, and outside the signal pipeline there is nothing reliably linking an update
   to the trade it amends. Every trade is therefore run to its stop, its targets, or the
@@ -263,6 +269,10 @@ class ProviderTradeScorer:
                 signal_posted_at=observed_at,
                 sibling_entries=[],
                 full_replay=(bars_replayed == 0),
+                # False, even for scalpers: the strict path refuses to score a bar that
+                # touches stop and target together, which is right when the figure will
+                # promote a provider and useless when the question is what the trades
+                # were worth. Non-strict takes the stop, which is the worse reading.
                 strict_intrabar_ambiguity=False,
             )
             bars_replayed += len(usable)
