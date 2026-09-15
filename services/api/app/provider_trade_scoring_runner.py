@@ -51,13 +51,12 @@ _SELECTABLE = """
         s.id IS NULL
         -- Re-ask only where more history could change the answer.
         OR s.outcome = 'open_at_window_end'
-        OR s.unresolvable_reason IN (
-            'no_price_history_for_window',
-            'research_fetch_failed:HTTPStatusError',
-            'research_fetch_failed:ConnectError',
-            'research_fetch_failed:ReadTimeout',
-            'research_fetch_failed:RuntimeError'
-        )
+        OR s.unresolvable_reason = 'no_price_history_for_window'
+        -- Any fetch failure, not a list of exception names. An allowlist of the
+        -- failures thought of in advance strands every trade that hit one that was
+        -- not: 1,427 rows recorded research_fetch_failed:ValueError on the first run
+        -- and would never have been re-asked once the cause was fixed.
+        OR s.unresolvable_reason LIKE 'research_fetch_failed:%'
       )
     ORDER BY o.observed_at
 """
