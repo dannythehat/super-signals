@@ -10,6 +10,11 @@ from urllib.parse import urlencode
 import httpx
 
 AIDY_QUOTE_MODE = "aidy_m1"
+# Retrospective research resolution. Deliberately not AIDY_QUOTE_MODE: provider_fairness
+# .score_eligibility admits only "aidy_m1" for scalper/intraday/swing styles, so a trade
+# resolved from retrospective bars can never become forward evidence or clear a
+# promotion gate. Its outcome is recorded separately, for the scoreboard only.
+AIDY_RETROSPECTIVE_QUOTE_MODE = "aidy_m1_retrospective"
 CALIBRATION_SOURCE_KIND = "calibration_backfill"
 CALIBRATION_SOURCE_PROVIDER = "twelve_data"
 _MAX_WINDOW = timedelta(hours=48)
@@ -247,6 +252,69 @@ class AidyMarketClient:
                 raise TypeError("AIDY M1 bar is invalid.")
             bars.append(self._bar(raw, start=start, end=end))
         return self._validate_window_payload(payload, start=start, end=end, bars=bars)
+
+    async def fetch_research_m1(self, *, start: datetime, end: datetime) -> AidyM1Window:
+        """Fetch settled history for provider research, never for a decision.
+
+        ``fetch_m1`` asks what AIDY could have seen at the time and refuses a bar
+        observed after the window closed. That is right for a decision and wrong for
+        scoring a provider's past trades, where the question is only what the market
+        did. This reads AIDY's research path, which serves both the live vendor source
+        and the retrospective source with no point-in-time cutoff.
+
+        Unlike the PIT window, an incomplete result is ordinary rather than an error:
+        some minutes were never captured and never backfilled, and the caller decides
+        whether the gap matters for the trade in hand.
+        """
+        start = _utc_strict(start, field="start")
+        end = _utc_strict(end, field="end")
+        if start.second or start.microsecond or end.second or end.microsecond:
+            raise ValueError("AIDY research M1 request window must be minute-aligned.")
+        if start >= end or end - start > _MAX_WINDOW:
+            raise ValueError("AIDY research M1 window must be positive and at most 48 hours.")
+        path = "/research/market/ohlc"
+        raw_query = urlencode(
+            [
+                ("symbol", "XAUUSD"),
+                ("from", start.isoformat()),
+                ("to", end.isoformat()),
+                ("timeframe", "1m"),
+            ]
+        )
+        async with httpx.AsyncClient(timeout=httpx.Timeout(self._timeout_seconds)) as client:
+            response = await client.get(
+                f"{self._base_url}{path}?{raw_query}",
+                headers=self._headers(),
+            )
+            response.raise_for_status()
+            payload = response.json()
+        if not isinstance(payload, dict) or payload.get("ok") is not True:
+            raise RuntimeError("AIDY research provider returned a non-success payload.")
+        claims_pit = payload.get("pit_eligible") is not False
+        claims_admission = payload.get("decision_admitted") is not False
+        if claims_pit or claims_admission:
+            # A research response that claims decision admissibility is a contract
+            # break; refuse it rather than let it reach a scorer.
+            raise RuntimeError("aidy_research_response_claims_decision_admission")
+        if str(payload.get("symbol")) != "XAUUSD" or str(payload.get("timeframe")) != "1m":
+            raise ValueError("aidy_research_response_market_mismatch")
+        if _utc_strict(payload.get("from"), field="response_from") != start:
+            raise ValueError("aidy_research_response_start_mismatch")
+        if _utc_strict(payload.get("to"), field="response_to") != end:
+            raise ValueError("aidy_research_response_end_mismatch")
+        raw_bars = payload.get("bars")
+        if not isinstance(raw_bars, list):
+            raise TypeError("AIDY research continuity payload is invalid.")
+        bars = [self._bar(raw, start=start, end=end) for raw in raw_bars if isinstance(raw, dict)]
+        expected = tuple(
+            _utc_strict(value, field="expected_open_time")
+            for value in (payload.get("expected_open_times") or [])
+        )
+        missing = tuple(
+            _utc_strict(value, field="missing_open_time")
+            for value in (payload.get("missing_open_times") or [])
+        )
+        return AidyM1Window(start, end, tuple(bars), expected, missing)
 
     async def fetch_calibration_m1(
         self, *, window_id: str, start: datetime, end: datetime
