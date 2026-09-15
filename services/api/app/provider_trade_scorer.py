@@ -29,6 +29,12 @@ them stay fair:
   and wrong here, where the question is what the trades were worth, so this takes the
   worse of the two readings instead. It never flatters a provider and it is applied to
   all of them.
+* **Replay starts at the first whole minute after the signal.** A message posted at
+  10:23:45 shares its minute bar with 45 seconds that came before it, and M1 cannot say
+  whether a touch inside that bar happened before the post or after. The live resolver
+  refuses to score the trade at all, which is right for forward evidence and throws away
+  a quarter of the catalogue here -- 98% of these messages are posted mid-minute. The
+  unattributable seconds are skipped instead of being attributed to either side.
 * **Management is not modelled.** Providers post stop moves and early closes as separate
   messages, and outside the signal pipeline there is nothing reliably linking an update
   to the trade it amends. Every trade is therefore run to its stop, its targets, or the
@@ -208,6 +214,12 @@ class ProviderTradeScorer:
         if not isinstance(observed_at, datetime):
             return self._unscored(observation, "observed_at_missing")
         observed_at = observed_at.astimezone(UTC)
+        # Round up, never down. Flooring would hand the trade the part of the minute
+        # that happened before it was posted, which is how a provider gets credited
+        # with a move it never called.
+        replay_from = observed_at.replace(second=0, microsecond=0)
+        if replay_from != observed_at:
+            replay_from += timedelta(minutes=1)
 
         try:
             payload = build_geometry_payload(observation)
@@ -220,11 +232,11 @@ class ProviderTradeScorer:
         state = _initial_state(
             geometry=geometry,
             leg_ids=leg_ids,
-            signal_posted_at=observed_at,
+            signal_posted_at=replay_from,
             lifecycle_mark=lifecycle_watermark([]),
         )
 
-        cursor = observed_at.replace(second=0, microsecond=0)
+        cursor = replay_from
         # Bars still forming are not settled history, so the window stops short of now.
         settled = datetime.now(UTC).replace(second=0, microsecond=0) - timedelta(minutes=5)
         deadline = min(cursor + MAX_TRADE_LIFETIME, settled)
@@ -272,7 +284,7 @@ class ProviderTradeScorer:
                 geometry=geometry,
                 events=_NO_EVENTS,
                 bars=usable,
-                signal_posted_at=observed_at,
+                signal_posted_at=replay_from,
                 sibling_entries=[],
                 full_replay=(bars_replayed == 0),
                 # False, even for scalpers: the strict path refuses to score a bar that
