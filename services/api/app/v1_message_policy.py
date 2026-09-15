@@ -33,6 +33,23 @@ _NUMBER_TOKEN = re.compile(r"(?<![A-Za-z0-9_.])\d+(?:\.\d+)?(?![A-Za-z0-9_.])")
 # Providers commonly print the same instrument as XAUUSD, XAU/USD or XAU USD.
 # These are literal aliases of the one supported instrument, not context inference.
 _INSTRUMENT = re.compile(r"\b(?:XAU\s*(?:/\s*)?USD|GOLD)\b", re.IGNORECASE)
+# Instruments this system does not trade. A source profile may supply a missing gold
+# identity, but it must never stand in for an instrument the provider named explicitly:
+# SureShot posted "BTCUSD SELL 79794.4 SL: 80994.4" and, because no gold token appeared
+# in the text, the gold profile supplied XAUUSD and the signal was stored as gold at a
+# Bitcoin price. Nothing reached the broker, but only because a later price check
+# happened to reject it, which is luck rather than a guarantee.
+_FOREIGN_INSTRUMENT = re.compile(
+    r"\b(?:"
+    r"BTC(?:USD[T]?)?|ETH(?:USD[T]?)?|SOL(?:USD[T]?)?|XRP(?:USD[T]?)?|DOGE(?:USD[T]?)?|"
+    r"LTC(?:USD[T]?)?|BNB(?:USD[T]?)?|ADA(?:USD[T]?)?|BITCOIN|ETHEREUM|"
+    r"NAS100|US30|US100|US500|SPX500|SP500|GER30|GER40|DAX40?|UK100|JP225|HK50|AUS200|"
+    r"USOIL|UKOIL|XTIUSD|XBRUSD|WTI|BRENT|NGAS|NATGAS|"
+    r"XAG(?:\s*/?\s*USD)?|SILVER|XPTUSD|PLATINUM|XPDUSD|PALLADIUM|"
+    r"(?:EUR|GBP|USD|JPY|CHF|CAD|AUD|NZD)\s*/?\s*(?:EUR|GBP|USD|JPY|CHF|CAD|AUD|NZD)"
+    r")\b",
+    re.IGNORECASE,
+)
 # LONG/SHORT are explicit directional trade words used by real selected providers.
 # They are treated only as side evidence; they never donate any price/protection.
 _BUY = re.compile(r"\b(?:BUY(?:S|ING)?|LONG)\b", re.IGNORECASE)
@@ -54,12 +71,21 @@ _RESULT_ONLY = re.compile(
     re.IGNORECASE,
 )
 
+# Profile id for a source whose instrument is declared in data rather than in this
+# file. It carries an instrument identity and nothing else: no grammar, and, like every
+# profile, no entry, SL, TP, order type or size.
+DECLARED_XAUUSD_PROFILE = "declared_xauusd"
+
+# Hand-written profiles that supply a gold identity. Kept as they are so no existing
+# source changes behaviour; new sources declare their instrument in the database
+# instead of being added here.
 _XAUUSD_SOURCE_PROFILES = {
     "tgc_xauusd",
     "tdc_xauusd",
     "tig_xauusd",
     "sureshot_xauusd",
     "matthew_xauusd",
+    DECLARED_XAUUSD_PROFILE,
 }
 
 
@@ -268,7 +294,12 @@ def apply_v1_message_policy(
         source_profile = str(extracted.get("source_profile") or "").strip().lower() or None
         edit_completed_first_trade = is_edit and original_has_signal is False
 
-        if _INSTRUMENT.search(text) is None and not _profile_supplies_xauusd(source_profile):
+        gold_named = _INSTRUMENT.search(text) is not None
+        # A provider naming a different instrument is refused outright. The source
+        # profile only ever fills a silence; it never overrides what was actually said.
+        if not gold_named and _FOREIGN_INSTRUMENT.search(text) is not None:
+            return _skip(decision, "foreign_instrument", extracted)
+        if not gold_named and not _profile_supplies_xauusd(source_profile):
             return _skip(decision, "missing_instrument", extracted)
 
         has_buy = _BUY.search(text) is not None

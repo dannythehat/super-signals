@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass, replace
+from decimal import Decimal, InvalidOperation
 from hashlib import sha256
 from typing import Any
 from uuid import UUID
@@ -322,7 +323,110 @@ class AiMessagePipeline:
                     "raw_text_sha256": decision.raw_text_sha256,
                 },
             )
+            self._store_observation(session, message_id, revision_index, decision)
             session.commit()
+
+    # Decisions that describe trading intent. Chatter and deterministic non-trades are
+    # not observations of how a provider trades, so they stay out of the research set.
+    _OBSERVED_DECISIONS = ("new_trade", "trade_update", "preparation")
+    _EXECUTABLE_ACTIONS = {"new_trade": "execute", "trade_update": "apply_update"}
+
+    @classmethod
+    def _store_observation(
+        cls,
+        session: Session,
+        message_id: UUID,
+        revision_index: int,
+        decision: AiMessageDecision,
+    ) -> None:
+        """Record every understood trade, whether or not it was executable.
+
+        A Signal is only created when the trade can also be mirrored to a broker, so
+        until now a correctly understood trade that failed an execution precondition
+        left no research trace. Whole providers were therefore invisible to shadow
+        research: a group that never publishes a stop loss produced no rows at all,
+        when "never publishes a stop loss" is itself what we are trying to learn.
+
+        This runs in the caller's session and transaction, so an observation is stored
+        exactly when its decision is. It only ever writes to the research table; no
+        execution state is read or touched here.
+        """
+        if decision.decision not in cls._OBSERVED_DECISIONS:
+            return
+        extracted = decision.extracted or {}
+        executable = decision.action == cls._EXECUTABLE_ACTIONS.get(decision.decision)
+        session.execute(
+            text(
+                """
+                INSERT INTO provider_trade_observations (
+                    id,message_id,source_id,revision_index,observed_at,decision,action,
+                    executable,outcome_reason,symbol,side,order_type,entry_low,entry_high,
+                    stop_loss,take_profits,tp_open,update_type,update_target,update_value,
+                    confidence,model,decision_source,raw_text_sha256
+                )
+                SELECT
+                    gen_random_uuid(),m.id,m.source_id,:revision_index,
+                    COALESCE(m.posted_at,m.created_at,now()),
+                    :decision,:action,:executable,LEFT(:outcome_reason,200),
+                    :symbol,:side,:order_type,
+                    CAST(NULLIF(:entry_low,'') AS numeric),
+                    CAST(NULLIF(:entry_high,'') AS numeric),
+                    CAST(NULLIF(:stop_loss,'') AS numeric),
+                    CAST(:take_profits AS jsonb),:tp_open,:update_type,:update_target,
+                    CAST(NULLIF(:update_value,'') AS numeric),
+                    :confidence,:model,:decision_source,:raw_text_sha256
+                FROM messages m WHERE m.id = :message_id
+                ON CONFLICT (message_id, revision_index) DO NOTHING
+                """
+            ),
+            {
+                "message_id": message_id,
+                "revision_index": revision_index,
+                "decision": decision.decision,
+                "action": decision.action,
+                "executable": executable,
+                "outcome_reason": decision.reason or "unspecified",
+                "symbol": cls._text_or_none(extracted.get("symbol")),
+                "side": cls._side_or_none(extracted.get("side")),
+                "order_type": cls._text_or_none(extracted.get("order_type")),
+                "entry_low": cls._number_text(extracted.get("entry_low")),
+                "entry_high": cls._number_text(extracted.get("entry_high")),
+                "stop_loss": cls._number_text(extracted.get("stop_loss")),
+                "take_profits": json.dumps(extracted.get("take_profits") or []),
+                "tp_open": bool(extracted.get("tp_open")),
+                "update_type": cls._text_or_none(extracted.get("update_type")),
+                "update_target": cls._text_or_none(extracted.get("update_target")),
+                "update_value": cls._number_text(extracted.get("update_value")),
+                "confidence": decision.confidence,
+                "model": decision.model,
+                "decision_source": decision.source,
+                "raw_text_sha256": decision.raw_text_sha256,
+            },
+        )
+
+    @staticmethod
+    def _text_or_none(value: Any) -> str | None:
+        text_value = str(value).strip() if value is not None else ""
+        return text_value or None
+
+    @classmethod
+    def _side_or_none(cls, value: Any) -> str | None:
+        side = (cls._text_or_none(value) or "").upper()
+        return side if side in {"BUY", "SELL"} else None
+
+    @staticmethod
+    def _number_text(value: Any) -> str | None:
+        """Pass numerics through as text so Postgres does the one authoritative cast."""
+        if value is None or isinstance(value, bool):
+            return None
+        candidate = str(value).strip()
+        if not candidate:
+            return None
+        try:
+            Decimal(candidate)
+        except (InvalidOperation, ValueError):
+            return None
+        return candidate
 
     @staticmethod
     def _reply_context(session: Session, source_id: UUID, payload: Any) -> str | None:
