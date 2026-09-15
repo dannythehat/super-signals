@@ -247,9 +247,15 @@ class ProviderTradeScorer:
                     type(exc).__name__,
                 )
                 if bars_replayed == 0:
+                    # The message, not just the type. "research_fetch_failed:ValueError"
+                    # against 2,214 trades said only that something was wrong, and cost
+                    # a deploy cycle to find out what; the cause named itself in the
+                    # message all along.
+                    detail = str(exc).strip().replace("\n", " ")[:80]
+                    reason = f"research_fetch_failed:{type(exc).__name__}"
                     return self._unscored(
                         observation,
-                        f"research_fetch_failed:{type(exc).__name__}",
+                        f"{reason}:{detail}" if detail else reason,
                         legs_total=len(geometry.targets),
                     )
                 break
