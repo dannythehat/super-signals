@@ -262,13 +262,19 @@ class Day13TelegramListenerManager(TelegramListenerManager):
                 # full edited message immediately, but only through the canonical
                 # listener's existing freshness guard so a stale edit can never be
                 # turned into a late market order.
+                # Fail closed. Recovery turns an edit into a live message, and this
+                # path runs on a listener that may have no freshness gate at all --
+                # defaulting to True let an arbitrarily old edit become a fresh market
+                # order on exactly the listeners least equipped to judge, which is the
+                # opposite of what the gate is for. Recovery now requires an
+                # affirmative answer: a gate that exists, a timestamp to judge, and a
+                # judgement that the entry is fresh.
                 freshness_check = getattr(self, "_fresh_recovered_entry", None)
-                safe_to_recover = True
-                if callable(freshness_check):
-                    safe_to_recover = (
-                        captured.posted_at is not None
-                        and bool(freshness_check(captured.posted_at))
-                    )
+                safe_to_recover = (
+                    callable(freshness_check)
+                    and captured.posted_at is not None
+                    and bool(freshness_check(captured.posted_at))
+                )
 
                 if safe_to_recover:
                     recovered = self._persist_message(
