@@ -52,6 +52,11 @@ _SELECTABLE = """
         -- Re-ask only where more history could change the answer.
         OR s.outcome = 'open_at_window_end'
         OR s.unresolvable_reason = 'no_price_history_for_window'
+        -- Blocked because the signal shared its minute bar with the seconds before it
+        -- was posted. Replay now starts at the next whole minute, so these resolve;
+        -- named one at a time rather than by prefix, because the other aidy_m1_
+        -- blocks are genuinely undecidable and would be re-asked forever.
+        OR s.unresolvable_reason = 'aidy_m1_signal_minute_ambiguous'
         -- Any fetch failure, not a list of exception names. An allowlist of the
         -- failures thought of in advance strands every trade that hit one that was
         -- not: 1,427 rows recorded research_fetch_failed:ValueError on the first run

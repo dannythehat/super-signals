@@ -247,3 +247,33 @@ def test_a_trade_still_running_is_not_counted_as_a_win_or_a_loss() -> None:
     assert result.net_pnl_usd == Decimal("10.00")
     assert result.legs_resolved == 1
     assert result.legs_total == 2
+
+
+def test_the_seconds_before_a_signal_was_posted_are_not_credited_to_it() -> None:
+    """A message posted at 10:23:45 shares its bar with 45 seconds that preceded it.
+
+    The live resolver refuses to score such a trade, which is right for forward evidence
+    and discards a quarter of the catalogue here -- 98% of these messages are posted
+    mid-minute. Replay starts at the next whole minute instead, so a spike that happened
+    before the provider spoke is neither counted for them nor against them.
+    """
+    mid_minute = POSTED_AT + timedelta(seconds=45)
+    # Minute 0 would have hit the target, but it is the partial minute and is skipped.
+    result = score(
+        observation(observed_at=mid_minute),
+        [bar(0, low="3999", high="4030"), bar(1, low="3999", high="4001"),
+         bar(2, low="3989", high="4000")],
+    )
+
+    assert result.outcome == "lost", "the pre-signal spike must not become a win"
+    assert result.first_bar_utc == POSTED_AT + timedelta(minutes=1)
+
+
+def test_a_signal_posted_exactly_on_the_minute_keeps_its_own_bar() -> None:
+    result = score(
+        observation(),
+        [bar(0, low="3999", high="4012"), bar(1, low="4010", high="4021")],
+    )
+
+    assert result.first_bar_utc == POSTED_AT
+    assert result.outcome == "won"
