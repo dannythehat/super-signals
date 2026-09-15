@@ -194,6 +194,25 @@ def test_an_incomplete_trade_says_what_is_missing(field, reason) -> None:
     assert result.unresolvable_reason == reason
 
 
+def test_a_fetch_failure_records_what_actually_went_wrong() -> None:
+    """A reason naming only the exception type is not a diagnosis.
+
+    2,214 trades recorded "research_fetch_failed:ValueError" and it took a deploy cycle
+    to learn that the message behind it named the cause exactly.
+    """
+
+    class FailingClient:
+        async def fetch_research_m1(self, *, start, end):
+            raise ValueError("first_observed_at_invalid_timestamp")
+
+    result = asyncio.run(ProviderTradeScorer(client=FailingClient()).score(observation()))
+
+    assert result.outcome == "unresolvable"
+    assert result.unresolvable_reason is not None
+    assert "first_observed_at_invalid_timestamp" in result.unresolvable_reason
+    assert len(result.unresolvable_reason) <= 120, "must fit the column"
+
+
 def test_a_day_with_no_price_history_is_reported_rather_than_guessed() -> None:
     """The days capture was down are exactly why this exists; they are not zeroes."""
     result = score(observation(), [])
