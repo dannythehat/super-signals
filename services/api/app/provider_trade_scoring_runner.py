@@ -11,7 +11,7 @@ research must therefore score one canonical observation per message rather than 
 every revision as a fresh trade. The canonical database view chooses the *first complete
 actionable revision* and exposes the time that revision actually existed. That prevents
 both duplicate P&L and hindsight from replaying an edited trade from the original post
- timestamp.
+timestamp.
 
 Nothing here can reach a live decision. Scores are written to ``provider_trade_scores``,
 whose ``forward_evidence_eligible`` column is CHECK-constrained false and which no
@@ -52,7 +52,7 @@ DEFAULT_CONCURRENCY = 4
 # at which that snapshot actually became available as ``observed_at``. Revision zero
 # uses the original posted_at; edited revisions use message_revisions.edited_at with a
 # conservative created_at fallback.
-_SELECTABLE = """
+_SELECTABLE = f"""
     SELECT c.id, c.source_id, c.observed_at, c.side, c.entry_low, c.entry_high,
            c.stop_loss, c.take_profits, c.order_type
     FROM provider_trade_canonical_observations c
@@ -61,7 +61,7 @@ _SELECTABLE = """
         s.id IS NULL
         -- A prior scoreboard generation used raw revision observations and the original
         -- message timestamp. Force every canonical trade through the repaired model.
-        OR s.benchmark_model IS DISTINCT FROM :benchmark_model
+        OR s.benchmark_model IS DISTINCT FROM '{RETROSPECTIVE_BENCHMARK_MODEL}'
         -- Re-ask only where more history could change the answer.
         OR s.outcome = 'open_at_window_end'
         OR s.unresolvable_reason = 'no_price_history_for_window'
@@ -171,11 +171,10 @@ class ProviderTradeScoringRunner:
 
     def _select(self, limit: int | None) -> list[dict[str, Any]]:
         sql = _SELECTABLE + ("\n    LIMIT :limit" if limit else "")
-        params: dict[str, Any] = {"benchmark_model": RETROSPECTIVE_BENCHMARK_MODEL}
-        if limit:
-            params["limit"] = limit
         with self._session_factory() as session:
-            rows = session.execute(text(sql), params).mappings().all()
+            rows = session.execute(
+                text(sql), {"limit": limit} if limit else {}
+            ).mappings().all()
         return [dict(row) for row in rows]
 
     def _persist(self, scores: list[TradeScore]) -> None:
