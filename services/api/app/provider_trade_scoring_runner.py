@@ -1,9 +1,17 @@
-"""Score every recorded provider trade and keep the answer current as history arrives.
+"""Score every logical provider trade and keep the answer current as history arrives.
 
 A score is derived, not observed. The same trade scores "no price history" today and
 "lost $20" once the minutes behind it are backfilled, so this re-selects rows whose
 answer can still change -- never scored, scored without history, or still open when the
 follow window closed -- and leaves settled ones alone.
+
+A Telegram message is one logical trade. Providers often build a signal by editing the
+same post repeatedly (entry, then stop, then TP1, TP2, formatting, and so on). Historical
+research must therefore score one canonical observation per message rather than treating
+every revision as a fresh trade. The canonical database view chooses the *first complete
+actionable revision* and exposes the time that revision actually existed. That prevents
+both duplicate P&L and hindsight from replaying an edited trade from the original post
+timestamp.
 
 Nothing here can reach a live decision. Scores are written to ``provider_trade_scores``,
 whose ``forward_evidence_eligible`` column is CHECK-constrained false and which no
@@ -30,25 +38,30 @@ from app.provider_trade_scorer import ProviderTradeScorer, TradeScore
 
 logger = logging.getLogger(__name__)
 
+# Version the repaired retrospective calculation separately from the first scoreboard
+# generation. Existing contaminated rows remain auditable in provider_trade_scores, but
+# the scoreboard and runner ignore them until the canonical observation is rescored.
+RETROSPECTIVE_BENCHMARK_MODEL = f"{BENCHMARK_MODEL}_canonical_edits_v1"
+
 # AIDY serves these from stored bars rather than the vendor, so the limit is politeness
 # to a single Worker rather than a credit budget.
 DEFAULT_CONCURRENCY = 4
 
-# A trade is worth scoring when the interpreter understood enough to place it: a side,
-# an entry, a stop and at least one target. Everything short of that is reported as
-# unmirrorable elsewhere and would only add noise here.
-_SELECTABLE = """
-    SELECT o.id, o.source_id, o.observed_at, o.side, o.entry_low, o.entry_high,
-           o.stop_loss, o.take_profits, o.order_type
-    FROM provider_trade_observations o
-    LEFT JOIN provider_trade_scores s ON s.observation_id = o.id
-    WHERE o.decision = 'new_trade'
-      AND o.side IS NOT NULL
-      AND o.entry_low IS NOT NULL
-      AND o.stop_loss IS NOT NULL
-      AND jsonb_array_length(o.take_profits) > 0
-      AND (
+# ``provider_trade_canonical_observations`` is created by migration 0093. It contains
+# exactly one complete new-trade snapshot per Telegram message and aliases the timestamp
+# at which that snapshot actually became available as ``observed_at``. Revision zero
+# uses the original posted_at; edited revisions use message_revisions.edited_at with a
+# conservative created_at fallback.
+_SELECTABLE = f"""
+    SELECT c.id, c.source_id, c.observed_at, c.side, c.entry_low, c.entry_high,
+           c.stop_loss, c.take_profits, c.order_type
+    FROM provider_trade_canonical_observations c
+    LEFT JOIN provider_trade_scores s ON s.observation_id = c.id
+    WHERE (
         s.id IS NULL
+        -- A prior scoreboard generation used raw revision observations and the original
+        -- message timestamp. Force every canonical trade through the repaired model.
+        OR s.benchmark_model IS DISTINCT FROM '{RETROSPECTIVE_BENCHMARK_MODEL}'
         -- Re-ask only where more history could change the answer.
         OR s.outcome = 'open_at_window_end'
         OR s.unresolvable_reason = 'no_price_history_for_window'
@@ -63,7 +76,7 @@ _SELECTABLE = """
         -- and would never have been re-asked once the cause was fixed.
         OR s.unresolvable_reason LIKE 'research_fetch_failed:%'
       )
-    ORDER BY o.observed_at
+    ORDER BY c.observed_at
 """
 
 _UPSERT = """
@@ -124,7 +137,7 @@ def _row_params(score: TradeScore) -> dict[str, Any]:
         "id": uuid4(),
         "observation_id": score.observation_id,
         "source_id": score.source_id,
-        "benchmark_model": BENCHMARK_MODEL,
+        "benchmark_model": RETROSPECTIVE_BENCHMARK_MODEL,
         "entry_convention": score.entry_convention,
         "outcome": score.outcome,
         "unresolvable_reason": score.unresolvable_reason,
@@ -242,5 +255,6 @@ if __name__ == "__main__":  # pragma: no cover - operational entry point
 __all__ = [
     "DEFAULT_CONCURRENCY",
     "ProviderTradeScoringRunner",
+    "RETROSPECTIVE_BENCHMARK_MODEL",
     "ScoringSummary",
 ]
