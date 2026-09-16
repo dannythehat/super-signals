@@ -27,6 +27,7 @@ from app.provider_trade_scoring_runner import (
 DATABASE_URL = os.getenv("DATABASE_URL")
 API_ROOT = Path(__file__).resolve().parents[1]
 POSTED_AT = datetime(2026, 9, 16, 10, 0, 15, tzinfo=UTC)
+SCORE_BASIS = "aidy_first_actionable_no_management_v1"
 
 
 @pytest.fixture(scope="module")
@@ -262,6 +263,16 @@ def test_progressive_edits_become_one_trade_at_first_actionable_edit(conn, sourc
     assert UUID(str(matching[0]["id"])) == first_actionable
     assert matching[0]["observed_at"] == first_actionable_at
 
+    scoreboard = conn.execute(
+        text("SELECT * FROM provider_trade_scoreboard WHERE source_id=:source"),
+        {"source": source_id},
+    ).mappings().one()
+    assert scoreboard["trades_recorded"] == 1
+    assert scoreboard["trades_scorable"] == 1
+    assert scoreboard["edit_assembled_pct"] == Decimal("100.0")
+    assert scoreboard["avg_actionable_delay_seconds"] == Decimal("75.0")
+    assert scoreboard["score_basis"] == SCORE_BASIS
+
 
 def test_complete_original_message_uses_original_post_time(conn, source_id) -> None:
     message_id = add_message(conn, source_id, index=2)
@@ -337,13 +348,14 @@ def test_scoreboard_counts_logical_trades_and_separates_open_partial_pnl(conn, s
         legs_total=2,
     )
 
-    open_message = add_message(conn, source_id, index=6, posted_at=POSTED_AT + timedelta(hours=1))
+    open_posted_at = POSTED_AT + timedelta(hours=1)
+    open_message = add_message(conn, source_id, index=6, posted_at=open_posted_at)
     open_observation = add_observation(
         conn,
         source_id,
         open_message,
         revision_index=0,
-        created_at=POSTED_AT + timedelta(hours=1),
+        created_at=open_posted_at,
     )
     add_score(
         conn,
@@ -369,4 +381,7 @@ def test_scoreboard_counts_logical_trades_and_separates_open_partial_pnl(conn, s
     assert row["total_r"] == Decimal("2")
     assert row["avg_r_per_trade"] == Decimal("2.0000")
     assert row["avg_r_per_leg"] == Decimal("1.0000")
+    assert row["edit_assembled_pct"] == Decimal("0.0")
+    assert row["avg_actionable_delay_seconds"] == Decimal("0.0")
+    assert row["score_basis"] == SCORE_BASIS
     assert row["benchmark_model"] == RETROSPECTIVE_BENCHMARK_MODEL
