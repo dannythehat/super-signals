@@ -19,6 +19,39 @@ def _utc_strict(value: datetime | str, *, field: str) -> datetime:
     return parsed.astimezone(UTC)
 
 
+def _validate_provider_snapshot_boundary(
+    *, snapshot: dict[str, Any], provenance: dict[str, Any]
+) -> None:
+    """Accept complete evidence or one explicit observational D1-degraded grade.
+
+    AIDY's formal forward engine still owns the complete-snapshot execution gate. This
+    client only consumes Provider Intelligence context, which is research/observational
+    and carries no live-money authority. Never infer degraded eligibility locally: AIDY
+    must attest the exact grade and missing timeframe in both snapshot and provenance.
+    """
+
+    status = str(snapshot.get("capture_status") or "").strip().lower()
+    if status == "complete":
+        return
+    if status != "partial":
+        raise ValueError("aidy_context_snapshot_not_complete")
+
+    snapshot_grade = str(snapshot.get("provider_context_evidence_grade") or "").strip()
+    snapshot_missing = snapshot.get("provider_context_missing_timeframes")
+    provenance_grade = str(provenance.get("provider_context_evidence_grade") or "").strip()
+    provenance_missing = provenance.get("provider_context_missing_timeframes")
+    if (
+        snapshot_grade != "intraday_complete_d1_missing"
+        or snapshot_missing != ["1d"]
+        or provenance_grade != snapshot_grade
+        or provenance_missing != ["1d"]
+        or provenance.get("provider_context_observational_only") is not True
+        or provenance.get("formal_forward_complete_snapshot_required") is not True
+        or provenance.get("live_money_execution_allowed") is not False
+    ):
+        raise ValueError("aidy_context_partial_snapshot_not_provider_eligible")
+
+
 @dataclass(frozen=True, slots=True)
 class AidyCanonicalContext:
     requested_as_of_utc: datetime
@@ -144,8 +177,7 @@ class AidyContextClient:
         snapshot_at = _utc_strict(snapshot.get("captured_at_utc"), field="snapshot_captured_at_utc")
         if snapshot_at != context_at or snapshot_at > requested:
             raise ValueError("aidy_context_snapshot_time_mismatch")
-        if str(snapshot.get("capture_status") or "") != "complete":
-            raise ValueError("aidy_context_snapshot_not_complete")
+        _validate_provider_snapshot_boundary(snapshot=snapshot, provenance=provenance)
         if str(snapshot.get("market_data_source") or "") != "twelve_data":
             raise ValueError("aidy_context_source_mismatch")
         digest = str(snapshot.get("snapshot_digest") or "").strip().lower()
