@@ -28,6 +28,13 @@ _ALLOWED_PROFILE_RISK_PERCENTS = _ALLOWED_BASE_RISK_PERCENTS + (
 _DOUBLE_LOT_MULTIPLIER = Decimal("2")
 _ONE_HUNDRED = Decimal("100")
 _ZERO = Decimal("0")
+# Owner-approved provider profiles are allowed one tightly bounded broker-minimum
+# accommodation. Vantage cannot place less than 0.01 lots, so an exact 1% leg can
+# otherwise become permanently untradeable as soon as the stop is wider than the
+# account's 1% cash budget. The floor may round that leg up only while the resulting
+# stop risk stays at or below 2.5% of the account. Tiny accounts remain protected:
+# a 0.01-lot XAUUSD trade risking 10-30%+ is still refused.
+_PROVIDER_BROKER_MINIMUM_MAX_ACTUAL_RISK_PERCENT = Decimal("2.5")
 
 
 class ApprovedProviderRisk(Decimal):
@@ -174,18 +181,25 @@ class Day24RiskSizer:
         # Normal broker-step rounding must never increase risk above the selected
         # per-leg target.
         #
-        # The broker's hard minimum trade size is the one case where the calculated
-        # volume cannot be honoured at all. Substituting the minimum lot silently
-        # converts a 1% instruction into whatever that lot happens to cost, and on a
-        # small balance that is unbounded: on a 50 EUR account a 17 USD gold stop is
-        # ~30% per leg, and on 2026-09-14 four legs sharing one stop took 92% of the
-        # account in a single tick. Refuse the leg instead of guessing a size the
-        # owner never authorised. A caller that genuinely accepts the overshoot for a
-        # given account tier must opt in explicitly and visibly.
+        # Vantage's hard minimum trade size is the one case where an exact approved
+        # provider percentage can be physically impossible. Production provider
+        # profiles may therefore use the broker minimum only for a modest rounding
+        # gap: the resulting stop risk must remain <= 2.5% of account balance. This
+        # restores executable 1% provider legs on normally funded accounts without
+        # returning to the old unbounded behaviour that could turn 0.01 lots into
+        # 10-30%+ risk on a tiny account. Generic/user-selected sizing remains strict
+        # unless its caller explicitly opts in to minimum-lot overshoot.
         if actual_risk > risk_budget:
             if not broker_minimum_applied:
                 raise Day24RiskSizingError("risk_budget_exceeded")
-            if not allow_broker_minimum_overshoot:
+            bounded_provider_minimum = (
+                provider_profile_risk
+                and actual_risk
+                <= balance_value
+                * _PROVIDER_BROKER_MINIMUM_MAX_ACTUAL_RISK_PERCENT
+                / _ONE_HUNDRED
+            )
+            if not bounded_provider_minimum and not allow_broker_minimum_overshoot:
                 raise Day24RiskSizingError("broker_minimum_exceeds_risk_budget")
 
         positions = tuple(
