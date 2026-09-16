@@ -16,8 +16,9 @@ existed. Later edits remain in the append-only evidence tables, but are not inde
 trades in this retrospective benchmark.
 
 The scoreboard also stops mixing ``open_at_window_end`` partial P&L into settled Net P&L.
-Open partial P&L is exposed separately, and normalized R-per-trade/R-per-leg metrics are
-added so providers with different numbers of TP legs can be compared more fairly.
+Open partial P&L is exposed separately, normalized R-per-trade/R-per-leg metrics are
+added, and edit-assembly metrics travel with each provider so AIDY can distinguish a
+provider that posts a complete setup once from one that constructs it by editing a post.
 """
 
 from collections.abc import Sequence
@@ -30,6 +31,7 @@ branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
 RETROSPECTIVE_BENCHMARK_MODEL = "fixed_1000_10_per_tp_fair_v2_canonical_edits_v1"
+SCORE_BASIS = "aidy_first_actionable_no_management_v1"
 
 _CANONICAL_VIEW = r"""
 CREATE VIEW provider_trade_canonical_observations AS
@@ -93,9 +95,14 @@ WITH observed AS (
     FROM provider_trade_observations
     GROUP BY source_id
 ), scorable AS (
-    SELECT source_id, COUNT(*) AS trades_scorable
-    FROM provider_trade_canonical_observations
-    GROUP BY source_id
+    SELECT
+        c.source_id,
+        COUNT(*) AS trades_scorable,
+        COUNT(*) FILTER (WHERE c.revision_index > 0) AS edit_assembled_trades,
+        AVG(EXTRACT(EPOCH FROM (c.observed_at - m.posted_at))) AS avg_actionable_delay_seconds
+    FROM provider_trade_canonical_observations c
+    JOIN messages m ON m.id = c.message_id
+    GROUP BY c.source_id
 ), scored AS (
     SELECT
         ps.source_id,
@@ -176,6 +183,18 @@ SELECT
         THEN ROUND(sc.resolved_total_r / sc.resolved_legs_total::numeric, 4)
         ELSE NULL::numeric
     END AS avg_r_per_leg,
+    CASE
+        WHEN COALESCE(c.trades_scorable, 0::bigint) > 0
+        THEN ROUND(100.0 * COALESCE(c.edit_assembled_trades, 0::bigint)::numeric /
+             c.trades_scorable::numeric, 1)
+        ELSE NULL::numeric
+    END AS edit_assembled_pct,
+    CASE
+        WHEN c.avg_actionable_delay_seconds IS NOT NULL
+        THEN ROUND(c.avg_actionable_delay_seconds::numeric, 1)
+        ELSE NULL::numeric
+    END AS avg_actionable_delay_seconds,
+    '{SCORE_BASIS}'::text AS score_basis,
     '{RETROSPECTIVE_BENCHMARK_MODEL}'::text AS benchmark_model
 FROM sources s
 JOIN observed o ON o.source_id = s.id
