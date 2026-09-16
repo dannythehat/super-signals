@@ -1,9 +1,9 @@
-"""Production Provider Intelligence Day 13 runner with bounded forward refresh.
+"""Continuous production runner for Provider Intelligence conditional learning.
 
 The statistical constitution remains in :mod:`provider_day13_conditional`. This runner
-binds the canonical production context schema and persists at most one result per source
-code SHA per UTC day, so a long-running deployment can accumulate genuinely forward
-OOS evidence without a redeploy. Retrospective provider score backfills are never read.
+binds the canonical production context schema and appends a new research snapshot only
+when the usable point-in-time/out-of-sample evidence digest changes. Retrospective
+provider-score backfills are never read and this module has no broker/live-money path.
 """
 
 from __future__ import annotations
@@ -21,7 +21,8 @@ from sqlalchemy import text
 from app import provider_day13_conditional as day13
 from app.db import get_engine, get_session_factory
 
-_DEFAULT_REFRESH_SECONDS = 3600
+_DEFAULT_REFRESH_SECONDS = 900
+_MIN_REFRESH_SECONDS = 300
 _LOCK_NAME = "provider_day13_conditional_v1"
 
 
@@ -78,20 +79,29 @@ def _load_observations(session: Any, *, cutoff: datetime) -> list[day13.Conditio
     return observations
 
 
-def _existing_daily_run(session: Any, *, code_sha: str, run_day: object) -> Any | None:
+def _existing_evidence_run(
+    session: Any,
+    *,
+    code_sha: str,
+    evidence_digest: str,
+) -> Any | None:
     return session.execute(
         text(
             """
             SELECT id,engineering_status,statistical_status,evidence_digest,
                    eligible_oos_trade_count,result_count,completed_at
             FROM provider_conditional_runs
-            WHERE model_version=:model AND code_sha=:sha AND run_day=:run_day
-              AND completed_at IS NOT NULL
+            WHERE model_version=:model AND code_sha=:sha
+              AND evidence_digest=:digest AND completed_at IS NOT NULL
             ORDER BY completed_at DESC,id DESC
             LIMIT 1
             """
         ),
-        {"model": day13.MODEL_VERSION, "sha": code_sha, "run_day": run_day},
+        {
+            "model": day13.MODEL_VERSION,
+            "sha": code_sha,
+            "digest": evidence_digest,
+        },
     ).mappings().first()
 
 
@@ -139,11 +149,10 @@ def _persist_results(session: Any, *, run_id: UUID, results: list[dict[str, Any]
 
 
 def run() -> dict[str, Any]:
-    """Persist one PIT/OOS Day 13 evidence run for the current UTC day."""
+    """Append one conditional snapshot only when forward PIT/OOS evidence changed."""
     session_factory = get_session_factory()
     code_sha = day13._code_sha()
     cutoff = datetime.now(UTC)
-    run_day = cutoff.date()
     lock = get_engine().connect()
     acquired = bool(
         lock.execute(text(f"SELECT pg_try_advisory_lock(hashtext('{_LOCK_NAME}'))")).scalar_one()
@@ -154,7 +163,6 @@ def run() -> dict[str, Any]:
             "engineering_status": "SKIPPED_LOCK_HELD",
             "statistical_status": day13.STATISTICAL_STATUS,
             "threshold_approval_status": day13.THRESHOLD_APPROVAL_STATUS,
-            "run_day": run_day.isoformat(),
             "research_only": True,
             "live_money_execution_allowed": False,
         }
@@ -164,8 +172,15 @@ def run() -> dict[str, Any]:
             provider_count = day13._ensure_preregistry(session, preregistered_at=cutoff)
             session.commit()
             hypotheses = day13._load_registry(session)
+            observations = _load_observations(session, cutoff=cutoff)
+            results, eligible_trade_ids = day13.build_conditional_results(hypotheses, observations)
+            digest = day13._evidence_digest(hypotheses, observations, eligible_trade_ids)
 
-            existing = _existing_daily_run(session, code_sha=code_sha, run_day=run_day)
+            existing = _existing_evidence_run(
+                session,
+                code_sha=code_sha,
+                evidence_digest=digest,
+            )
             if existing:
                 return {
                     "run_id": str(existing["id"]),
@@ -175,21 +190,18 @@ def run() -> dict[str, Any]:
                     "eligible_oos_trade_count": int(existing["eligible_oos_trade_count"]),
                     "result_count": int(existing["result_count"]),
                     "evidence_digest": existing["evidence_digest"],
-                    "run_day": run_day.isoformat(),
-                    "skipped_existing_daily_run": True,
+                    "skipped_unchanged_evidence": True,
+                    "continuous_learning_runtime": True,
                     "research_only": True,
                     "live_money_execution_allowed": False,
                 }
 
-            observations = _load_observations(session, cutoff=cutoff)
-            results, eligible_trade_ids = day13.build_conditional_results(hypotheses, observations)
             simulation = day13.simulated_governance_acceptance()
             engineering_status = (
                 "ENGINEERING_PROVEN"
                 if simulation["acceptance_passed"]
                 else "FAILED_SIMULATION_ACCEPTANCE"
             )
-            digest = day13._evidence_digest(hypotheses, observations, eligible_trade_ids)
             tested_count = sum(result["p_value"] is not None for result in results)
             bh_rejected_count = sum(bool(result["bh_rejected"]) for result in results)
             candidate_count = sum(bool(result["builder_gate_candidate"]) for result in results)
@@ -198,13 +210,13 @@ def run() -> dict[str, Any]:
                 text(
                     """
                     INSERT INTO provider_conditional_runs(
-                        model_version,registry_version,code_sha,evidence_cutoff,run_day,minimum_oos_n,
+                        model_version,registry_version,code_sha,evidence_cutoff,minimum_oos_n,
                         proposed_fdr_q,proposed_min_effect_r,threshold_approval_status,fdr_family,
                         provider_count,preregistered_hypothesis_count,eligible_oos_trade_count,
                         result_count,tested_hypothesis_count,bh_rejected_count,builder_gate_candidate_count,
                         authoritative_discovery_count,simulation_json,evidence_digest
                     ) VALUES (
-                        :model,:registry,:sha,:cutoff,:run_day,:min_n,:fdr_q,:min_effect,:approval,:family,
+                        :model,:registry,:sha,:cutoff,:min_n,:fdr_q,:min_effect,:approval,:family,
                         :providers,:hypotheses,:eligible,:results,:tested,:rejected,:candidates,0,
                         CAST(:simulation AS jsonb),:digest
                     ) RETURNING id
@@ -215,7 +227,6 @@ def run() -> dict[str, Any]:
                     "registry": day13.REGISTRY_VERSION,
                     "sha": code_sha,
                     "cutoff": cutoff,
-                    "run_day": run_day,
                     "min_n": day13.MINIMUM_OOS_N,
                     "fdr_q": day13.PROPOSED_FDR_Q,
                     "min_effect": day13.PROPOSED_MIN_EFFECT_R,
@@ -253,7 +264,6 @@ def run() -> dict[str, Any]:
                 "model_version": day13.MODEL_VERSION,
                 "registry_version": day13.REGISTRY_VERSION,
                 "code_sha": code_sha,
-                "run_day": run_day.isoformat(),
                 "evidence_cutoff": cutoff.isoformat(),
                 "engineering_status": engineering_status,
                 "statistical_status": day13.STATISTICAL_STATUS,
@@ -269,10 +279,11 @@ def run() -> dict[str, Any]:
                 "simulation_acceptance_passed": bool(simulation["acceptance_passed"]),
                 "evidence_digest": digest,
                 "primary_estimate_kind": day13.PRIMARY_ESTIMATE_KIND,
+                "continuous_learning_runtime": True,
                 "research_only": True,
                 "live_money_execution_allowed": False,
             }
-            print("PROVIDER_DAY13_CONDITIONAL=" + json.dumps(summary, sort_keys=True), flush=True)
+            print("PROVIDER_LEARNING=" + json.dumps(summary, sort_keys=True), flush=True)
             return summary
     finally:
         try:
@@ -282,8 +293,8 @@ def run() -> dict[str, Any]:
 
 
 def run_forever() -> None:
-    # Recover the old D1-only terminal-miss backlog before the first evidence run so
-    # today's Day 13 snapshot can immediately see newly valid PIT context.
+    # Recover the old v1 terminal-miss backlog before the first evidence run so newly
+    # valid D1-only degraded context can immediately participate in forward research.
     try:
         from app.provider_context_v2_recovery import run as recover_context_v2
 
@@ -292,10 +303,10 @@ def run_forever() -> None:
         print("PROVIDER_CONTEXT_V2_RECOVERY_ERROR=" + type(exc).__name__, flush=True)
 
     interval = max(
-        900,
+        _MIN_REFRESH_SECONDS,
         int(
             os.getenv(
-                "SUPER_SIGNALS_PROVIDER_DAY13_REFRESH_SECONDS",
+                "SUPER_SIGNALS_PROVIDER_LEARNING_SECONDS",
                 str(_DEFAULT_REFRESH_SECONDS),
             )
             or _DEFAULT_REFRESH_SECONDS
@@ -305,7 +316,7 @@ def run_forever() -> None:
         try:
             run()
         except Exception as exc:
-            print("PROVIDER_DAY13_REFRESH_ERROR=" + type(exc).__name__, flush=True)
+            print("PROVIDER_LEARNING_ERROR=" + type(exc).__name__, flush=True)
         time.sleep(interval)
 
 
