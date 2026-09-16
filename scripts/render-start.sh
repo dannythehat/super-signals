@@ -10,15 +10,13 @@ python -m app.bootstrap
 # diagnostics, deferred redeploy jobs and environment-driven partner onboarding are
 # intentionally not started here because they can race the canonical connection flow.
 
-# Provider Intelligence remains broker-isolated. Refresh the frozen Day 13
-# conditional research evidence first, then run Day 14 research governance.
-# Day 14 may only govern provider_research_profiles through learning -> shadow ->
-# qualified. Qualified is paper-research eligibility only; this subsystem cannot
-# mutate sources.status or grant live-money authority.
-(
-  python -m app.provider_day13_runtime &&
-  python -m app.provider_day14_governance
-) &
+# Provider Intelligence remains broker-isolated. Day 13 now owns a bounded forward
+# refresh loop: it first replays only v1 context misses that the v2 D1-only policy can
+# legitimately reconsider, then records at most one conditional evidence run per code
+# SHA per UTC day. Day 14 governance remains research-only and cannot grant live money
+# authority or mutate live provider routing.
+python -m app.provider_day13_runtime --forever &
+python -m app.provider_day14_governance &
 
 # Quality contract marker: uvicorn app.main:app
 exec python -m app.serve_runtime
