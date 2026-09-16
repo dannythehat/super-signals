@@ -45,3 +45,10 @@ from app import member_metrics_hotfix as _member_metrics_hotfix  # noqa: F401,E4
 # mapped member account (demo/paper or live) can retain exposure absent on the Owner
 # reference account.
 from app import master_mirror_guard as _master_mirror_guard  # noqa: F401,E402
+
+
+# AIDY operational watchdog. The canonical Provider Lab loop used to stop probing AIDY
+# after its first successful context read, which meant a later stale/stopped AIDY could
+# remain invisible. Keep that probe armed on every research pass while preserving all
+# research-only / no-live-money boundaries.
+from app import aidy_runtime_watchdog_hotfix as _aidy_runtime_watchdog_hotfix  # noqa: F401,E402
