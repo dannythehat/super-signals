@@ -1,9 +1,9 @@
 """Provider Context v2 recovery adapter.
 
 The v1 terminal-miss row is audit history, not a tombstone forever. After AIDY gained
-an explicitly degraded D1-only context grade, v1 misses may be retried once under this
-new contract. Broader/still-stale misses are persisted as v2 and then remain terminal.
-No broker, routing or live-money path is imported here.
+an explicitly degraded D1-only context grade, genuine v1 misses may be retried once
+under this new contract. Broader/still-stale misses are persisted as v2 and then remain
+terminal. No broker, routing or live-money path is imported here.
 """
 
 from __future__ import annotations
@@ -16,6 +16,7 @@ from sqlalchemy import text
 
 from app.aidy_context_client import AidyContextTerminalMiss
 from app.provider_context_attachment import (
+    TERMINAL_MISS_CONTRACT_VERSION,
     ContextAttachmentCandidate,
     ProviderContextAttachmentResolver,
 )
@@ -28,7 +29,7 @@ def _canonical(value: object) -> str:
 
 
 class ProviderContextAttachmentResolverV2(ProviderContextAttachmentResolver):
-    """Replay v1 misses once under the v2 D1-only degraded-context contract."""
+    """Replay only genuine v1 misses once under the v2 D1-only degraded contract."""
 
     def _candidates(self) -> list[ContextAttachmentCandidate]:
         with self._session_factory() as session:
@@ -44,6 +45,9 @@ class ProviderContextAttachmentResolverV2(ProviderContextAttachmentResolver):
                     FROM shadow_trades t
                     JOIN signals s ON s.id=t.signal_id
                     JOIN messages m ON m.id=s.source_message_id
+                    JOIN provider_signal_context_terminal_misses v1
+                      ON v1.signal_id=t.signal_id
+                     AND v1.contract_version=:v1_contract_version
                     WHERE t.provider_profile_pit_status='resolved'
                       AND t.provider_profile_version_id IS NOT NULL
                       AND t.source_id=m.source_id
@@ -58,7 +62,7 @@ class ProviderContextAttachmentResolverV2(ProviderContextAttachmentResolver):
                           SELECT 1
                           FROM provider_signal_context_terminal_misses x
                           WHERE x.signal_id=t.signal_id
-                            AND x.contract_version=:contract_version
+                            AND x.contract_version=:v2_contract_version
                       )
                     ORDER BY t.signal_id,t.entry_index
                     LIMIT :limit
@@ -66,7 +70,8 @@ class ProviderContextAttachmentResolverV2(ProviderContextAttachmentResolver):
                 ),
                 {
                     "limit": self._batch_limit,
-                    "contract_version": TERMINAL_MISS_CONTRACT_VERSION_V2,
+                    "v1_contract_version": TERMINAL_MISS_CONTRACT_VERSION,
+                    "v2_contract_version": TERMINAL_MISS_CONTRACT_VERSION_V2,
                 },
             ).mappings().all()
         candidates: list[ContextAttachmentCandidate] = []
