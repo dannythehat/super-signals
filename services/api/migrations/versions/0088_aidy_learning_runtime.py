@@ -1,4 +1,4 @@
-"""Make Provider Intelligence context recovery and Day 13 refresh repeatable.
+"""Make Provider Intelligence context recovery and learning refresh repeatable.
 
 Revision ID: 0088_aidy_learning_runtime
 Revises: 0087_provider_scoreboard
@@ -17,43 +17,27 @@ depends_on: str | Sequence[str] | None = None
 
 
 def upgrade() -> None:
-    # Day 13 used to be unique per code SHA. A long-running deployment therefore
-    # returned the first completed run forever even as new forward evidence arrived.
-    # Keep the source SHA intact and add a UTC evidence day as the bounded refresh key.
-    op.add_column(
-        "provider_conditional_runs",
-        sa.Column(
-            "run_day",
-            sa.Date(),
-            nullable=True,
-            server_default=sa.text("((now() AT TIME ZONE 'UTC')::date)"),
-        ),
-    )
-    op.execute(
-        "UPDATE provider_conditional_runs "
-        "SET run_day=(evidence_cutoff AT TIME ZONE 'UTC')::date "
-        "WHERE run_day IS NULL"
-    )
-    op.alter_column("provider_conditional_runs", "run_day", nullable=False)
+    # The original schema allowed one conditional run per source code SHA. That froze
+    # learning for the lifetime of a deployment. Evidence is already content-addressed
+    # by evidence_digest, so permit another append-only research snapshot only when the
+    # usable PIT/OOS evidence has actually changed. No retrospective provider score table
+    # participates in this identity.
     op.drop_constraint(
         "uq_provider_conditional_run_model_sha",
         "provider_conditional_runs",
         type_="unique",
     )
-    op.create_unique_constraint(
-        "uq_provider_conditional_run_model_sha_day",
-        "provider_conditional_runs",
-        ["model_version", "code_sha", "run_day"],
-    )
     op.create_index(
-        "ix_provider_conditional_run_day",
+        "uq_provider_conditional_run_model_sha_evidence",
         "provider_conditional_runs",
-        ["run_day", "completed_at"],
+        ["model_version", "code_sha", "evidence_digest"],
+        unique=True,
+        postgresql_where=sa.text("evidence_digest IS NOT NULL"),
     )
 
-    # Old v1 terminal misses remain immutable historical facts. The new context policy
-    # can legitimately recover D1-only partial snapshots, so allow exactly one v2 retry
-    # outcome beside the original v1 record instead of deleting/re-writing history.
+    # Old v1 terminal misses remain immutable historical facts. The new Provider Context
+    # contract can legitimately reconsider the subset that failed under the old strict
+    # completeness rule, so allow exactly one v2 outcome beside each original v1 row.
     op.drop_constraint(
         "uq_provider_context_terminal_miss_signal",
         "provider_signal_context_terminal_misses",
@@ -79,15 +63,12 @@ def downgrade() -> None:
         ["signal_id"],
     )
 
-    op.drop_index("ix_provider_conditional_run_day", table_name="provider_conditional_runs")
-    op.drop_constraint(
-        "uq_provider_conditional_run_model_sha_day",
-        "provider_conditional_runs",
-        type_="unique",
+    op.drop_index(
+        "uq_provider_conditional_run_model_sha_evidence",
+        table_name="provider_conditional_runs",
     )
     op.create_unique_constraint(
         "uq_provider_conditional_run_model_sha",
         "provider_conditional_runs",
         ["model_version", "code_sha"],
     )
-    op.drop_column("provider_conditional_runs", "run_day")
