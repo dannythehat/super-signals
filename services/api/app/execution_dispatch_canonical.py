@@ -32,11 +32,17 @@ from app.member_routing_canonical import MemberDistributionService, MemberManage
 from app.models import AuditEvent
 from app.mt5_execution_day26 import Day26ExecutionError
 from app.mt5_management_day27 import Day27ManagementError
-from app.provider_execution_probation import ProbationCheck, check_probation_eligibility
+from app.provider_execution_probation import (
+    ProbationCheck,
+    check_probation_eligibility,
+    is_active_probation,
+)
 from app.shadow_trading import ShadowTradeService
 
 logger = logging.getLogger(__name__)
 _ALLOWED_RISK = {Decimal("0.5"), Decimal("1"), Decimal("1.5"), Decimal("2")}
+_MANAGEMENT_RETRY_ATTEMPTS = 3
+_MANAGEMENT_RETRY_DELAY_SECONDS = 3.0
 _AMBIGUOUS_EXECUTION_ERRORS = {
     "metaapi_timeout",
     "metaapi_unreachable",
@@ -147,7 +153,7 @@ class CanonicalExecutionDispatcher:
                 telegram_message_id,
                 revision_index,
             )
-            return await self._dispatch_new_trade(stored, revision_index)
+            return await self._dispatch_new_trade(stored, revision_index, source_id=source_id)
 
         if stored.decision == "trade_update" and stored.action == "apply_update":
             logger.info(
@@ -176,6 +182,40 @@ class CanonicalExecutionDispatcher:
     def _check_probation(self, source_id: UUID, side: str | None) -> ProbationCheck:
         with self._session_factory() as session:
             return check_probation_eligibility(session, source_id=source_id, side=side)
+
+    def _is_active_probation(self, source_id: UUID) -> bool:
+        with self._session_factory() as session:
+            return is_active_probation(session, source_id=source_id)
+
+    @staticmethod
+    async def _execute_management_with_retry(
+        service: Any,
+        *,
+        owner_user_id: UUID,
+        lifecycle_event_id: UUID,
+    ) -> tuple[Any | None, str | None]:
+        """Retry only errors the gateway itself marked retryable (timeouts, stale link).
+
+        A genuinely ambiguous match (unresolved layer/price target) is never marked
+        retryable and is never retried here -- repeated identical failures on that same
+        message are instead picked up by ``management_reliability_runtime`` and, after a
+        bounded number of attempts, force-closed rather than left open indefinitely.
+        """
+        last_error: str | None = None
+        for attempt in range(_MANAGEMENT_RETRY_ATTEMPTS):
+            try:
+                result = await service.execute_owner_demo_event(
+                    owner_user_id=owner_user_id,
+                    lifecycle_event_id=lifecycle_event_id,
+                )
+            except Day27ManagementError as exc:
+                last_error = exc.code
+                if not exc.retryable or attempt == _MANAGEMENT_RETRY_ATTEMPTS - 1:
+                    return None, last_error
+                await asyncio.sleep(_MANAGEMENT_RETRY_DELAY_SECONDS)
+                continue
+            return result, None
+        return None, last_error
 
     def _dispatch_shadow(
         self,
@@ -216,6 +256,8 @@ class CanonicalExecutionDispatcher:
         self,
         stored: StoredDecision,
         revision_index: int,
+        *,
+        source_id: UUID,
     ) -> CanonicalRouteResult:
         signal_id = self._resolve_signal_id(stored.message_id, revision_index)
         if signal_id is None:
@@ -291,7 +333,10 @@ class CanonicalExecutionDispatcher:
                     owner_error = exc.code
 
             try:
-                member_result = await self._member_distribution.distribute(signal_id=signal_id)
+                member_result = await self._member_distribution.distribute(
+                    signal_id=signal_id,
+                    exclude_live=self._is_active_probation(source_id),
+                )
             except Exception:
                 logger.exception("Member trade distribution failed unexpectedly")
                 member_result = None
@@ -412,13 +457,11 @@ class CanonicalExecutionDispatcher:
             owner_result = None
             owner_error: str | None = None
             if owner_has_positions:
-                try:
-                    owner_result = await self._management.execute_owner_demo_event(
-                        owner_user_id=self._owner_user_id,
-                        lifecycle_event_id=lifecycle_event_id,
-                    )
-                except Day27ManagementError as exc:
-                    owner_error = exc.code
+                owner_result, owner_error = await self._execute_management_with_retry(
+                    self._management,
+                    owner_user_id=self._owner_user_id,
+                    lifecycle_event_id=lifecycle_event_id,
+                )
 
             try:
                 member_result = await self._member_management.distribute(

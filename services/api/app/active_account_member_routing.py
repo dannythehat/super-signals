@@ -49,7 +49,9 @@ class ActiveAccountMemberDistributionService(MemberDistributionService):
         self._demo_execution = demo_execution_service
         self._live_execution = live_execution_service
 
-    async def distribute(self, *, signal_id: UUID) -> MemberDistributionResult:
+    async def distribute(
+        self, *, signal_id: UUID, exclude_live: bool = False
+    ) -> MemberDistributionResult:
         targets = self._targets()
         outcomes: list[MemberDistributionOutcome] = []
         for target in targets:
@@ -62,6 +64,19 @@ class ActiveAccountMemberDistributionService(MemberDistributionService):
                         double_lot_approved=target.allow_double_lot,
                     )
                 elif target.account_environment == "live":
+                    if exclude_live:
+                        outcome = MemberDistributionOutcome(
+                            user_id=target.user_id,
+                            outcome="skipped",
+                            risk_percent=target.risk_percent,
+                            allow_double_lot=target.allow_double_lot,
+                            position_count=0,
+                            volume_per_position=(),
+                            error_code="probation_live_execution_excluded",
+                        )
+                        self._audit_user(signal_id=signal_id, outcome=outcome)
+                        outcomes.append(outcome)
+                        continue
                     if not live_execution_enabled():
                         outcome = MemberDistributionOutcome(
                             user_id=target.user_id,

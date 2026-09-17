@@ -81,9 +81,16 @@ class MemberDistributionService:
         self._session_factory = session_factory
         self._execution = execution_service
 
-    async def distribute(self, *, signal_id: UUID) -> MemberDistributionResult:
+    async def distribute(
+        self, *, signal_id: UUID, exclude_live: bool = False
+    ) -> MemberDistributionResult:
         targets = self._targets()
-        if not live_execution_enabled():
+        if exclude_live or not live_execution_enabled():
+            error_code = (
+                "probation_live_execution_excluded"
+                if exclude_live
+                else "live_execution_disabled"
+            )
             outcomes = tuple(
                 MemberDistributionOutcome(
                     user_id=target.user_id,
@@ -92,7 +99,7 @@ class MemberDistributionService:
                     allow_double_lot=target.allow_double_lot,
                     position_count=0,
                     volume_per_position=(),
-                    error_code="live_execution_disabled",
+                    error_code=error_code,
                 )
                 for target in targets
             )

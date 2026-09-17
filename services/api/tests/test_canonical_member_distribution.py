@@ -320,7 +320,7 @@ class _OwnerExecution:
 
 
 class _MemberDistribution:
-    async def distribute(self, *, signal_id: UUID):
+    async def distribute(self, *, signal_id: UUID, exclude_live: bool = False):
         return MemberDistributionResult(
             signal_id=signal_id,
             target_count=2,
@@ -374,6 +374,9 @@ class _RouterHarness(CanonicalExecutionDispatcher):
     def _prior_new_trade_route(self, signal_id):
         return None
 
+    def _is_active_probation(self, source_id):
+        return False
+
     def _audit_success(self, **kwargs):
         self.audits.append(("success", kwargs))
 
@@ -390,6 +393,7 @@ def test_owner_demo_failure_does_not_block_eligible_member_execution() -> None:
         router._dispatch_new_trade(
             StoredDecision(uuid4(), "new_trade", "execute", "v1_complete_signal"),
             0,
+            source_id=uuid4(),
         )
     )
     assert result.outcome == "executed"
