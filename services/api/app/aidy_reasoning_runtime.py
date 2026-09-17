@@ -21,10 +21,12 @@ from app.aidy_reasoning_runner import AidyReasoningRunner
 
 logger = logging.getLogger(__name__)
 
-# Slower than the 300s decision loop: this is enrichment, not time-critical, and a
-# longer interval keeps the natural per-pass call count (and therefore spend) predictable.
-_DEFAULT_INTERVAL_SECONDS = 900
-_DEFAULT_PASS_LIMIT = 100
+# Matches the 300s decision loop -- with v2's scope covering every approve decision
+# (2,598 in the historical backlog at build time), the budget gate is what actually
+# bounds spend, not a deliberately slow interval; a real backlog deserves draining in
+# well under an hour, not overnight.
+_DEFAULT_INTERVAL_SECONDS = 300
+_DEFAULT_PASS_LIMIT = 300
 
 
 def _positive_int(name: str, default: int) -> int:
