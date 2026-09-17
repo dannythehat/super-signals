@@ -13,6 +13,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
+from app.aidy_decision_outcome_runtime import AidyDecisionOutcomeRuntime
 from app.aidy_decision_runtime import AidyDecisionRuntime
 from app.aidy_shadow_runtime import AidyShadowRuntime
 from app.broker_settlement_canonical import CanonicalBrokerSettlementManager
@@ -149,6 +150,9 @@ async def _lifespan(application: FastAPI) -> AsyncIterator[None]:
     aidy_decision_runtime = AidyDecisionRuntime(session_factory)
     application.state.aidy_decision_runtime = aidy_decision_runtime
     await aidy_decision_runtime.start()
+    aidy_decision_outcome_runtime = AidyDecisionOutcomeRuntime(session_factory)
+    application.state.aidy_decision_outcome_runtime = aidy_decision_outcome_runtime
+    await aidy_decision_outcome_runtime.start()
 
     if os.getenv("SUPER_SIGNALS_DAY26_CODE_PROBE", "").strip() == "1":
         await run_day26_code_acceptance_probe()
@@ -373,6 +377,7 @@ async def _lifespan(application: FastAPI) -> AsyncIterator[None]:
                 await day34_live_acceptance_task
             except asyncio.CancelledError:
                 pass
+        await aidy_decision_outcome_runtime.stop()
         await aidy_decision_runtime.stop()
         await provider_scoring_runtime.stop()
         await aidy_shadow_runtime.stop()
