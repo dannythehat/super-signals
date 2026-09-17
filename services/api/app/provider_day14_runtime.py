@@ -740,7 +740,13 @@ def run_forever() -> None:
         try:
             run()
         except Exception as exc:
-            print("PROVIDER_DAY14_GOVERNANCE_ERROR=" + type(exc).__name__, flush=True)
+            # The message, not just the type: PROVIDER_DAY14_GOVERNANCE_ERROR=RuntimeError
+            # alone cost a multi-query forensic session to diagnose on 2026-09-17 -- the
+            # actual guard name (e.g. day13_preregistration_boundary_not_frozen) was in
+            # str(exc) the whole time.
+            detail = str(exc).strip().replace("\n", " ")[:200]
+            reason = "PROVIDER_DAY14_GOVERNANCE_ERROR=" + type(exc).__name__
+            print(f"{reason}:{detail}" if detail else reason, flush=True)
         time.sleep(interval)
 
 
