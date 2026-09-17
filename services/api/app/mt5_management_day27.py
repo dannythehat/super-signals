@@ -311,6 +311,81 @@ class Day27Mt5ManagementService:
             )
         return ()
 
+    async def force_close_all_positions(
+        self,
+        *,
+        owner_user_id: UUID,
+        signal_id: UUID,
+    ) -> int:
+        """Flatten every broker-confirmed open position for a signal, unconditionally.
+
+        Only called after a provider management instruction repeatedly could not be
+        resolved (see ``management_reliability_runtime``). It never parses provider text
+        or a target token -- it is the same unambiguous "close everything" outcome every
+        ordinary full close already reaches via ``_select_positions``' default branch,
+        just invoked directly so a position is never left open and unprotected forever
+        because one message could not be matched.
+        """
+        account = self._load_account(owner_user_id)
+        if account is None:
+            raise Day27ManagementError("mt5_account_not_configured")
+        try:
+            token = self._cipher.decrypt(account.token_ciphertext)
+        except BrokerCredentialDecryptionError as exc:
+            raise Day27ManagementError("broker_credential_decryption_failed") from exc
+        try:
+            region = await self._read.resolve_account_region(
+                token=token, account_id=account.account_id,
+            )
+        except MetaApiGatewayError as exc:
+            raise Day27ManagementError(exc.code, retryable=exc.retryable) from exc
+
+        broker_positions = await self._broker_positions(
+            token=token, account_id=account.account_id, region=region
+        )
+        self._reconcile_missing_positions(
+            signal_id=signal_id,
+            user_id=owner_user_id,
+            broker_position_ids=set(broker_positions),
+        )
+        local_positions = self._load_positions(signal_id, owner_user_id)
+        open_positions = tuple(
+            item
+            for item in local_positions
+            if item.status == "open"
+            and item.broker_position_id is not None
+            and item.broker_position_id in broker_positions
+        )
+
+        closed = 0
+        for item in open_positions:
+            assert item.broker_position_id is not None
+            await self._trade.close_position(
+                token=token,
+                account_id=account.account_id,
+                region=region,
+                position_id=item.broker_position_id,
+            )
+            closed += 1
+            self._mark_failsafe_closed(item.id)
+        return closed
+
+    def _mark_failsafe_closed(self, position_id: UUID) -> None:
+        now = datetime.now(UTC)
+        with self._session_factory() as session:
+            session.execute(
+                text(
+                    """
+                    UPDATE positions
+                    SET status = 'closed', closed_at = COALESCE(closed_at, :now),
+                        close_reason = 'management_failsafe_close', updated_at = :now
+                    WHERE id = :position_id AND status = 'open'
+                    """
+                ),
+                {"position_id": position_id, "now": now},
+            )
+            session.commit()
+
     def _load_account(self, owner_user_id: UUID) -> _Account | None:
         with self._session_factory() as session:
             row = session.execute(

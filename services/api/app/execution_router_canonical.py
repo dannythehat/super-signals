@@ -22,6 +22,7 @@ from app.active_account_member_routing import (
 from app.collective_execution_dispatch import CollectiveAwareCanonicalExecutionDispatcher
 from app.execution_dispatch_canonical import CanonicalExecutionDispatcher
 from app.graceful_market_targets import GracefulCaptureReliableMemberTradingExecutionService
+from app.management_reliability_runtime import ManagementReliabilityRuntime
 from app.metaapi_margin_gateway import MetaApiMarginGateway
 from app.metaapi_trade_gateway import MetaApiTradeGateway
 from app.mt5_crypto import MetaApiTokenCipher
@@ -145,6 +146,59 @@ def build_canonical_execution_router(
         return None
 
 
+def build_management_reliability_runtime(
+    *,
+    session_factory: sessionmaker[Session],
+    router: CanonicalExecutionDispatcher | None,
+) -> ManagementReliabilityRuntime | None:
+    """Retry, then fail-safe close, any provider management instruction that gets stuck.
+
+    Built from the same credentials/config as the router itself so a stuck management
+    instruction is recovered on whichever account -- owner demo, a member's own demo, or
+    a member's real live account -- actually still holds the exposure.
+    """
+    if router is None:
+        return None
+    try:
+        owner_user_id = UUID(os.getenv("SUPER_SIGNALS_DAY28_OWNER_ID", "").strip())
+    except ValueError:
+        return None
+    broker_keys = _broker_keys()
+    if not broker_keys:
+        return None
+    interval_seconds = int(
+        os.getenv("SUPER_SIGNALS_MANAGEMENT_RELIABILITY_INTERVAL_SECONDS", "180").strip()
+        or "180"
+    )
+    try:
+        cipher = MetaApiTokenCipher(broker_keys)
+        read_gateway = PaperResilientMetaApiReadGateway()
+        trade = MetaApiTradeGateway()
+        demo_management = ActiveAccountCanonicalTradingManagementService(
+            session_factory=session_factory,
+            cipher=cipher,
+            read_gateway=read_gateway,
+            trade_gateway=trade,
+        )
+        live_management = MemberTradingManagementService(
+            session_factory=session_factory,
+            cipher=cipher,
+            read_gateway=read_gateway,
+            trade_gateway=trade,
+        )
+        return ManagementReliabilityRuntime(
+            session_factory=session_factory,
+            dispatcher=router,
+            demo_management=demo_management,
+            live_management=live_management,
+            owner_user_id=owner_user_id,
+            interval_seconds=interval_seconds,
+        )
+    except ValueError:
+        logger.error("Management reliability runtime disabled: invalid configuration")
+        return None
+
+
 def build_canonical_pending_reconciler(
     *,
     session_factory: sessionmaker[Session],
@@ -173,4 +227,8 @@ def build_canonical_pending_reconciler(
         return None
 
 
-__all__ = ["build_canonical_execution_router", "build_canonical_pending_reconciler"]
+__all__ = [
+    "build_canonical_execution_router",
+    "build_canonical_pending_reconciler",
+    "build_management_reliability_runtime",
+]

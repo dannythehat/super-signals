@@ -97,6 +97,9 @@ class RouterHarness(CanonicalExecutionDispatcher):
     def _check_probation(self, source_id, side):
         return ProbationCheck(eligible=True, reason="not_probationary")
 
+    def _is_active_probation(self, source_id):
+        return False
+
     def _resolve_signal_id(self, message_id, revision_index):
         self.current_revision = revision_index
         return self.signal_id

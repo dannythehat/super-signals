@@ -16,7 +16,7 @@ from alembic import command
 from alembic.config import Config
 from sqlalchemy import create_engine, text
 
-from app.provider_execution_probation import check_probation_eligibility
+from app.provider_execution_probation import check_probation_eligibility, is_active_probation
 
 DATABASE_URL = os.getenv("DATABASE_URL")
 API_ROOT = Path(__file__).resolve().parents[1]
@@ -183,6 +183,31 @@ def test_a_graduated_provider_is_no_longer_restricted(conn, source_id) -> None:
 
     assert result.eligible is True
     assert result.reason == "probation_graduated"
+
+
+def test_is_active_probation_true_only_while_listed_and_not_graduated(conn, source_id) -> None:
+    from sqlalchemy.orm import sessionmaker
+
+    session_factory = sessionmaker(bind=conn, future=True, expire_on_commit=False)
+    with session_factory() as session:
+        assert is_active_probation(session, source_id=source_id) is False
+
+    conn.execute(
+        text("INSERT INTO provider_execution_probation (source_id) VALUES (:source)"),
+        {"source": source_id},
+    )
+    with session_factory() as session:
+        assert is_active_probation(session, source_id=source_id) is True
+
+    conn.execute(
+        text(
+            "UPDATE provider_execution_probation SET graduated=true, graduated_at=now() "
+            "WHERE source_id=:source"
+        ),
+        {"source": source_id},
+    )
+    with session_factory() as session:
+        assert is_active_probation(session, source_id=source_id) is False
 
 
 def test_unknown_signal_side_is_held_back_not_guessed(conn, source_id) -> None:
