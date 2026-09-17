@@ -43,12 +43,20 @@ _SELECTABLE = """
     SELECT d.id AS decision_id, d.decision_class, d.reasons, d.source_id,
            o.side, o.symbol, o.entry_low, o.entry_high, o.stop_loss, o.take_profits,
            COALESCE(NULLIF(s.chat_title, ''), s.source_alias) AS provider_name,
-           COALESCE(b.trades_resolved, 0) AS trades_resolved
+           COALESCE(b.trades_resolved, 0) AS trades_resolved,
+           fp.summary AS provider_fingerprint_summary
     FROM aidy_decisions d
     JOIN provider_trade_observations o ON o.id = d.observation_id
     JOIN sources s ON s.id = d.source_id
     LEFT JOIN provider_trade_scoreboard b ON b.source_id = d.source_id
     LEFT JOIN aidy_reasoning_annotations a ON a.decision_id = d.id
+    LEFT JOIN LATERAL (
+        SELECT f.summary
+        FROM provider_trade_fingerprints f
+        WHERE f.source_id = d.source_id
+        ORDER BY f.computed_at DESC
+        LIMIT 1
+    ) fp ON true
     WHERE d.decision_class = 'approve'
       AND a.id IS NULL
     ORDER BY d.decided_at
@@ -191,6 +199,11 @@ class AidyReasoningRunner:
                 decision_class=str(candidate["decision_class"]),
                 decision_reasons=list(candidate["reasons"] or []),
                 trades_resolved=int(candidate["trades_resolved"]),
+                provider_fingerprint_summary=(
+                    str(candidate["provider_fingerprint_summary"])
+                    if candidate["provider_fingerprint_summary"] is not None
+                    else None
+                ),
             )
             try:
                 annotation = await asyncio.to_thread(self._engine.reason, context)
