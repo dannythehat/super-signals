@@ -45,6 +45,7 @@ from app.publisher_config import get_publisher_settings
 from app.push_notifications_day34 import Day34PushNotificationManager
 from app.routes.access import router as access_router
 from app.routes.admin_accounts import router as admin_accounts_router
+from app.routes.aidy_overview import router as aidy_overview_router
 from app.routes.auth import router as auth_router
 from app.routes.day26_execution import router as day26_execution_router
 from app.routes.day27_management import router as day27_management_router
@@ -462,6 +463,7 @@ def create_app() -> FastAPI:
     application.include_router(auth_router)
     application.include_router(access_router)
     application.include_router(admin_accounts_router)
+    application.include_router(aidy_overview_router)
     application.include_router(telegram_accounts_router)
     application.include_router(telegram_sources_router)
     application.include_router(telegram_reliability_router)
