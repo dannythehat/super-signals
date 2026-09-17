@@ -46,6 +46,21 @@ class HypothesisRegistryResponse(BaseModel):
     run_completed_at: datetime | None
 
 
+class CoverageSummaryResponse(BaseModel):
+    total_sources: int
+    sources_with_observations: int
+    sources_with_decisions: int
+
+
+class ProviderCoverageResponse(BaseModel):
+    provider: str
+    decision_count: int
+    trades_resolved: int
+    win_rate_pct: Decimal | None
+    net_pnl_usd: Decimal
+    scored_coverage_pct: Decimal | None
+
+
 class AidyOverviewResponse(BaseModel):
     generated_at: datetime
     total_decisions: int
@@ -56,6 +71,8 @@ class AidyOverviewResponse(BaseModel):
     top_cohorts: tuple[CohortStandoutResponse, ...]
     bottom_cohorts: tuple[CohortStandoutResponse, ...]
     hypothesis_registry: HypothesisRegistryResponse | None
+    coverage: CoverageSummaryResponse
+    providers: tuple[ProviderCoverageResponse, ...]
 
 
 def _no_store(response: Response) -> None:
@@ -91,6 +108,10 @@ async def aidy_overview(
             HypothesisRegistryResponse(**asdict(view.hypothesis_registry))
             if view.hypothesis_registry is not None
             else None
+        ),
+        coverage=CoverageSummaryResponse(**asdict(view.coverage)),
+        providers=tuple(
+            ProviderCoverageResponse(**asdict(item)) for item in view.providers
         ),
     )
 

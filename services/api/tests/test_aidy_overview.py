@@ -178,6 +178,30 @@ def test_overview_totals_and_by_class_match_what_was_written(
     assert deny_summary.confirmed_hurt >= 1
 
 
+def test_a_provider_with_decisions_appears_in_the_provider_list_even_with_no_cohort_standout(
+    conn, source_id, session_factory
+) -> None:
+    """A provider must show up here even if it never clears the cohort view's 15-per-slice floor."""
+    observation_id = add_observation(conn, source_id, index=4)
+    conn.execute(
+        text(
+            "INSERT INTO aidy_decisions (id,observation_id,source_id,signal_posted_at,decided_at,"
+            "decision_class,reasons,model_version,rule_version,evidence_digest) "
+            "VALUES (gen_random_uuid(),:obs,:source,:posted,now(),'approve','[]','m','r','d')"
+        ),
+        {"obs": observation_id, "source": source_id, "posted": OBSERVED_AT},
+    )
+
+    view = AidyOverviewService(session_factory).read()
+
+    assert view.coverage.total_sources >= 1
+    assert view.coverage.sources_with_decisions >= 1
+    assert any(row.decision_count >= 1 for row in view.providers), (
+        "a provider with a real decision must appear in the provider coverage list, "
+        "not only in the cohort standouts table which most providers never clear"
+    )
+
+
 def test_a_decision_with_no_outcome_yet_is_counted_but_not_scored(
     conn, source_id, session_factory
 ) -> None:
