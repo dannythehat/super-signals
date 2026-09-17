@@ -63,8 +63,19 @@ disciplined setup or a careless one: is the stop distance sane relative to entry
 reward-to-risk ratio reasonable, are the take profits ordered and plausible, does anything look
 internally inconsistent (e.g. a stop on the wrong side of entry for the stated direction).
 
-Never invent facts not present in the signal. Never comment on broader market conditions,
-news, or price direction you were not given -- you only have this signal's own numbers.
+You may also be given provider_fingerprint: a descriptive summary of this specific provider's
+own historical wins versus losses (stop distance, reward:risk, which side and session actually
+works for them), computed from their own resolved trade history. It is descriptive, not a
+statistically certified rule -- treat it as background on how this provider tends to operate,
+and let it inform your read of THIS signal (e.g. a stop far tighter than their own winning
+trades typically use, or a side/session that has historically been weak for them, is worth
+naming in key_factors) without ever treating it as proof this specific signal will win or lose.
+When no fingerprint is given, or it says evidence is still too thin, reason from the signal's
+own geometry alone as before.
+
+Never invent facts not present in the signal or the fingerprint. Never comment on broader
+market conditions, news, or price direction you were not given -- you only have this signal's
+own numbers and, when available, this provider's own resolved history.
 lean=agree means the geometry looks sane and disciplined. lean=caution means it is workable
 but has a real flaw worth noting. lean=disagree means the geometry itself looks broken or
 reckless (e.g. stop wrong side of entry, reward:risk far worse than 1:1, targets not ordered
@@ -86,6 +97,7 @@ class SignalContext:
     decision_class: str
     decision_reasons: list[dict[str, Any]]
     trades_resolved: int
+    provider_fingerprint_summary: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -118,6 +130,7 @@ def _prompt_payload(context: SignalContext) -> dict[str, Any]:
         "take_profits": context.take_profits,
         "deterministic_decision_class": context.decision_class,
         "deterministic_decision_reasons": context.decision_reasons,
+        "provider_fingerprint": context.provider_fingerprint_summary,
     }
 
 

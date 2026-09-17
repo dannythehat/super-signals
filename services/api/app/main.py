@@ -4,9 +4,9 @@ import asyncio
 import logging
 import os
 import sys
+from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import AsyncIterator
 from uuid import UUID
 
 from fastapi import FastAPI
@@ -41,6 +41,7 @@ from app.performance_runtime import (
     CanonicalPerformanceRuntimeService as CanonicalPerformanceLedgerService,
 )
 from app.production_listener import build_production_listener_manager
+from app.provider_fingerprint_runtime import ProviderFingerprintRuntime
 from app.provider_trade_scoring_runtime import ProviderTradeScoringRuntime
 from app.publisher_config import get_publisher_settings
 from app.push_notifications_day34 import Day34PushNotificationManager
@@ -158,6 +159,9 @@ async def _lifespan(application: FastAPI) -> AsyncIterator[None]:
     aidy_reasoning_runtime = AidyReasoningRuntime(session_factory)
     application.state.aidy_reasoning_runtime = aidy_reasoning_runtime
     await aidy_reasoning_runtime.start()
+    provider_fingerprint_runtime = ProviderFingerprintRuntime(session_factory)
+    application.state.provider_fingerprint_runtime = provider_fingerprint_runtime
+    await provider_fingerprint_runtime.start()
 
     if os.getenv("SUPER_SIGNALS_DAY26_CODE_PROBE", "").strip() == "1":
         await run_day26_code_acceptance_probe()
@@ -382,6 +386,7 @@ async def _lifespan(application: FastAPI) -> AsyncIterator[None]:
                 await day34_live_acceptance_task
             except asyncio.CancelledError:
                 pass
+        await provider_fingerprint_runtime.stop()
         await aidy_reasoning_runtime.stop()
         await aidy_decision_outcome_runtime.stop()
         await aidy_decision_runtime.stop()
