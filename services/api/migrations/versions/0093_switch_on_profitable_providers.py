@@ -32,6 +32,7 @@ Revises: 0092_provider_probation
 Create Date: 2026-09-17
 """
 
+import json
 from collections.abc import Sequence
 
 import sqlalchemy as sa
@@ -99,6 +100,19 @@ def upgrade() -> None:
             ),
             {"source_id": source_id, "note": _ENABLED_NOTE},
         )
+        payload = json.dumps(
+            {
+                "source_title": title,
+                "previous_status": row["previous_status"],
+                "status": "testing",
+                "actor_role": "system_migration",
+                "actor_display_name": "Super Signals migration",
+                "monitoring_started": True,
+                "live_trading_enabled": False,
+                "probation_enabled": True,
+                "reason": "owner_enabled_paper_trading_after_tig_reliability_review",
+            }
+        )
         bind.execute(
             sa.text(
                 """
@@ -107,26 +121,11 @@ def upgrade() -> None:
                     'telegram.source_status_changed',
                     'source',
                     :source_id,
-                    jsonb_build_object(
-                        'source_title', :title,
-                        'previous_status', :previous_status,
-                        'status', 'testing',
-                        'actor_role', 'system_migration',
-                        'actor_display_name', 'Super Signals migration',
-                        'changed_at', now(),
-                        'monitoring_started', true,
-                        'live_trading_enabled', false,
-                        'probation_enabled', true,
-                        'reason', 'owner_enabled_paper_trading_after_tig_reliability_review'
-                    )
+                    CAST(:payload AS jsonb)
                 )
                 """
             ),
-            {
-                "source_id": source_id,
-                "title": title,
-                "previous_status": row["previous_status"],
-            },
+            {"source_id": source_id, "payload": payload},
         )
 
 
