@@ -1,10 +1,14 @@
-"""Select decisions AIDY's track record could not resolve, and let it actually reason.
+"""Select approved signals and let AIDY actually reason about each one's own geometry.
 
-Scoped deliberately narrow for v1: only `approve` decisions reasoned
-`insufficient_track_record_evidence` -- the exact case where the deterministic engine
-has nothing left to say and a real model read of the signal's own geometry adds
-something the track record cannot yet. This also bounds cost naturally, on top of the
-explicit monthly budget gate below.
+v1 scoped this to only `insufficient_track_record_evidence` approvals -- the case where
+the deterministic engine has nothing else to say. That left every provider with an
+established track record (the ones actually connected to real accounts) getting zero
+signal-level reasoning, purely because their win rate alone was enough to clear the
+deterministic bar. A provider with a good track record can still post an individual
+signal with reckless geometry; the track record judges the provider, this judges the
+signal. v2 covers every `approve` decision -- proven cheap (~$0.0005/call, the full
+2,598-decision historical backlog costs about $1.30) and still bounded by the explicit
+monthly budget gate below regardless.
 """
 
 from __future__ import annotations
@@ -38,13 +42,14 @@ logger = logging.getLogger(__name__)
 _SELECTABLE = """
     SELECT d.id AS decision_id, d.decision_class, d.reasons, d.source_id,
            o.side, o.symbol, o.entry_low, o.entry_high, o.stop_loss, o.take_profits,
-           COALESCE(NULLIF(s.chat_title, ''), s.source_alias) AS provider_name
+           COALESCE(NULLIF(s.chat_title, ''), s.source_alias) AS provider_name,
+           COALESCE(b.trades_resolved, 0) AS trades_resolved
     FROM aidy_decisions d
     JOIN provider_trade_observations o ON o.id = d.observation_id
     JOIN sources s ON s.id = d.source_id
+    LEFT JOIN provider_trade_scoreboard b ON b.source_id = d.source_id
     LEFT JOIN aidy_reasoning_annotations a ON a.decision_id = d.id
     WHERE d.decision_class = 'approve'
-      AND d.reasons @> '[{"code": "insufficient_track_record_evidence"}]'
       AND a.id IS NULL
     ORDER BY d.decided_at
     LIMIT :limit
@@ -185,7 +190,7 @@ class AidyReasoningRunner:
                 take_profits=list(candidate["take_profits"] or []),
                 decision_class=str(candidate["decision_class"]),
                 decision_reasons=list(candidate["reasons"] or []),
-                trades_resolved=0,
+                trades_resolved=int(candidate["trades_resolved"]),
             )
             try:
                 annotation = await asyncio.to_thread(self._engine.reason, context)

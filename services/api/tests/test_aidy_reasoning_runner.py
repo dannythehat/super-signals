@@ -202,15 +202,21 @@ _INSUFFICIENT_EVIDENCE = '[{"code": "insufficient_track_record_evidence", "trade
 _TRACK_RECORD_OK = '[{"code": "provider_track_record_acceptable", "trades_resolved": 40}]'
 
 
-def test_only_approve_with_insufficient_evidence_is_selected(
+def test_every_approve_decision_is_selected_regardless_of_track_record_reason(
     conn, source_id, session_factory
 ) -> None:
-    eligible_obs = add_observation(conn, source_id, index=1)
+    thin_history_obs = add_observation(conn, source_id, index=1)
     add_decision(
-        conn, eligible_obs, source_id, decision_class="approve", reasons=_INSUFFICIENT_EVIDENCE
+        conn,
+        thin_history_obs,
+        source_id,
+        decision_class="approve",
+        reasons=_INSUFFICIENT_EVIDENCE,
     )
-    decided_obs = add_observation(conn, source_id, index=2)
-    add_decision(conn, decided_obs, source_id, decision_class="approve", reasons=_TRACK_RECORD_OK)
+    established_obs = add_observation(conn, source_id, index=2)
+    add_decision(
+        conn, established_obs, source_id, decision_class="approve", reasons=_TRACK_RECORD_OK
+    )
     denied_obs = add_observation(conn, source_id, index=3)
     add_decision(
         conn, denied_obs, source_id, decision_class="deny", reasons=_INSUFFICIENT_EVIDENCE
@@ -220,10 +226,13 @@ def test_only_approve_with_insufficient_evidence_is_selected(
     runner = AidyReasoningRunner(session_factory, engine=fake, budget=_WIDE_BUDGET)
     summary = asyncio.run(runner.run())
 
-    assert summary.selected == 1
-    assert summary.written == 1
-    assert len(fake.calls) == 1
-    assert fake.calls[0].side == "BUY"
+    assert summary.selected == 2, (
+        "both approve decisions must be selected, not just the thin-history one"
+    )
+    assert summary.written == 2
+    assert len(fake.calls) == 2
+    assert all(call.side == "BUY" for call in fake.calls)
+    assert "deny" not in [call.decision_class for call in fake.calls]
 
 
 def test_a_decision_already_annotated_is_never_reselected(
