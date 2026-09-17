@@ -268,6 +268,54 @@ class AiLifecycleBridge:
                     return candidate, method or "standalone_active_context"
             return None, "active_trade_target_ambiguous"
 
+        # The overwhelming majority of "unresolved" management messages are not a
+        # linking failure at all: the provider's close/breakeven/etc instruction simply
+        # arrived after its target position had already closed by some other path (a
+        # stop hit, an earlier close, a duplicate provider message). There is genuinely
+        # nothing left to manage. Link it to that already-closed signal instead of
+        # giving up -- the dispatcher's own existing "no exposure anywhere" success
+        # path then takes over, so this is correctly recorded as a no-op rather than
+        # logged forever as a route failure nothing ever retries.
+        #
+        # Checked before the legacy resolver below, not after: real production data
+        # showed the legacy resolver's own "ambiguous" check is exactly what was
+        # swallowing this case, because a position closed directly by the broker (a
+        # stop hit) never gets a recorded terminal lifecycle event, so every one of a
+        # source's past already-closed signals piles up as a false "ambiguous"
+        # candidate for it. Safe to prefer over precision here specifically because
+        # every match below can only ever reach a no-op -- never a broker mutation --
+        # so it does not matter if a source has several already-closed candidates;
+        # the most recent one is a fine pick and getting it "wrong" changes nothing.
+        already_closed = session.execute(
+            text(
+                """
+                SELECT DISTINCT s.id,s.symbol,s.provider_message_id,s.source_posted_at
+                FROM signals AS s
+                WHERE s.source_id=:source_id
+                  AND s.source_posted_at<=:occurred_at
+                  AND (CAST(:symbol_hint AS text) IS NULL OR UPPER(s.symbol)=CAST(:symbol_hint AS text))
+                  AND EXISTS (SELECT 1 FROM positions p WHERE p.signal_id=s.id)
+                  AND NOT EXISTS (
+                      SELECT 1 FROM positions p2
+                      WHERE p2.signal_id=s.id
+                        AND (
+                            (p2.status='open' AND p2.broker_position_id IS NOT NULL)
+                            OR (p2.status='pending' AND p2.broker_order_id IS NOT NULL)
+                        )
+                  )
+                ORDER BY s.source_posted_at DESC,s.provider_message_id DESC
+                LIMIT 1
+                """
+            ),
+            {
+                "source_id": row["source_id"],
+                "occurred_at": row["occurred_at"],
+                "symbol_hint": symbol_hint,
+            },
+        ).mappings().first()
+        if already_closed is not None:
+            return already_closed, "management_target_already_closed"
+
         candidate, method, reason = StandaloneLifecycleLinkerV2._resolve_candidate(session, row)
         if candidate is not None:
             return candidate, method or "standalone_legacy_unique"
