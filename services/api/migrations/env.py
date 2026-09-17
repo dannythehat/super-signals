@@ -1,5 +1,6 @@
 """Alembic migration environment."""
 
+import os
 from logging.config import fileConfig
 
 from alembic import context
@@ -11,7 +12,11 @@ from app.models import Base
 config = context.config
 config.set_main_option("sqlalchemy.url", get_settings().database_url)
 
-if config.config_file_name is not None:
+# Skip when running under pytest: fileConfig() replaces the root logger's handlers
+# process-wide, which silently discards pytest's caplog capture handler for the rest
+# of the test session -- not just for this test, for every test that runs afterwards.
+# Real CLI/deploy usage (PYTEST_CURRENT_TEST unset) still gets the configured logging.
+if config.config_file_name is not None and "PYTEST_CURRENT_TEST" not in os.environ:
     fileConfig(config.config_file_name)
 
 target_metadata = Base.metadata
