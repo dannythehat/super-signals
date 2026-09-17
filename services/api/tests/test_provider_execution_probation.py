@@ -1,0 +1,202 @@
+"""A provider on probation only fires on its own historically-best side -- against real tables.
+
+Same reason the other Decision Ledger integration suites use PostgreSQL directly: the
+sample-floor gating and the "not listed = unaffected" default are meant to be exercised
+against the real provider_trade_fingerprints/provider_execution_probation tables, not a mock.
+"""
+
+from __future__ import annotations
+
+import os
+from pathlib import Path
+from uuid import UUID, uuid4
+
+import pytest
+from alembic import command
+from alembic.config import Config
+from sqlalchemy import create_engine, text
+
+from app.provider_execution_probation import check_probation_eligibility
+
+DATABASE_URL = os.getenv("DATABASE_URL")
+API_ROOT = Path(__file__).resolve().parents[1]
+
+
+@pytest.fixture(scope="module")
+def engine():
+    if not DATABASE_URL:
+        pytest.skip("DATABASE_URL is required for PostgreSQL integration tests")
+    engine = create_engine(DATABASE_URL, future=True)
+    config = Config(str(API_ROOT / "alembic.ini"))
+    config.set_main_option("sqlalchemy.url", DATABASE_URL)
+    command.upgrade(config, "head")
+    yield engine
+    engine.dispose()
+
+
+@pytest.fixture
+def conn(engine):
+    connection = engine.connect()
+    transaction = connection.begin()
+    try:
+        yield connection
+    finally:
+        transaction.rollback()
+        connection.close()
+
+
+@pytest.fixture
+def source_id(conn) -> UUID:
+    user_id, account_id, source_id = uuid4(), uuid4(), uuid4()
+    conn.execute(
+        text("INSERT INTO users (id,email,status) VALUES (:id,:email,'active')"),
+        {"id": user_id, "email": f"{user_id}@example.test"},
+    )
+    conn.execute(
+        text(
+            "INSERT INTO telegram_accounts "
+            "(id,owner_user_id,label,phone_number_e164,session_ciphertext,session_fingerprint) "
+            "VALUES (:id,:owner,'test',:phone,:cipher,:fp)"
+        ),
+        {
+            "id": account_id,
+            "owner": user_id,
+            "phone": f"+{abs(hash(str(account_id))) % 10**11:011d}",
+            "cipher": b"x",
+            "fp": str(account_id).replace("-", "")[:16],
+        },
+    )
+    conn.execute(
+        text(
+            "INSERT INTO sources "
+            "(id,telegram_account_id,chat_id,chat_title,source_alias,status,created_at,updated_at) "
+            "VALUES (:id,:account,:chat_id,:title,:title,'testing',now(),now())"
+        ),
+        {
+            "id": source_id,
+            "account": account_id,
+            "chat_id": -abs(hash(str(source_id))) % 10**12,
+            "title": "Probation Test Group",
+        },
+    )
+    return source_id
+
+
+def add_fingerprint(
+    conn, source_id: UUID, *, cohort_sample_met: bool, best_side: str | None
+) -> None:
+    conn.execute(
+        text(
+            "INSERT INTO provider_trade_fingerprints "
+            "(id,source_id,trades_resolved,wins,losses,geometry_sample_met,best_side,"
+            "cohort_sample_met,summary) "
+            "VALUES (:id,:source,20,12,8,false,:best_side,:cohort_met,'test summary')"
+        ),
+        {
+            "id": uuid4(),
+            "source": source_id,
+            "best_side": best_side,
+            "cohort_met": cohort_sample_met,
+        },
+    )
+
+
+def test_a_provider_not_on_probation_is_completely_unaffected(conn, source_id) -> None:
+    from sqlalchemy.orm import sessionmaker
+
+    session_factory = sessionmaker(bind=conn, future=True, expire_on_commit=False)
+    with session_factory() as session:
+        result = check_probation_eligibility(session, source_id=source_id, side="BUY")
+
+    assert result.eligible is True
+    assert result.reason == "not_probationary"
+
+
+def test_probation_matches_the_providers_own_best_side(conn, source_id) -> None:
+    from sqlalchemy.orm import sessionmaker
+
+    conn.execute(
+        text("INSERT INTO provider_execution_probation (source_id) VALUES (:source)"),
+        {"source": source_id},
+    )
+    add_fingerprint(conn, source_id, cohort_sample_met=True, best_side="BUY")
+
+    session_factory = sessionmaker(bind=conn, future=True, expire_on_commit=False)
+    with session_factory() as session:
+        matching = check_probation_eligibility(session, source_id=source_id, side="BUY")
+        opposite = check_probation_eligibility(session, source_id=source_id, side="SELL")
+
+    assert matching.eligible is True
+    assert matching.reason == "probation_matches_best_side"
+    assert opposite.eligible is False
+    assert "probation_side_not_historically_best" in opposite.reason
+
+
+def test_probation_holds_back_when_evidence_is_still_too_thin(conn, source_id) -> None:
+    from sqlalchemy.orm import sessionmaker
+
+    conn.execute(
+        text("INSERT INTO provider_execution_probation (source_id) VALUES (:source)"),
+        {"source": source_id},
+    )
+    add_fingerprint(conn, source_id, cohort_sample_met=False, best_side=None)
+
+    session_factory = sessionmaker(bind=conn, future=True, expire_on_commit=False)
+    with session_factory() as session:
+        result = check_probation_eligibility(session, source_id=source_id, side="BUY")
+
+    assert result.eligible is False
+    assert result.reason == "probation_insufficient_evidence"
+
+
+def test_probation_holds_back_with_no_fingerprint_at_all_yet(conn, source_id) -> None:
+    from sqlalchemy.orm import sessionmaker
+
+    conn.execute(
+        text("INSERT INTO provider_execution_probation (source_id) VALUES (:source)"),
+        {"source": source_id},
+    )
+
+    session_factory = sessionmaker(bind=conn, future=True, expire_on_commit=False)
+    with session_factory() as session:
+        result = check_probation_eligibility(session, source_id=source_id, side="BUY")
+
+    assert result.eligible is False
+    assert result.reason == "probation_insufficient_evidence"
+
+
+def test_a_graduated_provider_is_no_longer_restricted(conn, source_id) -> None:
+    from sqlalchemy.orm import sessionmaker
+
+    conn.execute(
+        text(
+            "INSERT INTO provider_execution_probation (source_id, graduated, graduated_at) "
+            "VALUES (:source, true, now())"
+        ),
+        {"source": source_id},
+    )
+    add_fingerprint(conn, source_id, cohort_sample_met=True, best_side="BUY")
+
+    session_factory = sessionmaker(bind=conn, future=True, expire_on_commit=False)
+    with session_factory() as session:
+        result = check_probation_eligibility(session, source_id=source_id, side="SELL")
+
+    assert result.eligible is True
+    assert result.reason == "probation_graduated"
+
+
+def test_unknown_signal_side_is_held_back_not_guessed(conn, source_id) -> None:
+    from sqlalchemy.orm import sessionmaker
+
+    conn.execute(
+        text("INSERT INTO provider_execution_probation (source_id) VALUES (:source)"),
+        {"source": source_id},
+    )
+    add_fingerprint(conn, source_id, cohort_sample_met=True, best_side="BUY")
+
+    session_factory = sessionmaker(bind=conn, future=True, expire_on_commit=False)
+    with session_factory() as session:
+        result = check_probation_eligibility(session, source_id=source_id, side=None)
+
+    assert result.eligible is False
+    assert result.reason == "probation_signal_side_unknown"
