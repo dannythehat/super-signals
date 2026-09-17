@@ -13,7 +13,8 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
-
+from app.aidy_decision_runtime import AidyDecisionRuntime
+from app.aidy_shadow_runtime import AidyShadowRuntime
 from app.broker_settlement_canonical import CanonicalBrokerSettlementManager
 from app.config import get_settings
 from app.day26_code_acceptance import run_day26_code_acceptance_probe
@@ -21,8 +22,6 @@ from app.day27_code_acceptance import run_day27_code_acceptance_probe
 from app.day34_code_acceptance import run_day34_code_acceptance_probe
 from app.day34_live_acceptance import run_day34_live_acceptance_safely
 from app.db import get_session_factory
-from app.aidy_shadow_runtime import AidyShadowRuntime
-from app.provider_trade_scoring_runtime import ProviderTradeScoringRuntime
 from app.metaapi_gateway import MetaApiProvisioningGateway
 from app.metaapi_read_gateway import MetaApiReadGateway
 from app.metaapi_trade_gateway import MetaApiTradeGateway
@@ -36,10 +35,12 @@ from app.mt5_recovery import (
     reencrypt_existing_metaapi_token,
     verify_existing_metaapi_token,
 )
-from app.performance_runtime import CanonicalPerformanceRuntimeService as CanonicalPerformanceLedgerService
+from app.performance_runtime import (
+    CanonicalPerformanceRuntimeService as CanonicalPerformanceLedgerService,
+)
 from app.production_listener import build_production_listener_manager
+from app.provider_trade_scoring_runtime import ProviderTradeScoringRuntime
 from app.publisher_config import get_publisher_settings
-from app.shadow_trading import ShadowTradeManager
 from app.push_notifications_day34 import Day34PushNotificationManager
 from app.routes.access import router as access_router
 from app.routes.admin_accounts import router as admin_accounts_router
@@ -59,14 +60,19 @@ from app.routes.telegram_parses import router as telegram_parses_router
 from app.routes.telegram_publisher import router as telegram_publisher_router
 from app.routes.telegram_reliability import (
     provide_day14_telegram_source_service,
+)
+from app.routes.telegram_reliability import (
     router as telegram_reliability_router,
 )
 from app.routes.telegram_reviews import router as telegram_reviews_router
 from app.routes.telegram_sources import (
     provide_telegram_source_service,
+)
+from app.routes.telegram_sources import (
     router as telegram_sources_router,
 )
 from app.routes.user_mt5_accounts import router as user_mt5_accounts_router
+from app.shadow_trading import ShadowTradeManager
 from app.telegram_crypto import TelegramSessionCipher
 from app.telegram_listener import TelegramListenerManager
 from app.telegram_publisher_canonical import CanonicalTelegramPublisherManager
@@ -140,6 +146,9 @@ async def _lifespan(application: FastAPI) -> AsyncIterator[None]:
     provider_scoring_runtime = ProviderTradeScoringRuntime(session_factory)
     application.state.provider_scoring_runtime = provider_scoring_runtime
     await provider_scoring_runtime.start()
+    aidy_decision_runtime = AidyDecisionRuntime(session_factory)
+    application.state.aidy_decision_runtime = aidy_decision_runtime
+    await aidy_decision_runtime.start()
 
     if os.getenv("SUPER_SIGNALS_DAY26_CODE_PROBE", "").strip() == "1":
         await run_day26_code_acceptance_probe()
@@ -364,6 +373,7 @@ async def _lifespan(application: FastAPI) -> AsyncIterator[None]:
                 await day34_live_acceptance_task
             except asyncio.CancelledError:
                 pass
+        await aidy_decision_runtime.stop()
         await provider_scoring_runtime.stop()
         await aidy_shadow_runtime.stop()
         await publisher.stop()
