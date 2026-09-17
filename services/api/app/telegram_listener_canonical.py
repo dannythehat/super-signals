@@ -27,7 +27,9 @@ from sqlalchemy.orm import Session, sessionmaker
 from app.execution_router_canonical import (
     build_canonical_execution_router,
     build_canonical_pending_reconciler,
+    build_management_reliability_runtime,
 )
+from app.management_reliability_runtime import ManagementReliabilityRuntime
 from app.telegram_crypto import TelegramSessionCipher
 from app.telegram_entity_recovery import read_messages_with_entity_recovery
 from app.telegram_listener import CapturedTelegramMessage, ReaderListeningPlan, TelegramListenerManager
@@ -84,11 +86,13 @@ class CanonicalProductionTelegramListenerManager(Day21TelegramListenerManager):
         *,
         canonical_router,
         pending_reconciler: UnifiedPendingReconciler | None,
+        management_reliability_runtime: ManagementReliabilityRuntime | None = None,
         **kwargs: Any,
     ) -> None:
         super().__init__(**kwargs)
         self._canonical_router = canonical_router
         self._canonical_pending_reconciler = pending_reconciler
+        self._management_reliability_runtime = management_reliability_runtime
         self._telegram_processing_pool = _ProviderProcessingPool()
         self._telegram_revision_locks = tuple(RLock() for _ in range(_STRIPE_COUNT))
         self._dispatch_lock = Lock()
@@ -102,9 +106,13 @@ class CanonicalProductionTelegramListenerManager(Day21TelegramListenerManager):
         """
         if self._canonical_pending_reconciler is not None:
             await self._canonical_pending_reconciler.start()
+        if self._management_reliability_runtime is not None:
+            await self._management_reliability_runtime.start()
         try:
             await TelegramListenerManager.start(self)
         except Exception:
+            if self._management_reliability_runtime is not None:
+                await self._management_reliability_runtime.stop()
             if self._canonical_pending_reconciler is not None:
                 await self._canonical_pending_reconciler.stop()
             raise
@@ -113,6 +121,8 @@ class CanonicalProductionTelegramListenerManager(Day21TelegramListenerManager):
         try:
             await TelegramListenerManager.stop(self)
         finally:
+            if self._management_reliability_runtime is not None:
+                await self._management_reliability_runtime.stop()
             if self._canonical_pending_reconciler is not None:
                 await self._canonical_pending_reconciler.stop()
             self._telegram_processing_pool.shutdown()
@@ -513,6 +523,10 @@ def build_canonical_production_listener_manager(
         excluded_chat_id=excluded_chat_id,
         canonical_router=router,
         pending_reconciler=build_canonical_pending_reconciler(
+            session_factory=session_factory,
+            router=router,
+        ),
+        management_reliability_runtime=build_management_reliability_runtime(
             session_factory=session_factory,
             router=router,
         ),

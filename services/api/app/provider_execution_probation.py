@@ -26,6 +26,23 @@ class ProbationCheck:
     reason: str
 
 
+def is_active_probation(session: Session, *, source_id: UUID) -> bool:
+    """True while a source is on probation and not yet graduated -- regardless of side.
+
+    Used to keep a still-probationary provider's paper trading on the owner/member demo
+    accounts only, never a member's real live account, matching the owner's own stated
+    plan: newly switched-on providers are paper traded until real forward results justify
+    graduating them (see ``provider_execution_probation`` migration 0092). Independent of
+    ``check_probation_eligibility``, which only answers whether one specific signal's side
+    matches this provider's best-evidenced side.
+    """
+    row = session.execute(
+        text("SELECT graduated FROM provider_execution_probation WHERE source_id = :source_id"),
+        {"source_id": source_id},
+    ).mappings().first()
+    return row is not None and not bool(row["graduated"])
+
+
 def check_probation_eligibility(
     session: Session, *, source_id: UUID, side: str | None
 ) -> ProbationCheck:
@@ -58,4 +75,4 @@ def check_probation_eligibility(
     return ProbationCheck(eligible=True, reason="probation_matches_best_side")
 
 
-__all__ = ["ProbationCheck", "check_probation_eligibility"]
+__all__ = ["ProbationCheck", "check_probation_eligibility", "is_active_probation"]
