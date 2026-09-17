@@ -7,6 +7,7 @@ import pytest
 
 from app.execution_dispatch_canonical import CanonicalExecutionDispatcher, StoredDecision
 from app.mt5_execution_day26 import Day26ExecutionError
+from app.provider_execution_probation import ProbationCheck
 
 
 class FakeExecutionService:
@@ -92,6 +93,9 @@ class RouterHarness(CanonicalExecutionDispatcher):
     def _load_stored_decision(self, **kwargs):
         self.load_calls += 1
         return self.stored
+
+    def _check_probation(self, source_id, side):
+        return ProbationCheck(eligible=True, reason="not_probationary")
 
     def _resolve_signal_id(self, message_id, revision_index):
         self.current_revision = revision_index

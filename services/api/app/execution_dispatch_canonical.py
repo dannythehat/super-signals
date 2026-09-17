@@ -30,9 +30,10 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from app.member_routing_canonical import MemberDistributionService, MemberManagementService
 from app.models import AuditEvent
-from app.shadow_trading import ShadowTradeService
 from app.mt5_execution_day26 import Day26ExecutionError
 from app.mt5_management_day27 import Day27ManagementError
+from app.provider_execution_probation import ProbationCheck, check_probation_eligibility
+from app.shadow_trading import ShadowTradeService
 
 logger = logging.getLogger(__name__)
 _ALLOWED_RISK = {Decimal("0.5"), Decimal("1"), Decimal("1.5"), Decimal("2")}
@@ -66,6 +67,7 @@ class StoredDecision:
     action: str
     reason: str
     source_status: str = "testing"
+    side: str | None = None
 
 
 class CanonicalExecutionDispatcher:
@@ -128,6 +130,17 @@ class CanonicalExecutionDispatcher:
             return self._dispatch_shadow(stored, revision_index)
 
         if stored.decision == "new_trade" and stored.action == "execute":
+            probation = self._check_probation(source_id, stored.side)
+            if not probation.eligible:
+                logger.info(
+                    "New trade held on probation source=%s telegram_message_id=%s reason=%s",
+                    source_id,
+                    telegram_message_id,
+                    probation.reason,
+                )
+                return self._dispatch_shadow(
+                    stored, revision_index, reason_override=probation.reason
+                )
             logger.info(
                 "Dispatching new trade source=%s telegram_message_id=%s revision=%s",
                 source_id,
@@ -160,19 +173,31 @@ class CanonicalExecutionDispatcher:
             reason=stored.reason,
         )
 
+    def _check_probation(self, source_id: UUID, side: str | None) -> ProbationCheck:
+        with self._session_factory() as session:
+            return check_probation_eligibility(session, source_id=source_id, side=side)
+
     def _dispatch_shadow(
         self,
         stored: StoredDecision,
         revision_index: int,
+        *,
+        reason_override: str | None = None,
     ) -> CanonicalRouteResult:
-        """Persist isolated virtual state without invoking broker/member services."""
+        """Persist isolated virtual state without invoking broker/member services.
+
+        Also used to hold back a `testing`/`live` provider's signal that is still on
+        probation and did not match its own best-side evidence -- recorded exactly like
+        a shadow signal, just tagged with why it was held rather than dispatched.
+        """
         if stored.decision == "new_trade" and stored.action == "execute":
             signal_id = self._resolve_signal_id(stored.message_id, revision_index)
             recorded = signal_id is not None and self._shadow.record_signal(signal_id)
+            default_reason = "shadow_signal_recorded" if recorded else "shadow_signal_not_eligible"
             return CanonicalRouteResult(
                 outcome="shadowed" if recorded else "ignored",
                 decision=stored.decision, action=stored.action, signal_id=signal_id,
-                reason="shadow_signal_recorded" if recorded else "shadow_signal_not_eligible",
+                reason=reason_override or default_reason,
             )
         if stored.decision == "trade_update" and stored.action == "apply_update":
             event_id, signal_id = self._resolve_lifecycle_event(stored.message_id, revision_index)
@@ -530,7 +555,8 @@ class CanonicalExecutionDispatcher:
             row = session.execute(
                 text(
                     """
-                    SELECT m.id AS message_id, d.decision, d.action, d.reason, s.status AS source_status
+                    SELECT m.id AS message_id, d.decision, d.action, d.reason,
+                           s.status AS source_status, d.extracted->>'side' AS side
                     FROM messages AS m
                     JOIN sources AS s ON s.id=m.source_id
                     JOIN ai_message_decisions AS d
@@ -557,6 +583,7 @@ class CanonicalExecutionDispatcher:
             action=str(row["action"] or ""),
             reason=str(row["reason"] or ""),
             source_status=str(row["source_status"] or ""),
+            side=(str(row["side"]) if row["side"] else None),
         )
 
     def _resolve_signal_id(self, message_id: UUID, revision_index: int) -> UUID | None:
