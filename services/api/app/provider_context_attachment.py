@@ -9,6 +9,7 @@ become PIT-valid later without rewriting history.
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import logging
@@ -276,7 +277,8 @@ class ProviderContextAttachmentResolver:
         attached = 0
         failures = 0
         self._last_terminal_misses = 0
-        for candidate in self._candidates():
+        candidates = await asyncio.to_thread(self._candidates)
+        for candidate in candidates:
             try:
                 joined = await join_provider_to_aidy_context(
                     client=self._client,
@@ -286,10 +288,10 @@ class ProviderContextAttachmentResolver:
                     provider_profile_version_no=candidate.provider_profile_version_no,
                     provider_profile_effective_at=candidate.provider_profile_effective_at,
                 )
-                if self._persist(candidate, joined):
+                if await asyncio.to_thread(self._persist, candidate, joined):
                     attached += 1
             except AidyContextTerminalMiss as exc:
-                if self._persist_terminal_miss(candidate, exc):
+                if await asyncio.to_thread(self._persist_terminal_miss, candidate, exc):
                     self._last_terminal_misses += 1
                 logger.info(
                     "Provider context terminal miss recorded signal_id=%s reason=%s",
