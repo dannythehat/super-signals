@@ -55,14 +55,17 @@ def test_candidate_query_excludes_both_successes_and_terminal_misses() -> None:
 
 def test_candidate_query_uses_canonical_signal_message_provenance() -> None:
     source = inspect.getsource(ProviderContextAttachmentResolver._candidates)
-    assert "JOIN signals s ON s.id=t.signal_id" in source
-    assert "JOIN messages m ON m.id=s.source_message_id" in source
-    assert "m.source_id AS source_id" in source
+    assert "FROM signals s" in source
+    assert "JOIN messages m" in source
+    assert "m.id=s.source_message_id" in source
+    assert "m.source_id=s.source_id" in source
+    assert "s.source_id AS source_id" in source
     assert "s.source_message_id AS message_id" in source
     assert "s.source_posted_at AS signal_posted_at" in source
-    assert "t.source_id=m.source_id" in source
-    assert "t.message_id=s.source_message_id" in source
-    assert "t.provider_profile_effective_at <= s.source_posted_at" in source
+    assert "v.source_id=s.source_id" in source
+    assert "v.effective_at<=s.source_posted_at" in source
+    assert "s.parser_status='accepted'" in source
+    assert "s.symbol='XAUUSD'" in source
 
 
 def test_pit_stale_is_classified_before_generic_http_error(monkeypatch: pytest.MonkeyPatch) -> None:
