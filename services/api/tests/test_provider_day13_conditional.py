@@ -133,3 +133,12 @@ def test_day13_replaces_completed_day12_startup_runner() -> None:
     startup = (ROOT.parents[1] / "scripts" / "render-start.sh").read_text(encoding="utf-8")
     assert "python -m app.provider_day13_runtime" in startup
     assert "python -m app.provider_day12_fingerprint" not in startup
+
+
+def test_production_day13_runtime_maps_current_gold_sessions_to_frozen_registry() -> None:
+    runtime = (ROOT / "app" / "provider_day13_runtime.py").read_text(encoding="utf-8")
+    assert "WHEN 'london' THEN 'europe'" in runtime
+    assert "WHEN 'london_new_york_overlap' THEN 'ny_early'" in runtime
+    assert "WHEN 'new_york' THEN 'other'" in runtime
+    assert "WHEN 'rollover' THEN 'other'" in runtime
+    assert 'session_bucket=str(row["day13_session_bucket"])' in runtime

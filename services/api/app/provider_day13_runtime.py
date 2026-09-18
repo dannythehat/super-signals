@@ -23,6 +23,14 @@ def _load_observations(session: Any, *, cutoff: datetime) -> list[day13.Conditio
             """
             SELECT t.id AS trade_id,t.source_id,t.signal_id,t.side,t.session_bucket,
                    t.opened_at,t.closed_at,t.quality_r_multiple,
+                   CASE t.session_bucket
+                     WHEN 'asia' THEN 'asia'
+                     WHEN 'london' THEN 'europe'
+                     WHEN 'london_new_york_overlap' THEN 'ny_early'
+                     WHEN 'new_york' THEN 'other'
+                     WHEN 'rollover' THEN 'other'
+                     ELSE t.session_bucket
+                   END AS day13_session_bucket,
                    a.signal_posted_at,a.aidy_context_as_of_utc,a.provider_profile_effective_at,a.regime_json
             FROM shadow_trades t
             JOIN sources s ON s.id=t.source_id
@@ -35,7 +43,10 @@ def _load_observations(session: Any, *, cutoff: datetime) -> list[day13.Conditio
               AND t.opened_at IS NOT NULL
               AND t.quality_r_multiple IS NOT NULL
               AND t.side IN ('BUY','SELL')
-              AND t.session_bucket IN ('asia','europe','ny_early','other')
+              AND t.session_bucket IN (
+                    'asia','london','london_new_york_overlap','new_york','rollover',
+                    'europe','ny_early','other'
+                  )
               AND a.signal_posted_at<=:cutoff
               AND a.aidy_context_as_of_utc<=a.signal_posted_at
               AND a.provider_profile_effective_at<=a.signal_posted_at
@@ -60,7 +71,7 @@ def _load_observations(session: Any, *, cutoff: datetime) -> list[day13.Conditio
                 source_id=UUID(str(row["source_id"])),
                 signal_id=UUID(str(row["signal_id"])),
                 side=str(row["side"]),
-                session_bucket=str(row["session_bucket"]),
+                session_bucket=str(row["day13_session_bucket"]),
                 signal_posted_at=row["signal_posted_at"].astimezone(UTC),
                 duration_bucket=day13.duration_bucket(duration_seconds),
                 realized_r=float(row["quality_r_multiple"]),
