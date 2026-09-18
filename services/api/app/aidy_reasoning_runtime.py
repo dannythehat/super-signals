@@ -24,11 +24,10 @@ from app.aidy_reasoning_runner import AidyReasoningRunner
 
 logger = logging.getLogger(__name__)
 
-# Matches the 300s decision loop -- with v2's scope covering every approve decision
-# (2,598 in the historical backlog at build time), the budget gate is what actually
-# bounds spend, not a deliberately slow interval; a real backlog deserves draining in
-# well under an hour, not overnight.
-_DEFAULT_INTERVAL_SECONDS = 300
+# Runs every minute so the shadow final-gate opinion is available close to signal time;
+# the budget gate still
+# bounds spend rather than the poll interval.
+_DEFAULT_INTERVAL_SECONDS = 60
 _DEFAULT_PASS_LIMIT = 300
 
 
