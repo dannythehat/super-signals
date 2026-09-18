@@ -1,4 +1,4 @@
-"""Application-owned AIDY Provider Lab replay and context runtime.
+"""Application-owned AIDY Provider Lab replay, context and intelligence runtime.
 
 This runtime is intentionally independent of broker credentials. M1 replay remains the
 primary research loop; Day 10 context enrichment is optional/fail-flat and may never
@@ -23,7 +23,7 @@ from app.weekend_trading_freeze import market_week_frozen
 
 logger = logging.getLogger(__name__)
 
-_DEFAULT_POLL_SECONDS = 300
+_DEFAULT_POLL_SECONDS = 60
 _DEFAULT_STARTUP_PASS_LIMIT = 96
 
 
