@@ -76,6 +76,9 @@ review_class=likely_trade means the current message likely represents/activates 
 the interpreter missed. likely_management means it likely manages an already-open provider trade.
 correct_skip means the interpreter was right to leave it alone. uncertain means evidence is not
 strong enough. execute_candidate/management_candidate are research labels only, never execution.
+If the original interpreter reason says the side, stop loss, instrument or entry is missing, you
+must never output execute_candidate. Use needs_rule_review instead, even when review_class is
+likely_trade, and list the missing field explicitly.
 
 missing_fields lists information genuinely absent from the current evidence. suggested_parser_rule
 must be a concise, provider-specific engineering hypothesis, or an empty string when no rule
@@ -216,6 +219,20 @@ class AidyMessageReviewEngine:
         if not 0 <= confidence <= 1:
             raise AidyMessageReviewUnavailable("aidy_message_review_confidence_invalid")
 
+        missing_fields = [str(x)[:100] for x in parsed["missing_fields"]][:8]
+        critical_missing = {
+            "missing_side": "side",
+            "missing_sl": "stop_loss",
+            "missing_instrument": "instrument",
+            "missing_entry": "entry",
+        }
+        required_field = critical_missing.get(context.original_outcome_reason or "")
+        if required_field is not None:
+            if required_field not in missing_fields:
+                missing_fields = [*missing_fields, required_field][:8]
+            if suggested_action == "execute_candidate":
+                suggested_action = "needs_rule_review"
+
         usage = body.get("usage") or {}
         input_tokens = int(usage.get("input_tokens") or 0)
         output_tokens = int(usage.get("output_tokens") or 0)
@@ -227,7 +244,7 @@ class AidyMessageReviewEngine:
             review_class=review_class,
             suggested_action=suggested_action,
             confidence=confidence,
-            missing_fields=[str(x)[:100] for x in parsed["missing_fields"]][:8],
+            missing_fields=missing_fields,
             rationale=str(parsed["rationale"])[:2000],
             suggested_parser_rule=str(parsed["suggested_parser_rule"])[:1000],
             model_name=self._model,
