@@ -258,6 +258,26 @@ class ProviderResearchService:
                 profile_rows.append((source.id, stats))
             session.commit()
 
+        # The live Telegram scan is useful for discovery, but it must not be the only
+        # learning source. Production already stores the full provider message stream;
+        # use that durable evidence as a fallback/richer sample so a temporarily sparse
+        # Telegram scan can never reset an established provider to zero readiness.
+        stored_rows = self._stored_profile_rows()
+        richest: dict[UUID, ProviderSampleStats] = {source_id: stats for source_id, stats in profile_rows}
+        for source_id, stats in stored_rows:
+            current = richest.get(source_id)
+            if current is None or (
+                stats.observed_messages,
+                stats.structured_signal_messages,
+                stats.signal_like_messages,
+            ) > (
+                current.observed_messages,
+                current.structured_signal_messages,
+                current.signal_like_messages,
+            ):
+                richest[source_id] = stats
+        profile_rows = list(richest.items())
+
         duplicates = self._duplicate_map(profile_rows)
         with self._session_factory() as session:
             for source_id, stats in profile_rows:
@@ -325,6 +345,61 @@ class ProviderResearchService:
             duplicate_flags=len(duplicates),
             scan_failures=failures,
         )
+
+    def _stored_profile_rows(self) -> list[tuple[UUID, ProviderSampleStats]]:
+        with self._session_factory() as session:
+            rows = session.execute(
+                text(
+                    """
+                    SELECT s.id AS source_id,s.chat_id,
+                           COALESCE(NULLIF(s.chat_title,''),NULLIF(s.source_alias,''),'Provider') AS title,
+                           m.telegram_message_id,m.raw_text,m.posted_at,m.edited_at
+                    FROM sources s
+                    JOIN LATERAL (
+                        SELECT mm.telegram_message_id,mm.raw_text,mm.posted_at,mm.edited_at
+                        FROM messages mm
+                        WHERE mm.source_id=s.id
+                          AND COALESCE(mm.raw_text,'')<>''
+                        ORDER BY mm.posted_at DESC
+                        LIMIT :history_limit
+                    ) m ON true
+                    WHERE s.status IN ('testing','shadow','live','active')
+                    ORDER BY s.id,m.posted_at
+                    """
+                ),
+                {"history_limit": self._history_limit},
+            ).mappings().all()
+
+        grouped: dict[UUID, dict[str, Any]] = {}
+        for row in rows:
+            source_id = UUID(str(row["source_id"]))
+            item = grouped.setdefault(
+                source_id,
+                {
+                    "chat_id": int(row["chat_id"]),
+                    "title": str(row["title"]),
+                    "messages": [],
+                },
+            )
+            item["messages"].append(
+                TelegramResearchMessage(
+                    telegram_message_id=int(row["telegram_message_id"]),
+                    raw_text=str(row["raw_text"] or ""),
+                    posted_at=row["posted_at"],
+                    edited_at=row["edited_at"],
+                )
+            )
+
+        result: list[tuple[UUID, ProviderSampleStats]] = []
+        for source_id, item in grouped.items():
+            dialog = TelegramResearchDialog(
+                chat_id=item["chat_id"],
+                title=item["title"],
+                kind="channel",
+                messages=tuple(item["messages"]),
+            )
+            result.append((source_id, analyze_provider_sample(dialog)))
+        return result
 
     def _connected_accounts(self) -> list[tuple[UUID, UUID, bytes]]:
         with self._session_factory() as session:
@@ -492,8 +567,8 @@ def build_provider_research_manager(
     cipher: TelegramSessionCipher,
     gateway: TelethonTelegramSourceGateway,
 ) -> ProviderResearchManager:
-    history_limit = int(os.getenv("SUPER_SIGNALS_PROVIDER_RESEARCH_HISTORY_LIMIT", "30") or "30")
-    scan_seconds = int(os.getenv("SUPER_SIGNALS_PROVIDER_RESEARCH_SCAN_SECONDS", "21600") or "21600")
+    history_limit = int(os.getenv("SUPER_SIGNALS_PROVIDER_RESEARCH_HISTORY_LIMIT", "100") or "100")
+    scan_seconds = int(os.getenv("SUPER_SIGNALS_PROVIDER_RESEARCH_SCAN_SECONDS", "1800") or "1800")
     service = ProviderResearchService(
         session_factory=session_factory,
         cipher=cipher,
