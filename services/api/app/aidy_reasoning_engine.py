@@ -26,8 +26,14 @@ from typing import Any
 
 import httpx
 
-MODEL_VERSION = "aidy_reasoning_engine_v4"
-PROMPT_VERSION = "aidy_reasoning_prompt_v5"
+from app.aidy_evidence_contract import (
+    EvidenceClaimValidationError,
+    assert_no_freeform_provider_history,
+    validate_provider_claim_refs,
+)
+
+MODEL_VERSION = "aidy_reasoning_engine_v5"
+PROMPT_VERSION = "aidy_reasoning_prompt_v6"
 
 # Bounded on purpose: each round trip is a real OpenAI request, so this caps both cost and
 # how long one signal can take to reason about, not just how many timeframes/hours it may
@@ -130,6 +136,11 @@ REASONING_SCHEMA: dict[str, Any] = {
         },
         "risk_multiplier": {"type": "number", "minimum": 0, "maximum": 1},
         "action_reason": {"type": "string"},
+        "provider_claim_refs": {
+            "type": "array",
+            "items": {"type": "string"},
+            "maxItems": 8,
+        },
     },
     "required": [
         "lean",
@@ -139,6 +150,7 @@ REASONING_SCHEMA: dict[str, Any] = {
         "shadow_action",
         "risk_multiplier",
         "action_reason",
+        "provider_claim_refs",
     ],
 }
 
@@ -154,15 +166,18 @@ disciplined setup or a careless one: is the stop distance sane relative to entry
 reward-to-risk ratio reasonable, are the take profits ordered and plausible, does anything look
 internally inconsistent (e.g. a stop on the wrong side of entry for the stated direction).
 
-You may also be given provider_fingerprint: a descriptive summary of this specific provider's
-own historical wins versus losses (stop distance, reward:risk, which side and session actually
-works for them), computed from their own resolved trade history. It is descriptive, not a
-statistically certified rule -- treat it as background on how this provider tends to operate,
-and let it inform your read of THIS signal (e.g. a stop far tighter than their own winning
-trades typically use, or a side/session that has historically been weak for them, is worth
-naming in key_factors) without ever treating it as proof this specific signal will win or lose.
-When no fingerprint is given, or it says evidence is still too thin, reason from the signal's
-own geometry alone as before.
+You may also be given provider_evidence_claims. These are the ONLY provider-history facts you
+may use. Each is an atomic point-in-time fact with an exact id, source path, value, sample size,
+version and evidence timestamp. If provider history materially affects your action, put the
+exact supporting claim id(s) in provider_claim_refs. Never infer a missing cohort from absence:
+if there is SELL history but no BUY claim, that does NOT mean BUY is weaker. A comparison
+requires direct evidence for both cohorts or an explicit best/worst comparison claim.
+
+Provider-history facts must NOT be restated in rationale, key_factors or action_reason. Those
+free-text fields are restricted to the current signal's geometry, current market evidence,
+current/recent message semantics and tool evidence. Provider history is represented only by
+provider_claim_refs, which are validated and persisted alongside the exact evidence snapshot.
+If no provider evidence is relevant, use an empty provider_claim_refs array.
 
 You may also be given market_context: an objective, point-in-time snapshot of gold (XAUUSD)
 conditions as of when this signal actually posted -- never anything known after the fact.
@@ -207,13 +222,12 @@ market_context's event_timing is unknown or you want to check whether a specific
 USD event sits close enough to this signal to add real holding risk. A forecast is a public
 consensus number known in advance, not a prediction of your own -- report it as such.
 
-You may also be given provider_intelligence, provider_profile, recent_messages and
-self_calibration. These are the provider-specific brain. Use them to understand this provider's
-normal message sequence, vocabulary, edit/reply behaviour, entry/order style, management habits,
-side/session performance and how your own earlier agree/caution/disagree calls performed once
-their outcomes resolved. recent_messages are strictly messages posted no later than this signal,
-so use sequence/context but never import a price or instruction from an older message unless the
-current signal or direct reply semantics actually make that linkage legitimate.
+You may also be given recent_messages and self_calibration. recent_messages are strictly
+messages posted no later than this signal, so use sequence/context but never import a price or
+instruction from an older message unless the current signal or direct reply semantics actually
+make that linkage legitimate. self_calibration describes your own earlier resolved reasoning
+performance and may lower confidence, but it is not permission to invent a provider-history
+fact. Provider historical behaviour/performance remains usable only through provider_claim_refs.
 
 supplemental_evidence may contain point-in-time candle/calendar evidence fetched before the model
 call. Treat it exactly like a successful tool result: real evidence available at this signal's
@@ -238,8 +252,9 @@ confirmed trend, when market_context makes that visible. lean=disagree means the
 itself looks broken or reckless (e.g. stop wrong side of entry, reward:risk far worse than
 1:1, targets not ordered in the trade's favour). confidence reflects how sure you are in that
 overall read, not in whether the trade will win. rationale is one or two sentences. key_factors
-is a short list of the specific observations that drove the lean (at most 5, each under 80
-characters), numeric or market-context based."""
+is a short list of the specific current-signal/current-market observations that drove the
+lean (at most 5, each under 80 characters). Do not put provider-history facts in free text;
+represent them only through provider_claim_refs."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -256,6 +271,7 @@ class SignalContext:
     decision_reasons: list[dict[str, Any]]
     trades_resolved: int
     provider_fingerprint_summary: str | None = None
+    provider_evidence_claims: list[dict[str, Any]] | None = None
     market_context: dict[str, Any] | None = None
     provider_intelligence: dict[str, Any] | None = None
     provider_profile: dict[str, Any] | None = None
@@ -283,6 +299,7 @@ class ReasoningAnnotation:
     shadow_action: str = "need_more_evidence"
     risk_multiplier: float = 0.0
     action_reason: str = ""
+    provider_claim_refs: tuple[str, ...] = ()
 
 
 ToolExecutor = Callable[[str, dict[str, Any]], Awaitable[dict[str, Any]]]
@@ -304,10 +321,8 @@ def _prompt_payload(context: SignalContext) -> dict[str, Any]:
         "take_profits": context.take_profits,
         "deterministic_decision_class": context.decision_class,
         "deterministic_decision_reasons": context.decision_reasons,
-        "provider_fingerprint": context.provider_fingerprint_summary,
+        "provider_evidence_claims": context.provider_evidence_claims or [],
         "market_context": context.market_context,
-        "provider_intelligence": context.provider_intelligence,
-        "provider_profile": context.provider_profile,
         "recent_messages": context.recent_messages,
         "self_calibration": context.self_calibration,
         "supplemental_evidence": context.supplemental_evidence,
@@ -379,7 +394,7 @@ class AidyReasoningEngine:
                         "model": self._model,
                         "store": False,
                         "reasoning": {"effort": "minimal"},
-                        "max_output_tokens": 600,
+                        "max_output_tokens": 700,
                         "instructions": _SYSTEM_INSTRUCTIONS,
                         "input": input_items,
                         "text": {
@@ -463,6 +478,23 @@ class AidyReasoningEngine:
         elif shadow_action == "reduce" and not 0.0 < risk_multiplier < 1.0:
             raise AidyReasoningUnavailable("aidy_reasoning_reduce_multiplier_invalid")
 
+        rationale = str(parsed["rationale"])[:2000]
+        key_factors = [str(factor)[:200] for factor in parsed["key_factors"]][:5]
+        action_reason = str(parsed["action_reason"])[:1000]
+        try:
+            provider_claim_refs = validate_provider_claim_refs(
+                list(parsed["provider_claim_refs"]),
+                context.provider_evidence_claims or [],
+            )
+            assert_no_freeform_provider_history(
+                provider_name=context.provider_name,
+                rationale=rationale,
+                key_factors=key_factors,
+                action_reason=action_reason,
+            )
+        except (EvidenceClaimValidationError, TypeError, ValueError) as exc:
+            raise AidyReasoningUnavailable("aidy_reasoning_provider_claim_invalid") from exc
+
         estimated_cost = (
             Decimal(total_input_tokens) * _USD_PER_INPUT_TOKEN
             + Decimal(total_output_tokens) * _USD_PER_OUTPUT_TOKEN
@@ -471,8 +503,8 @@ class AidyReasoningEngine:
         return ReasoningAnnotation(
             lean=lean,
             confidence=confidence,
-            rationale=str(parsed["rationale"])[:2000],
-            key_factors=[str(factor)[:200] for factor in parsed["key_factors"]][:5],
+            rationale=rationale,
+            key_factors=key_factors,
             model_name=self._model,
             response_id=response_id,
             input_tokens=total_input_tokens,
@@ -484,7 +516,8 @@ class AidyReasoningEngine:
             preflight_evidence_calls=context.preflight_evidence_calls,
             shadow_action=shadow_action,
             risk_multiplier=risk_multiplier,
-            action_reason=str(parsed["action_reason"])[:1000],
+            action_reason=action_reason,
+            provider_claim_refs=provider_claim_refs,
         )
 
     @staticmethod
