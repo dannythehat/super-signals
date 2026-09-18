@@ -289,22 +289,36 @@ def _latest_day13_run(session: Any) -> Mapping[str, Any]:
     return row
 
 
-def _frozen_boundary(session: Any) -> datetime:
-    row = session.execute(
+def _frozen_boundaries(session: Any) -> dict[UUID, datetime]:
+    """Return the immutable preregistration boundary for each provider.
+
+    Day 13 can legitimately add a later provider cohort under the same registry
+    version. Requiring one timestamp for the whole registry therefore rejects a
+    valid append-only registry. Each provider must still have exactly one frozen
+    boundary, so no provider can gain pre-registration observations.
+    """
+    rows = session.execute(
         text(
             """
-            SELECT MIN(preregistered_at) AS first_boundary,
+            SELECT source_id,
+                   MIN(preregistered_at) AS first_boundary,
                    MAX(preregistered_at) AS last_boundary,
                    COUNT(*) AS hypotheses
             FROM provider_conditional_hypotheses
             WHERE registry_version=:registry
+            GROUP BY source_id
             """
         ),
         {"registry": day13.REGISTRY_VERSION},
-    ).mappings().one()
-    if int(row["hypotheses"] or 0) == 0 or row["first_boundary"] != row["last_boundary"]:
-        raise RuntimeError("day13_preregistration_boundary_not_frozen")
-    return row["first_boundary"].astimezone(UTC)
+    ).mappings().all()
+    if not rows:
+        raise RuntimeError("day13_preregistration_boundary_missing")
+    boundaries: dict[UUID, datetime] = {}
+    for row in rows:
+        if int(row["hypotheses"] or 0) == 0 or row["first_boundary"] != row["last_boundary"]:
+            raise RuntimeError("day13_provider_preregistration_boundary_not_frozen")
+        boundaries[UUID(str(row["source_id"]))] = row["first_boundary"].astimezone(UTC)
+    return boundaries
 
 
 def _shadow_profiles(session: Any) -> list[Mapping[str, Any]]:
@@ -418,7 +432,7 @@ def run() -> dict[str, Any]:
             policy = _load_policy(session)
             source_run = _latest_day13_run(session)
             source_run_id = UUID(str(source_run["id"]))
-            frozen_boundary = _frozen_boundary(session)
+            frozen_boundaries = _frozen_boundaries(session)
             profiles = _shadow_profiles(session)
 
             hypotheses = day13._load_registry(session)
@@ -428,6 +442,9 @@ def run() -> dict[str, Any]:
             evidence_by_source: dict[UUID, ProviderEvidence] = {}
             for profile in profiles:
                 source_id = UUID(str(profile["source_id"]))
+                frozen_boundary = frozen_boundaries.get(source_id)
+                if frozen_boundary is None:
+                    raise RuntimeError("day13_provider_preregistration_boundary_missing")
                 evidence_by_source[source_id] = _provider_evidence(
                     source_id=source_id,
                     observations=observations,
@@ -439,7 +456,10 @@ def run() -> dict[str, Any]:
             global_evidence_payload = {
                 "policy_version": POLICY_VERSION,
                 "policy_approval_status": str(policy["approval_status"]),
-                "frozen_boundary": frozen_boundary.isoformat(),
+                "frozen_boundaries": {
+                    str(source_id): boundary.isoformat()
+                    for source_id, boundary in sorted(frozen_boundaries.items(), key=lambda item: str(item[0]))
+                },
                 "providers": [
                     {
                         "source_id": str(source_id),
@@ -615,7 +635,7 @@ def run() -> dict[str, Any]:
                                 {
                                     "reason": row["reason"],
                                     "policy_approval_status": str(policy["approval_status"]),
-                                    "frozen_oos_boundary": frozen_boundary.isoformat(),
+                                    "frozen_oos_boundary": frozen_boundaries[source_id].isoformat(),
                                 },
                                 sort_keys=True,
                             ),
