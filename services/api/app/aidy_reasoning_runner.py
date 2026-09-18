@@ -30,6 +30,7 @@ from app.aidy_economic_calendar_client import EconomicCalendarClient
 from app.aidy_market_client import AidyMarketClient
 from app.aidy_reasoning_calendar_tools import (
     build_calendar_tool_executor,
+    fetch_calendar_summary,
     fetch_todays_scheduled_events,
 )
 from app.aidy_reasoning_engine import (
@@ -44,7 +45,7 @@ from app.aidy_reasoning_engine import (
     SignalContext,
     ToolExecutor,
 )
-from app.aidy_reasoning_market_tools import build_candle_tool_executor
+from app.aidy_reasoning_market_tools import build_candle_tool_executor, fetch_candle_summary
 from app.provider_day19_explainer_budget import (
     ResourceBudget,
     ResourceUsage,
@@ -56,23 +57,101 @@ logger = logging.getLogger(__name__)
 _SELECTABLE = """
     SELECT d.id AS decision_id, d.decision_class, d.reasons, d.source_id,
            d.signal_posted_at,
-           o.side, o.symbol, o.entry_low, o.entry_high, o.stop_loss, o.take_profits,
+           o.message_id,o.signal_id,o.side,o.symbol,o.entry_low,o.entry_high,o.stop_loss,o.take_profits,
+           m.raw_text AS current_message,
            COALESCE(NULLIF(s.chat_title, ''), s.source_alias) AS provider_name,
            COALESCE(b.trades_resolved, 0) AS trades_resolved,
-           fp.summary AS provider_fingerprint_summary
+           fp.summary AS provider_fingerprint_summary,
+           profile.version_no AS provider_profile_version_no,
+           profile.profile_snapshot AS provider_profile_snapshot,
+           intel.contract_version AS provider_intelligence_contract,
+           intel.fingerprint_json AS provider_intelligence_fingerprint,
+           intel.adaptation_json AS provider_intelligence_adaptation,
+           intel.governance_json AS provider_intelligence_governance,
+           ctx.signal_id AS context_signal_id,
+           ctx.aidy_context_as_of_utc AS attached_context_as_of_utc,
+           ctx.aidy_context_lag_seconds AS attached_context_lag_seconds,
+           ctx.session_json AS attached_session_json,
+           ctx.regime_json AS attached_regime_json,
+           ctx.data_quality_json AS attached_data_quality_json,
+           ctx.market_json AS attached_market_json,
+           recent.messages_json AS recent_messages,
+           calibration.calibration_json AS self_calibration
     FROM aidy_decisions d
-    JOIN provider_trade_observations o ON o.id = d.observation_id
-    JOIN sources s ON s.id = d.source_id
-    LEFT JOIN provider_trade_scoreboard b ON b.source_id = d.source_id
-    LEFT JOIN aidy_reasoning_annotations a ON a.decision_id = d.id
+    JOIN provider_trade_observations o ON o.id=d.observation_id
+    JOIN sources s ON s.id=d.source_id
+    JOIN messages m ON m.id=o.message_id
+    LEFT JOIN provider_trade_scoreboard b ON b.source_id=d.source_id
+    LEFT JOIN aidy_reasoning_annotations a ON a.decision_id=d.id
     LEFT JOIN LATERAL (
         SELECT f.summary
         FROM provider_trade_fingerprints f
-        WHERE f.source_id = d.source_id
+        WHERE f.source_id=d.source_id
+          AND f.computed_at<=d.signal_posted_at
         ORDER BY f.computed_at DESC
         LIMIT 1
     ) fp ON true
-    WHERE d.decision_class = 'approve'
+    LEFT JOIN LATERAL (
+        SELECT v.version_no,v.profile_snapshot
+        FROM provider_research_profile_versions v
+        WHERE v.source_id=d.source_id
+          AND v.effective_at<=d.signal_posted_at
+        ORDER BY v.effective_at DESC,v.version_no DESC
+        LIMIT 1
+    ) profile ON true
+    LEFT JOIN LATERAL (
+        SELECT i.contract_version,i.fingerprint_json,i.adaptation_json,i.governance_json
+        FROM provider_intelligence_snapshots i
+        WHERE i.source_id=d.source_id
+          AND i.evidence_as_of_utc<=d.signal_posted_at
+        ORDER BY i.evidence_as_of_utc DESC,i.created_at DESC
+        LIMIT 1
+    ) intel ON true
+    LEFT JOIN LATERAL (
+        SELECT x.signal_id,x.aidy_context_as_of_utc,x.aidy_context_lag_seconds,
+               x.session_json,x.regime_json,x.data_quality_json,x.market_json
+        FROM provider_signal_context_attachments x
+        WHERE (o.signal_id IS NOT NULL AND x.signal_id=o.signal_id)
+           OR x.message_id=o.message_id
+        ORDER BY (o.signal_id IS NOT NULL AND x.signal_id=o.signal_id) DESC,x.created_at DESC
+        LIMIT 1
+    ) ctx ON true
+    LEFT JOIN LATERAL (
+        SELECT jsonb_agg(
+                   jsonb_build_object('posted_at',q.posted_at,'text',q.raw_text)
+                   ORDER BY q.posted_at
+               ) AS messages_json
+        FROM (
+            SELECT mm.posted_at,left(mm.raw_text,700) AS raw_text
+            FROM messages mm
+            WHERE mm.source_id=d.source_id
+              AND mm.posted_at<=d.signal_posted_at
+            ORDER BY mm.posted_at DESC
+            LIMIT 5
+        ) q
+    ) recent ON true
+    LEFT JOIN LATERAL (
+        SELECT jsonb_object_agg(z.lean,z.stats) AS calibration_json
+        FROM (
+            SELECT ar.lean,
+                   jsonb_build_object(
+                       'resolved',count(*),
+                       'wins',count(*) FILTER (WHERE ao.actual_pnl_usd>0),
+                       'losses',count(*) FILTER (WHERE ao.actual_pnl_usd<0),
+                       'avg_pnl_usd',round(avg(ao.actual_pnl_usd),2),
+                       'total_pnl_usd',round(sum(ao.actual_pnl_usd),2)
+                   ) AS stats
+            FROM aidy_reasoning_annotations ar
+            JOIN aidy_decisions prior_d ON prior_d.id=ar.decision_id
+            JOIN aidy_decision_outcomes ao ON ao.decision_id=prior_d.id
+            WHERE prior_d.source_id=d.source_id
+              AND ar.created_at<d.signal_posted_at
+              AND ao.resolved_at<d.signal_posted_at
+              AND ao.actual_pnl_usd IS NOT NULL
+            GROUP BY ar.lean
+        ) z
+    ) calibration ON true
+    WHERE d.decision_class='approve'
       AND a.id IS NULL
     ORDER BY d.decided_at
     LIMIT :limit
@@ -89,12 +168,18 @@ _INSERT = """
         id, decision_id, lean, confidence, rationale, key_factors,
         model_version, prompt_version, model_name, response_id,
         input_tokens, output_tokens, estimated_cost_usd, latency_ms,
-        market_context_available, request_count, tool_calls_made
+        market_context_available, provider_context_available,
+        provider_profile_version_no, request_count, tool_calls_made,
+        preflight_evidence_calls, shadow_action, shadow_risk_multiplier,
+        shadow_action_reason
     ) VALUES (
         :id, :decision_id, :lean, :confidence, :rationale, CAST(:key_factors AS jsonb),
         :model_version, :prompt_version, :model_name, :response_id,
         :input_tokens, :output_tokens, :estimated_cost_usd, :latency_ms,
-        :market_context_available, :request_count, :tool_calls_made
+        :market_context_available, :provider_context_available,
+        :provider_profile_version_no, :request_count, :tool_calls_made,
+        :preflight_evidence_calls, :shadow_action, :shadow_risk_multiplier,
+        :shadow_action_reason
     )
     ON CONFLICT (decision_id) DO NOTHING
 """
@@ -225,6 +310,125 @@ class AidyReasoningRunner:
             "quote_state": data_quality.get("quote_state"),
         }
 
+    @staticmethod
+    def _provider_brain(candidate: dict[str, Any]) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
+        profile = candidate.get("provider_profile_snapshot")
+        profile_dict = dict(profile) if isinstance(profile, dict) else {}
+        metadata = profile_dict.get("profile_metadata") if isinstance(profile_dict.get("profile_metadata"), dict) else {}
+        adaptive = metadata.get("adaptive_v1") if isinstance(metadata.get("adaptive_v1"), dict) else {}
+        footprint = metadata.get("footprint_v1") if isinstance(metadata.get("footprint_v1"), dict) else {}
+        language = adaptive.get("language") if isinstance(adaptive.get("language"), dict) else {}
+        interpretation = footprint.get("interpretation_context") if isinstance(footprint.get("interpretation_context"), dict) else {}
+        performance = adaptive.get("performance") if isinstance(adaptive.get("performance"), dict) else {}
+
+        profile_summary = None
+        if profile_dict:
+            profile_summary = {
+                "version_no": candidate.get("provider_profile_version_no"),
+                "research_state": profile_dict.get("research_state"),
+                "style": profile_dict.get("style"),
+                "interpretation_readiness": profile_dict.get("interpretation_readiness"),
+                "observed_messages": profile_dict.get("observed_messages"),
+                "structured_signal_messages": profile_dict.get("structured_signal_messages"),
+                "management_messages": profile_dict.get("management_messages"),
+                "interpretation_context": interpretation,
+                "language": {
+                    "cadence_bucket": language.get("cadence_bucket"),
+                    "sequence_bucket": language.get("sequence_bucket"),
+                    "entry_bucket": language.get("entry_bucket"),
+                    "order_bucket": language.get("order_bucket"),
+                    "management_bucket": language.get("management_bucket"),
+                    "traits": language.get("traits") or {},
+                    "grammar_examples_masked": language.get("grammar_examples_masked") or {},
+                },
+                "performance": performance,
+            }
+
+        intelligence = None
+        if any(
+            candidate.get(key) is not None
+            for key in (
+                "provider_intelligence_fingerprint",
+                "provider_intelligence_adaptation",
+                "provider_intelligence_governance",
+            )
+        ):
+            intelligence = {
+                "contract_version": candidate.get("provider_intelligence_contract"),
+                "fingerprint": candidate.get("provider_intelligence_fingerprint") or {},
+                "adaptation": candidate.get("provider_intelligence_adaptation") or {},
+                "governance": candidate.get("provider_intelligence_governance") or {},
+            }
+        return profile_summary, intelligence
+
+    @staticmethod
+    def _attached_market_context(candidate: dict[str, Any]) -> dict[str, Any] | None:
+        if candidate.get("context_signal_id") is None:
+            return None
+        regime = candidate.get("attached_regime_json") or {}
+        labels = regime.get("labels") if isinstance(regime, dict) else {}
+        labels = labels if isinstance(labels, dict) else {}
+        trend_evidence = (
+            ((regime.get("rule_evidence") or {}).get("trend_structure") or {})
+            if isinstance(regime, dict)
+            else {}
+        )
+        data_quality = candidate.get("attached_data_quality_json") or {}
+        data_quality = data_quality if isinstance(data_quality, dict) else {}
+        return {
+            "source": "immutable_signal_attachment",
+            "as_of_utc": (
+                candidate["attached_context_as_of_utc"].isoformat()
+                if candidate.get("attached_context_as_of_utc") is not None
+                else None
+            ),
+            "context_lag_seconds": candidate.get("attached_context_lag_seconds"),
+            "session": labels.get("session"),
+            "trend_structure": labels.get("trend_structure"),
+            "trend_by_timeframe": trend_evidence.get("directions"),
+            "volatility_band": labels.get("volatility_band"),
+            "event_timing": labels.get("event_timing"),
+            "quote_freshness": data_quality.get("quote_freshness"),
+            "quote_state": data_quality.get("quote_state"),
+            "market": candidate.get("attached_market_json") or {},
+        }
+
+    async def _prefetch_evidence(
+        self, *, signal_posted_at, market_context: dict[str, Any] | None
+    ) -> tuple[dict[str, Any] | None, int]:
+        evidence: dict[str, Any] = {}
+        calls = 0
+        if self._candle_client is not None:
+            evidence["m15_structure"] = await fetch_candle_summary(
+                self._candle_client,
+                as_of=signal_posted_at,
+                timeframe_minutes=15,
+                lookback_count=8,
+            )
+            calls += 1
+            trend = str((market_context or {}).get("trend_structure") or "unknown").lower()
+            if trend in {"mixed", "range", "unknown", "none"}:
+                evidence["h1_structure"] = await fetch_candle_summary(
+                    self._candle_client,
+                    as_of=signal_posted_at,
+                    timeframe_minutes=60,
+                    lookback_count=6,
+                )
+                calls += 1
+
+        event_timing = str((market_context or {}).get("event_timing") or "unknown").lower()
+        if self._calendar_client is not None and event_timing in {"unknown", "blocked", "none", ""}:
+            evidence["nearby_high_impact_events"] = await fetch_calendar_summary(
+                self._calendar_client,
+                as_of=signal_posted_at,
+                hours_before=6,
+                hours_after=6,
+                min_impact="high",
+            )
+            calls += 1
+
+        return (evidence or None), calls
+
     async def _fetch_market_context(self, signal_posted_at) -> dict | None:
         """Best-effort only, on two independent sources that either may or may not be
         configured: regime/session context from AidyContextClient, and -- per the owner's
@@ -299,7 +503,28 @@ class AidyReasoningRunner:
         candidates = await asyncio.to_thread(self._select, limit)
         summary.selected = len(candidates)
         for candidate in candidates:
-            market_context = await self._fetch_market_context(candidate["signal_posted_at"])
+            market_context = self._attached_market_context(candidate)
+            if market_context is None:
+                market_context = await self._fetch_market_context(candidate["signal_posted_at"])
+            elif self._calendar_client is not None:
+                try:
+                    day_events = await fetch_todays_scheduled_events(
+                        self._calendar_client, as_of=candidate["signal_posted_at"]
+                    )
+                    if day_events is not None:
+                        market_context["todays_scheduled_events"] = day_events
+                except Exception:
+                    logger.warning(
+                        "AIDY attached-context day map failed as_of=%s",
+                        candidate["signal_posted_at"],
+                        exc_info=True,
+                    )
+
+            provider_profile, provider_intelligence = self._provider_brain(candidate)
+            supplemental_evidence, preflight_calls = await self._prefetch_evidence(
+                signal_posted_at=candidate["signal_posted_at"],
+                market_context=market_context,
+            )
             context = SignalContext(
                 decision_id=str(candidate["decision_id"]),
                 provider_name=str(candidate["provider_name"]),
@@ -324,6 +549,16 @@ class AidyReasoningRunner:
                     else None
                 ),
                 market_context=market_context,
+                provider_intelligence=provider_intelligence,
+                provider_profile=provider_profile,
+                recent_messages=list(candidate.get("recent_messages") or []),
+                self_calibration=(
+                    dict(candidate["self_calibration"])
+                    if isinstance(candidate.get("self_calibration"), dict)
+                    else None
+                ),
+                supplemental_evidence=supplemental_evidence,
+                preflight_evidence_calls=preflight_calls,
             )
             tool_schemas, tool_executor = self._tools_for(candidate["signal_posted_at"])
             try:
@@ -351,8 +586,16 @@ class AidyReasoningRunner:
                 "estimated_cost_usd": annotation.estimated_cost_usd,
                 "latency_ms": annotation.latency_ms,
                 "market_context_available": market_context is not None,
+                "provider_context_available": (
+                    provider_profile is not None or provider_intelligence is not None
+                ),
+                "provider_profile_version_no": candidate.get("provider_profile_version_no"),
                 "request_count": annotation.request_count,
                 "tool_calls_made": annotation.tool_calls_made,
+                "preflight_evidence_calls": annotation.preflight_evidence_calls,
+                "shadow_action": annotation.shadow_action,
+                "shadow_risk_multiplier": annotation.risk_multiplier,
+                "shadow_action_reason": annotation.action_reason,
             }
             if await asyncio.to_thread(self._persist, row):
                 summary.record(annotation.lean)

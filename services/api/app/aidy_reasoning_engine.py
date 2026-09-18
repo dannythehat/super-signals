@@ -26,8 +26,8 @@ from typing import Any
 
 import httpx
 
-MODEL_VERSION = "aidy_reasoning_engine_v3"
-PROMPT_VERSION = "aidy_reasoning_prompt_v4"
+MODEL_VERSION = "aidy_reasoning_engine_v4"
+PROMPT_VERSION = "aidy_reasoning_prompt_v5"
 
 # Bounded on purpose: each round trip is a real OpenAI request, so this caps both cost and
 # how long one signal can take to reason about, not just how many timeframes/hours it may
@@ -124,17 +124,32 @@ REASONING_SCHEMA: dict[str, Any] = {
         "confidence": {"type": "number", "minimum": 0, "maximum": 1},
         "rationale": {"type": "string"},
         "key_factors": {"type": "array", "items": {"type": "string"}, "maxItems": 5},
+        "shadow_action": {
+            "type": "string",
+            "enum": ["take", "reduce", "hold", "reject", "need_more_evidence"],
+        },
+        "risk_multiplier": {"type": "number", "minimum": 0, "maximum": 1},
+        "action_reason": {"type": "string"},
     },
-    "required": ["lean", "confidence", "rationale", "key_factors"],
+    "required": [
+        "lean",
+        "confidence",
+        "rationale",
+        "key_factors",
+        "shadow_action",
+        "risk_multiplier",
+        "action_reason",
+    ],
 }
 
 _SYSTEM_INSTRUCTIONS = """You are AIDY, reasoning about one Gold (XAUUSD) trade signal that a
 deterministic rule engine already approved -- either because the posting provider's own
 recorded track record (win rate, average P&L across its resolved trades so far) cleared the
-bar, or because it has too little history yet for that to mean anything. You are not deciding
-whether to trade it -- that decision already happened and does not change, and a good overall
-track record does not excuse a specific bad signal. Your only job is to read the signal's own
-numeric geometry (entry, stop loss, take profits) and say whether it looks like a coherent,
+bar, or because it has too little history yet for that to mean anything. The production
+decision already happened and your output cannot change it. Your job is to independently assess
+this specific signal and produce a shadow-only final action for counterfactual testing; a good
+overall track record does not excuse a specific bad signal. Start with the signal's own
+numeric geometry (entry, stop loss, take profits) and decide whether it looks like a coherent,
 disciplined setup or a careless one: is the stop distance sane relative to entry, is the
 reward-to-risk ratio reasonable, are the take profits ordered and plausible, does anything look
 internally inconsistent (e.g. a stop on the wrong side of entry for the stated direction).
@@ -192,8 +207,31 @@ market_context's event_timing is unknown or you want to check whether a specific
 USD event sits close enough to this signal to add real holding risk. A forecast is a public
 consensus number known in advance, not a prediction of your own -- report it as such.
 
-Never invent facts not present in the signal, the fingerprint, market_context, or any candles
-or calendar events you fetched.
+You may also be given provider_intelligence, provider_profile, recent_messages and
+self_calibration. These are the provider-specific brain. Use them to understand this provider's
+normal message sequence, vocabulary, edit/reply behaviour, entry/order style, management habits,
+side/session performance and how your own earlier agree/caution/disagree calls performed once
+their outcomes resolved. recent_messages are strictly messages posted no later than this signal,
+so use sequence/context but never import a price or instruction from an older message unless the
+current signal or direct reply semantics actually make that linkage legitimate.
+
+supplemental_evidence may contain point-in-time candle/calendar evidence fetched before the model
+call. Treat it exactly like a successful tool result: real evidence available at this signal's
+timestamp, not hindsight. If evidence is missing or marked unavailable, lower confidence rather
+than guessing.
+
+In addition to lean, produce a SHADOW-ONLY final action. This action has no broker authority.
+take means the valid signal would be accepted at normal configured risk; reduce means it would be
+accepted at smaller risk and risk_multiplier must be between 0 and 1; hold means wait rather than
+enter immediately; reject means the setup should not be taken; need_more_evidence means the
+available evidence is too incomplete to make a responsible call. For take use risk_multiplier=1,
+and for hold/reject/need_more_evidence use risk_multiplier=0. Do not use provider reputation alone
+to reject a coherent signal, and do not override malformed geometry or missing evidence merely
+because a provider has historically performed well.
+
+Never invent facts not present in the signal, the fingerprint, provider intelligence/profile,
+recent messages, self calibration, market_context, supplemental evidence, or any candles/calendar
+events you fetched.
 lean=agree means the geometry looks sane and disciplined. lean=caution means it is workable
 but has a real flaw worth noting -- including a signal that fights a clear, multi-timeframe-
 confirmed trend, when market_context makes that visible. lean=disagree means the geometry
@@ -219,6 +257,12 @@ class SignalContext:
     trades_resolved: int
     provider_fingerprint_summary: str | None = None
     market_context: dict[str, Any] | None = None
+    provider_intelligence: dict[str, Any] | None = None
+    provider_profile: dict[str, Any] | None = None
+    recent_messages: list[dict[str, Any]] | None = None
+    self_calibration: dict[str, Any] | None = None
+    supplemental_evidence: dict[str, Any] | None = None
+    preflight_evidence_calls: int = 0
 
 
 @dataclass(frozen=True, slots=True)
@@ -235,6 +279,10 @@ class ReasoningAnnotation:
     latency_ms: int
     request_count: int = 1
     tool_calls_made: int = 0
+    preflight_evidence_calls: int = 0
+    shadow_action: str = "need_more_evidence"
+    risk_multiplier: float = 0.0
+    action_reason: str = ""
 
 
 ToolExecutor = Callable[[str, dict[str, Any]], Awaitable[dict[str, Any]]]
@@ -258,6 +306,11 @@ def _prompt_payload(context: SignalContext) -> dict[str, Any]:
         "deterministic_decision_reasons": context.decision_reasons,
         "provider_fingerprint": context.provider_fingerprint_summary,
         "market_context": context.market_context,
+        "provider_intelligence": context.provider_intelligence,
+        "provider_profile": context.provider_profile,
+        "recent_messages": context.recent_messages,
+        "self_calibration": context.self_calibration,
+        "supplemental_evidence": context.supplemental_evidence,
     }
 
 
@@ -397,6 +450,18 @@ class AidyReasoningEngine:
         confidence = float(parsed["confidence"])
         if not 0.0 <= confidence <= 1.0:
             raise AidyReasoningUnavailable("aidy_reasoning_confidence_invalid")
+        shadow_action = str(parsed["shadow_action"])
+        if shadow_action not in {"take", "reduce", "hold", "reject", "need_more_evidence"}:
+            raise AidyReasoningUnavailable("aidy_reasoning_shadow_action_invalid")
+        risk_multiplier = float(parsed["risk_multiplier"])
+        if not 0.0 <= risk_multiplier <= 1.0:
+            raise AidyReasoningUnavailable("aidy_reasoning_risk_multiplier_invalid")
+        if shadow_action == "take":
+            risk_multiplier = 1.0
+        elif shadow_action in {"hold", "reject", "need_more_evidence"}:
+            risk_multiplier = 0.0
+        elif shadow_action == "reduce" and not 0.0 < risk_multiplier < 1.0:
+            raise AidyReasoningUnavailable("aidy_reasoning_reduce_multiplier_invalid")
 
         estimated_cost = (
             Decimal(total_input_tokens) * _USD_PER_INPUT_TOKEN
@@ -416,6 +481,10 @@ class AidyReasoningEngine:
             latency_ms=latency_ms,
             request_count=request_count,
             tool_calls_made=tool_calls_made,
+            preflight_evidence_calls=context.preflight_evidence_calls,
+            shadow_action=shadow_action,
+            risk_multiplier=risk_multiplier,
+            action_reason=str(parsed["action_reason"])[:1000],
         )
 
     @staticmethod
