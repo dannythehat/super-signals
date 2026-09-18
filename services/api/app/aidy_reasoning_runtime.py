@@ -17,6 +17,7 @@ import os
 from sqlalchemy.orm import Session, sessionmaker
 
 from app.aidy_context_client import AidyContextClient
+from app.aidy_economic_calendar_client import EconomicCalendarClient
 from app.aidy_market_client import AidyMarketClient
 from app.aidy_reasoning_engine import AidyReasoningEngine
 from app.aidy_reasoning_runner import AidyReasoningRunner
@@ -94,6 +95,7 @@ class AidyReasoningRuntime:
             ),
             context_client=AidyContextClient.from_environment(),
             candle_client=AidyMarketClient.from_environment(),
+            calendar_client=EconomicCalendarClient.from_environment(),
         )
         self._task = asyncio.create_task(self._run(runner), name="super-signals-aidy-reasoning")
         logger.info("AIDY reasoning engine loop started interval=%ss", self._interval_seconds)

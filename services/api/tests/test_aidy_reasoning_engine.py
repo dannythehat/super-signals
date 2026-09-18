@@ -15,7 +15,10 @@ import httpx
 import pytest
 
 from app.aidy_reasoning_engine import (
+    CALENDAR_TOOL_NAME,
+    CALENDAR_TOOL_SCHEMA,
     CANDLE_TOOL_NAME,
+    CANDLE_TOOL_SCHEMA,
     AidyReasoningEngine,
     AidyReasoningUnavailable,
     SignalContext,
@@ -192,7 +195,9 @@ def test_a_tool_call_is_executed_and_its_result_fed_back() -> None:
         executor_calls.append((name, arguments))
         return {"timeframe_minutes": 15, "candles": [{"close": "2405.00"}]}
 
-    annotation = asyncio.run(engine.reason(_context(), tool_executor=executor))
+    annotation = asyncio.run(
+        engine.reason(_context(), tool_executor=executor, tool_schemas=[CANDLE_TOOL_SCHEMA])
+    )
 
     assert executor_calls == [
         (CANDLE_TOOL_NAME, {"timeframe_minutes": 15, "lookback_count": 5})
@@ -232,7 +237,9 @@ def test_tool_use_is_bounded_and_the_final_round_never_offers_tools() -> None:
     async def executor(name: str, arguments: dict) -> dict:
         return {"ok": True}
 
-    annotation = asyncio.run(engine.reason(_context(), tool_executor=executor))
+    annotation = asyncio.run(
+        engine.reason(_context(), tool_executor=executor, tool_schemas=[CANDLE_TOOL_SCHEMA])
+    )
 
     assert len(requests_seen) == 3
     assert requests_seen[0].get("tools") and requests_seen[1].get("tools")
@@ -254,7 +261,65 @@ def test_a_failed_tool_fetch_result_is_still_fed_back_not_raised() -> None:
     async def failing_executor(name: str, arguments: dict) -> dict:
         return {"error": "candle_fetch_failed:TimeoutError"}
 
-    annotation = asyncio.run(engine.reason(_context(), tool_executor=failing_executor))
+    annotation = asyncio.run(
+        engine.reason(_context(), tool_executor=failing_executor, tool_schemas=[CANDLE_TOOL_SCHEMA])
+    )
 
     assert annotation.lean == "agree"
     assert annotation.tool_calls_made == 1
+
+
+def test_multiple_tools_can_be_offered_and_the_model_may_call_either() -> None:
+    tool_call = _function_call_response(
+        name=CALENDAR_TOOL_NAME,
+        arguments={"hours_before": 6, "hours_after": 24, "min_impact": "high"},
+    )
+    requests_seen: list[dict] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content)
+        requests_seen.append(body)
+        if len(requests_seen) == 1:
+            return httpx.Response(200, json=tool_call, request=request)
+        return httpx.Response(200, json=_message_response(_ANNOTATION), request=request)
+
+    engine = AidyReasoningEngine(api_key="test-key", transport=httpx.MockTransport(handler))
+    calls: list[tuple[str, dict]] = []
+
+    async def executor(name: str, arguments: dict) -> dict:
+        calls.append((name, arguments))
+        return {"events": []}
+
+    asyncio.run(
+        engine.reason(
+            _context(),
+            tool_executor=executor,
+            tool_schemas=[CANDLE_TOOL_SCHEMA, CALENDAR_TOOL_SCHEMA],
+        )
+    )
+
+    assert calls == [
+        (CALENDAR_TOOL_NAME, {"hours_before": 6, "hours_after": 24, "min_impact": "high"})
+    ]
+    offered_names = {tool["name"] for tool in requests_seen[0]["tools"]}
+    assert offered_names == {CANDLE_TOOL_NAME, CALENDAR_TOOL_NAME}
+
+
+def test_no_schemas_with_an_executor_still_never_offers_tools() -> None:
+    """An executor alone can't honour a call without the model ever being told the tool
+    exists -- both tool_executor and tool_schemas must be present for tools to be offered."""
+    captured: list[dict] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured.append(json.loads(request.content))
+        return httpx.Response(200, json=_message_response(_ANNOTATION), request=request)
+
+    engine = AidyReasoningEngine(api_key="test-key", transport=httpx.MockTransport(handler))
+
+    async def executor(name: str, arguments: dict) -> dict:
+        raise AssertionError("must never be called")
+
+    asyncio.run(engine.reason(_context(), tool_executor=executor, tool_schemas=None))
+
+    assert len(captured) == 1
+    assert "tools" not in captured[0]
