@@ -82,6 +82,7 @@ _SELECTABLE = """
            ctx.regime_json AS attached_regime_json,
            ctx.data_quality_json AS attached_data_quality_json,
            ctx.market_json AS attached_market_json,
+           ctx.gold_state_json AS attached_gold_state_json,
            recent.messages_json AS recent_messages,
            calibration.calibration_json AS self_calibration
     FROM aidy_decisions d
@@ -116,7 +117,7 @@ _SELECTABLE = """
     ) intel ON true
     LEFT JOIN LATERAL (
         SELECT x.signal_id,x.aidy_context_as_of_utc,x.aidy_context_lag_seconds,
-               x.session_json,x.regime_json,x.data_quality_json,x.market_json
+               x.session_json,x.regime_json,x.data_quality_json,x.market_json,x.gold_state_json
         FROM provider_signal_context_attachments x
         WHERE (o.signal_id IS NOT NULL AND x.signal_id=o.signal_id)
            OR x.message_id=o.message_id
@@ -411,6 +412,7 @@ class AidyReasoningRunner:
             "quote_freshness": data_quality.get("quote_freshness"),
             "quote_state": data_quality.get("quote_state"),
             "market": candidate.get("attached_market_json") or {},
+            "gold_state": candidate.get("attached_gold_state_json") or {},
         }
 
     async def _prefetch_evidence(
