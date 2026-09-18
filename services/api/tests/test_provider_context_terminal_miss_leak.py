@@ -158,6 +158,7 @@ def test_startup_drain_counts_terminal_progress_without_changing_live_routing() 
     source = inspect.getsource(AidyShadowRuntime._run)
     assert "terminal_misses = context_resolver.last_terminal_misses" in source
     assert "processed > 0 or attached > 0 or terminal_misses > 0" in source
-    assert "cannot block either market resolution or live signal routing" in source
-    assert "broker" in source.lower()
+    assert "context_resolver.resolve_once()" in source
+    assert source.index("context_resolver.resolve_once()") < source.index("market_resolver.resolve_once()")
+    assert "broker" not in source.lower()
     assert "execution_dispatch" not in source
