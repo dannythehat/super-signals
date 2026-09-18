@@ -89,6 +89,7 @@ _ANNOTATION = {
     "shadow_action": "take",
     "risk_multiplier": 1.0,
     "action_reason": "The setup is coherent enough to take at configured risk.",
+    "provider_claim_refs": [],
 }
 
 
@@ -337,3 +338,95 @@ def test_system_instructions_require_candles_for_ambiguous_or_countertrend_struc
     assert "trend_structure is mixed/range/unknown" in instructions
     assert "when the signal runs against a clear multi-timeframe trend" in instructions
     assert "Do not call it merely to" in instructions
+
+
+def test_valid_provider_claim_ref_is_preserved() -> None:
+    claim = {
+        "id": "provider.performance.side.SELL",
+        "kind": "provider_side_performance",
+        "source": "provider_profile",
+        "path": "provider_profile.performance.side_buckets.SELL",
+        "value": {"trades": 20, "wins": 15, "losses": 5, "win_rate_percent": 75.0},
+        "sample_n": 20,
+        "version": 12,
+        "as_of_utc": "2026-09-18T12:00:00+00:00",
+    }
+    context = replace(_context(), provider_evidence_claims=[claim])
+    payload = {**_ANNOTATION, "provider_claim_refs": [claim["id"]]}
+    engine = AidyReasoningEngine(
+        api_key="test-key", transport=_scripted_transport([_message_response(payload)])
+    )
+
+    annotation = asyncio.run(engine.reason(context))
+
+    assert annotation.provider_claim_refs == ("provider.performance.side.SELL",)
+
+
+def test_model_cannot_reference_provider_evidence_that_does_not_exist() -> None:
+    payload = {**_ANNOTATION, "provider_claim_refs": ["provider.performance.side.BUY"]}
+    engine = AidyReasoningEngine(
+        api_key="test-key", transport=_scripted_transport([_message_response(payload)])
+    )
+
+    with pytest.raises(AidyReasoningUnavailable, match="aidy_reasoning_provider_claim_invalid"):
+        asyncio.run(engine.reason(_context()))
+
+
+def test_provider_history_cannot_leak_into_free_text() -> None:
+    claim = {
+        "id": "provider.performance.side.SELL",
+        "kind": "provider_side_performance",
+        "source": "provider_profile",
+        "path": "provider_profile.performance.side_buckets.SELL",
+        "value": {"trades": 20, "wins": 15, "losses": 5, "win_rate_percent": 75.0},
+        "sample_n": 20,
+        "version": 12,
+        "as_of_utc": "2026-09-18T12:00:00+00:00",
+    }
+    context = replace(_context(), provider_evidence_claims=[claim])
+    payload = {
+        **_ANNOTATION,
+        "rationale": "The provider is historically stronger on SELL.",
+        "provider_claim_refs": [claim["id"]],
+    }
+    engine = AidyReasoningEngine(
+        api_key="test-key", transport=_scripted_transport([_message_response(payload)])
+    )
+
+    with pytest.raises(AidyReasoningUnavailable, match="aidy_reasoning_provider_claim_invalid"):
+        asyncio.run(engine.reason(context))
+
+
+def test_prompt_sends_atomic_claims_not_raw_provider_history() -> None:
+    captured: list[dict] = []
+    claim = {
+        "id": "provider.performance.side.SELL",
+        "kind": "provider_side_performance",
+        "source": "provider_profile",
+        "path": "provider_profile.performance.side_buckets.SELL",
+        "value": {"trades": 20, "wins": 15, "losses": 5, "win_rate_percent": 75.0},
+        "sample_n": 20,
+        "version": 12,
+        "as_of_utc": "2026-09-18T12:00:00+00:00",
+    }
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured.append(json.loads(request.content))
+        return httpx.Response(200, json=_message_response(_ANNOTATION), request=request)
+
+    context = replace(
+        _context(),
+        provider_evidence_claims=[claim],
+        provider_profile={"performance": {"invented": "must not leave the process"}},
+        provider_intelligence={"governance": {"invented": "must not leave the process"}},
+        provider_fingerprint_summary="legacy unstructured fingerprint must not be sent",
+    )
+    engine = AidyReasoningEngine(api_key="test-key", transport=httpx.MockTransport(handler))
+
+    asyncio.run(engine.reason(context))
+
+    sent = json.loads(captured[0]["input"][0]["content"])
+    assert sent["provider_evidence_claims"] == [claim]
+    assert "provider_profile" not in sent
+    assert "provider_intelligence" not in sent
+    assert "provider_fingerprint" not in sent
