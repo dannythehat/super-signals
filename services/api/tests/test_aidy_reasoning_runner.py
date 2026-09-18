@@ -55,7 +55,7 @@ class FakeEngine:
         if self.calls is None:
             self.calls = []
 
-    def reason(self, context: SignalContext) -> ReasoningAnnotation:
+    async def reason(self, context: SignalContext, *, tool_executor=None) -> ReasoningAnnotation:
         self.calls.append(context)
         if self.should_fail:
             raise AidyReasoningUnavailable("forced_failure")
@@ -91,7 +91,9 @@ def _fake_context(*, as_of: datetime) -> AidyCanonicalContext:
                 "event_timing": "clear_current_window",
             },
             "rule_evidence": {
-                "trend_structure": {"directions": {"M15": "bullish", "H1": "bullish", "H4": "bullish"}}
+                "trend_structure": {
+                    "directions": {"M15": "bullish", "H1": "bullish", "H4": "bullish"}
+                }
             },
         },
         data_quality={"quote_freshness": "fresh", "quote_state": "known"},
@@ -402,7 +404,7 @@ def test_market_context_is_fetched_and_passed_to_the_engine_when_available(
     fake_engine = FakeEngine()
     market_client = FakeMarketClient()
     runner = AidyReasoningRunner(
-        session_factory, engine=fake_engine, budget=_WIDE_BUDGET, market_client=market_client
+        session_factory, engine=fake_engine, budget=_WIDE_BUDGET, context_client=market_client
     )
     summary = asyncio.run(runner.run())
 
@@ -431,9 +433,11 @@ def test_a_stale_or_failed_market_context_lookup_never_blocks_reasoning(
     )
 
     fake_engine = FakeEngine()
-    stale_client = FakeMarketClient(fail_with=AidyContextTerminalMiss("pit_context_stale", payload={}))
+    stale_client = FakeMarketClient(
+        fail_with=AidyContextTerminalMiss("pit_context_stale", payload={})
+    )
     runner = AidyReasoningRunner(
-        session_factory, engine=fake_engine, budget=_WIDE_BUDGET, market_client=stale_client
+        session_factory, engine=fake_engine, budget=_WIDE_BUDGET, context_client=stale_client
     )
     summary = asyncio.run(runner.run())
 
