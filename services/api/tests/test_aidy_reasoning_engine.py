@@ -323,3 +323,12 @@ def test_no_schemas_with_an_executor_still_never_offers_tools() -> None:
 
     assert len(captured) == 1
     assert "tools" not in captured[0]
+
+
+def test_system_instructions_require_candles_for_ambiguous_or_countertrend_structure() -> None:
+    from app import aidy_reasoning_engine as module
+
+    instructions = module._SYSTEM_INSTRUCTIONS
+    assert "trend_structure is mixed/range/unknown" in instructions
+    assert "signal runs against a clear multi-timeframe trend" in instructions
+    assert "Do not call it merely to" in instructions
