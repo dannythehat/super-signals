@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import os
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -7,6 +8,10 @@ from typing import Any
 from urllib.parse import urlencode
 
 import httpx
+
+_CONTEXT_RETRY_ATTEMPTS = 4
+_CONTEXT_RETRY_BASE_SECONDS = 0.25
+_CONTEXT_RETRY_STATUS_CODES = {429, 500, 502, 503, 504}
 
 
 def _utc_strict(value: datetime | str, *, field: str) -> datetime:
@@ -84,34 +89,58 @@ class AidyContextClient:
             "User-Agent": "SuperSignals-ProviderLab-AIDY-Context/1.0",
         }
 
+    async def _get_with_retry(self, *, url: str) -> httpx.Response:
+        """Retry transient transport/server failures without weakening PIT validation."""
+        timeout = httpx.Timeout(self._timeout_seconds)
+        async with httpx.AsyncClient(timeout=timeout) as client:
+            for attempt in range(_CONTEXT_RETRY_ATTEMPTS):
+                try:
+                    response = await client.get(url, headers=self._headers())
+                except (
+                    httpx.ConnectTimeout,
+                    httpx.ConnectError,
+                    httpx.ReadTimeout,
+                    httpx.ReadError,
+                    httpx.RemoteProtocolError,
+                ):
+                    if attempt + 1 >= _CONTEXT_RETRY_ATTEMPTS:
+                        raise
+                    await asyncio.sleep(_CONTEXT_RETRY_BASE_SECONDS * (2 ** attempt))
+                    continue
+                if (
+                    response.status_code in _CONTEXT_RETRY_STATUS_CODES
+                    and attempt + 1 < _CONTEXT_RETRY_ATTEMPTS
+                ):
+                    await asyncio.sleep(_CONTEXT_RETRY_BASE_SECONDS * (2 ** attempt))
+                    continue
+                return response
+        raise RuntimeError("AIDY context retry bound exhausted.")
+
     async def fetch_context(self, *, as_of: datetime) -> AidyCanonicalContext:
         requested = _utc_strict(as_of, field="as_of")
         query = urlencode([("as_of", requested.isoformat())])
-        async with httpx.AsyncClient(timeout=httpx.Timeout(self._timeout_seconds)) as client:
-            response = await client.get(
-                f"{self._base_url}/provider/context?{query}",
-                headers=self._headers(),
+        response = await self._get_with_retry(
+            url=f"{self._base_url}/provider/context?{query}"
+        )
+        error_payload: dict[str, Any] = {}
+        if response.status_code >= 400:
+            try:
+                decoded = response.json()
+            except ValueError:
+                decoded = {}
+            if isinstance(decoded, dict):
+                error_payload = decoded
+        if response.status_code == 409 and error_payload.get("error") == "pit_context_stale":
+            raise AidyContextTerminalMiss(
+                "pit_context_stale",
+                payload=error_payload,
             )
-            error_payload: dict[str, Any] = {}
-            if response.status_code >= 400:
-                try:
-                    decoded = response.json()
-                except ValueError:
-                    decoded = {}
-                if isinstance(decoded, dict):
-                    error_payload = decoded
-            if response.status_code == 409:
-                if error_payload.get("error") == "pit_context_stale":
-                    raise AidyContextTerminalMiss(
-                        "pit_context_stale",
-                        payload=error_payload,
-                    )
-            if response.status_code >= 400:
-                raise AidyContextUpstreamError(
-                    status_code=response.status_code,
-                    payload=error_payload,
-                )
-            payload = response.json()
+        if response.status_code >= 400:
+            raise AidyContextUpstreamError(
+                status_code=response.status_code,
+                payload=error_payload,
+            )
+        payload = response.json()
         if not isinstance(payload, dict) or payload.get("ok") is not True:
             raise RuntimeError("AIDY context provider returned a non-success payload.")
         if payload.get("join_eligible") is not True:
