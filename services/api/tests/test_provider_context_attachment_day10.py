@@ -142,10 +142,10 @@ def test_day10_context_failures_are_isolated_from_m1_resolution() -> None:
     source = inspect.getsource(AidyShadowRuntime._run)
     market_call = source.index("market_resolver.resolve_once()")
     context_call = source.index("context_resolver.resolve_once()")
-    assert market_call < context_call
+    assert context_call < market_call
     assert source.count("except Exception") >= 2
     assert "context attachment loop failed safely" in source
-    assert "cannot block either market resolution or live signal routing" in source
+    assert "never held behind a historical replay backlog" in source
 
 
 def test_day10_runtime_is_app_owned_not_broker_owned() -> None:
