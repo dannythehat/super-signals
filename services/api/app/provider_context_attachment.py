@@ -26,7 +26,7 @@ from app.provider_aidy_context_join import ProviderContextJoinBlocked, join_prov
 
 logger = logging.getLogger(__name__)
 
-CONTRACT_VERSION = "provider_aidy_context_attachment_v1"
+CONTRACT_VERSION = "provider_aidy_context_attachment_v2"
 TERMINAL_MISS_CONTRACT_VERSION = "provider_aidy_context_terminal_miss_v1"
 _DEFAULT_BATCH_LIMIT = 50
 
@@ -169,6 +169,7 @@ class ProviderContextAttachmentResolver:
                 "regime": aidy.regime,
                 "data_quality": aidy.data_quality,
                 "market": aidy.market,
+                "gold_state": aidy.gold_state,
                 "provenance": aidy.provenance,
             },
             "point_in_time_clean": True,
@@ -190,7 +191,7 @@ class ProviderContextAttachmentResolver:
                         provider_profile_effective_at,aidy_requested_as_of_utc,
                         aidy_context_as_of_utc,aidy_context_lag_seconds,aidy_context_hash,
                         aidy_snapshot_id,aidy_snapshot_digest,aidy_snapshot_archive_key,
-                        session_json,regime_json,data_quality_json,market_json,provenance_json,
+                        session_json,regime_json,data_quality_json,market_json,gold_state_json,provenance_json,
                         attachment_payload,attachment_digest,contract_version
                     ) VALUES (
                         :id,:signal_id,:source_id,:message_id,:signal_posted_at,
@@ -198,7 +199,8 @@ class ProviderContextAttachmentResolver:
                         :snapshot_id,:snapshot_digest,:snapshot_archive_key,
                         CAST(:session_json AS jsonb),CAST(:regime_json AS jsonb),
                         CAST(:data_quality_json AS jsonb),CAST(:market_json AS jsonb),
-                        CAST(:provenance_json AS jsonb),CAST(:payload AS jsonb),:digest,:contract_version
+                        CAST(:gold_state_json AS jsonb),CAST(:provenance_json AS jsonb),
+                        CAST(:payload AS jsonb),:digest,:contract_version
                     )
                     ON CONFLICT (signal_id) DO NOTHING
                     RETURNING id
@@ -224,6 +226,7 @@ class ProviderContextAttachmentResolver:
                     "regime_json": _canonical(aidy.regime),
                     "data_quality_json": _canonical(aidy.data_quality),
                     "market_json": _canonical(aidy.market),
+                    "gold_state_json": _canonical(aidy.gold_state),
                     "provenance_json": _canonical(aidy.provenance),
                     "payload": _canonical(payload),
                     "digest": digest,
