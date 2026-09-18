@@ -19,6 +19,7 @@ import json
 import logging
 import os
 from dataclasses import dataclass, field
+from typing import Any
 from uuid import uuid4
 
 from sqlalchemy import create_engine, text
@@ -27,7 +28,10 @@ from sqlalchemy.orm import Session, sessionmaker
 from app.aidy_context_client import AidyCanonicalContext, AidyContextClient, AidyContextTerminalMiss
 from app.aidy_economic_calendar_client import EconomicCalendarClient
 from app.aidy_market_client import AidyMarketClient
-from app.aidy_reasoning_calendar_tools import build_calendar_tool_executor
+from app.aidy_reasoning_calendar_tools import (
+    build_calendar_tool_executor,
+    fetch_todays_scheduled_events,
+)
 from app.aidy_reasoning_engine import (
     CALENDAR_TOOL_NAME,
     CALENDAR_TOOL_SCHEMA,
@@ -222,23 +226,43 @@ class AidyReasoningRunner:
         }
 
     async def _fetch_market_context(self, signal_posted_at) -> dict | None:
-        """Best-effort only: a signal reasoned long after it posted has no live context left
-        to fetch (AidyContextTerminalMiss(pit_context_stale)), and any other lookup failure
-        must never block reasoning about the signal's own geometry -- fall back to None,
-        exactly the no-context path this engine already had before market awareness existed.
+        """Best-effort only, on two independent sources that either may or may not be
+        configured: regime/session context from AidyContextClient, and -- per the owner's
+        explicit direction to have AIDY 'map the trading day out... refer to it throughout
+        the day' -- today's scheduled high/medium-impact calendar events, folded in as a
+        standing field rather than left to the model to decide whether to ask for. A signal
+        reasoned long after it posted has no live context left to fetch for either
+        (AidyContextTerminalMiss(pit_context_stale) for the first, an old-signal refusal for
+        the second), and any other lookup failure must never block reasoning about the
+        signal's own geometry -- each source degrades independently, never both at once just
+        because one failed.
         """
-        if self._context_client is None:
-            return None
-        try:
-            context = await self._context_client.fetch_context(as_of=signal_posted_at)
-        except AidyContextTerminalMiss:
-            return None
-        except Exception:  # noqa: BLE001 - a context lookup must never fail the reasoning pass
-            logger.warning(
-                "AIDY market context lookup failed as_of=%s", signal_posted_at, exc_info=True
-            )
-            return None
-        return self._market_context_summary(context)
+        summary: dict[str, Any] = {}
+
+        if self._context_client is not None:
+            try:
+                context = await self._context_client.fetch_context(as_of=signal_posted_at)
+                summary.update(self._market_context_summary(context))
+            except AidyContextTerminalMiss:
+                pass
+            except Exception:  # noqa: BLE001 - a context lookup must never fail the pass
+                logger.warning(
+                    "AIDY market context lookup failed as_of=%s", signal_posted_at, exc_info=True
+                )
+
+        if self._calendar_client is not None:
+            try:
+                events = await fetch_todays_scheduled_events(
+                    self._calendar_client, as_of=signal_posted_at
+                )
+                if events is not None:
+                    summary["todays_scheduled_events"] = events
+            except Exception:  # noqa: BLE001 - a calendar lookup must never fail the pass
+                logger.warning(
+                    "AIDY day-map lookup failed as_of=%s", signal_posted_at, exc_info=True
+                )
+
+        return summary or None
 
     def _select(self, limit: int) -> list[dict]:
         with self._session_factory() as session:
