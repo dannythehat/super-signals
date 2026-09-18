@@ -80,31 +80,41 @@ class ProviderContextAttachmentResolver:
             rows = session.execute(
                 text(
                     """
-                    SELECT DISTINCT ON (t.signal_id)
-                           t.signal_id,m.source_id AS source_id,
+                    SELECT s.id AS signal_id,
+                           s.source_id AS source_id,
                            s.source_message_id AS message_id,
                            s.source_posted_at AS signal_posted_at,
-                           t.provider_profile_version_id,t.provider_profile_version_no,
-                           t.provider_profile_effective_at
-                    FROM shadow_trades t
-                    JOIN signals s ON s.id=t.signal_id
-                    JOIN messages m ON m.id=s.source_message_id
-                    WHERE t.provider_profile_pit_status='resolved'
-                      AND t.provider_profile_version_id IS NOT NULL
-                      AND t.source_id=m.source_id
-                      AND t.message_id=s.source_message_id
-                      AND t.provider_profile_effective_at <= s.source_posted_at
+                           pv.id AS provider_profile_version_id,
+                           pv.version_no AS provider_profile_version_no,
+                           pv.effective_at AS provider_profile_effective_at
+                    FROM signals s
+                    JOIN sources src ON src.id=s.source_id
+                    JOIN messages m
+                      ON m.id=s.source_message_id
+                     AND m.source_id=s.source_id
+                    JOIN LATERAL (
+                        SELECT v.id,v.version_no,v.effective_at
+                        FROM provider_research_profile_versions v
+                        WHERE v.source_id=s.source_id
+                          AND v.effective_at<=s.source_posted_at
+                        ORDER BY v.effective_at DESC,v.version_no DESC
+                        LIMIT 1
+                    ) pv ON true
+                    WHERE s.parser_status='accepted'
+                      AND s.symbol='XAUUSD'
+                      AND s.source_posted_at IS NOT NULL
+                      AND src.status IN ('testing','shadow','live','active')
                       AND NOT EXISTS (
                           SELECT 1
                           FROM provider_signal_context_attachments a
-                          WHERE a.signal_id=t.signal_id
+                          WHERE a.signal_id=s.id
                       )
                       AND NOT EXISTS (
                           SELECT 1
                           FROM provider_signal_context_terminal_misses x
-                          WHERE x.signal_id=t.signal_id
+                          WHERE x.signal_id=s.id
                       )
-                    ORDER BY t.signal_id,t.entry_index
+                    ORDER BY s.source_posted_at,s.id
                     LIMIT :limit
                     """
                 ),
