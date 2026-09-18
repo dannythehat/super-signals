@@ -101,6 +101,16 @@ class AidyDecisionRunner:
             session.execute(text(_INSERT), rows)
             session.commit()
 
+    def _evaluate_chunk(self, chunk: list[dict]) -> tuple[list[dict], list[str]]:
+        """Run synchronous DB-heavy decision evaluation outside the web event loop."""
+        rows: list[dict] = []
+        classes: list[str] = []
+        for observation in chunk:
+            result = self._engine.evaluate(observation)
+            rows.append(row_params(result))
+            classes.append(result.decision_class)
+        return rows, classes
+
     async def run(self, *, limit: int | None = None, batch_size: int = 200) -> DecisionSummary:
         observations = await asyncio.to_thread(self._select, limit)
         summary = DecisionSummary(selected=len(observations))
@@ -109,11 +119,9 @@ class AidyDecisionRunner:
 
         for start in range(0, len(observations), batch_size):
             chunk = observations[start : start + batch_size]
-            rows = []
-            for observation in chunk:
-                result = self._engine.evaluate(observation)
-                rows.append(row_params(result))
-                summary.record(result.decision_class)
+            rows, classes = await asyncio.to_thread(self._evaluate_chunk, chunk)
+            for decision_class in classes:
+                summary.record(decision_class)
             await asyncio.to_thread(self._persist, rows)
             logger.info("AIDY decisions progress %s/%s", summary.written, summary.selected)
             print(f"decided {summary.written}/{summary.selected}", flush=True)
