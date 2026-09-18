@@ -114,14 +114,17 @@ def test_day10_payload_freezes_exact_provider_and_aidy_identity_deterministicall
     assert payload["live_money_execution_allowed"] is False
 
 
-def test_day10_candidate_query_is_resolved_only_bounded_and_idempotent() -> None:
+def test_day10_candidate_query_covers_every_accepted_gold_signal_bounded_and_idempotent() -> None:
     source = inspect.getsource(ProviderContextAttachmentResolver)
-    assert "provider_profile_pit_status='resolved'" in source
+    assert "s.parser_status='accepted'" in source
+    assert "s.symbol='XAUUSD'" in source
+    assert "provider_research_profile_versions" in source
+    assert "v.effective_at<=s.source_posted_at" in source
     assert "provider_signal_context_attachments" in source
     assert "NOT EXISTS" in source
     assert "LIMIT :limit" in source
     assert "ON CONFLICT (signal_id) DO NOTHING" in source
-    assert "legacy_unresolvable" not in source
+    assert "FROM shadow_trades" not in source
 
 
 def test_day10_resolver_has_no_broker_or_execution_authority() -> None:
