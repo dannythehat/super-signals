@@ -2,8 +2,9 @@
 
 Day 10 persists only research provenance. It never calls broker/member execution paths and
 never mutates the shadow trade after enrollment. Transient AIDY lookup failures remain
-retryable; a proven historical `pit_context_stale` miss is persisted once and excluded
-from future polls because it cannot become PIT-valid later without rewriting history.
+retryable; a proven historical terminal PIT miss (`pit_context_stale` or
+`no_pit_context`) is persisted once and excluded from future polls because it cannot
+become PIT-valid later without rewriting history.
 """
 
 from __future__ import annotations
@@ -236,7 +237,7 @@ class ProviderContextAttachmentResolver:
         candidate: ContextAttachmentCandidate,
         miss: AidyContextTerminalMiss,
     ) -> bool:
-        if miss.reason != "pit_context_stale":
+        if miss.reason not in {"pit_context_stale", "no_pit_context"}:
             raise ValueError("provider_context_terminal_miss_reason_invalid")
         response_payload = dict(miss.payload)
         response_payload["error"] = miss.reason
