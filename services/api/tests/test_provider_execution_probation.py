@@ -83,20 +83,27 @@ def source_id(conn) -> UUID:
 
 
 def add_fingerprint(
-    conn, source_id: UUID, *, cohort_sample_met: bool, best_side: str | None
+    conn,
+    source_id: UUID,
+    *,
+    side_sample_met: bool,
+    best_side: str | None,
+    session_sample_met: bool = False,
 ) -> None:
     conn.execute(
         text(
             "INSERT INTO provider_trade_fingerprints "
             "(id,source_id,trades_resolved,wins,losses,geometry_sample_met,best_side,"
-            "cohort_sample_met,summary) "
-            "VALUES (:id,:source,20,12,8,false,:best_side,:cohort_met,'test summary')"
+            "side_sample_met,session_sample_met,cohort_sample_met,summary) "
+            "VALUES (:id,:source,20,12,8,false,:best_side,:side_met,:session_met,"
+            ":side_met AND :session_met,'test summary')"
         ),
         {
             "id": uuid4(),
             "source": source_id,
             "best_side": best_side,
-            "cohort_met": cohort_sample_met,
+            "side_met": side_sample_met,
+            "session_met": session_sample_met,
         },
     )
 
@@ -119,7 +126,7 @@ def test_probation_matches_the_providers_own_best_side(conn, source_id) -> None:
         text("INSERT INTO provider_execution_probation (source_id) VALUES (:source)"),
         {"source": source_id},
     )
-    add_fingerprint(conn, source_id, cohort_sample_met=True, best_side="BUY")
+    add_fingerprint(conn, source_id, side_sample_met=True, best_side="BUY")
 
     session_factory = sessionmaker(bind=conn, future=True, expire_on_commit=False)
     with session_factory() as session:
@@ -139,7 +146,7 @@ def test_probation_holds_back_when_evidence_is_still_too_thin(conn, source_id) -
         text("INSERT INTO provider_execution_probation (source_id) VALUES (:source)"),
         {"source": source_id},
     )
-    add_fingerprint(conn, source_id, cohort_sample_met=False, best_side=None)
+    add_fingerprint(conn, source_id, side_sample_met=False, best_side=None)
 
     session_factory = sessionmaker(bind=conn, future=True, expire_on_commit=False)
     with session_factory() as session:
@@ -175,7 +182,7 @@ def test_a_graduated_provider_is_no_longer_restricted(conn, source_id) -> None:
         ),
         {"source": source_id},
     )
-    add_fingerprint(conn, source_id, cohort_sample_met=True, best_side="BUY")
+    add_fingerprint(conn, source_id, side_sample_met=True, best_side="BUY")
 
     session_factory = sessionmaker(bind=conn, future=True, expire_on_commit=False)
     with session_factory() as session:
@@ -210,6 +217,32 @@ def test_is_active_probation_true_only_while_listed_and_not_graduated(conn, sour
         assert is_active_probation(session, source_id=source_id) is False
 
 
+def test_a_provider_with_thin_session_spread_but_solid_side_evidence_still_graduates(
+    conn, source_id
+) -> None:
+    """Regression: GOLDHUNTER had 43 resolved trades with both BUY and SELL individually
+    well past the cohort floor, but its trades clustered into one dominant session, so the
+    fingerprint's session comparison could never be made. That used to zero out the combined
+    ``cohort_sample_met`` flag this check read, holding every signal back forever even though
+    the side evidence alone was fully sufficient. Side and session are independent axes now."""
+    from sqlalchemy.orm import sessionmaker
+
+    conn.execute(
+        text("INSERT INTO provider_execution_probation (source_id) VALUES (:source)"),
+        {"source": source_id},
+    )
+    add_fingerprint(
+        conn, source_id, side_sample_met=True, session_sample_met=False, best_side="SELL"
+    )
+
+    session_factory = sessionmaker(bind=conn, future=True, expire_on_commit=False)
+    with session_factory() as session:
+        result = check_probation_eligibility(session, source_id=source_id, side="SELL")
+
+    assert result.eligible is True
+    assert result.reason == "probation_matches_best_side"
+
+
 def test_unknown_signal_side_is_held_back_not_guessed(conn, source_id) -> None:
     from sqlalchemy.orm import sessionmaker
 
@@ -217,7 +250,7 @@ def test_unknown_signal_side_is_held_back_not_guessed(conn, source_id) -> None:
         text("INSERT INTO provider_execution_probation (source_id) VALUES (:source)"),
         {"source": source_id},
     )
-    add_fingerprint(conn, source_id, cohort_sample_met=True, best_side="BUY")
+    add_fingerprint(conn, source_id, side_sample_met=True, best_side="BUY")
 
     session_factory = sessionmaker(bind=conn, future=True, expire_on_commit=False)
     with session_factory() as session:

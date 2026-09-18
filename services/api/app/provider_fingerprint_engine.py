@@ -60,6 +60,8 @@ class ProviderFingerprint:
     worst_session: str | None
     worst_session_win_rate_pct: Decimal | None
     worst_session_trades: int | None
+    side_sample_met: bool
+    session_sample_met: bool
     cohort_sample_met: bool
     summary: str
 
@@ -140,7 +142,8 @@ def _build_summary(
     best_session_wr: Decimal | None,
     worst_session: str | None,
     worst_session_wr: Decimal | None,
-    cohort_sample_met: bool,
+    side_sample_met: bool,
+    session_sample_met: bool,
 ) -> str:
     parts: list[str] = []
     style_text = (
@@ -168,20 +171,26 @@ def _build_summary(
             )
     else:
         parts.append("Not enough resolved wins and losses yet to compare geometry honestly.")
-    if cohort_sample_met and best_side and worst_side:
+    if side_sample_met and best_side and worst_side:
         parts.append(
             f"Strongest side is {best_side} ({best_side_wr}% win rate), weakest is {worst_side} "
             f"({worst_side_wr}% win rate)."
         )
-    if cohort_sample_met and best_session and worst_session:
+    if session_sample_met and best_session and worst_session:
         parts.append(
             f"Strongest session is {best_session} ({best_session_wr}% win rate), weakest is "
             f"{worst_session} ({worst_session_wr}% win rate)."
         )
-    if not cohort_sample_met:
+    if not side_sample_met and not session_sample_met:
         parts.append(
             "Not enough resolved trades in any single side/session slice yet to call "
             "a best or worst."
+        )
+    elif not side_sample_met:
+        parts.append("Not enough resolved trades on both sides yet to call a best or worst side.")
+    elif not session_sample_met:
+        parts.append(
+            "Not enough resolved trades in more than one session yet to call a best or worst session."
         )
     parts.append("Descriptive pattern from history so far -- not a statistically certified rule.")
     return " ".join(parts)
@@ -253,20 +262,26 @@ class ProviderFingerprintEngine:
             .mappings()
             .all()
         )
-        cohort_sample_met = (
-            bool(sides) and bool(sessions_) and len(sides) >= 1 and len(sessions_) >= 1
-        )
-
         best_side = sides[0] if sides else None
         worst_side = sides[-1] if sides else None
         best_session = sessions_[0] if sessions_ else None
         worst_session = sessions_[-1] if sessions_ else None
-        # Comparing a side/session against itself is not a "best vs worst" finding.
-        cohort_sample_met = bool(
+        # Comparing a side/session against itself is not a "best vs worst" finding. Side and
+        # session are independent axes -- a provider whose trades cluster into one dominant
+        # session (or one dominant side) can still have a fully evidenced best *side*, and
+        # execution eligibility (provider_execution_probation.check_probation_eligibility)
+        # only ever needs the side answer. Gating that on session adequacy too meant a
+        # provider with a proven, sufficiently-sampled side split could never graduate past
+        # "insufficient evidence" purely because their session mix was thin -- a real case
+        # (GOLDHUNTER: 43 resolved trades, both sides well past the cohort floor, but spread
+        # thin across five sessions) that was silently blocking every paper trade.
+        side_sample_met = bool(
             best_side and worst_side and best_side["side"] != worst_side["side"]
-        ) and bool(
+        )
+        session_sample_met = bool(
             best_session and worst_session and best_session["session"] != worst_session["session"]
         )
+        cohort_sample_met = side_sample_met and session_sample_met
 
         provider_name = str(base["provider_name"])
         trading_style = str(base["trading_style"]) if base["trading_style"] else None
@@ -284,27 +299,28 @@ class ProviderFingerprintEngine:
             avg_rr_won=avg_rr_won,
             avg_rr_lost=avg_rr_lost,
             geometry_sample_met=geometry_sample_met,
-            best_side=str(best_side["side"]) if cohort_sample_met and best_side else None,
+            best_side=str(best_side["side"]) if side_sample_met and best_side else None,
             best_side_wr=Decimal(str(best_side["win_rate_pct"]))
-            if cohort_sample_met and best_side
+            if side_sample_met and best_side
             else None,
-            worst_side=str(worst_side["side"]) if cohort_sample_met and worst_side else None,
+            worst_side=str(worst_side["side"]) if side_sample_met and worst_side else None,
             worst_side_wr=Decimal(str(worst_side["win_rate_pct"]))
-            if cohort_sample_met and worst_side
+            if side_sample_met and worst_side
             else None,
             best_session=str(best_session["session"])
-            if cohort_sample_met and best_session
+            if session_sample_met and best_session
             else None,
             best_session_wr=Decimal(str(best_session["win_rate_pct"]))
-            if cohort_sample_met and best_session
+            if session_sample_met and best_session
             else None,
             worst_session=str(worst_session["session"])
-            if cohort_sample_met and worst_session
+            if session_sample_met and worst_session
             else None,
             worst_session_wr=Decimal(str(worst_session["win_rate_pct"]))
-            if cohort_sample_met and worst_session
+            if session_sample_met and worst_session
             else None,
-            cohort_sample_met=cohort_sample_met,
+            side_sample_met=side_sample_met,
+            session_sample_met=session_sample_met,
         )
 
         return ProviderFingerprint(
@@ -320,36 +336,38 @@ class ProviderFingerprintEngine:
             avg_planned_rr_won=avg_rr_won,
             avg_planned_rr_lost=avg_rr_lost,
             geometry_sample_met=geometry_sample_met,
-            best_side=str(best_side["side"]) if cohort_sample_met and best_side else None,
+            best_side=str(best_side["side"]) if side_sample_met and best_side else None,
             best_side_win_rate_pct=Decimal(str(best_side["win_rate_pct"]))
-            if cohort_sample_met and best_side
+            if side_sample_met and best_side
             else None,
-            best_side_trades=int(best_side["trades"]) if cohort_sample_met and best_side else None,
-            worst_side=str(worst_side["side"]) if cohort_sample_met and worst_side else None,
+            best_side_trades=int(best_side["trades"]) if side_sample_met and best_side else None,
+            worst_side=str(worst_side["side"]) if side_sample_met and worst_side else None,
             worst_side_win_rate_pct=Decimal(str(worst_side["win_rate_pct"]))
-            if cohort_sample_met and worst_side
+            if side_sample_met and worst_side
             else None,
             worst_side_trades=int(worst_side["trades"])
-            if cohort_sample_met and worst_side
+            if side_sample_met and worst_side
             else None,
             best_session=str(best_session["session"])
-            if cohort_sample_met and best_session
+            if session_sample_met and best_session
             else None,
             best_session_win_rate_pct=Decimal(str(best_session["win_rate_pct"]))
-            if cohort_sample_met and best_session
+            if session_sample_met and best_session
             else None,
             best_session_trades=int(best_session["trades"])
-            if cohort_sample_met and best_session
+            if session_sample_met and best_session
             else None,
             worst_session=str(worst_session["session"])
-            if cohort_sample_met and worst_session
+            if session_sample_met and worst_session
             else None,
             worst_session_win_rate_pct=Decimal(str(worst_session["win_rate_pct"]))
-            if cohort_sample_met and worst_session
+            if session_sample_met and worst_session
             else None,
             worst_session_trades=int(worst_session["trades"])
-            if cohort_sample_met and worst_session
+            if session_sample_met and worst_session
             else None,
+            side_sample_met=side_sample_met,
+            session_sample_met=session_sample_met,
             cohort_sample_met=cohort_sample_met,
             summary=summary,
         )
