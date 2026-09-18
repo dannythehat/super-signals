@@ -37,6 +37,7 @@ class AidyCanonicalContext:
     regime: dict[str, Any]
     data_quality: dict[str, Any]
     market: dict[str, Any]
+    gold_state: dict[str, Any]
     provenance: dict[str, Any]
 
 
@@ -196,8 +197,32 @@ class AidyContextClient:
         regime = context.get("regime")
         data_quality = context.get("data_quality")
         market = context.get("market")
+        gold_state = context.get("gold_state")
         if not all(isinstance(value, dict) for value in (session, regime, data_quality, market)):
             raise TypeError("aidy_context_semantic_sections_invalid")
+        if gold_state is None:
+            gold_state = {}
+        if not isinstance(gold_state, dict):
+            raise TypeError("aidy_context_gold_state_invalid")
+        if gold_state:
+            if gold_state.get("contract_version") != "aidy_provider_gold_state_v1":
+                raise ValueError("aidy_context_gold_state_contract_invalid")
+            if gold_state.get("live_money_execution_allowed") is not False:
+                raise ValueError("aidy_context_gold_state_illegal_execution_authority")
+            if gold_state.get("predictive_edge_claimed") is not False:
+                raise ValueError("aidy_context_gold_state_predictive_claim_forbidden")
+            gold_state_at = _utc_strict(gold_state.get("as_of_utc"), field="gold_state_as_of_utc")
+            if gold_state_at != context_at or gold_state_at > requested:
+                raise ValueError("aidy_context_gold_state_time_mismatch")
+            research = gold_state.get("research_surfaces")
+            if not isinstance(research, dict):
+                raise TypeError("aidy_context_gold_state_research_invalid")
+            if any(
+                isinstance(item, dict) and item.get("decision_input_allowed") is not False
+                for key, item in research.items()
+                if key in {"rates_macro", "tiered_macro_events", "cme_contract_state"}
+            ):
+                raise ValueError("aidy_context_unqualified_research_surface_enabled")
         return AidyCanonicalContext(
             requested_as_of_utc=requested,
             context_as_of_utc=context_at,
@@ -210,5 +235,6 @@ class AidyContextClient:
             regime=dict(regime),
             data_quality=dict(data_quality),
             market=dict(market),
+            gold_state=dict(gold_state),
             provenance=dict(provenance),
         )
