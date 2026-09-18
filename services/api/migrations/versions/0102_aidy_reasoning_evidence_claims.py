@@ -4,7 +4,7 @@ New forward reasoning rows persist the exact provider evidence snapshot the mode
 allowed to use plus the validated claim IDs it actually relied on. Legacy annotations
 remain intact and are explicitly labelled legacy_unvalidated rather than rewritten.
 
-Revision ID: 0102_aidy_reasoning_evidence_claims
+Revision ID: 0102_aidy_evidence_claims
 Revises: 0101_aidy_no_pit_terminal
 Create Date: 2026-09-19
 """
@@ -13,7 +13,7 @@ from collections.abc import Sequence
 
 from alembic import op
 
-revision: str = "0102_aidy_reasoning_evidence_claims"
+revision: str = "0102_aidy_evidence_claims"
 down_revision: str | None = "0101_aidy_no_pit_terminal"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
