@@ -108,6 +108,46 @@ def test_pit_stale_is_classified_before_generic_http_error(monkeypatch: pytest.M
     assert caught.value.payload["context_lag_seconds"] == 900
 
 
+
+
+def test_no_pit_context_is_terminal_before_generic_http_error(monkeypatch: pytest.MonkeyPatch) -> None:
+    class FakeResponse:
+        status_code = 404
+
+        @staticmethod
+        def json() -> dict[str, object]:
+            return {
+                "ok": False,
+                "error": "no_pit_context",
+            }
+
+        @staticmethod
+        def raise_for_status() -> None:
+            raise AssertionError("no PIT context must be terminal before raise_for_status")
+
+    class FakeAsyncClient:
+        def __init__(self, *args: object, **kwargs: object) -> None:
+            pass
+
+        async def __aenter__(self) -> "FakeAsyncClient":
+            return self
+
+        async def __aexit__(self, *args: object) -> None:
+            return None
+
+        async def get(self, *args: object, **kwargs: object) -> FakeResponse:
+            return FakeResponse()
+
+    import app.aidy_context_client as module
+
+    monkeypatch.setattr(module.httpx, "AsyncClient", FakeAsyncClient)
+    client = AidyContextClient(base_url="https://aidy.test", bearer_token="token")
+    with pytest.raises(AidyContextTerminalMiss) as caught:
+        asyncio.run(client.fetch_context(as_of=datetime(2026, 9, 7, 12, 0, tzinfo=UTC)))
+    assert caught.value.reason == "no_pit_context"
+    assert caught.value.payload["error"] == "no_pit_context"
+
+
 def test_terminal_miss_is_persisted_once_without_counting_as_retry_failure() -> None:
     candidate = _candidate()
 
