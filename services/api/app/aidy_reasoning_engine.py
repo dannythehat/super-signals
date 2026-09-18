@@ -197,6 +197,15 @@ be known yet. This is a standing map of the day, not something you asked for, so
 note when a nearby event sits close enough to this signal's own timing to add real holding
 risk, independent of whether you also call get_economic_calendar for a narrower or wider query.
 
+market_context may also include gold_state, a versioned point-in-time Gold-state dossier from
+the standalone AIDY Gold brain. Use a surface ONLY when its own decision_input_allowed field is
+true. price_liquidity contains measured session ranges, prior-period structure, breakout/
+reversion state, wick/swing structure and feed health. volatility contains realised-volatility
+and jump/continuity evidence when available. Research surfaces explicitly marked
+decision_input_allowed=false are NOT evidence for this decision; their presence documents an
+unknown/unqualified research gap. gold_state is descriptive context, not a directional edge
+claim. Never convert an UNKNOWN or research-only field into a bullish/bearish conclusion.
+
 When market_context is given, you may note whether this signal's own direction (side) runs with or
 against the current multi-timeframe trend, and whether the session or a nearby event timing
 adds real risk to holding it -- but this is supporting context for your read of the signal's
