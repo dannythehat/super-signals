@@ -1,8 +1,9 @@
 """Application-owned AIDY Provider Lab replay, context and intelligence runtime.
 
-This runtime is intentionally independent of broker credentials. M1 replay remains the
-primary research loop; Day 10 context enrichment is optional/fail-flat and may never
-prevent the existing resolver from starting.
+This runtime is intentionally independent of broker credentials. Point-in-time signal
+context and provider-intelligence refresh run before the slower M1 replay so AIDY's
+near-real-time reasoning is never held behind a historical replay backlog. Every path is
+research-only/fail-flat and may never block broker/member execution.
 """
 
 from __future__ import annotations
@@ -153,28 +154,11 @@ class AidyShadowRuntime:
             if context_client is not None and not context_probe_ready:
                 context_probe_ready = await self._probe_current_context(context_client)
 
-            try:
-                processed, market_failures = await market_resolver.resolve_once()
-            except asyncio.CancelledError:
-                raise
-            except Exception:
-                logger.exception("AIDY Provider Lab M1 resolver loop failed safely")
-                processed, market_failures = 0, 1
-
-            market_message = (
-                "AIDY Provider Lab M1 resolution "
-                f"processed={processed} failures={market_failures}"
-            )
-            print(market_message, flush=True)
-            if processed or market_failures:
-                logger.info(market_message)
-
+            # Attach immutable signal context first. M1 replay can be a long-running
+            # backlog operation, so it must never sit in front of the context needed by
+            # AIDY's near-real-time reasoning/final-shadow layer.
             attached, context_failures, terminal_misses = 0, 0, 0
             if context_resolver is not None:
-                # Context attachment is deliberately isolated from M1 replay and from
-                # all broker/member execution. Transient AIDY failures retry later;
-                # terminal PIT-stale outcomes are persisted once.
-                # They cannot block either market resolution or live signal routing.
                 try:
                     attached, context_failures = await context_resolver.resolve_once()
                     terminal_misses = context_resolver.last_terminal_misses
@@ -195,10 +179,9 @@ class AidyShadowRuntime:
                 if attached or terminal_misses or context_failures:
                     logger.info(context_message)
 
-            # B-F is a research-only consolidation pass. It writes immutable provider
-            # intelligence/data-hub evidence and has no broker, sizing or routing path.
-            # Skip it inside isolated runtime tests; the pure B-F contracts have their
-            # own unit coverage and production runs after migrations are applied.
+            # Refresh provider intelligence before the potentially slower M1 replay so
+            # reasoning can consume the freshest provider brain without waiting for a
+            # historical market-data backlog to drain.
             intelligence_snapshots = 0
             book_snapshots = 0
             if not os.getenv("PYTEST_CURRENT_TEST", "").strip():
@@ -219,6 +202,22 @@ class AidyShadowRuntime:
                         )
                         print(intelligence_message, flush=True)
                         logger.info(intelligence_message)
+
+            try:
+                processed, market_failures = await market_resolver.resolve_once()
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.exception("AIDY Provider Lab M1 resolver loop failed safely")
+                processed, market_failures = 0, 1
+
+            market_message = (
+                "AIDY Provider Lab M1 resolution "
+                f"processed={processed} failures={market_failures}"
+            )
+            print(market_message, flush=True)
+            if processed or market_failures:
+                logger.info(market_message)
 
             if draining_startup_backlog:
                 startup_pass += 1
