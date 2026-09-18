@@ -130,9 +130,17 @@ class AidyContextClient:
                 decoded = {}
             if isinstance(decoded, dict):
                 error_payload = decoded
+        terminal_reason: str | None = None
         if response.status_code == 409 and error_payload.get("error") == "pit_context_stale":
+            terminal_reason = "pit_context_stale"
+        elif response.status_code == 404 and error_payload.get("error") == "no_pit_context":
+            # AIDY has no historical context at or before this immutable signal
+            # timestamp. Retrying later cannot make a point-in-time snapshot appear
+            # without rewriting history, so record a terminal research miss once.
+            terminal_reason = "no_pit_context"
+        if terminal_reason is not None:
             raise AidyContextTerminalMiss(
-                "pit_context_stale",
+                terminal_reason,
                 payload=error_payload,
             )
         if response.status_code >= 400:
