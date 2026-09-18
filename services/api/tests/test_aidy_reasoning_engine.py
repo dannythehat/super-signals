@@ -86,6 +86,9 @@ _ANNOTATION = {
     "confidence": 0.7,
     "rationale": "Stop distance and reward:risk look disciplined.",
     "key_factors": ["R:R roughly 1:2", "stop on correct side of entry"],
+    "shadow_action": "take",
+    "risk_multiplier": 1.0,
+    "action_reason": "The setup is coherent enough to take at configured risk.",
 }
 
 
@@ -105,6 +108,8 @@ def test_a_well_formed_response_is_parsed_into_a_typed_annotation() -> None:
     assert len(annotation.key_factors) == 2
     assert annotation.request_count == 1
     assert annotation.tool_calls_made == 0
+    assert annotation.shadow_action == "take"
+    assert annotation.risk_multiplier == 1.0
 
 
 def test_an_invalid_lean_is_never_persisted_as_a_guess() -> None:
