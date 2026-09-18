@@ -214,7 +214,7 @@ class ProviderResearchService:
         self._history_limit = min(max(int(history_limit), 5), 100)
 
     async def scan_once(self) -> ProviderResearchScanSummary:
-        accounts = self._connected_accounts()
+        accounts = await asyncio.to_thread(self._connected_accounts)
         sampled: dict[int, tuple[UUID, UUID, TelegramResearchDialog, ProviderSampleStats]] = {}
         failures = 0
         dialogs_sampled = 0
@@ -236,33 +236,21 @@ class ProviderResearchService:
                 continue
 
             dialogs_sampled += len(dialogs)
-            for dialog in dialogs:
-                stats = analyze_provider_sample(dialog)
+            analyzed = await asyncio.to_thread(self._analyze_dialogs, dialogs)
+            for dialog, stats in analyzed:
                 if not stats.candidate:
                     continue
                 sampled.setdefault(dialog.chat_id, (account_id, owner_user_id, dialog, stats))
 
-        new_shadow = 0
-        profile_rows: list[tuple[UUID, ProviderSampleStats]] = []
-        with self._session_factory() as session:
-            for account_id, owner_user_id, dialog, stats in sampled.values():
-                source, created = self._ensure_shadow_source(
-                    session,
-                    account_id=account_id,
-                    owner_user_id=owner_user_id,
-                    dialog=dialog,
-                )
-                if source is None:
-                    continue
-                new_shadow += int(created)
-                profile_rows.append((source.id, stats))
-            session.commit()
+        new_shadow, profile_rows = await asyncio.to_thread(
+            self._ensure_sampled_sources, sampled
+        )
 
         # The live Telegram scan is useful for discovery, but it must not be the only
         # learning source. Production already stores the full provider message stream;
         # use that durable evidence as a fallback/richer sample so a temporarily sparse
         # Telegram scan can never reset an established provider to zero readiness.
-        stored_rows = self._stored_profile_rows()
+        stored_rows = await asyncio.to_thread(self._stored_profile_rows)
         richest: dict[UUID, ProviderSampleStats] = {source_id: stats for source_id, stats in profile_rows}
         for source_id, stats in stored_rows:
             current = richest.get(source_id)
@@ -278,7 +266,51 @@ class ProviderResearchService:
                 richest[source_id] = stats
         profile_rows = list(richest.items())
 
-        duplicates = self._duplicate_map(profile_rows)
+        duplicates = await asyncio.to_thread(self._duplicate_map, profile_rows)
+        await asyncio.to_thread(self._persist_profiles, profile_rows, duplicates)
+
+        return ProviderResearchScanSummary(
+            readers_scanned=len(accounts),
+            dialogs_sampled=dialogs_sampled,
+            candidates_found=len(sampled),
+            new_shadow_sources=new_shadow,
+            profiles_updated=len(profile_rows),
+            duplicate_flags=len(duplicates),
+            scan_failures=failures,
+        )
+
+    @staticmethod
+    def _analyze_dialogs(
+        dialogs: list[TelegramResearchDialog] | tuple[TelegramResearchDialog, ...],
+    ) -> list[tuple[TelegramResearchDialog, ProviderSampleStats]]:
+        return [(dialog, analyze_provider_sample(dialog)) for dialog in dialogs]
+
+    def _ensure_sampled_sources(
+        self,
+        sampled: dict[int, tuple[UUID, UUID, TelegramResearchDialog, ProviderSampleStats]],
+    ) -> tuple[int, list[tuple[UUID, ProviderSampleStats]]]:
+        new_shadow = 0
+        profile_rows: list[tuple[UUID, ProviderSampleStats]] = []
+        with self._session_factory() as session:
+            for account_id, owner_user_id, dialog, stats in sampled.values():
+                source, created = self._ensure_shadow_source(
+                    session,
+                    account_id=account_id,
+                    owner_user_id=owner_user_id,
+                    dialog=dialog,
+                )
+                if source is None:
+                    continue
+                new_shadow += int(created)
+                profile_rows.append((source.id, stats))
+            session.commit()
+        return new_shadow, profile_rows
+
+    def _persist_profiles(
+        self,
+        profile_rows: list[tuple[UUID, ProviderSampleStats]],
+        duplicates: dict[UUID, tuple[UUID, float]],
+    ) -> None:
         with self._session_factory() as session:
             for source_id, stats in profile_rows:
                 duplicate_of, duplicate_score = duplicates.get(source_id, (None, None))
@@ -335,16 +367,6 @@ class ProviderResearchService:
                     },
                 )
             session.commit()
-
-        return ProviderResearchScanSummary(
-            readers_scanned=len(accounts),
-            dialogs_sampled=dialogs_sampled,
-            candidates_found=len(sampled),
-            new_shadow_sources=new_shadow,
-            profiles_updated=len(profile_rows),
-            duplicate_flags=len(duplicates),
-            scan_failures=failures,
-        )
 
     def _stored_profile_rows(self) -> list[tuple[UUID, ProviderSampleStats]]:
         with self._session_factory() as session:
