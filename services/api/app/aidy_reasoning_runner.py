@@ -27,6 +27,10 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from app.aidy_context_client import AidyCanonicalContext, AidyContextClient, AidyContextTerminalMiss
 from app.aidy_economic_calendar_client import EconomicCalendarClient
+from app.aidy_evidence_contract import (
+    EVIDENCE_CONTRACT_VERSION,
+    build_provider_evidence_claims,
+)
 from app.aidy_market_client import AidyMarketClient
 from app.aidy_reasoning_calendar_tools import (
     build_calendar_tool_executor,
@@ -62,9 +66,12 @@ _SELECTABLE = """
            COALESCE(NULLIF(s.chat_title, ''), s.source_alias) AS provider_name,
            COALESCE(b.trades_resolved, 0) AS trades_resolved,
            fp.summary AS provider_fingerprint_summary,
+           fp.snapshot AS provider_fingerprint_snapshot,
            profile.version_no AS provider_profile_version_no,
+           profile.effective_at AS provider_profile_effective_at,
            profile.profile_snapshot AS provider_profile_snapshot,
            intel.contract_version AS provider_intelligence_contract,
+           intel.evidence_as_of_utc AS provider_intelligence_evidence_as_of_utc,
            intel.fingerprint_json AS provider_intelligence_fingerprint,
            intel.adaptation_json AS provider_intelligence_adaptation,
            intel.governance_json AS provider_intelligence_governance,
@@ -84,7 +91,7 @@ _SELECTABLE = """
     LEFT JOIN provider_trade_scoreboard b ON b.source_id=d.source_id
     LEFT JOIN aidy_reasoning_annotations a ON a.decision_id=d.id
     LEFT JOIN LATERAL (
-        SELECT f.summary
+        SELECT f.summary,to_jsonb(f) AS snapshot
         FROM provider_trade_fingerprints f
         WHERE f.source_id=d.source_id
           AND f.computed_at<=d.signal_posted_at
@@ -92,7 +99,7 @@ _SELECTABLE = """
         LIMIT 1
     ) fp ON true
     LEFT JOIN LATERAL (
-        SELECT v.version_no,v.profile_snapshot
+        SELECT v.version_no,v.effective_at,v.profile_snapshot
         FROM provider_research_profile_versions v
         WHERE v.source_id=d.source_id
           AND v.effective_at<=d.signal_posted_at
@@ -100,7 +107,7 @@ _SELECTABLE = """
         LIMIT 1
     ) profile ON true
     LEFT JOIN LATERAL (
-        SELECT i.contract_version,i.fingerprint_json,i.adaptation_json,i.governance_json
+        SELECT i.contract_version,i.evidence_as_of_utc,i.fingerprint_json,i.adaptation_json,i.governance_json
         FROM provider_intelligence_snapshots i
         WHERE i.source_id=d.source_id
           AND i.evidence_as_of_utc<=d.signal_posted_at
@@ -171,7 +178,8 @@ _INSERT = """
         market_context_available, provider_context_available,
         provider_profile_version_no, request_count, tool_calls_made,
         preflight_evidence_calls, shadow_action, shadow_risk_multiplier,
-        shadow_action_reason
+        shadow_action_reason, evidence_contract_version, provider_evidence_snapshot,
+        provider_claim_refs, claim_validation_status, unsupported_claim_count
     ) VALUES (
         :id, :decision_id, :lean, :confidence, :rationale, CAST(:key_factors AS jsonb),
         :model_version, :prompt_version, :model_name, :response_id,
@@ -179,7 +187,9 @@ _INSERT = """
         :market_context_available, :provider_context_available,
         :provider_profile_version_no, :request_count, :tool_calls_made,
         :preflight_evidence_calls, :shadow_action, :shadow_risk_multiplier,
-        :shadow_action_reason
+        :shadow_action_reason, :evidence_contract_version,
+        CAST(:provider_evidence_snapshot AS jsonb), CAST(:provider_claim_refs AS jsonb),
+        :claim_validation_status, :unsupported_claim_count
     )
     ON CONFLICT (decision_id) DO NOTHING
 """
@@ -325,6 +335,11 @@ class AidyReasoningRunner:
         if profile_dict:
             profile_summary = {
                 "version_no": candidate.get("provider_profile_version_no"),
+                "effective_at": (
+                    candidate["provider_profile_effective_at"].isoformat()
+                    if candidate.get("provider_profile_effective_at") is not None
+                    else None
+                ),
                 "research_state": profile_dict.get("research_state"),
                 "style": profile_dict.get("style"),
                 "interpretation_readiness": profile_dict.get("interpretation_readiness"),
@@ -355,6 +370,11 @@ class AidyReasoningRunner:
         ):
             intelligence = {
                 "contract_version": candidate.get("provider_intelligence_contract"),
+                "evidence_as_of_utc": (
+                    candidate["provider_intelligence_evidence_as_of_utc"].isoformat()
+                    if candidate.get("provider_intelligence_evidence_as_of_utc") is not None
+                    else None
+                ),
                 "fingerprint": candidate.get("provider_intelligence_fingerprint") or {},
                 "adaptation": candidate.get("provider_intelligence_adaptation") or {},
                 "governance": candidate.get("provider_intelligence_governance") or {},
@@ -521,6 +541,15 @@ class AidyReasoningRunner:
                     )
 
             provider_profile, provider_intelligence = self._provider_brain(candidate)
+            provider_evidence_claims = build_provider_evidence_claims(
+                provider_profile=provider_profile,
+                provider_intelligence=provider_intelligence,
+                provider_fingerprint=(
+                    dict(candidate["provider_fingerprint_snapshot"])
+                    if isinstance(candidate.get("provider_fingerprint_snapshot"), dict)
+                    else None
+                ),
+            )
             supplemental_evidence, preflight_calls = await self._prefetch_evidence(
                 signal_posted_at=candidate["signal_posted_at"],
                 market_context=market_context,
@@ -548,6 +577,7 @@ class AidyReasoningRunner:
                     if candidate["provider_fingerprint_summary"] is not None
                     else None
                 ),
+                provider_evidence_claims=provider_evidence_claims,
                 market_context=market_context,
                 provider_intelligence=provider_intelligence,
                 provider_profile=provider_profile,
@@ -596,6 +626,11 @@ class AidyReasoningRunner:
                 "shadow_action": annotation.shadow_action,
                 "shadow_risk_multiplier": annotation.risk_multiplier,
                 "shadow_action_reason": annotation.action_reason,
+                "evidence_contract_version": EVIDENCE_CONTRACT_VERSION,
+                "provider_evidence_snapshot": json.dumps(provider_evidence_claims, default=str),
+                "provider_claim_refs": json.dumps(list(annotation.provider_claim_refs)),
+                "claim_validation_status": "passed",
+                "unsupported_claim_count": 0,
             }
             if await asyncio.to_thread(self._persist, row):
                 summary.record(annotation.lean)
