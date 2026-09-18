@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any
 from urllib.parse import urlencode
@@ -37,8 +37,8 @@ class AidyCanonicalContext:
     regime: dict[str, Any]
     data_quality: dict[str, Any]
     market: dict[str, Any]
-    gold_state: dict[str, Any]
     provenance: dict[str, Any]
+    gold_state: dict[str, Any] = field(default_factory=dict)
 
 
 class AidyContextTerminalMiss(RuntimeError):
