@@ -29,10 +29,11 @@ import httpx
 MODEL_VERSION = "aidy_reasoning_engine_v3"
 PROMPT_VERSION = "aidy_reasoning_prompt_v3"
 
-# The only tool AIDY may call today. Bounded on purpose: each round trip is a real OpenAI
-# request, so this caps both cost and how long one signal can take to reason about, not
-# just how many timeframes it may ask for in one call (lookback_count already covers that).
+# Bounded on purpose: each round trip is a real OpenAI request, so this caps both cost and
+# how long one signal can take to reason about, not just how many timeframes/hours it may
+# ask for in one call (each tool's own parameters already cap that per call).
 CANDLE_TOOL_NAME = "get_recent_candles"
+CALENDAR_TOOL_NAME = "get_economic_calendar"
 _MAX_TOOL_ROUNDS = 2
 
 CANDLE_TOOL_SCHEMA: dict[str, Any] = {
@@ -62,6 +63,44 @@ CANDLE_TOOL_SCHEMA: dict[str, Any] = {
             },
         },
         "required": ["timeframe_minutes", "lookback_count"],
+    },
+}
+
+CALENDAR_TOOL_SCHEMA: dict[str, Any] = {
+    "type": "function",
+    "name": CALENDAR_TOOL_NAME,
+    "description": (
+        "Fetch real scheduled macro economic events (e.g. NFP, CPI, Fed rate decisions) "
+        "around this signal's own posted time. Returns each event's title, country, impact "
+        "(low/medium/high), scheduled time, published consensus forecast and prior reading -- "
+        "never a realized/actual outcome, since that is only ever knowable once the event has "
+        "genuinely happened. Use this to check whether a high-impact USD event sits close "
+        "enough to this signal's own timing to add real risk to holding it, especially when "
+        "market_context's event_timing field is unknown."
+    ),
+    "parameters": {
+        "type": "object",
+        "additionalProperties": False,
+        "properties": {
+            "hours_before": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 72,
+                "description": "How many hours before this signal's own posted time to include.",
+            },
+            "hours_after": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 72,
+                "description": "How many hours after this signal's own posted time to include.",
+            },
+            "min_impact": {
+                "type": "string",
+                "enum": ["low", "medium", "high"],
+                "description": "Only return events at or above this impact level.",
+            },
+        },
+        "required": ["hours_before", "hours_after", "min_impact"],
     },
 }
 
@@ -138,8 +177,15 @@ from the geometry, fingerprint and market_context you already have. If you call 
 candles you get back are real market data, never a forecast -- describe what they show, never
 what you expect to happen next.
 
+You may also be offered a get_economic_calendar tool: real scheduled macro events (e.g. NFP,
+CPI, Fed decisions) with published forecast and prior reading, around this signal's own posted
+time -- never a realized/actual outcome, since that could not be known yet. Call it when
+market_context's event_timing is unknown or you want to check whether a specific high-impact
+USD event sits close enough to this signal to add real holding risk. A forecast is a public
+consensus number known in advance, not a prediction of your own -- report it as such.
+
 Never invent facts not present in the signal, the fingerprint, market_context, or any candles
-you fetched.
+or calendar events you fetched.
 lean=agree means the geometry looks sane and disciplined. lean=caution means it is workable
 but has a real flaw worth noting -- including a signal that fights a clear, multi-timeframe-
 confirmed trend, when market_context makes that visible. lean=disagree means the geometry
@@ -228,9 +274,19 @@ class AidyReasoningEngine:
         self._transport = transport
 
     async def reason(
-        self, context: SignalContext, *, tool_executor: ToolExecutor | None = None
+        self,
+        context: SignalContext,
+        *,
+        tool_executor: ToolExecutor | None = None,
+        tool_schemas: list[dict[str, Any]] | None = None,
     ) -> ReasoningAnnotation:
-        """Reason about one signal, optionally letting the model call get_recent_candles.
+        """Reason about one signal, optionally letting the model call one of tool_schemas.
+
+        tool_schemas is which tools are actually available this call (the caller only ever
+        configures the clients it has -- candles, calendar, both, or neither); tool_executor
+        is a single dispatcher the caller routes to the right one by name. Offering a schema
+        with no executor (or vice versa) is treated as no tools available at all, since
+        either alone cannot honour a call the model makes.
 
         Bounded to _MAX_TOOL_ROUNDS rounds of tool use; the final round never offers tools,
         so the model cannot stall indefinitely -- it must return its structured answer with
@@ -255,8 +311,9 @@ class AidyReasoningEngine:
             async with httpx.AsyncClient(
                 timeout=self._timeout_seconds, transport=self._transport
             ) as client:
+                have_tools = tool_executor is not None and bool(tool_schemas)
                 for round_index in range(_MAX_TOOL_ROUNDS + 1):
-                    offer_tools = tool_executor is not None and round_index < _MAX_TOOL_ROUNDS
+                    offer_tools = have_tools and round_index < _MAX_TOOL_ROUNDS
                     payload: dict[str, Any] = {
                         "model": self._model,
                         "store": False,
@@ -274,7 +331,7 @@ class AidyReasoningEngine:
                         },
                     }
                     if offer_tools:
-                        payload["tools"] = [CANDLE_TOOL_SCHEMA]
+                        payload["tools"] = tool_schemas
 
                     response = await client.post(
                         f"{self._base_url}/responses",

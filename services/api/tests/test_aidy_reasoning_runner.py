@@ -23,7 +23,13 @@ from sqlalchemy import create_engine, text
 from sqlalchemy.exc import DBAPIError
 
 from app.aidy_context_client import AidyCanonicalContext, AidyContextTerminalMiss
-from app.aidy_reasoning_engine import AidyReasoningUnavailable, ReasoningAnnotation, SignalContext
+from app.aidy_reasoning_engine import (
+    CALENDAR_TOOL_NAME,
+    CANDLE_TOOL_NAME,
+    AidyReasoningUnavailable,
+    ReasoningAnnotation,
+    SignalContext,
+)
 from app.aidy_reasoning_runner import AidyReasoningRunner
 from app.provider_day19_explainer_budget import ResourceBudget
 
@@ -55,7 +61,9 @@ class FakeEngine:
         if self.calls is None:
             self.calls = []
 
-    async def reason(self, context: SignalContext, *, tool_executor=None) -> ReasoningAnnotation:
+    async def reason(
+        self, context: SignalContext, *, tool_executor=None, tool_schemas=None
+    ) -> ReasoningAnnotation:
         self.calls.append(context)
         if self.should_fail:
             raise AidyReasoningUnavailable("forced_failure")
@@ -118,6 +126,26 @@ class FakeMarketClient:
         if self.fail_with is not None:
             raise self.fail_with
         return _fake_context(as_of=as_of)
+
+
+@dataclass
+class FakeCandleClient:
+    """Async duck-type of AidyMarketClient -- just enough to prove _tools_for wires it up."""
+
+    async def fetch_m1(self, *, start: datetime, end: datetime):
+        from app.aidy_market_client import AidyM1Window
+
+        return AidyM1Window(
+            start=start, end=end, bars=(), expected_open_times=(), missing_open_times=()
+        )
+
+
+@dataclass
+class FakeCalendarClient:
+    """Async duck-type of EconomicCalendarClient -- just enough to prove _tools_for wires it up."""
+
+    async def fetch_week(self, which: str):
+        return []
 
 
 @pytest.fixture(scope="module")
@@ -468,3 +496,72 @@ def test_no_market_client_configured_reasons_exactly_as_before(
 
     assert summary.written == 1
     assert fake_engine.calls[0].market_context is None
+
+
+def test_tools_for_offers_nothing_when_no_tool_clients_are_configured() -> None:
+    runner = AidyReasoningRunner.__new__(AidyReasoningRunner)
+    runner._candle_client = None
+    runner._calendar_client = None
+
+    schemas, executor = runner._tools_for(datetime.now(UTC))
+
+    assert schemas == []
+    assert executor is None
+
+
+def test_tools_for_combines_both_clients_and_dispatches_by_name() -> None:
+    runner = AidyReasoningRunner.__new__(AidyReasoningRunner)
+    runner._candle_client = FakeCandleClient()
+    runner._calendar_client = FakeCalendarClient()
+
+    schemas, executor = runner._tools_for(datetime.now(UTC))
+
+    assert {schema["name"] for schema in schemas} == {CANDLE_TOOL_NAME, CALENDAR_TOOL_NAME}
+    assert executor is not None
+
+    candle_result = asyncio.run(
+        executor(CANDLE_TOOL_NAME, {"timeframe_minutes": 15, "lookback_count": 5})
+    )
+    assert "error" not in candle_result
+
+    calendar_result = asyncio.run(
+        executor(CALENDAR_TOOL_NAME, {"hours_before": 6, "hours_after": 6, "min_impact": "low"})
+    )
+    assert calendar_result == {
+        "window_start_utc": calendar_result["window_start_utc"],
+        "window_end_utc": calendar_result["window_end_utc"],
+        "events": [],
+    }
+
+    unknown_result = asyncio.run(executor("not_a_real_tool", {}))
+    assert unknown_result == {"error": "unknown_tool"}
+
+
+def test_tools_for_offers_only_the_configured_client() -> None:
+    runner = AidyReasoningRunner.__new__(AidyReasoningRunner)
+    runner._candle_client = FakeCandleClient()
+    runner._calendar_client = None
+
+    schemas, executor = runner._tools_for(datetime.now(UTC))
+
+    assert {schema["name"] for schema in schemas} == {CANDLE_TOOL_NAME}
+    assert executor is not None
+    assert asyncio.run(executor(CALENDAR_TOOL_NAME, {})) == {"error": "unknown_tool"}
+
+
+def test_calendar_client_is_wired_end_to_end_through_run(conn, source_id, session_factory) -> None:
+    observation_id = add_observation(conn, source_id, index=11)
+    add_decision(
+        conn, observation_id, source_id, decision_class="approve", reasons=_INSUFFICIENT_EVIDENCE
+    )
+
+    fake_engine = FakeEngine()
+    runner = AidyReasoningRunner(
+        session_factory,
+        engine=fake_engine,
+        budget=_WIDE_BUDGET,
+        calendar_client=FakeCalendarClient(),
+    )
+    summary = asyncio.run(runner.run())
+
+    assert summary.written == 1

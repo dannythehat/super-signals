@@ -25,13 +25,20 @@ from sqlalchemy import create_engine, text
 from sqlalchemy.orm import Session, sessionmaker
 
 from app.aidy_context_client import AidyCanonicalContext, AidyContextClient, AidyContextTerminalMiss
+from app.aidy_economic_calendar_client import EconomicCalendarClient
 from app.aidy_market_client import AidyMarketClient
+from app.aidy_reasoning_calendar_tools import build_calendar_tool_executor
 from app.aidy_reasoning_engine import (
+    CALENDAR_TOOL_NAME,
+    CALENDAR_TOOL_SCHEMA,
+    CANDLE_TOOL_NAME,
+    CANDLE_TOOL_SCHEMA,
     MODEL_VERSION,
     PROMPT_VERSION,
     AidyReasoningEngine,
     AidyReasoningUnavailable,
     SignalContext,
+    ToolExecutor,
 )
 from app.aidy_reasoning_market_tools import build_candle_tool_executor
 from app.provider_day19_explainer_budget import (
@@ -149,12 +156,46 @@ class AidyReasoningRunner:
         budget: ResourceBudget | None = None,
         context_client: AidyContextClient | None = None,
         candle_client: AidyMarketClient | None = None,
+        calendar_client: EconomicCalendarClient | None = None,
     ) -> None:
         self._session_factory = session_factory
         self._engine = engine
         self._budget = budget or _budget_from_environment()
         self._context_client = context_client
         self._candle_client = candle_client
+        self._calendar_client = calendar_client
+
+    def _tools_for(self, signal_posted_at) -> tuple[list[dict], ToolExecutor | None]:
+        """Combine whichever tool clients are actually configured into one schema list and
+        one dispatching executor. A tool whose client isn't configured is simply absent from
+        both -- never offered, so the model can't call something no executor can honour."""
+        schemas: list[dict] = []
+        executors: dict[str, ToolExecutor] = {}
+
+        candle_executor = build_candle_tool_executor(
+            self._candle_client, signal_posted_at=signal_posted_at
+        )
+        if candle_executor is not None:
+            schemas.append(CANDLE_TOOL_SCHEMA)
+            executors[CANDLE_TOOL_NAME] = candle_executor
+
+        calendar_executor = build_calendar_tool_executor(
+            self._calendar_client, signal_posted_at=signal_posted_at
+        )
+        if calendar_executor is not None:
+            schemas.append(CALENDAR_TOOL_SCHEMA)
+            executors[CALENDAR_TOOL_NAME] = calendar_executor
+
+        if not executors:
+            return [], None
+
+        async def dispatch(name: str, arguments: dict) -> dict:
+            executor = executors.get(name)
+            if executor is None:
+                return {"error": "unknown_tool"}
+            return await executor(name, arguments)
+
+        return schemas, dispatch
 
     @staticmethod
     def _market_context_summary(context: AidyCanonicalContext) -> dict:
@@ -260,11 +301,11 @@ class AidyReasoningRunner:
                 ),
                 market_context=market_context,
             )
-            tool_executor = build_candle_tool_executor(
-                self._candle_client, signal_posted_at=candidate["signal_posted_at"]
-            )
+            tool_schemas, tool_executor = self._tools_for(candidate["signal_posted_at"])
             try:
-                annotation = await self._engine.reason(context, tool_executor=tool_executor)
+                annotation = await self._engine.reason(
+                    context, tool_executor=tool_executor, tool_schemas=tool_schemas
+                )
             except AidyReasoningUnavailable:
                 summary.failed += 1
                 logger.warning("AIDY reasoning call failed decision_id=%s", context.decision_id)
@@ -334,6 +375,7 @@ async def _main() -> int:
             ),
             context_client=AidyContextClient.from_environment(),
             candle_client=AidyMarketClient.from_environment(),
+            calendar_client=EconomicCalendarClient.from_environment(),
         )
         summary = await runner.run(limit=args.limit)
     finally:
