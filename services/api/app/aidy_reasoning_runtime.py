@@ -16,6 +16,7 @@ import os
 
 from sqlalchemy.orm import Session, sessionmaker
 
+from app.aidy_context_client import AidyContextClient
 from app.aidy_reasoning_engine import AidyReasoningEngine
 from app.aidy_reasoning_runner import AidyReasoningRunner
 
@@ -90,6 +91,7 @@ class AidyReasoningRuntime:
                 api_key=api_key,
                 model=os.getenv("AIDY_REASONING_MODEL", "gpt-5-mini-2025-08-07").strip(),
             ),
+            market_client=AidyContextClient.from_environment(),
         )
         self._task = asyncio.create_task(self._run(runner), name="super-signals-aidy-reasoning")
         logger.info("AIDY reasoning engine loop started interval=%ss", self._interval_seconds)

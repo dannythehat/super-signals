@@ -22,6 +22,7 @@ from alembic.config import Config
 from sqlalchemy import create_engine, text
 from sqlalchemy.exc import DBAPIError
 
+from app.aidy_context_client import AidyCanonicalContext, AidyContextTerminalMiss
 from app.aidy_reasoning_engine import AidyReasoningUnavailable, ReasoningAnnotation, SignalContext
 from app.aidy_reasoning_runner import AidyReasoningRunner
 from app.provider_day19_explainer_budget import ResourceBudget
@@ -70,6 +71,51 @@ class FakeEngine:
             estimated_cost_usd=Decimal("0.001"),
             latency_ms=5,
         )
+
+
+def _fake_context(*, as_of: datetime) -> AidyCanonicalContext:
+    return AidyCanonicalContext(
+        requested_as_of_utc=as_of,
+        context_as_of_utc=as_of,
+        context_lag_seconds=30,
+        context_hash="hash",
+        snapshot_id="snap",
+        snapshot_digest="d" * 64,
+        snapshot_archive_key="key",
+        session={"computed_session_code": "london"},
+        regime={
+            "labels": {
+                "session": "london",
+                "trend_structure": "bullish_trend",
+                "volatility_band": "normal",
+                "event_timing": "clear_current_window",
+            },
+            "rule_evidence": {
+                "trend_structure": {"directions": {"M15": "bullish", "H1": "bullish", "H4": "bullish"}}
+            },
+        },
+        data_quality={"quote_freshness": "fresh", "quote_state": "known"},
+        market={},
+        provenance={"private_forward_only": True, "live_money_execution_allowed": False},
+    )
+
+
+@dataclass
+class FakeMarketClient:
+    """Async duck-type of AidyContextClient -- either returns a fixed context or raises."""
+
+    fail_with: Exception | None = None
+    requested: list[datetime] | None = None
+
+    def __post_init__(self) -> None:
+        if self.requested is None:
+            self.requested = []
+
+    async def fetch_context(self, *, as_of: datetime) -> AidyCanonicalContext:
+        self.requested.append(as_of)
+        if self.fail_with is not None:
+            raise self.fail_with
+        return _fake_context(as_of=as_of)
 
 
 @pytest.fixture(scope="module")
@@ -343,3 +389,78 @@ def test_an_annotation_row_cannot_be_rewritten(conn, source_id) -> None:
             text("UPDATE aidy_reasoning_annotations SET lean='disagree' WHERE id=:id"),
             {"id": annotation_id},
         )
+
+
+def test_market_context_is_fetched_and_passed_to_the_engine_when_available(
+    conn, source_id, session_factory
+) -> None:
+    observation_id = add_observation(conn, source_id, index=8)
+    add_decision(
+        conn, observation_id, source_id, decision_class="approve", reasons=_INSUFFICIENT_EVIDENCE
+    )
+
+    fake_engine = FakeEngine()
+    market_client = FakeMarketClient()
+    runner = AidyReasoningRunner(
+        session_factory, engine=fake_engine, budget=_WIDE_BUDGET, market_client=market_client
+    )
+    summary = asyncio.run(runner.run())
+
+    assert summary.written == 1
+    assert market_client.requested == [OBSERVED_AT]
+    assert fake_engine.calls[0].market_context is not None
+    assert fake_engine.calls[0].market_context["trend_structure"] == "bullish_trend"
+    assert fake_engine.calls[0].market_context["session"] == "london"
+
+    row = conn.execute(
+        text(
+            "SELECT market_context_available FROM aidy_reasoning_annotations "
+            "WHERE decision_id IN (SELECT id FROM aidy_decisions WHERE observation_id=:obs)"
+        ),
+        {"obs": observation_id},
+    ).mappings().one()
+    assert row["market_context_available"] is True
+
+
+def test_a_stale_or_failed_market_context_lookup_never_blocks_reasoning(
+    conn, source_id, session_factory
+) -> None:
+    observation_id = add_observation(conn, source_id, index=9)
+    add_decision(
+        conn, observation_id, source_id, decision_class="approve", reasons=_INSUFFICIENT_EVIDENCE
+    )
+
+    fake_engine = FakeEngine()
+    stale_client = FakeMarketClient(fail_with=AidyContextTerminalMiss("pit_context_stale", payload={}))
+    runner = AidyReasoningRunner(
+        session_factory, engine=fake_engine, budget=_WIDE_BUDGET, market_client=stale_client
+    )
+    summary = asyncio.run(runner.run())
+
+    assert summary.written == 1, "a stale context lookup must not stop the signal being reasoned"
+    assert fake_engine.calls[0].market_context is None
+
+    row = conn.execute(
+        text(
+            "SELECT market_context_available FROM aidy_reasoning_annotations "
+            "WHERE decision_id IN (SELECT id FROM aidy_decisions WHERE observation_id=:obs)"
+        ),
+        {"obs": observation_id},
+    ).mappings().one()
+    assert row["market_context_available"] is False
+
+
+def test_no_market_client_configured_reasons_exactly_as_before(
+    conn, source_id, session_factory
+) -> None:
+    observation_id = add_observation(conn, source_id, index=10)
+    add_decision(
+        conn, observation_id, source_id, decision_class="approve", reasons=_INSUFFICIENT_EVIDENCE
+    )
+
+    fake_engine = FakeEngine()
+    runner = AidyReasoningRunner(session_factory, engine=fake_engine, budget=_WIDE_BUDGET)
+    summary = asyncio.run(runner.run())
+
+    assert summary.written == 1
+    assert fake_engine.calls[0].market_context is None
