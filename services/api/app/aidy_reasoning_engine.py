@@ -202,8 +202,8 @@ against the current multi-timeframe trend, and whether the session or a nearby e
 adds real risk to holding it -- but this is supporting context for your read of the signal's
 geometry, never a replacement for it, and never a forecast of your own about where price goes
 next. When market_context is absent, or its fields are unknown, reason from the signal's own
-geometry and the provider fingerprint alone, exactly as before -- do not guess at conditions
-you were not given.
+geometry and whatever validated provider_evidence_claims exist -- do not guess at conditions
+or provider behaviour you were not given.
 
 You may also be offered a get_recent_candles tool: real OHLC candles at a timeframe and
 lookback you choose, ending at (never after) this signal's own posted time. Use it when the
@@ -243,8 +243,8 @@ and for hold/reject/need_more_evidence use risk_multiplier=0. Do not use provide
 to reject a coherent signal, and do not override malformed geometry or missing evidence merely
 because a provider has historically performed well.
 
-Never invent facts not present in the signal, the fingerprint, provider intelligence/profile,
-recent messages, self calibration, market_context, supplemental evidence, or any candles/calendar
+Never invent facts not present in the signal, validated provider_evidence_claims, recent
+messages, self calibration, market_context, supplemental evidence, or any candles/calendar
 events you fetched.
 lean=agree means the geometry looks sane and disciplined. lean=caution means it is workable
 but has a real flaw worth noting -- including a signal that fights a clear, multi-timeframe-
@@ -311,8 +311,6 @@ class AidyReasoningUnavailable(RuntimeError):
 
 def _prompt_payload(context: SignalContext) -> dict[str, Any]:
     return {
-        "provider_name": context.provider_name,
-        "provider_trades_resolved": context.trades_resolved,
         "side": context.side,
         "symbol": context.symbol,
         "entry_low": context.entry_low,
