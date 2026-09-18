@@ -48,6 +48,15 @@ def _joined() -> tuple[ContextAttachmentCandidate, ProviderAidyContextJoin]:
         regime={"compound_regime_key": "trend|normal"},
         data_quality={"state": "good"},
         market={"quote_context": {"mid": "3500"}},
+        gold_state={
+            "contract_version": "aidy_provider_gold_state_v1",
+            "as_of_utc": (signal_at - timedelta(minutes=3)).isoformat(),
+            "descriptive_context_only": True,
+            "predictive_edge_claimed": False,
+            "live_money_execution_allowed": False,
+            "price_liquidity": {"state": "known", "decision_input_allowed": True},
+            "research_surfaces": {},
+        },
         provenance={
             "private_forward_only": True,
             "live_money_execution_allowed": False,
@@ -109,6 +118,7 @@ def test_day10_payload_freezes_exact_provider_and_aidy_identity_deterministicall
     assert payload["aidy"]["requested_as_of_utc"] == candidate.signal_posted_at.isoformat()
     assert payload["aidy"]["context_hash"] == joined.aidy.context_hash
     assert payload["aidy"]["snapshot"]["digest"] == joined.aidy.snapshot_digest
+    assert payload["aidy"]["gold_state"]["contract_version"] == "aidy_provider_gold_state_v1"
     assert payload["point_in_time_clean"] is True
     assert payload["research_only"] is True
     assert payload["live_money_execution_allowed"] is False
