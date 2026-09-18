@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 
 import httpx
 import pytest
@@ -113,3 +114,31 @@ def test_an_http_error_is_retryable_not_terminal(monkeypatch) -> None:
 def test_api_key_is_required() -> None:
     with pytest.raises(ValueError):
         AidyReasoningEngine(api_key="")
+
+
+def test_market_context_is_sent_when_present_and_omitted_as_null_when_absent(monkeypatch) -> None:
+    captured: dict = {}
+
+    def fake_post(url, *, headers, json, timeout):  # noqa: A002
+        captured["input"] = json["input"]
+        return _fake_response(
+            {"lean": "agree", "confidence": 0.6, "rationale": "x", "key_factors": []}
+        )
+
+    monkeypatch.setattr(httpx, "post", fake_post)
+    engine = AidyReasoningEngine(api_key="test-key")
+
+    engine.reason(_context())
+    sent_without_context = json.loads(captured["input"])
+    assert sent_without_context["market_context"] is None
+
+    with_context = replace(
+        _context(),
+        market_context={"trend_structure": "bullish_trend", "session": "london"},
+    )
+    engine.reason(with_context)
+    sent_with_context = json.loads(captured["input"])
+    assert sent_with_context["market_context"] == {
+        "trend_structure": "bullish_trend",
+        "session": "london",
+    }

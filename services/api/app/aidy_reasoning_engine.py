@@ -25,8 +25,8 @@ from typing import Any
 
 import httpx
 
-MODEL_VERSION = "aidy_reasoning_engine_v1"
-PROMPT_VERSION = "aidy_reasoning_prompt_v1"
+MODEL_VERSION = "aidy_reasoning_engine_v2"
+PROMPT_VERSION = "aidy_reasoning_prompt_v2"
 
 # gpt-5-mini matches the existing message-interpretation supervisor's default model --
 # the cheapest tier that still reasons, since this runs continuously and the owner's
@@ -73,15 +73,33 @@ naming in key_factors) without ever treating it as proof this specific signal wi
 When no fingerprint is given, or it says evidence is still too thin, reason from the signal's
 own geometry alone as before.
 
-Never invent facts not present in the signal or the fingerprint. Never comment on broader
-market conditions, news, or price direction you were not given -- you only have this signal's
-own numbers and, when available, this provider's own resolved history.
+You may also be given market_context: an objective, point-in-time snapshot of gold (XAUUSD)
+conditions as of when this signal actually posted -- never anything known after the fact.
+trend_by_timeframe gives each of M15/H1/H4's own directional read (bullish/bearish/flat/
+unknown); trend_structure is the combined label across those (bullish_trend, bearish_trend,
+range, mixed, or unknown when too few timeframes agree or are known). session is the trading
+session gold was in. volatility_band and event_timing describe current volatility and whether
+a scheduled event sits close to this moment, when known -- "unknown" or "blocked" here is a
+genuine gap in evidence, not a signal of calm, and must be named as unknown rather than treated
+as calm. quote_freshness/quote_state describe how trustworthy this snapshot itself is -- treat
+a stale or unknown quote as a reason for lower confidence, not as evidence either way. When
+market_context is given, you may note whether this signal's own direction (side) runs with or
+against the current multi-timeframe trend, and whether the session or a nearby event timing
+adds real risk to holding it -- but this is supporting context for your read of the signal's
+geometry, never a replacement for it, and never a forecast of your own about where price goes
+next. When market_context is absent, or its fields are unknown, reason from the signal's own
+geometry and the provider fingerprint alone, exactly as before -- do not guess at conditions
+you were not given.
+
+Never invent facts not present in the signal, the fingerprint, or market_context.
 lean=agree means the geometry looks sane and disciplined. lean=caution means it is workable
-but has a real flaw worth noting. lean=disagree means the geometry itself looks broken or
-reckless (e.g. stop wrong side of entry, reward:risk far worse than 1:1, targets not ordered
-in the trade's favour). confidence reflects how sure you are in that geometric read, not in
-whether the trade will win. rationale is one or two sentences. key_factors is a short list of
-the specific numeric observations that drove the lean (at most 5, each under 80 characters)."""
+but has a real flaw worth noting -- including a signal that fights a clear, multi-timeframe-
+confirmed trend, when market_context makes that visible. lean=disagree means the geometry
+itself looks broken or reckless (e.g. stop wrong side of entry, reward:risk far worse than
+1:1, targets not ordered in the trade's favour). confidence reflects how sure you are in that
+overall read, not in whether the trade will win. rationale is one or two sentences. key_factors
+is a short list of the specific observations that drove the lean (at most 5, each under 80
+characters), numeric or market-context based."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -98,6 +116,7 @@ class SignalContext:
     decision_reasons: list[dict[str, Any]]
     trades_resolved: int
     provider_fingerprint_summary: str | None = None
+    market_context: dict[str, Any] | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -131,6 +150,7 @@ def _prompt_payload(context: SignalContext) -> dict[str, Any]:
         "deterministic_decision_class": context.decision_class,
         "deterministic_decision_reasons": context.decision_reasons,
         "provider_fingerprint": context.provider_fingerprint_summary,
+        "market_context": context.market_context,
     }
 
 

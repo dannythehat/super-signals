@@ -24,6 +24,7 @@ from uuid import uuid4
 from sqlalchemy import create_engine, text
 from sqlalchemy.orm import Session, sessionmaker
 
+from app.aidy_context_client import AidyCanonicalContext, AidyContextClient, AidyContextTerminalMiss
 from app.aidy_reasoning_engine import (
     MODEL_VERSION,
     PROMPT_VERSION,
@@ -41,6 +42,7 @@ logger = logging.getLogger(__name__)
 
 _SELECTABLE = """
     SELECT d.id AS decision_id, d.decision_class, d.reasons, d.source_id,
+           d.signal_posted_at,
            o.side, o.symbol, o.entry_low, o.entry_high, o.stop_loss, o.take_profits,
            COALESCE(NULLIF(s.chat_title, ''), s.source_alias) AS provider_name,
            COALESCE(b.trades_resolved, 0) AS trades_resolved,
@@ -73,11 +75,13 @@ _INSERT = """
     INSERT INTO aidy_reasoning_annotations (
         id, decision_id, lean, confidence, rationale, key_factors,
         model_version, prompt_version, model_name, response_id,
-        input_tokens, output_tokens, estimated_cost_usd, latency_ms
+        input_tokens, output_tokens, estimated_cost_usd, latency_ms,
+        market_context_available
     ) VALUES (
         :id, :decision_id, :lean, :confidence, :rationale, CAST(:key_factors AS jsonb),
         :model_version, :prompt_version, :model_name, :response_id,
-        :input_tokens, :output_tokens, :estimated_cost_usd, :latency_ms
+        :input_tokens, :output_tokens, :estimated_cost_usd, :latency_ms,
+        :market_context_available
     )
     ON CONFLICT (decision_id) DO NOTHING
 """
@@ -141,10 +145,55 @@ class AidyReasoningRunner:
         *,
         engine: AidyReasoningEngine,
         budget: ResourceBudget | None = None,
+        market_client: AidyContextClient | None = None,
     ) -> None:
         self._session_factory = session_factory
         self._engine = engine
         self._budget = budget or _budget_from_environment()
+        self._market_client = market_client
+
+    @staticmethod
+    def _market_context_summary(context: AidyCanonicalContext) -> dict:
+        """Reduce AIDY's full context packet to what the reasoning prompt actually needs.
+
+        The real packet carries digests, hashes and internal provenance the model has no
+        use for and that would only burn tokens; this keeps the fields _SYSTEM_INSTRUCTIONS
+        actually tells the model how to read.
+        """
+        regime = context.regime or {}
+        labels = regime.get("labels") or {}
+        trend_evidence = (regime.get("rule_evidence") or {}).get("trend_structure") or {}
+        data_quality = context.data_quality or {}
+        return {
+            "as_of_utc": context.context_as_of_utc.isoformat(),
+            "context_lag_seconds": context.context_lag_seconds,
+            "session": labels.get("session"),
+            "trend_structure": labels.get("trend_structure"),
+            "trend_by_timeframe": trend_evidence.get("directions"),
+            "volatility_band": labels.get("volatility_band"),
+            "event_timing": labels.get("event_timing"),
+            "quote_freshness": data_quality.get("quote_freshness"),
+            "quote_state": data_quality.get("quote_state"),
+        }
+
+    async def _fetch_market_context(self, signal_posted_at) -> dict | None:
+        """Best-effort only: a signal reasoned long after it posted has no live context left
+        to fetch (AidyContextTerminalMiss(pit_context_stale)), and any other lookup failure
+        must never block reasoning about the signal's own geometry -- fall back to None,
+        exactly the no-context path this engine already had before market awareness existed.
+        """
+        if self._market_client is None:
+            return None
+        try:
+            context = await self._market_client.fetch_context(as_of=signal_posted_at)
+        except AidyContextTerminalMiss:
+            return None
+        except Exception:  # noqa: BLE001 - a context lookup must never fail the reasoning pass
+            logger.warning(
+                "AIDY market context lookup failed as_of=%s", signal_posted_at, exc_info=True
+            )
+            return None
+        return self._market_context_summary(context)
 
     def _select(self, limit: int) -> list[dict]:
         with self._session_factory() as session:
@@ -181,6 +230,7 @@ class AidyReasoningRunner:
         candidates = await asyncio.to_thread(self._select, limit)
         summary.selected = len(candidates)
         for candidate in candidates:
+            market_context = await self._fetch_market_context(candidate["signal_posted_at"])
             context = SignalContext(
                 decision_id=str(candidate["decision_id"]),
                 provider_name=str(candidate["provider_name"]),
@@ -204,6 +254,7 @@ class AidyReasoningRunner:
                     if candidate["provider_fingerprint_summary"] is not None
                     else None
                 ),
+                market_context=market_context,
             )
             try:
                 annotation = await asyncio.to_thread(self._engine.reason, context)
@@ -227,6 +278,7 @@ class AidyReasoningRunner:
                 "output_tokens": annotation.output_tokens,
                 "estimated_cost_usd": annotation.estimated_cost_usd,
                 "latency_ms": annotation.latency_ms,
+                "market_context_available": market_context is not None,
             }
             if await asyncio.to_thread(self._persist, row):
                 summary.record(annotation.lean)
@@ -271,6 +323,7 @@ async def _main() -> int:
                 api_key=api_key,
                 model=os.getenv("AIDY_REASONING_MODEL", "gpt-5-mini-2025-08-07").strip(),
             ),
+            market_client=AidyContextClient.from_environment(),
         )
         summary = await runner.run(limit=args.limit)
     finally:
