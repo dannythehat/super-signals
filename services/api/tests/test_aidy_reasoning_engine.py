@@ -430,3 +430,5 @@ def test_prompt_sends_atomic_claims_not_raw_provider_history() -> None:
     assert "provider_profile" not in sent
     assert "provider_intelligence" not in sent
     assert "provider_fingerprint" not in sent
+    assert "provider_name" not in sent
+    assert "provider_trades_resolved" not in sent
