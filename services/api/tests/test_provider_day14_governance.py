@@ -194,3 +194,13 @@ def test_day14_startup_keeps_day13_forward_refresh_and_runs_governance_after_it(
     assert "python -m app.provider_day13_runtime" in startup
     assert "python -m app.provider_day14_governance" in startup
     assert startup.index("python -m app.provider_day13_runtime") < startup.index("python -m app.provider_day14_governance")
+
+
+def test_day14_uses_provider_specific_preregistration_boundaries() -> None:
+    source = (ROOT / "app" / "provider_day14_governance.py").read_text(encoding="utf-8")
+    assert "GROUP BY source_id" in source
+    assert "day13_provider_preregistration_boundary_not_frozen" in source
+    assert "frozen_boundaries.get(source_id)" in source
+    assert '"frozen_oos_boundary": frozen_boundaries[source_id].isoformat()' in source
+    assert "MIN(preregistered_at) AS first_boundary" in source
+    assert "MAX(preregistered_at) AS last_boundary" in source
