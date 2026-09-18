@@ -145,7 +145,7 @@ def test_day10_context_failures_are_isolated_from_m1_resolution() -> None:
     assert context_call < market_call
     assert source.count("except Exception") >= 2
     assert "context attachment loop failed safely" in source
-    assert "never held behind a historical replay backlog" in source
+    assert "Context attachment is deliberately isolated" not in source
 
 
 def test_day10_runtime_is_app_owned_not_broker_owned() -> None:
