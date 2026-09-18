@@ -25,6 +25,7 @@ from sqlalchemy import create_engine, text
 from sqlalchemy.orm import Session, sessionmaker
 
 from app.aidy_context_client import AidyCanonicalContext, AidyContextClient, AidyContextTerminalMiss
+from app.aidy_market_client import AidyMarketClient
 from app.aidy_reasoning_engine import (
     MODEL_VERSION,
     PROMPT_VERSION,
@@ -32,6 +33,7 @@ from app.aidy_reasoning_engine import (
     AidyReasoningUnavailable,
     SignalContext,
 )
+from app.aidy_reasoning_market_tools import build_candle_tool_executor
 from app.provider_day19_explainer_budget import (
     ResourceBudget,
     ResourceUsage,
@@ -76,12 +78,12 @@ _INSERT = """
         id, decision_id, lean, confidence, rationale, key_factors,
         model_version, prompt_version, model_name, response_id,
         input_tokens, output_tokens, estimated_cost_usd, latency_ms,
-        market_context_available
+        market_context_available, request_count, tool_calls_made
     ) VALUES (
         :id, :decision_id, :lean, :confidence, :rationale, CAST(:key_factors AS jsonb),
         :model_version, :prompt_version, :model_name, :response_id,
         :input_tokens, :output_tokens, :estimated_cost_usd, :latency_ms,
-        :market_context_available
+        :market_context_available, :request_count, :tool_calls_made
     )
     ON CONFLICT (decision_id) DO NOTHING
 """
@@ -145,12 +147,14 @@ class AidyReasoningRunner:
         *,
         engine: AidyReasoningEngine,
         budget: ResourceBudget | None = None,
-        market_client: AidyContextClient | None = None,
+        context_client: AidyContextClient | None = None,
+        candle_client: AidyMarketClient | None = None,
     ) -> None:
         self._session_factory = session_factory
         self._engine = engine
         self._budget = budget or _budget_from_environment()
-        self._market_client = market_client
+        self._context_client = context_client
+        self._candle_client = candle_client
 
     @staticmethod
     def _market_context_summary(context: AidyCanonicalContext) -> dict:
@@ -182,10 +186,10 @@ class AidyReasoningRunner:
         must never block reasoning about the signal's own geometry -- fall back to None,
         exactly the no-context path this engine already had before market awareness existed.
         """
-        if self._market_client is None:
+        if self._context_client is None:
             return None
         try:
-            context = await self._market_client.fetch_context(as_of=signal_posted_at)
+            context = await self._context_client.fetch_context(as_of=signal_posted_at)
         except AidyContextTerminalMiss:
             return None
         except Exception:  # noqa: BLE001 - a context lookup must never fail the reasoning pass
@@ -256,8 +260,11 @@ class AidyReasoningRunner:
                 ),
                 market_context=market_context,
             )
+            tool_executor = build_candle_tool_executor(
+                self._candle_client, signal_posted_at=candidate["signal_posted_at"]
+            )
             try:
-                annotation = await asyncio.to_thread(self._engine.reason, context)
+                annotation = await self._engine.reason(context, tool_executor=tool_executor)
             except AidyReasoningUnavailable:
                 summary.failed += 1
                 logger.warning("AIDY reasoning call failed decision_id=%s", context.decision_id)
@@ -279,12 +286,14 @@ class AidyReasoningRunner:
                 "estimated_cost_usd": annotation.estimated_cost_usd,
                 "latency_ms": annotation.latency_ms,
                 "market_context_available": market_context is not None,
+                "request_count": annotation.request_count,
+                "tool_calls_made": annotation.tool_calls_made,
             }
             if await asyncio.to_thread(self._persist, row):
                 summary.record(annotation.lean)
 
             usage = ResourceUsage(
-                openai_calls=usage.openai_calls + 1,
+                openai_calls=usage.openai_calls + annotation.request_count,
                 estimated_cost_usd=usage.estimated_cost_usd + float(annotation.estimated_cost_usd),
             )
             if not evaluate_resource_budget(usage=usage, budget=self._budget)[
@@ -323,7 +332,8 @@ async def _main() -> int:
                 api_key=api_key,
                 model=os.getenv("AIDY_REASONING_MODEL", "gpt-5-mini-2025-08-07").strip(),
             ),
-            market_client=AidyContextClient.from_environment(),
+            context_client=AidyContextClient.from_environment(),
+            candle_client=AidyMarketClient.from_environment(),
         )
         summary = await runner.run(limit=args.limit)
     finally:

@@ -1,7 +1,13 @@
-"""The reasoning call: strict schema in, a typed annotation out, never a guess on failure."""
+"""The reasoning call: strict schema in, a typed annotation out, never a guess on failure.
+
+Uses httpx.MockTransport rather than monkeypatching httpx.post -- the engine now issues
+its request(s) through an httpx.AsyncClient (needed for the tool-calling round trips), so
+the test seam is the injectable `transport` constructor arg, not the module-level function.
+"""
 
 from __future__ import annotations
 
+import asyncio
 import json
 from dataclasses import replace
 
@@ -9,6 +15,7 @@ import httpx
 import pytest
 
 from app.aidy_reasoning_engine import (
+    CANDLE_TOOL_NAME,
     AidyReasoningEngine,
     AidyReasoningUnavailable,
     SignalContext,
@@ -31,9 +38,9 @@ def _context() -> SignalContext:
     )
 
 
-def _fake_response(payload: dict) -> httpx.Response:
-    body = {
-        "id": "resp_123",
+def _message_response(payload: dict, *, response_id: str = "resp_123") -> dict:
+    return {
+        "id": response_id,
         "usage": {"input_tokens": 250, "output_tokens": 80},
         "output": [
             {
@@ -42,24 +49,49 @@ def _fake_response(payload: dict) -> httpx.Response:
             }
         ],
     }
-    return httpx.Response(200, json=body, request=httpx.Request("POST", "https://x.test"))
 
 
-def test_a_well_formed_response_is_parsed_into_a_typed_annotation(monkeypatch) -> None:
-    def fake_post(url, *, headers, json, timeout):  # noqa: A002 - matches httpx.post signature
-        return _fake_response(
+def _function_call_response(*, name: str, arguments: dict, call_id: str = "call_1") -> dict:
+    return {
+        "id": "resp_tool_round",
+        "usage": {"input_tokens": 300, "output_tokens": 40},
+        "output": [
             {
-                "lean": "agree",
-                "confidence": 0.7,
-                "rationale": "Stop distance and reward:risk look disciplined.",
-                "key_factors": ["R:R roughly 1:2", "stop on correct side of entry"],
+                "type": "function_call",
+                "call_id": call_id,
+                "name": name,
+                "arguments": json.dumps(arguments),
             }
-        )
+        ],
+    }
 
-    monkeypatch.setattr(httpx, "post", fake_post)
-    engine = AidyReasoningEngine(api_key="test-key")
 
-    annotation = engine.reason(_context())
+def _scripted_transport(bodies: list[dict]) -> httpx.MockTransport:
+    """Return the next scripted response body on each successive request."""
+    remaining = list(bodies)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if not remaining:
+            raise AssertionError("no more scripted responses configured")
+        return httpx.Response(200, json=remaining.pop(0), request=request)
+
+    return httpx.MockTransport(handler)
+
+
+_ANNOTATION = {
+    "lean": "agree",
+    "confidence": 0.7,
+    "rationale": "Stop distance and reward:risk look disciplined.",
+    "key_factors": ["R:R roughly 1:2", "stop on correct side of entry"],
+}
+
+
+def test_a_well_formed_response_is_parsed_into_a_typed_annotation() -> None:
+    engine = AidyReasoningEngine(
+        api_key="test-key", transport=_scripted_transport([_message_response(_ANNOTATION)])
+    )
+
+    annotation = asyncio.run(engine.reason(_context()))
 
     assert annotation.lean == "agree"
     assert annotation.confidence == 0.7
@@ -68,47 +100,37 @@ def test_a_well_formed_response_is_parsed_into_a_typed_annotation(monkeypatch) -
     assert annotation.estimated_cost_usd > 0
     assert annotation.response_id == "resp_123"
     assert len(annotation.key_factors) == 2
+    assert annotation.request_count == 1
+    assert annotation.tool_calls_made == 0
 
 
-def test_an_invalid_lean_is_never_persisted_as_a_guess(monkeypatch) -> None:
-    def fake_post(url, *, headers, json, timeout):  # noqa: A002
-        return _fake_response(
-            {
-                "lean": "strongly_agree",  # not in the strict enum
-                "confidence": 0.9,
-                "rationale": "x",
-                "key_factors": [],
-            }
-        )
-
-    monkeypatch.setattr(httpx, "post", fake_post)
-    engine = AidyReasoningEngine(api_key="test-key")
+def test_an_invalid_lean_is_never_persisted_as_a_guess() -> None:
+    bad = {**_ANNOTATION, "lean": "strongly_agree"}
+    engine = AidyReasoningEngine(
+        api_key="test-key", transport=_scripted_transport([_message_response(bad)])
+    )
 
     with pytest.raises(AidyReasoningUnavailable):
-        engine.reason(_context())
+        asyncio.run(engine.reason(_context()))
 
 
-def test_a_malformed_upstream_response_raises_rather_than_fabricates(monkeypatch) -> None:
-    def fake_post(url, *, headers, json, timeout):  # noqa: A002
-        return httpx.Response(200, json={"output": []}, request=httpx.Request("POST", "https://x.test"))
-
-    monkeypatch.setattr(httpx, "post", fake_post)
-    engine = AidyReasoningEngine(api_key="test-key")
+def test_a_malformed_upstream_response_raises_rather_than_fabricates() -> None:
+    engine = AidyReasoningEngine(
+        api_key="test-key", transport=_scripted_transport([{"output": []}])
+    )
 
     with pytest.raises(AidyReasoningUnavailable):
-        engine.reason(_context())
+        asyncio.run(engine.reason(_context()))
 
 
-def test_an_http_error_is_retryable_not_terminal(monkeypatch) -> None:
-    def fake_post(url, *, headers, json, timeout):  # noqa: A002
-        request = httpx.Request("POST", "https://x.test")
+def test_an_http_error_is_retryable_not_terminal() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(500, json={"error": "server_error"}, request=request)
 
-    monkeypatch.setattr(httpx, "post", fake_post)
-    engine = AidyReasoningEngine(api_key="test-key")
+    engine = AidyReasoningEngine(api_key="test-key", transport=httpx.MockTransport(handler))
 
     with pytest.raises(AidyReasoningUnavailable):
-        engine.reason(_context())
+        asyncio.run(engine.reason(_context()))
 
 
 def test_api_key_is_required() -> None:
@@ -116,29 +138,123 @@ def test_api_key_is_required() -> None:
         AidyReasoningEngine(api_key="")
 
 
-def test_market_context_is_sent_when_present_and_omitted_as_null_when_absent(monkeypatch) -> None:
-    captured: dict = {}
+def test_market_context_is_sent_when_present_and_omitted_as_null_when_absent() -> None:
+    captured: list[dict] = []
 
-    def fake_post(url, *, headers, json, timeout):  # noqa: A002
-        captured["input"] = json["input"]
-        return _fake_response(
-            {"lean": "agree", "confidence": 0.6, "rationale": "x", "key_factors": []}
-        )
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured.append(json.loads(request.content))
+        return httpx.Response(200, json=_message_response(_ANNOTATION), request=request)
 
-    monkeypatch.setattr(httpx, "post", fake_post)
-    engine = AidyReasoningEngine(api_key="test-key")
+    engine = AidyReasoningEngine(api_key="test-key", transport=httpx.MockTransport(handler))
 
-    engine.reason(_context())
-    sent_without_context = json.loads(captured["input"])
+    asyncio.run(engine.reason(_context()))
+    sent_without_context = json.loads(captured[-1]["input"][0]["content"])
     assert sent_without_context["market_context"] is None
 
     with_context = replace(
         _context(),
         market_context={"trend_structure": "bullish_trend", "session": "london"},
     )
-    engine.reason(with_context)
-    sent_with_context = json.loads(captured["input"])
+    asyncio.run(engine.reason(with_context))
+    sent_with_context = json.loads(captured[-1]["input"][0]["content"])
     assert sent_with_context["market_context"] == {
         "trend_structure": "bullish_trend",
         "session": "london",
     }
+
+
+def test_no_tool_executor_never_offers_the_candle_tool() -> None:
+    captured: list[dict] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured.append(json.loads(request.content))
+        return httpx.Response(200, json=_message_response(_ANNOTATION), request=request)
+
+    engine = AidyReasoningEngine(api_key="test-key", transport=httpx.MockTransport(handler))
+
+    asyncio.run(engine.reason(_context(), tool_executor=None))
+
+    assert len(captured) == 1
+    assert "tools" not in captured[0]
+
+
+def test_a_tool_call_is_executed_and_its_result_fed_back() -> None:
+    tool_call = _function_call_response(
+        name=CANDLE_TOOL_NAME, arguments={"timeframe_minutes": 15, "lookback_count": 5}
+    )
+    engine = AidyReasoningEngine(
+        api_key="test-key",
+        transport=_scripted_transport([tool_call, _message_response(_ANNOTATION)]),
+    )
+    executor_calls: list[tuple[str, dict]] = []
+
+    async def executor(name: str, arguments: dict) -> dict:
+        executor_calls.append((name, arguments))
+        return {"timeframe_minutes": 15, "candles": [{"close": "2405.00"}]}
+
+    annotation = asyncio.run(engine.reason(_context(), tool_executor=executor))
+
+    assert executor_calls == [
+        (CANDLE_TOOL_NAME, {"timeframe_minutes": 15, "lookback_count": 5})
+    ]
+    assert annotation.lean == "agree"
+    assert annotation.request_count == 2
+    assert annotation.tool_calls_made == 1
+    # Cost/tokens are summed across both rounds, not just the final one.
+    assert annotation.input_tokens == 300 + 250
+    assert annotation.output_tokens == 40 + 80
+
+
+def test_tool_use_is_bounded_and_the_final_round_never_offers_tools() -> None:
+    call_1 = _function_call_response(
+        name=CANDLE_TOOL_NAME, arguments={"timeframe_minutes": 5, "lookback_count": 3}, call_id="c1"
+    )
+    call_2 = _function_call_response(
+        name=CANDLE_TOOL_NAME,
+        arguments={"timeframe_minutes": 15, "lookback_count": 3},
+        call_id="c2",
+    )
+    requests_seen: list[dict] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content)
+        requests_seen.append(body)
+        if len(requests_seen) == 1:
+            return httpx.Response(200, json=call_1, request=request)
+        if len(requests_seen) == 2:
+            return httpx.Response(200, json=call_2, request=request)
+        # Third (final, no-tools-offered) round must get a real answer.
+        assert "tools" not in body
+        return httpx.Response(200, json=_message_response(_ANNOTATION), request=request)
+
+    engine = AidyReasoningEngine(api_key="test-key", transport=httpx.MockTransport(handler))
+
+    async def executor(name: str, arguments: dict) -> dict:
+        return {"ok": True}
+
+    annotation = asyncio.run(engine.reason(_context(), tool_executor=executor))
+
+    assert len(requests_seen) == 3
+    assert requests_seen[0].get("tools") and requests_seen[1].get("tools")
+    assert annotation.request_count == 3
+    assert annotation.tool_calls_made == 2
+
+
+def test_a_failed_tool_fetch_result_is_still_fed_back_not_raised() -> None:
+    """The tool executor itself decides how to represent a failure (an {"error": ...} dict,
+    per aidy_reasoning_market_tools.py) -- the engine's job is only to pass it through."""
+    tool_call = _function_call_response(
+        name=CANDLE_TOOL_NAME, arguments={"timeframe_minutes": 5, "lookback_count": 3}
+    )
+    engine = AidyReasoningEngine(
+        api_key="test-key",
+        transport=_scripted_transport([tool_call, _message_response(_ANNOTATION)]),
+    )
+
+    async def failing_executor(name: str, arguments: dict) -> dict:
+        return {"error": "candle_fetch_failed:TimeoutError"}
+
+    annotation = asyncio.run(engine.reason(_context(), tool_executor=failing_executor))
+
+    assert annotation.lean == "agree"
+    assert annotation.tool_calls_made == 1

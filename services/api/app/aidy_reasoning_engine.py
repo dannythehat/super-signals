@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import json
 import time
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from decimal import Decimal
 from hashlib import sha256
@@ -25,8 +26,44 @@ from typing import Any
 
 import httpx
 
-MODEL_VERSION = "aidy_reasoning_engine_v2"
-PROMPT_VERSION = "aidy_reasoning_prompt_v2"
+MODEL_VERSION = "aidy_reasoning_engine_v3"
+PROMPT_VERSION = "aidy_reasoning_prompt_v3"
+
+# The only tool AIDY may call today. Bounded on purpose: each round trip is a real OpenAI
+# request, so this caps both cost and how long one signal can take to reason about, not
+# just how many timeframes it may ask for in one call (lookback_count already covers that).
+CANDLE_TOOL_NAME = "get_recent_candles"
+_MAX_TOOL_ROUNDS = 2
+
+CANDLE_TOOL_SCHEMA: dict[str, Any] = {
+    "type": "function",
+    "name": CANDLE_TOOL_NAME,
+    "description": (
+        "Fetch real, point-in-time gold (XAUUSD) OHLC candles aggregated to a requested "
+        "timeframe, ending at (never after) this signal's own posted time. Use this when "
+        "market_context's single trend label per timeframe is not enough to judge this "
+        "signal's entry against recent price structure -- e.g. whether the entry sits inside "
+        "a recent range, at a recent high/low, or against a clear short-term swing."
+    ),
+    "parameters": {
+        "type": "object",
+        "additionalProperties": False,
+        "properties": {
+            "timeframe_minutes": {
+                "type": "integer",
+                "enum": [1, 5, 15, 30, 45, 60],
+                "description": "Candle size in minutes.",
+            },
+            "lookback_count": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 20,
+                "description": "How many of the most recent candles at that timeframe to return.",
+            },
+        },
+        "required": ["timeframe_minutes", "lookback_count"],
+    },
+}
 
 # gpt-5-mini matches the existing message-interpretation supervisor's default model --
 # the cheapest tier that still reasons, since this runs continuously and the owner's
@@ -91,7 +128,18 @@ next. When market_context is absent, or its fields are unknown, reason from the 
 geometry and the provider fingerprint alone, exactly as before -- do not guess at conditions
 you were not given.
 
-Never invent facts not present in the signal, the fingerprint, or market_context.
+You may also be offered a get_recent_candles tool: real OHLC candles at a timeframe and
+lookback you choose, ending at (never after) this signal's own posted time. Call it only when
+market_context's single trend label per timeframe genuinely is not enough to judge this
+signal's own entry -- for example, to see whether the entry sits inside a recent range, at a
+recent swing high/low, or against a short-term move the trend label alone does not show. It is
+not offered for every signal, and calling it is never required; most signals should be judged
+from the geometry, fingerprint and market_context you already have. If you call it, the
+candles you get back are real market data, never a forecast -- describe what they show, never
+what you expect to happen next.
+
+Never invent facts not present in the signal, the fingerprint, market_context, or any candles
+you fetched.
 lean=agree means the geometry looks sane and disciplined. lean=caution means it is workable
 but has a real flaw worth noting -- including a signal that fights a clear, multi-timeframe-
 confirmed trend, when market_context makes that visible. lean=disagree means the geometry
@@ -131,6 +179,11 @@ class ReasoningAnnotation:
     output_tokens: int
     estimated_cost_usd: Decimal
     latency_ms: int
+    request_count: int = 1
+    tool_calls_made: int = 0
+
+
+ToolExecutor = Callable[[str, dict[str, Any]], Awaitable[dict[str, Any]]]
 
 
 class AidyReasoningUnavailable(RuntimeError):
@@ -162,6 +215,7 @@ class AidyReasoningEngine:
         model: str = _DEFAULT_MODEL,
         timeout_seconds: int = 15,
         base_url: str = "https://api.openai.com/v1",
+        transport: httpx.AsyncBaseTransport | None = None,
     ) -> None:
         if not api_key:
             raise ValueError("openai_api_key_missing")
@@ -169,37 +223,105 @@ class AidyReasoningEngine:
         self._model = model
         self._timeout_seconds = timeout_seconds
         self._base_url = base_url.rstrip("/")
+        # Test-only seam: production never passes this, so httpx.AsyncClient's real default
+        # transport (a genuine HTTP connection) is used exactly as before.
+        self._transport = transport
 
-    def reason(self, context: SignalContext) -> ReasoningAnnotation:
+    async def reason(
+        self, context: SignalContext, *, tool_executor: ToolExecutor | None = None
+    ) -> ReasoningAnnotation:
+        """Reason about one signal, optionally letting the model call get_recent_candles.
+
+        Bounded to _MAX_TOOL_ROUNDS rounds of tool use; the final round never offers tools,
+        so the model cannot stall indefinitely -- it must return its structured answer with
+        whatever it has fetched so far. Each round is one real OpenAI request; token usage
+        and cost are summed across every round actually made, never just the last one.
+        """
         started = time.perf_counter()
-        payload = {
-            "model": self._model,
-            "store": False,
-            "reasoning": {"effort": "minimal"},
-            "max_output_tokens": 600,
-            "instructions": _SYSTEM_INSTRUCTIONS,
-            "input": json.dumps(_prompt_payload(context), ensure_ascii=False),
-            "text": {
-                "format": {
-                    "type": "json_schema",
-                    "name": "aidy_signal_reasoning",
-                    "strict": True,
-                    "schema": REASONING_SCHEMA,
-                }
-            },
-        }
+        input_items: list[dict[str, Any]] = [
+            {
+                "role": "user",
+                "content": json.dumps(_prompt_payload(context), ensure_ascii=False),
+            }
+        ]
+        total_input_tokens = 0
+        total_output_tokens = 0
+        response_id: str | None = None
+        request_count = 0
+        tool_calls_made = 0
+        body: dict[str, Any] | None = None
+
         try:
-            response = httpx.post(
-                f"{self._base_url}/responses",
-                headers={
-                    "Authorization": f"Bearer {self._api_key}",
-                    "Content-Type": "application/json",
-                },
-                json=payload,
-                timeout=self._timeout_seconds,
-            )
-            response.raise_for_status()
-            body = response.json()
+            async with httpx.AsyncClient(
+                timeout=self._timeout_seconds, transport=self._transport
+            ) as client:
+                for round_index in range(_MAX_TOOL_ROUNDS + 1):
+                    offer_tools = tool_executor is not None and round_index < _MAX_TOOL_ROUNDS
+                    payload: dict[str, Any] = {
+                        "model": self._model,
+                        "store": False,
+                        "reasoning": {"effort": "minimal"},
+                        "max_output_tokens": 600,
+                        "instructions": _SYSTEM_INSTRUCTIONS,
+                        "input": input_items,
+                        "text": {
+                            "format": {
+                                "type": "json_schema",
+                                "name": "aidy_signal_reasoning",
+                                "strict": True,
+                                "schema": REASONING_SCHEMA,
+                            }
+                        },
+                    }
+                    if offer_tools:
+                        payload["tools"] = [CANDLE_TOOL_SCHEMA]
+
+                    response = await client.post(
+                        f"{self._base_url}/responses",
+                        headers={
+                            "Authorization": f"Bearer {self._api_key}",
+                            "Content-Type": "application/json",
+                        },
+                        json=payload,
+                    )
+                    response.raise_for_status()
+                    body = response.json()
+                    request_count += 1
+
+                    usage = body.get("usage") or {}
+                    total_input_tokens += int(usage.get("input_tokens") or 0)
+                    total_output_tokens += int(usage.get("output_tokens") or 0)
+                    response_id = (str(body.get("id")) if body.get("id") else response_id)
+
+                    function_calls = [
+                        item
+                        for item in body.get("output", [])
+                        if item.get("type") == "function_call"
+                    ]
+                    if not function_calls:
+                        break
+                    if tool_executor is None:
+                        raise AidyReasoningUnavailable("aidy_reasoning_unexpected_tool_call")
+
+                    input_items = [*input_items, *function_calls]
+                    for call in function_calls:
+                        tool_calls_made += 1
+                        try:
+                            arguments = json.loads(call.get("arguments") or "{}")
+                        except json.JSONDecodeError:
+                            arguments = {}
+                        result = await tool_executor(str(call.get("name")), arguments)
+                        input_items.append(
+                            {
+                                "type": "function_call_output",
+                                "call_id": call.get("call_id"),
+                                "output": json.dumps(result, ensure_ascii=False),
+                            }
+                        )
+                else:
+                    raise AidyReasoningUnavailable("aidy_reasoning_tool_round_limit_exceeded")
+
+            assert body is not None  # the loop always runs at least once
             parsed = json.loads(self._output_text(body))
         except (httpx.HTTPError, ValueError, KeyError, TypeError, json.JSONDecodeError) as exc:
             raise AidyReasoningUnavailable("aidy_reasoning_unavailable") from exc
@@ -211,12 +333,9 @@ class AidyReasoningEngine:
         if not 0.0 <= confidence <= 1.0:
             raise AidyReasoningUnavailable("aidy_reasoning_confidence_invalid")
 
-        usage = body.get("usage") or {}
-        input_tokens = int(usage.get("input_tokens") or 0)
-        output_tokens = int(usage.get("output_tokens") or 0)
         estimated_cost = (
-            Decimal(input_tokens) * _USD_PER_INPUT_TOKEN
-            + Decimal(output_tokens) * _USD_PER_OUTPUT_TOKEN
+            Decimal(total_input_tokens) * _USD_PER_INPUT_TOKEN
+            + Decimal(total_output_tokens) * _USD_PER_OUTPUT_TOKEN
         )
         latency_ms = int((time.perf_counter() - started) * 1000)
         return ReasoningAnnotation(
@@ -225,11 +344,13 @@ class AidyReasoningEngine:
             rationale=str(parsed["rationale"])[:2000],
             key_factors=[str(factor)[:200] for factor in parsed["key_factors"]][:5],
             model_name=self._model,
-            response_id=(str(body.get("id")) if body.get("id") else None),
-            input_tokens=input_tokens,
-            output_tokens=output_tokens,
+            response_id=response_id,
+            input_tokens=total_input_tokens,
+            output_tokens=total_output_tokens,
             estimated_cost_usd=estimated_cost,
             latency_ms=latency_ms,
+            request_count=request_count,
+            tool_calls_made=tool_calls_made,
         )
 
     @staticmethod
