@@ -16,7 +16,6 @@ EVIDENCE_CONTRACT_VERSION = "aidy_reasoning_evidence_v1"
 # Free-form provider-history prose is deliberately prohibited. Provider history may affect
 # the decision only through validated provider_claim_refs, whose exact facts are persisted.
 _PROVIDER_HISTORY_PATTERNS = (
-    re.compile(r"\bprovider\b", re.I),
     re.compile(r"\bhistor(?:y|ic|ically)\b", re.I),
     re.compile(r"\btrack\s*record\b", re.I),
     re.compile(r"\bwin\s*rate\b", re.I),
@@ -24,9 +23,8 @@ _PROVIDER_HISTORY_PATTERNS = (
     re.compile(r"\bstronger\s+side\b", re.I),
     re.compile(r"\bbest\s+(?:side|session)\b", re.I),
     re.compile(r"\bworst\s+(?:side|session)\b", re.I),
-    re.compile(r"\btypically\b", re.I),
-    re.compile(r"\btends?\s+to\b", re.I),
-    re.compile(r"\busually\b", re.I),
+    re.compile(r"\bprovider\s+(?:history|performance|record|profile)\b", re.I),
+    re.compile(r"\btheir\s+(?:history|record|win\s*rate|performance)\b", re.I),
 )
 
 
