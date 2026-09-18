@@ -29,7 +29,7 @@ _INSERT = """
         worst_side, worst_side_win_rate_pct, worst_side_trades,
         best_session, best_session_win_rate_pct, best_session_trades,
         worst_session, worst_session_win_rate_pct, worst_session_trades,
-        cohort_sample_met, summary
+        side_sample_met, session_sample_met, cohort_sample_met, summary
     ) VALUES (
         :id, :source_id, :trading_style, :trades_resolved, :wins, :losses, :win_rate_pct,
         :avg_stop_distance_won, :avg_stop_distance_lost, :avg_planned_rr_won, :avg_planned_rr_lost,
@@ -37,7 +37,7 @@ _INSERT = """
         :worst_side, :worst_side_win_rate_pct, :worst_side_trades,
         :best_session, :best_session_win_rate_pct, :best_session_trades,
         :worst_session, :worst_session_win_rate_pct, :worst_session_trades,
-        :cohort_sample_met, :summary
+        :side_sample_met, :session_sample_met, :cohort_sample_met, :summary
     )
 """
 
@@ -68,6 +68,8 @@ def _row(fp: ProviderFingerprint) -> dict:
         "worst_session": fp.worst_session,
         "worst_session_win_rate_pct": fp.worst_session_win_rate_pct,
         "worst_session_trades": fp.worst_session_trades,
+        "side_sample_met": fp.side_sample_met,
+        "session_sample_met": fp.session_sample_met,
         "cohort_sample_met": fp.cohort_sample_met,
         "summary": fp.summary,
     }

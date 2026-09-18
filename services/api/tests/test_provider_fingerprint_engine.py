@@ -26,7 +26,8 @@ def test_summary_states_geometry_when_sample_is_sufficient() -> None:
         best_session_wr=Decimal("75.0"),
         worst_session="late",
         worst_session_wr=Decimal("30.0"),
-        cohort_sample_met=True,
+        side_sample_met=True,
+        session_sample_met=True,
     )
     assert "Test Provider trades as a scalper" in summary
     assert "wider stop" in summary
@@ -55,12 +56,45 @@ def test_summary_never_claims_geometry_below_the_sample_floor() -> None:
         best_session_wr=None,
         worst_session=None,
         worst_session_wr=None,
-        cohort_sample_met=False,
+        side_sample_met=False,
+        session_sample_met=False,
     )
     assert "wider stop" not in summary
     assert "tighter stop" not in summary
     assert "Not enough resolved wins and losses" in summary
     assert "Not enough resolved trades in any single side/session slice" in summary
+
+
+def test_summary_reports_side_independently_of_thin_session_spread() -> None:
+    """A provider whose per-side evidence clears the floor must get credit for it even when
+    their trades cluster into too few sessions to say anything about session -- these are
+    independent axes, and the whole point of the split is that one thin axis cannot mask the
+    other, well-evidenced one (this was the exact GOLDHUNTER gap)."""
+    summary = _build_summary(
+        provider_name="Session Clustered Provider",
+        trading_style="scalper",
+        trades_resolved=43,
+        win_rate_pct=Decimal("79.1"),
+        avg_stop_won=None,
+        avg_stop_lost=None,
+        avg_rr_won=None,
+        avg_rr_lost=None,
+        geometry_sample_met=False,
+        best_side="SELL",
+        best_side_wr=Decimal("80.0"),
+        worst_side="BUY",
+        worst_side_wr=Decimal("78.3"),
+        best_session=None,
+        best_session_wr=None,
+        worst_session=None,
+        worst_session_wr=None,
+        side_sample_met=True,
+        session_sample_met=False,
+    )
+    assert "Strongest side is SELL" in summary
+    assert "weakest is BUY" in summary
+    assert "Not enough resolved trades in more than one session" in summary
+    assert "Not enough resolved trades in any single side/session slice" not in summary
 
 
 def test_summary_omits_style_sentence_when_style_is_unknown() -> None:
@@ -82,7 +116,8 @@ def test_summary_omits_style_sentence_when_style_is_unknown() -> None:
         best_session_wr=None,
         worst_session=None,
         worst_session_wr=None,
-        cohort_sample_met=False,
+        side_sample_met=False,
+        session_sample_met=False,
     )
     assert "trades as a unknown" not in summary
     assert "Mystery Provider" in summary
