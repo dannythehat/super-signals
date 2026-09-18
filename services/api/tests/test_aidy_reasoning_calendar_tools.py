@@ -7,7 +7,11 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 
 from app.aidy_economic_calendar_client import EconomicCalendarEvent, EconomicCalendarUnavailable
-from app.aidy_reasoning_calendar_tools import build_calendar_tool_executor, fetch_calendar_summary
+from app.aidy_reasoning_calendar_tools import (
+    build_calendar_tool_executor,
+    fetch_calendar_summary,
+    fetch_todays_scheduled_events,
+)
 from app.aidy_reasoning_engine import CALENDAR_TOOL_NAME
 
 
@@ -165,3 +169,86 @@ def test_the_built_executor_clamps_out_of_range_hours() -> None:
 
     # Clamped to [0, 72] each side rather than rejected -- still produces a real (empty) result.
     assert "error" not in result
+
+
+def _event_at(base_day: datetime, *, hour: int, impact: str, title: str) -> EconomicCalendarEvent:
+    return EconomicCalendarEvent(
+        title=title,
+        country="USD",
+        impact=impact,
+        event_time_utc=base_day.replace(hour=hour, minute=0, second=0, microsecond=0),
+        forecast="2.0%",
+        previous="1.8%",
+    )
+
+
+def test_fetch_todays_scheduled_events_includes_only_todays_medium_and_high_impact() -> None:
+    as_of = datetime(2026, 9, 18, 12, 0, tzinfo=UTC)
+    client = FakeCalendarClient(
+        thisweek=[
+            _event_at(as_of, hour=2, impact="High", title="CPI"),
+            _event_at(as_of, hour=20, impact="Medium", title="Fed speaker"),
+            _event_at(as_of, hour=10, impact="Low", title="Minor release"),
+        ]
+    )
+    yesterday = as_of - timedelta(days=1)
+    tomorrow = as_of + timedelta(days=1)
+    client.thisweek.append(_event_at(yesterday, hour=23, impact="High", title="Yesterday NFP"))
+    client.thisweek.append(_event_at(tomorrow, hour=1, impact="High", title="Tomorrow FOMC"))
+
+    result = asyncio.run(fetch_todays_scheduled_events(client, as_of=as_of))
+
+    assert result is not None
+    titles = [event["title"] for event in result]
+    assert titles == ["CPI", "Fed speaker"]  # ordered by time, low-impact and other days excluded
+
+
+def test_fetch_todays_scheduled_events_labels_each_with_the_canonical_session_bucket() -> None:
+    as_of = datetime(2026, 9, 18, 12, 0, tzinfo=UTC)
+    client = FakeCalendarClient(
+        thisweek=[_event_at(as_of, hour=2, impact="High", title="Asia-session event")]
+    )
+
+    result = asyncio.run(fetch_todays_scheduled_events(client, as_of=as_of))
+
+    assert result is not None
+    assert result[0]["session"] == "asia"
+
+
+def test_fetch_todays_scheduled_events_refuses_a_signal_too_old() -> None:
+    client = FakeCalendarClient()
+    old_signal = datetime.now(UTC) - timedelta(days=30)
+
+    result = asyncio.run(fetch_todays_scheduled_events(client, as_of=old_signal))
+
+    assert result is None
+
+
+def test_fetch_todays_scheduled_events_returns_none_on_fetch_failure() -> None:
+    client = FakeCalendarClient(
+        raise_with=EconomicCalendarUnavailable("economic_calendar_fetch_failed:thisweek")
+    )
+
+    result = asyncio.run(fetch_todays_scheduled_events(client, as_of=datetime.now(UTC)))
+
+    assert result is None
+
+
+def test_fetch_todays_scheduled_events_never_exposes_a_realized_outcome_field() -> None:
+    as_of = datetime.now(UTC)
+    client = FakeCalendarClient(
+        thisweek=[_event_at(as_of, hour=as_of.hour, impact="High", title="NFP")]
+    )
+
+    result = asyncio.run(fetch_todays_scheduled_events(client, as_of=as_of))
+
+    assert result is not None
+    assert set(result[0]) == {
+        "time_utc",
+        "session",
+        "title",
+        "country",
+        "impact",
+        "forecast",
+        "previous",
+    }

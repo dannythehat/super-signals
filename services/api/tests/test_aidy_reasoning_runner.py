@@ -23,6 +23,7 @@ from sqlalchemy import create_engine, text
 from sqlalchemy.exc import DBAPIError
 
 from app.aidy_context_client import AidyCanonicalContext, AidyContextTerminalMiss
+from app.aidy_economic_calendar_client import EconomicCalendarEvent
 from app.aidy_reasoning_engine import (
     CALENDAR_TOOL_NAME,
     CANDLE_TOOL_NAME,
@@ -144,8 +145,10 @@ class FakeCandleClient:
 class FakeCalendarClient:
     """Async duck-type of EconomicCalendarClient -- just enough to prove _tools_for wires it up."""
 
+    events: list | None = None
+
     async def fetch_week(self, which: str):
-        return []
+        return list(self.events) if self.events else []
 
 
 @pytest.fixture(scope="module")
@@ -496,6 +499,79 @@ def test_no_market_client_configured_reasons_exactly_as_before(
 
     assert summary.written == 1
     assert fake_engine.calls[0].market_context is None
+
+
+def test_fetch_market_context_folds_in_the_day_map_alongside_regime_context() -> None:
+    """Uses datetime.now(UTC) as as_of, not the fixture's fixed OBSERVED_AT -- the calendar
+    day map deliberately refuses anything older than ~6 days, so a historical fixture
+    timestamp can never exercise this path."""
+    runner = AidyReasoningRunner.__new__(AidyReasoningRunner)
+    runner._context_client = FakeMarketClient()
+    calendar = FakeCalendarClient()
+    calendar.events = [
+        EconomicCalendarEvent(
+            title="CPI",
+            country="USD",
+            impact="High",
+            event_time_utc=datetime.now(UTC),
+            forecast="2.0%",
+            previous="1.8%",
+        )
+    ]
+    runner._calendar_client = calendar
+
+    context = asyncio.run(runner._fetch_market_context(datetime.now(UTC)))
+
+    assert context is not None
+    assert context["session"] == "london"  # from FakeMarketClient's fixed regime fixture
+    assert [event["title"] for event in context["todays_scheduled_events"]] == ["CPI"]
+
+
+def test_fetch_market_context_degrades_each_source_independently() -> None:
+    """A failed context client must not suppress a working calendar client, and vice versa."""
+    runner = AidyReasoningRunner.__new__(AidyReasoningRunner)
+    runner._context_client = FakeMarketClient(fail_with=RuntimeError("boom"))
+    calendar = FakeCalendarClient()
+    calendar.events = [
+        EconomicCalendarEvent(
+            title="FOMC",
+            country="USD",
+            impact="High",
+            event_time_utc=datetime.now(UTC),
+            forecast="",
+            previous="",
+        )
+    ]
+    runner._calendar_client = calendar
+
+    context = asyncio.run(runner._fetch_market_context(datetime.now(UTC)))
+
+    assert context is not None
+    assert "session" not in context  # regime context failed
+    assert [event["title"] for event in context["todays_scheduled_events"]] == ["FOMC"]
+
+
+def test_fetch_market_context_reports_a_genuinely_empty_day_honestly_not_as_none() -> None:
+    """No scheduled events today is real information (distinct from 'could not check') --
+    it must still appear as an empty list, not be collapsed into the same None used when
+    nothing could be fetched at all."""
+    runner = AidyReasoningRunner.__new__(AidyReasoningRunner)
+    runner._context_client = None
+    runner._calendar_client = FakeCalendarClient()  # no events, and not too old -- just empty
+
+    context = asyncio.run(runner._fetch_market_context(datetime.now(UTC)))
+
+    assert context == {"todays_scheduled_events": []}
+
+
+def test_fetch_market_context_returns_none_when_no_clients_are_configured_at_all() -> None:
+    runner = AidyReasoningRunner.__new__(AidyReasoningRunner)
+    runner._context_client = None
+    runner._calendar_client = None
+
+    context = asyncio.run(runner._fetch_market_context(datetime.now(UTC)))
+
+    assert context is None
 
 
 def test_tools_for_offers_nothing_when_no_tool_clients_are_configured() -> None:

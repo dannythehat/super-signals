@@ -27,7 +27,7 @@ from typing import Any
 import httpx
 
 MODEL_VERSION = "aidy_reasoning_engine_v3"
-PROMPT_VERSION = "aidy_reasoning_prompt_v3"
+PROMPT_VERSION = "aidy_reasoning_prompt_v4"
 
 # Bounded on purpose: each round trip is a real OpenAI request, so this caps both cost and
 # how long one signal can take to reason about, not just how many timeframes/hours it may
@@ -158,8 +158,16 @@ session gold was in. volatility_band and event_timing describe current volatilit
 a scheduled event sits close to this moment, when known -- "unknown" or "blocked" here is a
 genuine gap in evidence, not a signal of calm, and must be named as unknown rather than treated
 as calm. quote_freshness/quote_state describe how trustworthy this snapshot itself is -- treat
-a stale or unknown quote as a reason for lower confidence, not as evidence either way. When
-market_context is given, you may note whether this signal's own direction (side) runs with or
+a stale or unknown quote as a reason for lower confidence, not as evidence either way.
+
+market_context may also include todays_scheduled_events: every medium/high-impact macro event
+scheduled anywhere in this signal's own UTC calendar day, each with its time, session, country,
+impact, published forecast and prior reading -- never a realized outcome, since that could not
+be known yet. This is a standing map of the day, not something you asked for, so use it freely:
+note when a nearby event sits close enough to this signal's own timing to add real holding
+risk, independent of whether you also call get_economic_calendar for a narrower or wider query.
+
+When market_context is given, you may note whether this signal's own direction (side) runs with or
 against the current multi-timeframe trend, and whether the session or a nearby event timing
 adds real risk to holding it -- but this is supporting context for your read of the signal's
 geometry, never a replacement for it, and never a forecast of your own about where price goes
