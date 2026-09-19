@@ -233,3 +233,26 @@ def test_replay_v2_versions_cases_and_decisions_without_rewriting_v1() -> None:
     assert "rc.input_contract_version=:input_contract_version" in module
     assert "rd.replay_version=:replay_version" in module
     assert "c.input_contract_version=:input_contract_version" in module
+
+
+def test_materializer_uses_message_revision_exactly_as_of_signal_time() -> None:
+    source = MODULE.read_text(encoding="utf-8")
+    materialize = source.split('_MATERIALIZE_SELECT = text(', 1)[1].split(
+        '_INSERT_CASE = text(', 1
+    )[0]
+    assert "FROM message_revisions rev" in materialize
+    assert "rev.edited_at<=d.signal_posted_at" in materialize
+    assert "COALESCE(mr.raw_text,mm.raw_text)" in materialize
+    assert "revision_index_as_of_signal" in materialize
+    assert "(mm.deleted_at IS NULL OR mm.deleted_at>d.signal_posted_at)" in materialize
+    assert "ctx.aidy_context_as_of_utc IS NOT NULL" in materialize
+    assert "ctx.signal_id IS NOT NULL" not in materialize
+
+
+def test_materializer_does_not_select_legacy_decision_reasons() -> None:
+    source = MODULE.read_text(encoding="utf-8")
+    materialize = source.split('_MATERIALIZE_SELECT = text(', 1)[1].split(
+        '_INSERT_CASE = text(', 1
+    )[0]
+    assert "d.reasons" not in materialize
+    assert "d.decision_class" not in materialize
