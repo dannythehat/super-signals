@@ -99,6 +99,7 @@ def test_signal_context_is_built_only_from_frozen_pretrade_payload() -> None:
     assert context.symbol == "XAUUSD"
     assert context.provider_evidence_claims[0]["sample_n"] == 20
     assert context.market_context["source"] == "immutable_signal_attachment"
+    assert context.decision_reasons == [{"code": "research"}]
     assert context.self_calibration is None
     assert context.supplemental_evidence is None
 
@@ -207,3 +208,12 @@ def test_main_lifecycle_starts_and_stops_replay_runtime_safely() -> None:
     assert stop in source
     assert source.index(construct) < source.index(start) < source.index("try:\n        yield")
     assert source.index(stop) > source.index("finally:")
+
+
+def test_materializer_excludes_legacy_decision_reasons_from_real_replay_payload() -> None:
+    source = MODULE.read_text(encoding="utf-8")
+    assert '"decision_class": "approve"' in source
+    assert '"reasons": []' in source
+    assert '"legacy_decision_reasons_excluded": True' in source
+    assert '"selection_bias_possible": True' in source
+    assert '"usable_for_live_edge_claim": False' in source
