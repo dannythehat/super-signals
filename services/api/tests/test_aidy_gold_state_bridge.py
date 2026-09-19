@@ -38,7 +38,7 @@ def _payload(*, illegal_research: bool = False) -> dict:
             "data_quality": {"quote_freshness": "fresh"},
             "market": {"quote_context": {"mid": "4380"}},
             "gold_state": {
-                "contract_version": "aidy_provider_gold_state_v1",
+                "contract_version": "aidy_provider_gold_state_v2",
                 "as_of_utc": stamp,
                 "symbol": "XAUUSD",
                 "descriptive_context_only": True,
@@ -127,7 +127,7 @@ def test_context_client_accepts_qualified_gold_state(monkeypatch: pytest.MonkeyP
         client.fetch_context(as_of=datetime(2026, 9, 18, 16, 0, tzinfo=UTC))
     )
 
-    assert context.gold_state["contract_version"] == "aidy_provider_gold_state_v1"
+    assert context.gold_state["contract_version"] == "aidy_provider_gold_state_v2"
     assert context.gold_state["price_liquidity"]["decision_input_allowed"] is True
     assert context.gold_state["research_surfaces"]["rates_macro"]["decision_input_allowed"] is False
 
@@ -160,3 +160,51 @@ def test_context_client_keeps_v2_rollout_backward_compatible(monkeypatch: pytest
     )
 
     assert context.gold_state == {}
+
+
+def test_context_client_keeps_v1_gold_state_backward_compatible(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import app.aidy_context_client as module
+
+    payload = _payload()
+    payload["context"]["gold_state"]["contract_version"] = "aidy_provider_gold_state_v1"
+    _AsyncClient.payload = payload
+    monkeypatch.setattr(module.httpx, "AsyncClient", _AsyncClient)
+    client = AidyContextClient(base_url="https://aidy.test", bearer_token="token")
+
+    context = asyncio.run(
+        client.fetch_context(as_of=datetime(2026, 9, 18, 16, 0, tzinfo=UTC))
+    )
+
+    assert context.gold_state["contract_version"] == "aidy_provider_gold_state_v1"
+
+
+def test_context_client_rejects_gold_state_that_claims_directional_edge(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import app.aidy_context_client as module
+
+    payload = _payload()
+    payload["context"]["gold_state"]["predictive_edge_claimed"] = True
+    _AsyncClient.payload = payload
+    monkeypatch.setattr(module.httpx, "AsyncClient", _AsyncClient)
+    client = AidyContextClient(base_url="https://aidy.test", bearer_token="token")
+
+    with pytest.raises(ValueError, match="aidy_context_gold_state_predictive_claim_forbidden"):
+        asyncio.run(client.fetch_context(as_of=datetime(2026, 9, 18, 16, 0, tzinfo=UTC)))
+
+
+def test_context_client_rejects_non_descriptive_gold_state(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import app.aidy_context_client as module
+
+    payload = _payload()
+    payload["context"]["gold_state"]["descriptive_context_only"] = False
+    _AsyncClient.payload = payload
+    monkeypatch.setattr(module.httpx, "AsyncClient", _AsyncClient)
+    client = AidyContextClient(base_url="https://aidy.test", bearer_token="token")
+
+    with pytest.raises(ValueError, match="aidy_context_gold_state_not_descriptive_only"):
+        asyncio.run(client.fetch_context(as_of=datetime(2026, 9, 18, 16, 0, tzinfo=UTC)))
