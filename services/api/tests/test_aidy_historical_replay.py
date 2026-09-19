@@ -70,7 +70,7 @@ def _payload() -> dict:
             "profile_effective_at_lte_signal": True,
             "context_as_of_lte_signal": True,
             "recent_messages_lte_signal": True,
-            "outcome_values_loaded": False,
+            "outcome_values_absent": True,
         },
     }
 
@@ -159,7 +159,7 @@ def test_holdout_scope_is_locked_without_explicit_open_flag(
 
 def test_materialization_query_does_not_select_future_outcome_values() -> None:
     source = MODULE.read_text(encoding="utf-8")
-    select_block = source.split('_MATERIALIZE_SELECT = text(', 1)[1].split(')_INSERT_CASE', 1)[0]
+    select_block = source.split('_MATERIALIZE_SELECT = text(', 1)[1].split('_INSERT_CASE = text(', 1)[0]
     assert "EXISTS (" in select_block
     assert "aidy_decision_outcomes" in select_block
     for forbidden in (
@@ -174,7 +174,7 @@ def test_materialization_query_does_not_select_future_outcome_values() -> None:
 
 def test_outcomes_are_joined_only_after_replay_decision_exists() -> None:
     source = MODULE.read_text(encoding="utf-8")
-    score_block = source.split('_SELECT_UNSCORED = text(', 1)[1].split(')_INSERT_SCORE', 1)[0]
+    score_block = source.split('_SELECT_UNSCORED = text(', 1)[1].split('_INSERT_SCORE = text(', 1)[0]
     assert "FROM aidy_historical_replay_decisions rd" in score_block
     assert "JOIN aidy_decision_outcomes ao" in score_block
 
