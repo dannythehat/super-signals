@@ -69,7 +69,7 @@ _FORBIDDEN_INPUT_KEYS = {
 
 _MATERIALIZE_SELECT = text(
     """
-    SELECT d.id AS source_decision_id,d.decision_class,d.reasons,d.source_id,
+    SELECT d.id AS source_decision_id,d.source_id,
            d.signal_posted_at,
            o.message_id,o.signal_id,o.side,o.symbol,o.entry_low,o.entry_high,o.stop_loss,o.take_profits,
            COALESCE(NULLIF(s.chat_title,''),s.source_alias,'UNKNOWN') AS provider_name,
@@ -134,22 +134,37 @@ _MATERIALIZE_SELECT = text(
     ) ctx ON true
     LEFT JOIN LATERAL (
         SELECT jsonb_agg(
-                   jsonb_build_object('posted_at',q.posted_at,'text',q.raw_text)
+                   jsonb_build_object(
+                       'posted_at',q.posted_at,
+                       'text',q.effective_text,
+                       'revision_index_as_of_signal',q.effective_revision_index
+                   )
                    ORDER BY q.posted_at
                ) AS messages_json
         FROM (
-            SELECT mm.posted_at,left(mm.raw_text,700) AS raw_text
+            SELECT mm.posted_at,
+                   left(COALESCE(mr.raw_text,mm.raw_text),700) AS effective_text,
+                   COALESCE(mr.revision_index,0) AS effective_revision_index
             FROM messages mm
+            LEFT JOIN LATERAL (
+                SELECT rev.raw_text,rev.revision_index
+                FROM message_revisions rev
+                WHERE rev.message_id=mm.id
+                  AND rev.edited_at<=d.signal_posted_at
+                ORDER BY rev.revision_index DESC,rev.edited_at DESC
+                LIMIT 1
+            ) mr ON true
             WHERE mm.source_id=d.source_id
               AND mm.posted_at<=d.signal_posted_at
-            ORDER BY mm.posted_at DESC
+              AND (mm.deleted_at IS NULL OR mm.deleted_at>d.signal_posted_at)
+            ORDER BY mm.posted_at DESC,mm.telegram_message_id DESC
             LIMIT 5
         ) q
     ) recent ON true
     WHERE d.decision_class='approve'
       AND rc.id IS NULL
       AND profile.version_no IS NOT NULL
-      AND ctx.signal_id IS NOT NULL
+      AND ctx.aidy_context_as_of_utc IS NOT NULL
       AND EXISTS (
           SELECT 1 FROM aidy_decision_outcomes ao WHERE ao.decision_id=d.id
       )
