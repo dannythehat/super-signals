@@ -255,4 +255,4 @@ def test_materializer_does_not_select_legacy_decision_reasons() -> None:
         '_INSERT_CASE = text(', 1
     )[0]
     assert "d.reasons" not in materialize
-    assert "d.decision_class" not in materialize
+    assert "WHERE d.decision_class='approve'" in materialize
