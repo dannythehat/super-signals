@@ -220,7 +220,7 @@ def test_materializer_excludes_legacy_decision_reasons_from_real_replay_payload(
     assert '"usable_for_live_edge_claim": False' in source
 
 
-def test_replay_v2_versions_cases_and_decisions_without_rewriting_v1() -> None:
+def test_replay_v3_versions_cases_and_decisions_without_rewriting_prior_exams() -> None:
     source = VERSIONING_MIGRATION.read_text(encoding="utf-8")
     assert 'revision: str = "0107_aidy_hist_replay_v2"' in source
     assert 'down_revision: str | None = "0106_aidy_hist_replay"' in source
@@ -228,8 +228,8 @@ def test_replay_v2_versions_cases_and_decisions_without_rewriting_v1() -> None:
     assert "UNIQUE (case_id,replay_version)" in source
 
     module = MODULE.read_text(encoding="utf-8")
-    assert 'REPLAY_VERSION = "aidy_historical_time_machine_v2"' in module
-    assert 'INPUT_CONTRACT_VERSION = "aidy_historical_replay_input_v2"' in module
+    assert 'REPLAY_VERSION = "aidy_historical_time_machine_v3"' in module
+    assert 'INPUT_CONTRACT_VERSION = "aidy_historical_replay_input_v3"' in module
     assert "rc.input_contract_version=:input_contract_version" in module
     assert "rd.replay_version=:replay_version" in module
     assert "c.input_contract_version=:input_contract_version" in module
