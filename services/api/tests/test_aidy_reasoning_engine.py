@@ -432,3 +432,15 @@ def test_prompt_sends_atomic_claims_not_raw_provider_history() -> None:
     assert "provider_fingerprint" not in sent
     assert "provider_name" not in sent
     assert "provider_trades_resolved" not in sent
+
+
+def test_gold_state_v2_prompt_forbids_proxy_causality_and_prediction() -> None:
+    from app import aidy_reasoning_engine as module
+
+    instructions = " ".join(module._SYSTEM_INSTRUCTIONS.split())
+    assert "Gold State v2 is DESCRIPTIVE, not a directional prediction" in instructions
+    assert "proxy_not_order_flow=true" in instructions
+    assert "never call this hidden orders" in instructions
+    assert "causal_attribution_proven=false" in instructions
+    assert "When cause_unknown=true, explicitly treat the cause as unknown" in instructions
+    assert "proximity is risk context, never proof that the event caused any move" in instructions

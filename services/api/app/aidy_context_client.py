@@ -206,7 +206,8 @@ class AidyContextClient:
         if not isinstance(gold_state, dict):
             raise TypeError("aidy_context_gold_state_invalid")
         if gold_state:
-            if gold_state.get("contract_version") not in _GOLD_STATE_CONTRACTS:
+            contract_version = gold_state.get("contract_version")
+            if contract_version not in _GOLD_STATE_CONTRACTS:
                 raise ValueError("aidy_context_gold_state_contract_invalid")
             if gold_state.get("descriptive_context_only") is not True:
                 raise ValueError("aidy_context_gold_state_not_descriptive_only")
@@ -217,6 +218,37 @@ class AidyContextClient:
             gold_state_at = _utc_strict(gold_state.get("as_of_utc"), field="gold_state_as_of_utc")
             if gold_state_at != context_at or gold_state_at > requested:
                 raise ValueError("aidy_context_gold_state_time_mismatch")
+            if contract_version == "aidy_provider_gold_state_v2":
+                if gold_state.get("gold_state_engine_version") != "aidy_gold_state_engine_v1":
+                    raise ValueError("aidy_context_gold_state_engine_version_invalid")
+                if gold_state.get("research_only") is not True:
+                    raise ValueError("aidy_context_gold_state_research_only_required")
+                if gold_state.get("future_values_used") is not False:
+                    raise ValueError("aidy_context_gold_state_future_values_forbidden")
+                if gold_state.get("unknown_stays_unknown") is not True:
+                    raise ValueError("aidy_context_gold_state_unknown_contract_invalid")
+                digest = str(gold_state.get("gold_state_digest") or "")
+                if len(digest) != 64 or any(ch not in "0123456789abcdef" for ch in digest):
+                    raise ValueError("aidy_context_gold_state_digest_invalid")
+                for section_name in (
+                    "session",
+                    "market_structure",
+                    "liquidity",
+                    "location",
+                    "volatility",
+                    "scheduled_event_risk",
+                    "move_observation",
+                ):
+                    if not isinstance(gold_state.get(section_name), dict):
+                        raise TypeError(f"aidy_context_gold_state_{section_name}_invalid")
+                liquidity = gold_state["liquidity"]
+                if liquidity.get("proxy_not_order_flow") is not True:
+                    raise ValueError("aidy_context_gold_state_liquidity_proxy_flag_missing")
+                if liquidity.get("hidden_order_flow_claimed") is not False:
+                    raise ValueError("aidy_context_gold_state_hidden_order_flow_forbidden")
+                move = gold_state["move_observation"]
+                if move.get("causal_attribution_proven") is not False:
+                    raise ValueError("aidy_context_gold_state_causal_attribution_forbidden")
             research = gold_state.get("research_surfaces")
             if not isinstance(research, dict):
                 raise TypeError("aidy_context_gold_state_research_invalid")

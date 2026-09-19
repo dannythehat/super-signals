@@ -32,8 +32,8 @@ from app.aidy_evidence_contract import (
     validate_provider_claim_refs,
 )
 
-MODEL_VERSION = "aidy_reasoning_engine_v5"
-PROMPT_VERSION = "aidy_reasoning_prompt_v6"
+MODEL_VERSION = "aidy_reasoning_engine_v6"
+PROMPT_VERSION = "aidy_reasoning_prompt_v7"
 
 # Bounded on purpose: each round trip is a real OpenAI request, so this caps both cost and
 # how long one signal can take to reason about, not just how many timeframes/hours it may
@@ -202,12 +202,25 @@ risk, independent of whether you also call get_economic_calendar for a narrower 
 
 market_context may also include gold_state, a versioned point-in-time Gold-state dossier from
 the standalone AIDY Gold brain. Use a surface ONLY when its own decision_input_allowed field is
-true. price_liquidity contains measured session ranges, prior-period structure, breakout/
-reversion state, wick/swing structure and feed health. volatility contains realised-volatility
-and jump/continuity evidence when available. Research surfaces explicitly marked
-decision_input_allowed=false are NOT evidence for this decision; their presence documents an
-unknown/unqualified research gap. gold_state is descriptive context, not a directional edge
-claim. Never convert an UNKNOWN or research-only field into a bullish/bearish conclusion.
+true. Gold State v2 is DESCRIPTIVE, not a directional prediction:
+- session says which named session is actually active when known.
+- market_structure describes completed-bar close paths by timeframe. A direction such as "up"
+  means those completed closes rose over the measured window; it does NOT mean Gold will rise.
+- location measures current price against observed prior-day/session/opening-range levels and
+  descriptive round-number references. Round numbers carry no predictive edge by themselves.
+- liquidity exposes price-pattern proxies such as penetration/reclaim of an observed high/low.
+  proxy_not_order_flow=true means exactly that: never call this hidden orders, institutional
+  flow, stop hunting, manipulation, or proof that liquidity caused the move.
+- volatility describes realised/jump/range expansion or compression when qualified.
+- move_observation measures recent displacement versus prior completed M1 history. Its
+  mechanism_context entries are candidate context only. causal_attribution_proven=false means
+  you MUST NOT say an event, liquidity pattern or volatility state caused the move. When
+  cause_unknown=true, explicitly treat the cause as unknown.
+- scheduled_event_risk says only that a known scheduled event is near the signal; proximity is
+  risk context, never proof that the event caused any move.
+Research surfaces explicitly marked decision_input_allowed=false are NOT evidence for this
+decision; their presence documents an unknown/unqualified research gap. Never convert UNKNOWN,
+research-only, a proxy, or descriptive structure into a causal or predictive claim.
 
 When market_context is given, you may note whether this signal's own direction (side) runs with or
 against the current multi-timeframe trend, and whether the session or a nearby event timing
