@@ -709,18 +709,46 @@ class AidyHistoricalReplayRuntime:
     def running(self) -> bool:
         return self._task is not None and not self._task.done()
 
+    def _record_runtime_state(self, state: str, *, scope: str) -> None:
+        now = datetime.now(UTC)
+        with self._session_factory() as session:
+            session.execute(
+                _INSERT_RUN,
+                {
+                    "id": str(uuid4()),
+                    "replay_version": REPLAY_VERSION,
+                    "model_version": MODEL_VERSION,
+                    "prompt_version": PROMPT_VERSION,
+                    "partition_scope": scope,
+                    "cases_materialized": 0,
+                    "decisions_written": 0,
+                    "decisions_failed": 0,
+                    "scores_written": 0,
+                    "total_replay_delta_usd": Decimal("0"),
+                    "total_replay_shadow_pnl_usd": Decimal("0"),
+                    "holdout_opened": scope == "holdout",
+                    "started_at": now,
+                    "finished_at": now,
+                    "details": _canonical({"runtime_state": state}),
+                },
+            )
+            session.commit()
+
     async def start(self) -> bool:
         if self.running:
             return True
+        scope = _scope_from_env()
         if os.getenv("AIDY_HISTORICAL_REPLAY_ENABLED", "0").strip() != "1":
+            self._record_runtime_state("disabled_by_configuration", scope=scope)
             logger.info("AIDY historical replay disabled by configuration")
             return False
         api_key = _api_key()
         if not api_key:
+            self._record_runtime_state("missing_openai_api_key", scope=scope)
             logger.warning("AIDY historical replay enabled but no OpenAI API key is configured")
             return False
 
-        scope = _scope_from_env()
+        self._record_runtime_state("started", scope=scope)
         self._stopping.clear()
         service = AidyHistoricalReplayService(
             self._session_factory,
