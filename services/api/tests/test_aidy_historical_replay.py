@@ -16,7 +16,7 @@ from app.aidy_historical_replay import (
     _scope_from_env,
     _shadow_score,
     _signal_context_from_payload,
-) 
+)
 from app.aidy_reasoning_engine import AidyReasoningUnavailable
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -224,7 +224,7 @@ def test_materializer_excludes_legacy_decision_reasons_from_real_replay_payload(
     assert '"usable_for_live_edge_claim": False' in source
 
 
-def test_replay_v3_versions_cases_and_decisions_without_rewriting_prior_exams() -> None:
+def test_replay_versions_cases_and_decisions_without_rewriting_prior_exams() -> None:
     source = VERSIONING_MIGRATION.read_text(encoding="utf-8")
     assert 'revision: str = "0107_aidy_hist_replay_v2"' in source
     assert 'down_revision: str | None = "0106_aidy_hist_replay"' in source
@@ -298,3 +298,23 @@ def test_replay_does_not_retry_other_reasoning_failures() -> None:
             )
         )
     assert engine.calls == 1
+
+
+def test_replay_bounds_repeated_provider_claim_failure_to_one_retry() -> None:
+    engine = _ReplayRetryEngine(
+        [
+            "aidy_reasoning_provider_claim_invalid",
+            "aidy_reasoning_provider_claim_invalid",
+        ]
+    )
+    with pytest.raises(
+        AidyReasoningUnavailable,
+        match="aidy_reasoning_provider_claim_invalid",
+    ):
+        asyncio.run(
+            _reason_with_provider_claim_retry(
+                engine,
+                _signal_context_from_payload(_payload()),
+            )
+        )
+    assert engine.calls == 2
