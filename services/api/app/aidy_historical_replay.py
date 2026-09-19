@@ -35,8 +35,8 @@ from app.aidy_reasoning_runner import AidyReasoningRunner
 
 logger = logging.getLogger(__name__)
 
-REPLAY_VERSION = "aidy_historical_time_machine_v1"
-INPUT_CONTRACT_VERSION = "aidy_historical_replay_input_v1"
+REPLAY_VERSION = "aidy_historical_time_machine_v2"
+INPUT_CONTRACT_VERSION = "aidy_historical_replay_input_v2"
 
 # Frozen from the first exact-PIT resolved cohort on 2026-09-19 (240 rows).
 # These cutoffs never move when later rows are added.
@@ -94,7 +94,9 @@ _MATERIALIZE_SELECT = text(
     FROM aidy_decisions d
     JOIN provider_trade_observations o ON o.id=d.observation_id
     JOIN sources s ON s.id=d.source_id
-    LEFT JOIN aidy_historical_replay_cases rc ON rc.source_decision_id=d.id
+    LEFT JOIN aidy_historical_replay_cases rc
+      ON rc.source_decision_id=d.id
+     AND rc.input_contract_version=:input_contract_version
     LEFT JOIN LATERAL (
         SELECT to_jsonb(f) AS snapshot
         FROM provider_trade_fingerprints f
@@ -167,7 +169,7 @@ _INSERT_CASE = text(
         :input_contract_version,CAST(:input_payload AS jsonb),:input_digest,:model_eligible,
         true,false
     )
-    ON CONFLICT (source_decision_id) DO NOTHING
+    ON CONFLICT (source_decision_id,input_contract_version) DO NOTHING
     """
 )
 
@@ -175,8 +177,10 @@ _SELECT_CASES = text(
     """
     SELECT c.*
     FROM aidy_historical_replay_cases c
-    LEFT JOIN aidy_historical_replay_decisions rd ON rd.case_id=c.id
+    LEFT JOIN aidy_historical_replay_decisions rd
+      ON rd.case_id=c.id AND rd.replay_version=:replay_version
     WHERE rd.id IS NULL
+      AND c.input_contract_version=:input_contract_version
       AND c.model_eligible=true
       AND (
         (:scope='development' AND c.partition='development')
@@ -199,7 +203,7 @@ _INSERT_DECISION = text(
         CAST(:output_payload AS jsonb),:response_id,:input_tokens,:output_tokens,
         :estimated_cost_usd,:latency_ms,true,false
     )
-    ON CONFLICT (case_id) DO NOTHING
+    ON CONFLICT (case_id,replay_version) DO NOTHING
     """
 )
 
@@ -213,6 +217,7 @@ _SELECT_UNSCORED = text(
     JOIN aidy_decision_outcomes ao ON ao.decision_id=c.source_decision_id
     LEFT JOIN aidy_historical_replay_scores rs ON rs.replay_decision_id=rd.id
     WHERE rs.id IS NULL
+      AND rd.replay_version=:replay_version
     ORDER BY rd.decided_at,rd.id
     LIMIT :limit
     """
@@ -406,7 +411,10 @@ class AidyHistoricalReplayService:
         with self._session_factory() as session:
             candidates = [
                 dict(row)
-                for row in session.execute(_MATERIALIZE_SELECT, {"limit": limit}).mappings()
+                for row in session.execute(
+                    _MATERIALIZE_SELECT,
+                    {"limit": limit, "input_contract_version": INPUT_CONTRACT_VERSION},
+                ).mappings()
             ]
 
         written = 0
@@ -525,7 +533,13 @@ class AidyHistoricalReplayService:
             return [
                 dict(row)
                 for row in session.execute(
-                    _SELECT_CASES, {"scope": self._scope, "limit": limit}
+                    _SELECT_CASES,
+                    {
+                        "scope": self._scope,
+                        "limit": limit,
+                        "replay_version": REPLAY_VERSION,
+                        "input_contract_version": INPUT_CONTRACT_VERSION,
+                    }
                 ).mappings()
             ]
 
@@ -605,7 +619,10 @@ class AidyHistoricalReplayService:
         with self._session_factory() as session:
             rows = [
                 dict(row)
-                for row in session.execute(_SELECT_UNSCORED, {"limit": limit}).mappings()
+                for row in session.execute(
+                    _SELECT_UNSCORED,
+                    {"limit": limit, "replay_version": REPLAY_VERSION},
+                ).mappings()
             ]
 
         written = 0
