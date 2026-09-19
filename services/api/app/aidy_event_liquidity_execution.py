@@ -125,6 +125,24 @@ def _nearest_scheduled_event(
     }
 
 
+def execution_calibration_from_candidate(candidate: dict[str, Any]) -> dict[str, Any]:
+    """Project the PIT-safe SQL calibration columns into the deterministic builder input."""
+    return {
+        "entry_slippage_samples": candidate.get("execution_entry_samples"),
+        "entry_adverse_p50_points": candidate.get("execution_entry_p50"),
+        "entry_adverse_p95_points": candidate.get("execution_entry_p95"),
+        "exit_slippage_samples": candidate.get("execution_exit_samples"),
+        "exit_adverse_p50_points": candidate.get("execution_exit_p50"),
+        "exit_adverse_p95_points": candidate.get("execution_exit_p95"),
+        "contract_value_samples": candidate.get("execution_contract_samples"),
+        "usd_per_point_per_lot_p50": candidate.get("execution_contract_p50"),
+        "cash_charge_samples": candidate.get("execution_charge_samples"),
+        "cash_charge_per_lot_p50_usd": candidate.get("execution_charge_p50"),
+        "cash_charge_per_lot_p95_usd": candidate.get("execution_charge_p95"),
+        "evidence_as_of_utc": candidate.get("execution_evidence_as_of_utc"),
+    }
+
+
 def build_event_liquidity_execution_context(
     *,
     signal_posted_at: datetime,
@@ -246,4 +264,5 @@ def build_event_liquidity_execution_context(
 __all__ = [
     "CONTEXT_VERSION",
     "build_event_liquidity_execution_context",
+    "execution_calibration_from_candidate",
 ]
