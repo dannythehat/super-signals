@@ -397,6 +397,7 @@ class AidyReasoningRunner:
             "event_timing": labels.get("event_timing"),
             "quote_freshness": data_quality.get("quote_freshness"),
             "quote_state": data_quality.get("quote_state"),
+            "market": context.market or {},
         }
 
     @staticmethod
