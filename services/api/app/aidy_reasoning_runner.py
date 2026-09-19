@@ -551,6 +551,8 @@ class AidyReasoningRunner:
                     if isinstance(candidate.get("provider_fingerprint_snapshot"), dict)
                     else None
                 ),
+                signal_side=str(candidate.get("side") or ""),
+                signal_session=str((market_context or {}).get("session") or ""),
             )
             supplemental_evidence, preflight_calls = await self._prefetch_evidence(
                 signal_posted_at=candidate["signal_posted_at"],
