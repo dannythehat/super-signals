@@ -171,6 +171,24 @@ def test_market_context_is_sent_when_present_and_omitted_as_null_when_absent() -
         "session": "london",
     }
 
+    with_execution = replace(
+        _context(),
+        event_liquidity_execution_context={
+            "contract_version": "aidy_event_liquidity_execution_v1",
+            "event": {"directional_prediction_allowed": False},
+            "research_only": True,
+            "live_money_execution_allowed": False,
+        },
+    )
+    asyncio.run(engine.reason(with_execution))
+    sent_with_execution = json.loads(captured[-1]["input"][0]["content"])
+    assert sent_with_execution["event_liquidity_execution_context"]["contract_version"] == (
+        "aidy_event_liquidity_execution_v1"
+    )
+    assert sent_with_execution["event_liquidity_execution_context"]["event"][
+        "directional_prediction_allowed"
+    ] is False
+
 
 def test_no_tool_executor_never_offers_the_candle_tool() -> None:
     captured: list[dict] = []

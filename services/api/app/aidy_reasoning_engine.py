@@ -33,7 +33,7 @@ from app.aidy_evidence_contract import (
 )
 
 MODEL_VERSION = "aidy_reasoning_engine_v5"
-PROMPT_VERSION = "aidy_reasoning_prompt_v6"
+PROMPT_VERSION = "aidy_reasoning_prompt_v7"
 
 # Bounded on purpose: each round trip is a real OpenAI request, so this caps both cost and
 # how long one signal can take to reason about, not just how many timeframes/hours it may
@@ -246,6 +246,15 @@ call. Treat it exactly like a successful tool result: real evidence available at
 timestamp, not hindsight. If evidence is missing or marked unavailable, lower confidence rather
 than guessing.
 
+event_liquidity_execution_context is deterministic, point-in-time factual evidence built by the
+application from the signal geometry, immutable quote/liquidity context, scheduled-event metadata,
+and broker execution calibration available no later than the signal. Use it to identify factual
+execution problems such as price already being outside the entry zone, targets already crossed,
+stale/invalid quote evidence, nearby scheduled-event risk, or historically observed slippage/cash
+friction when calibration status is engineering_calibrated. Scheduled events are risk/timing facts,
+never directional predictions, and no realized event outcome is available. If execution calibration
+is insufficient or marked invalid, treat execution friction as UNKNOWN rather than filling the gap.
+
 In addition to lean, produce a SHADOW-ONLY final action. This action has no broker authority.
 take means the valid signal would be accepted at normal configured risk; reduce means it would be
 accepted at smaller risk and risk_multiplier must be between 0 and 1; hold means wait rather than
@@ -290,6 +299,7 @@ class SignalContext:
     recent_messages: list[dict[str, Any]] | None = None
     self_calibration: dict[str, Any] | None = None
     supplemental_evidence: dict[str, Any] | None = None
+    event_liquidity_execution_context: dict[str, Any] | None = None
     preflight_evidence_calls: int = 0
 
 
@@ -336,6 +346,7 @@ def _prompt_payload(context: SignalContext) -> dict[str, Any]:
         "recent_messages": context.recent_messages,
         "self_calibration": context.self_calibration,
         "supplemental_evidence": context.supplemental_evidence,
+        "event_liquidity_execution_context": context.event_liquidity_execution_context,
     }
 
 
