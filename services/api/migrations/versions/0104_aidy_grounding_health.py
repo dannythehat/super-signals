@@ -46,7 +46,7 @@ def upgrade() -> None:
                     coalesce(shadow_action_reason,'') || ' ' ||
                     coalesce(key_factors::text,'')
                   ) ~
-                  '(histor|track[[:space:]]*record|win[[:space:]]*rate|weaker[[:space:]]+side|stronger[[:space:]]+side|best[[:space:]]+(side|session)|worst[[:space:]]+(side|session)|provider[[:space:]]+(history|performance|record|profile)|their[[:space:]]+(history|record|performance)|((buy|sell).{0,36}(weak|strong|better|worse|outperform|underperform))|((asia|london|new[ _-]?york|overlap|late).{0,40}(weak|strong|better|worse|perform|prefer|favou?r)))'
+                  '(histor|track[[:space:]]*record|win[[:space:]]*rate|weaker[[:space:]]+side|stronger[[:space:]]+side|best[[:space:]]+(side|session)|worst[[:space:]]+(side|session)|provider[[:space:]]+(history|performance|record|profile)|their[[:space:]]+(history|record|performance)|((buys?|sells?).{0,36}(weak|strong|better|worse|outperform|underperform))|((asia|london|new[ _-]?york|overlap|late).{0,40}(weak|strong|better|worse|perform|prefer|favou?r)))'
             )::bigint AS suspicious_legacy_provider_history_rows,
             MAX(created_at) FILTER (
                 WHERE evidence_contract_version LIKE 'aidy_reasoning_evidence_%'
