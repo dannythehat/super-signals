@@ -11,7 +11,7 @@ from __future__ import annotations
 import re
 from typing import Any
 
-EVIDENCE_CONTRACT_VERSION = "aidy_reasoning_evidence_v1"
+EVIDENCE_CONTRACT_VERSION = "aidy_reasoning_evidence_v2"
 
 # Free-form provider-history prose is deliberately prohibited. Provider history may affect
 # the decision only through validated provider_claim_refs, whose exact facts are persisted.
@@ -25,6 +25,10 @@ _PROVIDER_HISTORY_PATTERNS = (
     re.compile(r"\bworst\s+(?:side|session)\b", re.I),
     re.compile(r"\bprovider\s+(?:history|performance|record|profile)\b", re.I),
     re.compile(r"\btheir\s+(?:history|record|win\s*rate|performance)\b", re.I),
+    re.compile(r"\b(?:buy|sell)\b.{0,36}\b(?:weak|strong|better|worse|outperform|underperform)", re.I),
+    re.compile(r"\b(?:weak|strong|better|worse|outperform|underperform).{0,36}\b(?:buy|sell)\b", re.I),
+    re.compile(r"\b(?:asia|london|new[ _-]?york|overlap|late)\b.{0,40}\b(?:weak|strong|better|worse|perform|prefer|favou?r)", re.I),
+    re.compile(r"\b(?:prefer|prefers|preferred|favou?r|favou?rs|dominant).{0,40}\b(?:asia|london|new[ _-]?york|overlap|late|buy|sell)\b", re.I),
 )
 
 
@@ -68,6 +72,8 @@ def build_provider_evidence_claims(
     provider_profile: dict[str, Any] | None,
     provider_intelligence: dict[str, Any] | None,
     provider_fingerprint: dict[str, Any] | None,
+    signal_side: str | None = None,
+    signal_session: str | None = None,
 ) -> list[dict[str, Any]]:
     """Return only provider facts that really exist in the PIT packet.
 
@@ -76,6 +82,8 @@ def build_provider_evidence_claims(
     "BUY is weaker" evidence claim by absence.
     """
     claims: list[dict[str, Any]] = []
+    current_side = str(signal_side or "").upper().strip()
+    current_session = str(signal_session or "").lower().strip().replace("-", "_").replace(" ", "_")
     profile = provider_profile or {}
     profile_version = profile.get("version_no")
     profile_as_of = profile.get("effective_at")
@@ -104,14 +112,16 @@ def build_provider_evidence_claims(
         )
 
     side_buckets = performance.get("side_buckets")
-    if isinstance(side_buckets, dict):
+    if isinstance(side_buckets, dict) and current_side:
         for side, stats in sorted(side_buckets.items()):
             if not isinstance(stats, dict):
+                continue
+            side_key = str(side).upper()
+            if side_key != current_side:
                 continue
             n = _positive_int(stats.get("trades"))
             if n is None:
                 continue
-            side_key = str(side).upper()
             claims.append(
                 _claim(
                     f"provider.performance.side.{side_key}",
@@ -131,14 +141,16 @@ def build_provider_evidence_claims(
             )
 
     session_buckets = performance.get("session_buckets_utc")
-    if isinstance(session_buckets, dict):
+    if isinstance(session_buckets, dict) and current_session:
         for session, stats in sorted(session_buckets.items()):
             if not isinstance(stats, dict):
+                continue
+            session_key = str(session).lower().strip().replace("-", "_").replace(" ", "_")
+            if session_key != current_session:
                 continue
             n = _positive_int(stats.get("trades"))
             if n is None:
                 continue
-            session_key = str(session).lower()
             claims.append(
                 _claim(
                     f"provider.performance.session.{session_key}",
@@ -221,7 +233,7 @@ def build_provider_evidence_claims(
         for label in ("best", "worst"):
             side = fp.get(f"{label}_side")
             trades = _positive_int(fp.get(f"{label}_side_trades"))
-            if side and trades:
+            if side and trades and current_side and str(side).upper() == current_side:
                 claims.append(
                     _claim(
                         f"provider.fingerprint.{label}_side",
@@ -242,7 +254,8 @@ def build_provider_evidence_claims(
         for label in ("best", "worst"):
             session = fp.get(f"{label}_session")
             trades = _positive_int(fp.get(f"{label}_session_trades"))
-            if session and trades:
+            normalized_session = str(session or "").lower().strip().replace("-", "_").replace(" ", "_")
+            if session and trades and current_session and normalized_session == current_session:
                 claims.append(
                     _claim(
                         f"provider.fingerprint.{label}_session",
