@@ -35,7 +35,7 @@ from app.aidy_reasoning_runner import AidyReasoningRunner
 
 logger = logging.getLogger(__name__)
 
-REPLAY_VERSION = "aidy_historical_time_machine_v3"
+REPLAY_VERSION = "aidy_historical_time_machine_v4"
 INPUT_CONTRACT_VERSION = "aidy_historical_replay_input_v3"
 
 # Frozen from the first exact-PIT resolved cohort on 2026-09-19 (240 rows).
@@ -46,6 +46,7 @@ _VALIDATION_END = datetime(2026, 9, 18, 8, 32, 44, tzinfo=UTC)
 _DEFAULT_INTERVAL_SECONDS = 30
 _DEFAULT_BATCH = 12
 _DEFAULT_MAX_CALLS = 220
+_PROVIDER_CLAIM_RETRY_LIMIT = 1
 
 _FORBIDDEN_INPUT_KEYS = {
     "actual_pnl_usd",
@@ -346,7 +347,7 @@ def _signal_context_from_payload(payload: dict[str, Any]) -> SignalContext:
     deterministic = payload.get("deterministic_decision") or {}
     return SignalContext(
         decision_id=str(payload["source_decision_id"]),
-        provider_name=str(payload.get("provider_name_for_validation_only") or "UNKNOWN"),
+        provider_name="",
         side=str(signal.get("side") or ""),
         symbol=str(signal.get("symbol") or ""),
         entry_low=signal.get("entry_low"),
@@ -367,6 +368,26 @@ def _signal_context_from_payload(payload: dict[str, Any]) -> SignalContext:
         supplemental_evidence=None,
         preflight_evidence_calls=0,
     )
+
+
+async def _reason_with_provider_claim_retry(
+    engine: AidyReasoningEngine,
+    context: SignalContext,
+    *,
+    retry_limit: int = _PROVIDER_CLAIM_RETRY_LIMIT,
+) -> tuple[Any, int]:
+    """Retry only stochastic provider-claim prose violations; never weaken validation."""
+    retries = 0
+    while True:
+        try:
+            return await engine.reason(context), retries
+        except AidyReasoningUnavailable as exc:
+            if (
+                str(exc) != "aidy_reasoning_provider_claim_invalid"
+                or retries >= retry_limit
+            ):
+                raise
+            retries += 1
 
 
 def _shadow_score(
@@ -589,8 +610,9 @@ class AidyHistoricalReplayService:
                 if not isinstance(pit, dict) or not all(pit.values()):
                     raise ValueError("pit_assertion_not_clean")
 
-                annotation = await self._engine.reason(
-                    _signal_context_from_payload(payload)
+                annotation, provider_claim_retries = await _reason_with_provider_claim_retry(
+                    self._engine,
+                    _signal_context_from_payload(payload),
                 )
                 output_payload = {
                     "lean": annotation.lean,
@@ -601,6 +623,7 @@ class AidyHistoricalReplayService:
                     "risk_multiplier": annotation.risk_multiplier,
                     "action_reason": annotation.action_reason,
                     "provider_claim_refs": list(annotation.provider_claim_refs),
+                    "provider_claim_validation_retries": provider_claim_retries,
                     "outcome_visible_to_model": False,
                     "tools_offered": False,
                 }
@@ -854,6 +877,7 @@ __all__ = [
     "REPLAY_VERSION",
     "_assert_no_future_fields",
     "_partition",
+    "_reason_with_provider_claim_retry",
     "_scope_from_env",
     "_shadow_score",
     "_signal_context_from_payload",
