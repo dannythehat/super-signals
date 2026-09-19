@@ -317,6 +317,54 @@ def _api_key() -> str:
     return os.getenv("OPENAI_API_KEY", "").strip() or os.getenv("Open", "").strip()
 
 
+def _signal_context_from_payload(payload: dict[str, Any]) -> SignalContext:
+    _assert_no_future_fields(payload)
+    pit = payload.get("pit_assertions") or {}
+    if not isinstance(pit, dict) or not pit or not all(pit.values()):
+        raise ValueError("historical_replay_pit_assertion_not_clean")
+    signal = payload.get("signal") or {}
+    deterministic = payload.get("deterministic_decision") or {}
+    return SignalContext(
+        decision_id=str(payload["source_decision_id"]),
+        provider_name=str(payload.get("provider_name_for_validation_only") or "UNKNOWN"),
+        side=str(signal.get("side") or ""),
+        symbol=str(signal.get("symbol") or ""),
+        entry_low=signal.get("entry_low"),
+        entry_high=signal.get("entry_high"),
+        stop_loss=signal.get("stop_loss"),
+        take_profits=[str(value) for value in (signal.get("take_profits") or [])],
+        decision_class=str(deterministic.get("decision_class") or ""),
+        decision_reasons=list(deterministic.get("reasons") or []),
+        trades_resolved=0,
+        provider_evidence_claims=list(payload.get("provider_evidence_claims") or []),
+        market_context=(
+            dict(payload["market_context"])
+            if isinstance(payload.get("market_context"), dict)
+            else None
+        ),
+        recent_messages=list(payload.get("recent_messages") or []),
+        self_calibration=None,
+        supplemental_evidence=None,
+        preflight_evidence_calls=0,
+    )
+
+
+def _shadow_score(
+    *, action: str, risk_multiplier: Decimal, actual_pnl_usd: Decimal
+) -> tuple[Decimal, Decimal]:
+    if action == "take":
+        shadow = actual_pnl_usd
+    elif action == "reduce":
+        if not Decimal("0") < risk_multiplier < Decimal("1"):
+            raise ValueError("historical_replay_reduce_multiplier_invalid")
+        shadow = actual_pnl_usd * risk_multiplier
+    elif action in {"hold", "reject", "need_more_evidence"}:
+        shadow = Decimal("0")
+    else:
+        raise ValueError("historical_replay_action_invalid")
+    return shadow, shadow - actual_pnl_usd
+
+
 @dataclass
 class HistoricalReplaySummary:
     cases_materialized: int = 0
@@ -505,36 +553,8 @@ class AidyHistoricalReplayService:
                 if not isinstance(pit, dict) or not all(pit.values()):
                     raise ValueError("pit_assertion_not_clean")
 
-                signal = payload.get("signal") or {}
-                deterministic = payload.get("deterministic_decision") or {}
                 annotation = await self._engine.reason(
-                    SignalContext(
-                        decision_id=str(payload["source_decision_id"]),
-                        provider_name=str(
-                            payload.get("provider_name_for_validation_only") or "UNKNOWN"
-                        ),
-                        side=str(signal.get("side") or ""),
-                        symbol=str(signal.get("symbol") or ""),
-                        entry_low=signal.get("entry_low"),
-                        entry_high=signal.get("entry_high"),
-                        stop_loss=signal.get("stop_loss"),
-                        take_profits=[str(value) for value in (signal.get("take_profits") or [])],
-                        decision_class=str(deterministic.get("decision_class") or ""),
-                        decision_reasons=list(deterministic.get("reasons") or []),
-                        trades_resolved=0,
-                        provider_evidence_claims=list(
-                            payload.get("provider_evidence_claims") or []
-                        ),
-                        market_context=(
-                            dict(payload["market_context"])
-                            if isinstance(payload.get("market_context"), dict)
-                            else None
-                        ),
-                        recent_messages=list(payload.get("recent_messages") or []),
-                        self_calibration=None,
-                        supplemental_evidence=None,
-                        preflight_evidence_calls=0,
-                    )
+                    _signal_context_from_payload(payload)
                 )
                 output_payload = {
                     "lean": annotation.lean,
@@ -592,16 +612,14 @@ class AidyHistoricalReplayService:
             multiplier = Decimal(str(output.get("risk_multiplier") or 0))
             actual = Decimal(str(row["actual_pnl_usd"]))
 
-            if action == "take":
-                shadow = actual
-            elif action == "reduce":
-                shadow = actual * multiplier
-            elif action in {"hold", "reject", "need_more_evidence"}:
-                shadow = Decimal("0")
-            else:
+            try:
+                shadow, delta = _shadow_score(
+                    action=action,
+                    risk_multiplier=multiplier,
+                    actual_pnl_usd=actual,
+                )
+            except ValueError:
                 continue
-
-            delta = shadow - actual
             with self._session_factory() as session:
                 result = session.execute(
                     _INSERT_SCORE,
@@ -769,4 +787,7 @@ __all__ = [
     "REPLAY_VERSION",
     "_assert_no_future_fields",
     "_partition",
+    "_scope_from_env",
+    "_shadow_score",
+    "_signal_context_from_payload",
 ]
