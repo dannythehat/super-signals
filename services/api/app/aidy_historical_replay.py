@@ -451,8 +451,14 @@ class AidyHistoricalReplayService:
                     ],
                 },
                 "deterministic_decision": {
-                    "decision_class": candidate.get("decision_class"),
-                    "reasons": candidate.get("reasons") or [],
+                    "decision_class": "approve",
+                    "reasons": [],
+                },
+                "selection_provenance": {
+                    "population": "legacy_aidy_approved_resolved_exact_pit",
+                    "legacy_decision_reasons_excluded": True,
+                    "selection_bias_possible": True,
+                    "usable_for_live_edge_claim": False,
                 },
                 "provider_profile_version_no": candidate.get("provider_profile_version_no"),
                 "provider_profile_effective_at": _dt_iso(
@@ -485,6 +491,7 @@ class AidyHistoricalReplayService:
                         for item in (candidate.get("recent_messages") or [])
                     ),
                     "outcome_values_absent": True,
+                    "legacy_decision_reasons_excluded": True,
                 },
             }
             _assert_no_future_fields(payload)
