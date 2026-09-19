@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from datetime import UTC, datetime
 from decimal import Decimal
 from pathlib import Path
@@ -11,10 +12,12 @@ from app.aidy_historical_replay import (
     REPLAY_VERSION,
     _assert_no_future_fields,
     _partition,
+    _reason_with_provider_claim_retry,
     _scope_from_env,
     _shadow_score,
     _signal_context_from_payload,
-)
+) 
+from app.aidy_reasoning_engine import AidyReasoningUnavailable
 
 ROOT = Path(__file__).resolve().parents[1]
 MIGRATION = ROOT / "migrations" / "versions" / "0106_aidy_hist_replay.py"
@@ -96,6 +99,7 @@ def test_future_outcome_fields_are_forbidden_anywhere_in_input() -> None:
 def test_signal_context_is_built_only_from_frozen_pretrade_payload() -> None:
     context = _signal_context_from_payload(_payload())
     assert context.decision_id == "11111111-1111-1111-1111-111111111111"
+    assert context.provider_name == ""
     assert context.side == "BUY"
     assert context.symbol == "XAUUSD"
     assert context.provider_evidence_claims[0]["sample_n"] == 20
@@ -228,7 +232,7 @@ def test_replay_v3_versions_cases_and_decisions_without_rewriting_prior_exams() 
     assert "UNIQUE (case_id,replay_version)" in source
 
     module = MODULE.read_text(encoding="utf-8")
-    assert 'REPLAY_VERSION = "aidy_historical_time_machine_v3"' in module
+    assert 'REPLAY_VERSION = "aidy_historical_time_machine_v4"' in module
     assert 'INPUT_CONTRACT_VERSION = "aidy_historical_replay_input_v3"' in module
     assert "rc.input_contract_version=:input_contract_version" in module
     assert "rd.replay_version=:replay_version" in module
@@ -256,3 +260,41 @@ def test_materializer_does_not_select_legacy_decision_reasons() -> None:
     )[0]
     assert "d.reasons" not in materialize
     assert "WHERE d.decision_class='approve'" in materialize
+
+
+class _ReplayRetryEngine:
+    def __init__(self, errors: list[str]) -> None:
+        self.errors = list(errors)
+        self.calls = 0
+        self.annotation = object()
+
+    async def reason(self, context):  # noqa: ANN001, ANN201 - tiny test double
+        self.calls += 1
+        if self.errors:
+            raise AidyReasoningUnavailable(self.errors.pop(0))
+        return self.annotation
+
+
+def test_replay_retries_exact_provider_claim_validation_once() -> None:
+    engine = _ReplayRetryEngine(["aidy_reasoning_provider_claim_invalid"])
+    annotation, retries = asyncio.run(
+        _reason_with_provider_claim_retry(
+            engine,
+            _signal_context_from_payload(_payload()),
+        )
+    )
+    assert annotation is engine.annotation
+    assert retries == 1
+    assert engine.calls == 2
+
+
+def test_replay_does_not_retry_other_reasoning_failures() -> None:
+    engine = _ReplayRetryEngine(["aidy_reasoning_unavailable"])
+    with pytest.raises(AidyReasoningUnavailable, match="aidy_reasoning_unavailable"):
+        asyncio.run(
+            _reason_with_provider_claim_retry(
+                engine,
+                _signal_context_from_payload(_payload()),
+            )
+        )
+    assert engine.calls == 1
