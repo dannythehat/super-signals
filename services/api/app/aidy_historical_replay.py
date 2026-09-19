@@ -484,7 +484,7 @@ class AidyHistoricalReplayService:
                         )
                         for item in (candidate.get("recent_messages") or [])
                     ),
-                    "outcome_values_loaded": False,
+                    "outcome_values_absent": True,
                 },
             }
             _assert_no_future_fields(payload)
@@ -506,7 +506,7 @@ class AidyHistoricalReplayService:
                         "input_contract_version": INPUT_CONTRACT_VERSION,
                         "input_payload": _canonical(payload),
                         "input_digest": _digest(payload),
-                        "model_eligible": partition != "holdout",
+                        "model_eligible": True,
                     },
                 )
                 session.commit()
