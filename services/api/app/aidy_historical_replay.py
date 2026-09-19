@@ -41,6 +41,7 @@ logger = logging.getLogger(__name__)
 
 REPLAY_VERSION = "aidy_historical_time_machine_v5"
 INPUT_CONTRACT_VERSION = "aidy_historical_replay_input_v4"
+SOURCE_INPUT_CONTRACT_VERSION = "aidy_historical_replay_input_v3"
 
 # Frozen partition cutoffs from the first exact-PIT eligible cohort on 2026-09-19.
 # These cutoffs never move when later rows are added.
@@ -109,6 +110,9 @@ _MATERIALIZE_SELECT = text(
            execution.charge_p95 AS execution_charge_p95,
            execution.evidence_as_of_utc AS execution_evidence_as_of_utc
     FROM aidy_decisions d
+    JOIN aidy_historical_replay_cases frozen
+      ON frozen.source_decision_id=d.id
+     AND frozen.input_contract_version=:source_input_contract_version
     JOIN provider_trade_observations o ON o.id=d.observation_id
     JOIN sources s ON s.id=d.source_id
     LEFT JOIN aidy_historical_replay_cases rc
@@ -514,7 +518,11 @@ class AidyHistoricalReplayService:
                 dict(row)
                 for row in session.execute(
                     _MATERIALIZE_SELECT,
-                    {"limit": limit, "input_contract_version": INPUT_CONTRACT_VERSION},
+                    {
+                        "limit": limit,
+                        "input_contract_version": INPUT_CONTRACT_VERSION,
+                        "source_input_contract_version": SOURCE_INPUT_CONTRACT_VERSION,
+                    },
                 ).mappings()
             ]
 
@@ -951,6 +959,7 @@ __all__ = [
     "HistoricalReplaySummary",
     "INPUT_CONTRACT_VERSION",
     "REPLAY_VERSION",
+    "SOURCE_INPUT_CONTRACT_VERSION",
     "_assert_no_future_fields",
     "_partition",
     "_reason_with_provider_claim_retry",
