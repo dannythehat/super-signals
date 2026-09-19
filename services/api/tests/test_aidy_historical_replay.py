@@ -18,6 +18,7 @@ from app.aidy_historical_replay import (
 
 ROOT = Path(__file__).resolve().parents[1]
 MIGRATION = ROOT / "migrations" / "versions" / "0106_aidy_hist_replay.py"
+VERSIONING_MIGRATION = ROOT / "migrations" / "versions" / "0107_aidy_hist_replay_v2.py"
 MODULE = ROOT / "app" / "aidy_historical_replay.py"
 MAIN = ROOT / "app" / "main.py"
 
@@ -217,3 +218,18 @@ def test_materializer_excludes_legacy_decision_reasons_from_real_replay_payload(
     assert '"legacy_decision_reasons_excluded": True' in source
     assert '"selection_bias_possible": True' in source
     assert '"usable_for_live_edge_claim": False' in source
+
+
+def test_replay_v2_versions_cases_and_decisions_without_rewriting_v1() -> None:
+    source = VERSIONING_MIGRATION.read_text(encoding="utf-8")
+    assert 'revision: str = "0107_aidy_hist_replay_v2"' in source
+    assert 'down_revision: str | None = "0106_aidy_hist_replay"' in source
+    assert "UNIQUE (source_decision_id,input_contract_version)" in source
+    assert "UNIQUE (case_id,replay_version)" in source
+
+    module = MODULE.read_text(encoding="utf-8")
+    assert 'REPLAY_VERSION = "aidy_historical_time_machine_v2"' in module
+    assert 'INPUT_CONTRACT_VERSION = "aidy_historical_replay_input_v2"' in module
+    assert "rc.input_contract_version=:input_contract_version" in module
+    assert "rd.replay_version=:replay_version" in module
+    assert "c.input_contract_version=:input_contract_version" in module
