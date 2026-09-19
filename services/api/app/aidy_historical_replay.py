@@ -24,6 +24,10 @@ from sqlalchemy import text
 from sqlalchemy.orm import Session, sessionmaker
 
 from app.aidy_evidence_contract import build_provider_evidence_claims
+from app.aidy_event_liquidity_execution import (
+    build_event_liquidity_execution_context,
+    execution_calibration_from_candidate,
+)
 from app.aidy_reasoning_engine import (
     MODEL_VERSION,
     PROMPT_VERSION,
@@ -35,10 +39,10 @@ from app.aidy_reasoning_runner import AidyReasoningRunner
 
 logger = logging.getLogger(__name__)
 
-REPLAY_VERSION = "aidy_historical_time_machine_v4"
-INPUT_CONTRACT_VERSION = "aidy_historical_replay_input_v3"
+REPLAY_VERSION = "aidy_historical_time_machine_v5"
+INPUT_CONTRACT_VERSION = "aidy_historical_replay_input_v4"
 
-# Frozen from the first exact-PIT resolved cohort on 2026-09-19 (240 rows).
+# Frozen partition cutoffs from the first exact-PIT eligible cohort on 2026-09-19.
 # These cutoffs never move when later rows are added.
 _DEVELOPMENT_END = datetime(2026, 9, 17, 13, 20, 25, tzinfo=UTC)
 _VALIDATION_END = datetime(2026, 9, 18, 8, 32, 44, tzinfo=UTC)
@@ -91,7 +95,19 @@ _MATERIALIZE_SELECT = text(
            ctx.data_quality_json AS attached_data_quality_json,
            ctx.market_json AS attached_market_json,
            ctx.gold_state_json AS attached_gold_state_json,
-           recent.messages_json AS recent_messages
+           recent.messages_json AS recent_messages,
+           execution.entry_samples AS execution_entry_samples,
+           execution.entry_p50 AS execution_entry_p50,
+           execution.entry_p95 AS execution_entry_p95,
+           execution.exit_samples AS execution_exit_samples,
+           execution.exit_p50 AS execution_exit_p50,
+           execution.exit_p95 AS execution_exit_p95,
+           execution.contract_samples AS execution_contract_samples,
+           execution.contract_p50 AS execution_contract_p50,
+           execution.charge_samples AS execution_charge_samples,
+           execution.charge_p50 AS execution_charge_p50,
+           execution.charge_p95 AS execution_charge_p95,
+           execution.evidence_as_of_utc AS execution_evidence_as_of_utc
     FROM aidy_decisions d
     JOIN provider_trade_observations o ON o.id=d.observation_id
     JOIN sources s ON s.id=d.source_id
@@ -162,6 +178,50 @@ _MATERIALIZE_SELECT = text(
             LIMIT 5
         ) q
     ) recent ON true
+    LEFT JOIN LATERAL (
+        SELECT
+            COUNT(c.entry_adverse_slippage_points)::int AS entry_samples,
+            GREATEST(percentile_cont(0.50) WITHIN GROUP (
+                ORDER BY c.entry_adverse_slippage_points
+            )::numeric,0) AS entry_p50,
+            GREATEST(percentile_cont(0.95) WITHIN GROUP (
+                ORDER BY c.entry_adverse_slippage_points
+            )::numeric,0) AS entry_p95,
+            COUNT(c.exit_adverse_slippage_points)::int AS exit_samples,
+            GREATEST(percentile_cont(0.50) WITHIN GROUP (
+                ORDER BY c.exit_adverse_slippage_points
+            )::numeric,0) AS exit_p50,
+            GREATEST(percentile_cont(0.95) WITHIN GROUP (
+                ORDER BY c.exit_adverse_slippage_points
+            )::numeric,0) AS exit_p95,
+            COUNT(c.implied_usd_per_point_per_lot) FILTER (
+                WHERE c.implied_usd_per_point_per_lot>0
+                  AND c.implied_usd_per_point_per_lot<1000
+            )::int AS contract_samples,
+            (percentile_cont(0.50) WITHIN GROUP (
+                ORDER BY c.implied_usd_per_point_per_lot
+            ) FILTER (
+                WHERE c.implied_usd_per_point_per_lot>0
+                  AND c.implied_usd_per_point_per_lot<1000
+            ))::numeric AS contract_p50,
+            COUNT(c.broker_cash_charge_usd_per_lot) FILTER (
+                WHERE c.broker_cash_charge_usd_per_lot IS NOT NULL
+            )::int AS charge_samples,
+            (percentile_cont(0.50) WITHIN GROUP (
+                ORDER BY GREATEST(c.broker_cash_charge_usd_per_lot,0)
+            ) FILTER (
+                WHERE c.broker_cash_charge_usd_per_lot IS NOT NULL
+            ))::numeric AS charge_p50,
+            (percentile_cont(0.95) WITHIN GROUP (
+                ORDER BY GREATEST(c.broker_cash_charge_usd_per_lot,0)
+            ) FILTER (
+                WHERE c.broker_cash_charge_usd_per_lot IS NOT NULL
+            ))::numeric AS charge_p95,
+            MAX(c.closed_at) AS evidence_as_of_utc
+        FROM provider_execution_calibration_samples c
+        WHERE c.account_environment='demo'
+          AND c.closed_at<=d.signal_posted_at
+    ) execution ON true
     WHERE d.decision_class='approve'
       AND rc.id IS NULL
       AND profile.version_no IS NOT NULL
@@ -366,6 +426,11 @@ def _signal_context_from_payload(payload: dict[str, Any]) -> SignalContext:
         recent_messages=list(payload.get("recent_messages") or []),
         self_calibration=None,
         supplemental_evidence=None,
+        event_liquidity_execution_context=(
+            dict(payload["event_liquidity_execution_context"])
+            if isinstance(payload.get("event_liquidity_execution_context"), dict)
+            else None
+        ),
         preflight_evidence_calls=0,
     )
 
@@ -472,6 +537,16 @@ class AidyHistoricalReplayService:
                 signal_side=str(candidate.get("side") or ""),
                 signal_session=str((market_context or {}).get("session") or ""),
             )
+            event_liquidity_execution_context = build_event_liquidity_execution_context(
+                signal_posted_at=signal_at,
+                side=str(candidate.get("side") or ""),
+                entry_low=candidate.get("entry_low"),
+                entry_high=candidate.get("entry_high"),
+                stop_loss=candidate.get("stop_loss"),
+                take_profits=list(candidate.get("take_profits") or []),
+                market_context=market_context,
+                execution_calibration=execution_calibration_from_candidate(candidate),
+            )
             payload = {
                 "input_contract_version": INPUT_CONTRACT_VERSION,
                 "source_decision_id": str(candidate["source_decision_id"]),
@@ -510,6 +585,7 @@ class AidyHistoricalReplayService:
                 ),
                 "provider_evidence_claims": claims,
                 "market_context": market_context,
+                "event_liquidity_execution_context": event_liquidity_execution_context,
                 "recent_messages": candidate.get("recent_messages") or [],
                 "self_calibration": None,
                 "supplemental_evidence": None,
