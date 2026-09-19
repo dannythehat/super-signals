@@ -25,8 +25,8 @@ _PROVIDER_HISTORY_PATTERNS = (
     re.compile(r"\bworst\s+(?:side|session)\b", re.I),
     re.compile(r"\bprovider\s+(?:history|performance|record|profile)\b", re.I),
     re.compile(r"\btheir\s+(?:history|record|win\s*rate|performance)\b", re.I),
-    re.compile(r"\b(?:buy|sell)\b.{0,36}\b(?:weak|strong|better|worse|outperform|underperform)", re.I),
-    re.compile(r"\b(?:weak|strong|better|worse|outperform|underperform).{0,36}\b(?:buy|sell)\b", re.I),
+    re.compile(r"\b(?:buys?|sells?)\b.{0,36}\b(?:weak|strong|better|worse|outperform|underperform)", re.I),
+    re.compile(r"\b(?:weak|strong|better|worse|outperform|underperform).{0,36}\b(?:buys?|sells?)\b", re.I),
     re.compile(r"\b(?:asia|london|new[ _-]?york|overlap|late)\b.{0,40}\b(?:weak|strong|better|worse|perform|prefer|favou?r)", re.I),
     re.compile(r"\b(?:prefer|prefers|preferred|favou?r|favou?rs|dominant).{0,40}\b(?:asia|london|new[ _-]?york|overlap|late|buy|sell)\b", re.I),
 )
