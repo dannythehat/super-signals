@@ -27,6 +27,10 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from app.aidy_context_client import AidyCanonicalContext, AidyContextClient, AidyContextTerminalMiss
 from app.aidy_economic_calendar_client import EconomicCalendarClient
+from app.aidy_event_liquidity_execution import (
+    build_event_liquidity_execution_context,
+    execution_calibration_from_candidate,
+)
 from app.aidy_evidence_contract import (
     EVIDENCE_CONTRACT_VERSION,
     build_provider_evidence_claims,
@@ -84,7 +88,19 @@ _SELECTABLE = """
            ctx.market_json AS attached_market_json,
            ctx.gold_state_json AS attached_gold_state_json,
            recent.messages_json AS recent_messages,
-           calibration.calibration_json AS self_calibration
+           calibration.calibration_json AS self_calibration,
+           execution.entry_samples AS execution_entry_samples,
+           execution.entry_p50 AS execution_entry_p50,
+           execution.entry_p95 AS execution_entry_p95,
+           execution.exit_samples AS execution_exit_samples,
+           execution.exit_p50 AS execution_exit_p50,
+           execution.exit_p95 AS execution_exit_p95,
+           execution.contract_samples AS execution_contract_samples,
+           execution.contract_p50 AS execution_contract_p50,
+           execution.charge_samples AS execution_charge_samples,
+           execution.charge_p50 AS execution_charge_p50,
+           execution.charge_p95 AS execution_charge_p95,
+           execution.evidence_as_of_utc AS execution_evidence_as_of_utc
     FROM aidy_decisions d
     JOIN provider_trade_observations o ON o.id=d.observation_id
     JOIN sources s ON s.id=d.source_id
@@ -159,6 +175,68 @@ _SELECTABLE = """
             GROUP BY ar.lean
         ) z
     ) calibration ON true
+    LEFT JOIN LATERAL (
+        SELECT
+            COUNT(c.entry_adverse_slippage_points)::int AS entry_samples,
+            GREATEST(
+                percentile_cont(0.50) WITHIN GROUP (
+                    ORDER BY c.entry_adverse_slippage_points
+                )::numeric,
+                0
+            ) AS entry_p50,
+            GREATEST(
+                percentile_cont(0.95) WITHIN GROUP (
+                    ORDER BY c.entry_adverse_slippage_points
+                )::numeric,
+                0
+            ) AS entry_p95,
+            COUNT(c.exit_adverse_slippage_points)::int AS exit_samples,
+            GREATEST(
+                percentile_cont(0.50) WITHIN GROUP (
+                    ORDER BY c.exit_adverse_slippage_points
+                )::numeric,
+                0
+            ) AS exit_p50,
+            GREATEST(
+                percentile_cont(0.95) WITHIN GROUP (
+                    ORDER BY c.exit_adverse_slippage_points
+                )::numeric,
+                0
+            ) AS exit_p95,
+            COUNT(c.implied_usd_per_point_per_lot) FILTER (
+                WHERE c.implied_usd_per_point_per_lot>0
+                  AND c.implied_usd_per_point_per_lot<1000
+            )::int AS contract_samples,
+            (
+                percentile_cont(0.50) WITHIN GROUP (
+                    ORDER BY c.implied_usd_per_point_per_lot
+                ) FILTER (
+                    WHERE c.implied_usd_per_point_per_lot>0
+                      AND c.implied_usd_per_point_per_lot<1000
+                )
+            )::numeric AS contract_p50,
+            COUNT(c.broker_cash_charge_usd_per_lot) FILTER (
+                WHERE c.broker_cash_charge_usd_per_lot IS NOT NULL
+            )::int AS charge_samples,
+            (
+                percentile_cont(0.50) WITHIN GROUP (
+                    ORDER BY GREATEST(c.broker_cash_charge_usd_per_lot,0)
+                ) FILTER (
+                    WHERE c.broker_cash_charge_usd_per_lot IS NOT NULL
+                )
+            )::numeric AS charge_p50,
+            (
+                percentile_cont(0.95) WITHIN GROUP (
+                    ORDER BY GREATEST(c.broker_cash_charge_usd_per_lot,0)
+                ) FILTER (
+                    WHERE c.broker_cash_charge_usd_per_lot IS NOT NULL
+                )
+            )::numeric AS charge_p95,
+            MAX(c.closed_at) AS evidence_as_of_utc
+        FROM provider_execution_calibration_samples c
+        WHERE c.account_environment='demo'
+          AND c.closed_at<=d.signal_posted_at
+    ) execution ON true
     WHERE d.decision_class='approve'
       AND a.id IS NULL
     ORDER BY d.decided_at
@@ -558,6 +636,16 @@ class AidyReasoningRunner:
                 signal_posted_at=candidate["signal_posted_at"],
                 market_context=market_context,
             )
+            event_liquidity_execution_context = build_event_liquidity_execution_context(
+                signal_posted_at=candidate["signal_posted_at"],
+                side=str(candidate.get("side") or ""),
+                entry_low=candidate.get("entry_low"),
+                entry_high=candidate.get("entry_high"),
+                stop_loss=candidate.get("stop_loss"),
+                take_profits=list(candidate.get("take_profits") or []),
+                market_context=market_context,
+                execution_calibration=execution_calibration_from_candidate(candidate),
+            )
             context = SignalContext(
                 decision_id=str(candidate["decision_id"]),
                 provider_name=str(candidate["provider_name"]),
@@ -592,6 +680,7 @@ class AidyReasoningRunner:
                     else None
                 ),
                 supplemental_evidence=supplemental_evidence,
+                event_liquidity_execution_context=event_liquidity_execution_context,
                 preflight_evidence_calls=preflight_calls,
             )
             tool_schemas, tool_executor = self._tools_for(candidate["signal_posted_at"])
