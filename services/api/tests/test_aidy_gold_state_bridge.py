@@ -39,11 +39,45 @@ def _payload(*, illegal_research: bool = False) -> dict:
             "market": {"quote_context": {"mid": "4380"}},
             "gold_state": {
                 "contract_version": "aidy_provider_gold_state_v2",
+                "gold_state_engine_version": "aidy_gold_state_engine_v1",
+                "gold_state_digest": "d" * 64,
                 "as_of_utc": stamp,
                 "symbol": "XAUUSD",
+                "research_only": True,
                 "descriptive_context_only": True,
                 "predictive_edge_claimed": False,
                 "live_money_execution_allowed": False,
+                "future_values_used": False,
+                "unknown_stays_unknown": True,
+                "session": {
+                    "state": "known",
+                    "decision_input_allowed": True,
+                    "computed_session_code": "new_york",
+                },
+                "market_structure": {
+                    "state": "partial",
+                    "decision_input_allowed": True,
+                    "predictive_edge_claimed": False,
+                    "timeframes": {},
+                },
+                "liquidity": {
+                    "state": "known",
+                    "decision_input_allowed": True,
+                    "proxy_not_order_flow": True,
+                    "hidden_order_flow_claimed": False,
+                    "sweep_reclaim_proxies": [],
+                },
+                "location": {
+                    "state": "known",
+                    "decision_input_allowed": True,
+                    "mid": "4380",
+                },
+                "move_observation": {
+                    "state": "known",
+                    "decision_input_allowed": True,
+                    "causal_attribution_proven": False,
+                    "cause_unknown": False,
+                },
                 "price_liquidity": {
                     "state": "known",
                     "decision_input_allowed": True,
@@ -207,4 +241,49 @@ def test_context_client_rejects_non_descriptive_gold_state(
     client = AidyContextClient(base_url="https://aidy.test", bearer_token="token")
 
     with pytest.raises(ValueError, match="aidy_context_gold_state_not_descriptive_only"):
+        asyncio.run(client.fetch_context(as_of=datetime(2026, 9, 18, 16, 0, tzinfo=UTC)))
+
+
+def test_context_client_rejects_v2_hidden_order_flow_claim(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import app.aidy_context_client as module
+
+    payload = _payload()
+    payload["context"]["gold_state"]["liquidity"]["hidden_order_flow_claimed"] = True
+    _AsyncClient.payload = payload
+    monkeypatch.setattr(module.httpx, "AsyncClient", _AsyncClient)
+    client = AidyContextClient(base_url="https://aidy.test", bearer_token="token")
+
+    with pytest.raises(ValueError, match="aidy_context_gold_state_hidden_order_flow_forbidden"):
+        asyncio.run(client.fetch_context(as_of=datetime(2026, 9, 18, 16, 0, tzinfo=UTC)))
+
+
+def test_context_client_rejects_v2_causal_attribution_claim(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import app.aidy_context_client as module
+
+    payload = _payload()
+    payload["context"]["gold_state"]["move_observation"]["causal_attribution_proven"] = True
+    _AsyncClient.payload = payload
+    monkeypatch.setattr(module.httpx, "AsyncClient", _AsyncClient)
+    client = AidyContextClient(base_url="https://aidy.test", bearer_token="token")
+
+    with pytest.raises(ValueError, match="aidy_context_gold_state_causal_attribution_forbidden"):
+        asyncio.run(client.fetch_context(as_of=datetime(2026, 9, 18, 16, 0, tzinfo=UTC)))
+
+
+def test_context_client_rejects_v2_future_values(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import app.aidy_context_client as module
+
+    payload = _payload()
+    payload["context"]["gold_state"]["future_values_used"] = True
+    _AsyncClient.payload = payload
+    monkeypatch.setattr(module.httpx, "AsyncClient", _AsyncClient)
+    client = AidyContextClient(base_url="https://aidy.test", bearer_token="token")
+
+    with pytest.raises(ValueError, match="aidy_context_gold_state_future_values_forbidden"):
         asyncio.run(client.fetch_context(as_of=datetime(2026, 9, 18, 16, 0, tzinfo=UTC)))
