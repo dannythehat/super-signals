@@ -168,10 +168,13 @@ internally inconsistent (e.g. a stop on the wrong side of entry for the stated d
 
 You may also be given provider_evidence_claims. These are the ONLY provider-history facts you
 may use. Each is an atomic point-in-time fact with an exact id, source path, value, sample size,
-version and evidence timestamp. If provider history materially affects your action, put the
-exact supporting claim id(s) in provider_claim_refs. Never infer a missing cohort from absence:
-if there is SELL history but no BUY claim, that does NOT mean BUY is weaker. A comparison
-requires direct evidence for both cohorts or an explicit best/worst comparison claim.
+version and evidence timestamp. The application pre-scopes side/session performance evidence
+to THIS signal's side and session, so an opposite-side or different-session cohort is deliberately
+not available unless there is an explicit comparison claim that passed its own sample gate.
+If provider history materially affects your action, put the exact supporting claim id(s) in
+provider_claim_refs. Never infer a missing cohort from absence. A behaviour claim such as
+dominant_session_utc describes posting/communication behaviour, NOT profitability in that
+session, and must never be converted into a performance claim.
 
 Provider-history facts must NOT be restated in rationale, key_factors or action_reason. Those
 free-text fields are restricted to the current signal's geometry, current market evidence,
