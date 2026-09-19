@@ -15,6 +15,7 @@ from fastapi.staticfiles import StaticFiles
 
 from app.aidy_decision_outcome_runtime import AidyDecisionOutcomeRuntime
 from app.aidy_decision_runtime import AidyDecisionRuntime
+from app.aidy_grounding_acceptance import AidyGroundingAcceptanceRuntime
 from app.aidy_reasoning_runtime import AidyReasoningRuntime
 from app.aidy_message_review_runtime import AidyMessageReviewRuntime
 from app.aidy_shadow_runtime import AidyShadowRuntime
@@ -160,6 +161,9 @@ async def _lifespan(application: FastAPI) -> AsyncIterator[None]:
     aidy_reasoning_runtime = AidyReasoningRuntime(session_factory)
     application.state.aidy_reasoning_runtime = aidy_reasoning_runtime
     await aidy_reasoning_runtime.start()
+    aidy_grounding_acceptance_runtime = AidyGroundingAcceptanceRuntime(session_factory)
+    application.state.aidy_grounding_acceptance_runtime = aidy_grounding_acceptance_runtime
+    await aidy_grounding_acceptance_runtime.start()
     aidy_message_review_runtime = AidyMessageReviewRuntime(session_factory)
     application.state.aidy_message_review_runtime = aidy_message_review_runtime
     await aidy_message_review_runtime.start()
@@ -392,6 +396,7 @@ async def _lifespan(application: FastAPI) -> AsyncIterator[None]:
                 pass
         await provider_fingerprint_runtime.stop()
         await aidy_message_review_runtime.stop()
+        await aidy_grounding_acceptance_runtime.stop()
         await aidy_reasoning_runtime.stop()
         await aidy_decision_outcome_runtime.stop()
         await aidy_decision_runtime.stop()
