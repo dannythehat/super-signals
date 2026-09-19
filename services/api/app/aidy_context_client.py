@@ -12,6 +12,7 @@ import httpx
 _CONTEXT_RETRY_ATTEMPTS = 4
 _CONTEXT_RETRY_BASE_SECONDS = 0.25
 _CONTEXT_RETRY_STATUS_CODES = {429, 500, 502, 503, 504}
+_GOLD_STATE_CONTRACTS = {"aidy_provider_gold_state_v1", "aidy_provider_gold_state_v2"}
 
 
 def _utc_strict(value: datetime | str, *, field: str) -> datetime:
@@ -205,8 +206,10 @@ class AidyContextClient:
         if not isinstance(gold_state, dict):
             raise TypeError("aidy_context_gold_state_invalid")
         if gold_state:
-            if gold_state.get("contract_version") != "aidy_provider_gold_state_v1":
+            if gold_state.get("contract_version") not in _GOLD_STATE_CONTRACTS:
                 raise ValueError("aidy_context_gold_state_contract_invalid")
+            if gold_state.get("descriptive_context_only") is not True:
+                raise ValueError("aidy_context_gold_state_not_descriptive_only")
             if gold_state.get("live_money_execution_allowed") is not False:
                 raise ValueError("aidy_context_gold_state_illegal_execution_authority")
             if gold_state.get("predictive_edge_claimed") is not False:
