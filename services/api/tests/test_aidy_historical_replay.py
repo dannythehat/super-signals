@@ -10,6 +10,7 @@ import pytest
 from app.aidy_historical_replay import (
     INPUT_CONTRACT_VERSION,
     REPLAY_VERSION,
+    SOURCE_INPUT_CONTRACT_VERSION,
     _assert_no_future_fields,
     _partition,
     _reason_with_provider_claim_retry,
@@ -261,6 +262,9 @@ def test_materializer_does_not_select_legacy_decision_reasons() -> None:
     assert "d.reasons" not in materialize
     assert "provider_execution_calibration_samples" in materialize
     assert "c.closed_at<=d.signal_posted_at" in materialize
+    assert "JOIN aidy_historical_replay_cases frozen" in materialize
+    assert "frozen.input_contract_version=:source_input_contract_version" in materialize
+    assert SOURCE_INPUT_CONTRACT_VERSION == "aidy_historical_replay_input_v3"
     assert "WHERE d.decision_class='approve'" in materialize
 
 
