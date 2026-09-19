@@ -35,8 +35,8 @@ from app.aidy_reasoning_runner import AidyReasoningRunner
 
 logger = logging.getLogger(__name__)
 
-REPLAY_VERSION = "aidy_historical_time_machine_v2"
-INPUT_CONTRACT_VERSION = "aidy_historical_replay_input_v2"
+REPLAY_VERSION = "aidy_historical_time_machine_v3"
+INPUT_CONTRACT_VERSION = "aidy_historical_replay_input_v3"
 
 # Frozen from the first exact-PIT resolved cohort on 2026-09-19 (240 rows).
 # These cutoffs never move when later rows are added.
