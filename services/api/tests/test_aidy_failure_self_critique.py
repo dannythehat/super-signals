@@ -1,6 +1,6 @@
-from pathlib import Path
-
 from __future__ import annotations
+
+from pathlib import Path
 
 from app.aidy_failure_self_critique import build_failure_self_critique_context
 
