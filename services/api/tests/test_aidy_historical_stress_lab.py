@@ -30,8 +30,8 @@ def _bar(minute: int, close: str, *, high: str | None = None, low: str | None = 
 
 
 def test_stress_lab_versions_are_separate_from_exact_pit_replay() -> None:
-    assert STRESS_REPLAY_VERSION == "aidy_historical_stress_lab_v5_effective_time"
-    assert STRESS_INPUT_CONTRACT_VERSION == "aidy_historical_stress_input_v4_effective_time"
+    assert STRESS_REPLAY_VERSION == "aidy_historical_stress_lab_v6_toolbox"
+    assert STRESS_INPUT_CONTRACT_VERSION == "aidy_historical_stress_input_v5_toolbox"
 
 
 def test_stress_partition_is_chronological() -> None:
