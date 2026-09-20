@@ -361,6 +361,7 @@ class ReasoningAnnotation:
     latency_ms: int
     request_count: int = 1
     tool_calls_made: int = 0
+    tool_names_used: tuple[str, ...] = ()
     preflight_evidence_calls: int = 0
     shadow_action: str = "need_more_evidence"
     risk_multiplier: float = 0.0
@@ -450,6 +451,7 @@ class AidyReasoningEngine:
         response_id: str | None = None
         request_count = 0
         tool_calls_made = 0
+        tool_names_used: list[str] = []
         body: dict[str, Any] | None = None
 
         try:
@@ -508,11 +510,14 @@ class AidyReasoningEngine:
                     input_items = [*input_items, *function_calls]
                     for call in function_calls:
                         tool_calls_made += 1
+                        tool_name = str(call.get("name") or "")
+                        if tool_name:
+                            tool_names_used.append(tool_name)
                         try:
                             arguments = json.loads(call.get("arguments") or "{}")
                         except json.JSONDecodeError:
                             arguments = {}
-                        result = await tool_executor(str(call.get("name")), arguments)
+                        result = await tool_executor(tool_name, arguments)
                         input_items.append(
                             {
                                 "type": "function_call_output",
@@ -620,6 +625,7 @@ class AidyReasoningEngine:
             latency_ms=latency_ms,
             request_count=request_count,
             tool_calls_made=tool_calls_made,
+            tool_names_used=tuple(tool_names_used),
             preflight_evidence_calls=context.preflight_evidence_calls,
             shadow_action=shadow_action,
             risk_multiplier=risk_multiplier,
