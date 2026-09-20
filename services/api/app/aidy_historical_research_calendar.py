@@ -132,7 +132,6 @@ def historical_schedule_for_day(as_of: datetime) -> list[dict[str, Any]]:
             {
                 "forecast": "",
                 "previous": "",
-                "actual": None,
                 "realized_outcome_available": False,
                 "schedule_provenance": "retrospective_official_schedule",
                 "pit_eligible": False,
