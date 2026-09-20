@@ -30,8 +30,8 @@ def _bar(minute: int, close: str, *, high: str | None = None, low: str | None = 
 
 
 def test_stress_lab_versions_are_separate_from_exact_pit_replay() -> None:
-    assert STRESS_REPLAY_VERSION == "aidy_historical_stress_lab_v4_provider"
-    assert STRESS_INPUT_CONTRACT_VERSION == "aidy_historical_stress_input_v3_provider"
+    assert STRESS_REPLAY_VERSION == "aidy_historical_stress_lab_v5_effective_time"
+    assert STRESS_INPUT_CONTRACT_VERSION == "aidy_historical_stress_input_v4_effective_time"
 
 
 def test_stress_partition_is_chronological() -> None:
@@ -195,3 +195,17 @@ def test_stress_runtime_defers_heavy_work_until_after_startup_grace() -> None:
     assert run_block.index("timeout=self._startup_delay_seconds") < run_block.index(
         "service.run_once("
     )
+
+
+def test_stress_uses_revision_edit_time_as_effective_signal_time() -> None:
+    import inspect
+    import app.aidy_historical_stress_lab as module
+
+    source = inspect.getsource(module)
+    candidate_sql = str(module._CANDIDATES)
+    prior_sql = str(module._PRIOR_POOL)
+    assert "COALESCE(target_rev.edited_at,d.signal_posted_at) AS signal_posted_at" in candidate_sql
+    assert "target_rev.revision_index=o.revision_index" in candidate_sql
+    assert "target_rev.revision_index=o.revision_index" in prior_sql
+    assert "signal_time_semantics" in source
+    assert "target_revision_available_by_signal_time" in source
