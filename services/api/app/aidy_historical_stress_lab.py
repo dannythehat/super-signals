@@ -66,7 +66,7 @@ from app.aidy_reasoning_engine import (
 
 logger = logging.getLogger(__name__)
 
-STRESS_REPLAY_VERSION = "aidy_historical_stress_lab_v8_preflight_router"
+STRESS_REPLAY_VERSION = "aidy_historical_stress_lab_v9_gold_first"
 STRESS_INPUT_CONTRACT_VERSION = "aidy_historical_stress_input_v5_toolbox"
 STRESS_MARKET_CONTRACT_VERSION = "aidy_historical_stress_market_v1"
 STRESS_ANALOGUE_VERSION = "aidy_historical_stress_analogue_v1"
@@ -1377,6 +1377,11 @@ class AidyHistoricalStressLabService:
                 output = {
                     "lean": annotation.lean,
                     "confidence": annotation.confidence,
+                    "gold_view_direction": annotation.gold_view_direction,
+                    "gold_view_confidence": annotation.gold_view_confidence,
+                    "gold_view_horizon_minutes": annotation.gold_view_horizon_minutes,
+                    "gold_view_reason": annotation.gold_view_reason,
+                    "provider_alignment": annotation.provider_alignment,
                     "rationale": annotation.rationale,
                     "key_factors": annotation.key_factors,
                     "shadow_action": annotation.shadow_action,
