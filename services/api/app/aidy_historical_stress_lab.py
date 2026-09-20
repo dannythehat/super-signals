@@ -31,12 +31,12 @@ from uuid import uuid4
 from sqlalchemy import text
 from sqlalchemy.orm import Session, sessionmaker
 
-from app.aidy_event_liquidity_execution import build_event_liquidity_execution_context
 from app.aidy_candle_aggregation import (
     UnsupportedTimeframe,
     aggregate_m1_bars,
     lookback_window,
 )
+from app.aidy_event_liquidity_execution import build_event_liquidity_execution_context
 from app.aidy_failure_self_critique import build_failure_self_critique_context
 from app.aidy_historical_replay import (
     _assert_no_future_fields,
@@ -72,7 +72,11 @@ _DEFAULT_INTERVAL_SECONDS = 20
 _DEFAULT_BATCH = 12
 _DEFAULT_MAX_CALLS = 803
 _EXPECTED_COHORT = 803
-_EXPECTED_PARTITIONS = {"research_train": 571, "research_validation": 70, "research_oos": 162}
+_EXPECTED_PARTITIONS = {
+    "research_train": 571,
+    "research_validation": 70,
+    "research_oos": 162,
+}
 _MARKET_LOOKBACK = timedelta(hours=5)
 
 
@@ -728,11 +732,12 @@ class AidyHistoricalStressLabService:
                 return {"error": "unknown_tool"}
             try:
                 timeframe_minutes = int(arguments["timeframe_minutes"])
-                lookback_count = int(arguments["lookback_count"])
+                requested_count = int(arguments["lookback_count"])
+                lookback_count = max(1, min(requested_count, 20))
                 start, end = lookback_window(
                     as_of=signal_posted_at,
                     timeframe_minutes=timeframe_minutes,
-                    lookback_count=max(1, min(lookback_count, 20)),
+                    lookback_count=lookback_count,
                 )
             except (KeyError, TypeError, ValueError, UnsupportedTimeframe) as exc:
                 return {"error": f"invalid_arguments:{str(exc)[:120]}"}
