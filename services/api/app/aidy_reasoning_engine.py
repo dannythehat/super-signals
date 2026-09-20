@@ -32,8 +32,8 @@ from app.aidy_evidence_contract import (
     validate_provider_claim_refs,
 )
 
-MODEL_VERSION = "aidy_reasoning_engine_v6"
-PROMPT_VERSION = "aidy_reasoning_prompt_v10"
+MODEL_VERSION = "aidy_reasoning_engine_v7"
+PROMPT_VERSION = "aidy_reasoning_prompt_v11"
 
 # Bounded on purpose: each round trip is a real OpenAI request, so this caps both cost and
 # how long one signal can take to reason about, not just how many timeframes/hours it may
@@ -280,9 +280,12 @@ more than they helped, do not mechanically flip to TAKE; instead require a CURRE
 reason before reducing again. The unknown_gate separates hard UNKNOWN from ordinary uncertainty:
 unknown_required means material evidence/geometry is genuinely missing and need_more_evidence is
 appropriate; unknown_permitted means uncertainty exists but is not, by itself, a reason to avoid an
-otherwise coherent trade. Never use reduce as a generic way to express caution. A reduction must be
-supported by a concrete current-signal/current-market flaw. Prior self-feedback can discipline your
-behaviour but can never override broken geometry, a real current risk, or any authority gate.
+otherwise coherent trade. risk_adjustment_guard.current_trade_reduce_reasons is the deterministic
+allow-list for a reduced shadow size. If reduce_gate_open is false, do NOT choose reduce merely to
+express caution; choose take when the setup is otherwise acceptable, or choose hold/reject/
+need_more_evidence only for their own genuine current-trade reasons. Prior self-feedback can
+discipline your behaviour but can never override broken geometry, a real current risk, or any
+authority gate.
 
 In addition to lean, produce a SHADOW-ONLY final action. This action has no broker authority.
 take means the valid signal would be accepted at normal configured risk; reduce means it would be
@@ -353,6 +356,7 @@ class ReasoningAnnotation:
     shadow_action: str = "need_more_evidence"
     risk_multiplier: float = 0.0
     action_reason: str = ""
+    action_calibration: str = "none"
     provider_claim_refs: tuple[str, ...] = ()
 
 
@@ -537,6 +541,44 @@ class AidyReasoningEngine:
         rationale = str(parsed["rationale"])[:2000]
         key_factors = [str(factor)[:200] for factor in parsed["key_factors"]][:5]
         action_reason = str(parsed["action_reason"])[:1000]
+        action_calibration = "none"
+
+        build5 = (
+            context.failure_self_critique_context
+            if isinstance(context.failure_self_critique_context, dict)
+            else {}
+        )
+        unknown_gate = (
+            build5.get("unknown_gate")
+            if isinstance(build5.get("unknown_gate"), dict)
+            else {}
+        )
+        risk_guard = (
+            build5.get("risk_adjustment_guard")
+            if isinstance(build5.get("risk_adjustment_guard"), dict)
+            else {}
+        )
+        if str(unknown_gate.get("status") or "") == "unknown_required":
+            if shadow_action != "need_more_evidence":
+                action_calibration = f"{shadow_action}_to_need_more_evidence_unknown_required"
+            shadow_action = "need_more_evidence"
+            risk_multiplier = 0.0
+            action_reason = (
+                "Build 5 deterministic UNKNOWN gate: material current-trade evidence or "
+                "geometry is missing."
+            )
+        elif (
+            shadow_action == "reduce"
+            and bool(risk_guard.get("reduce_requires_current_trade_specific_reason"))
+            and not bool(risk_guard.get("reduce_gate_open"))
+        ):
+            action_calibration = "reduce_to_take_no_current_trade_reason"
+            shadow_action = "take"
+            risk_multiplier = 1.0
+            action_reason = (
+                "Build 5 calibration removed the reduction because no approved "
+                "current-trade-specific reduce reason was present."
+            )
         try:
             provider_claim_refs = validate_provider_claim_refs(
                 list(parsed["provider_claim_refs"]),
@@ -573,6 +615,7 @@ class AidyReasoningEngine:
             shadow_action=shadow_action,
             risk_multiplier=risk_multiplier,
             action_reason=action_reason,
+            action_calibration=action_calibration,
             provider_claim_refs=provider_claim_refs,
         )
 
