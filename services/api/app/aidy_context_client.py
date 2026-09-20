@@ -280,6 +280,27 @@ class AidyContextClient:
                         ch not in "0123456789abcdef" for ch in movement_digest
                     ):
                         raise ValueError("aidy_context_gold_movement_digest_invalid")
+                    analogues = gold_state.get("movement_analogues")
+                    if analogues is not None:
+                        if not isinstance(analogues, dict):
+                            raise TypeError("aidy_context_gold_movement_analogues_invalid")
+                        if (
+                            analogues.get("retrieval_version")
+                            != "aidy_gold_movement_analogue_retrieval_v1"
+                        ):
+                            raise ValueError("aidy_context_gold_movement_analogue_version_invalid")
+                        analogue_at = _utc_strict(
+                            analogues.get("as_of_utc"),
+                            field="gold_movement_analogues_as_of_utc",
+                        )
+                        if analogue_at != context_at or analogue_at > requested:
+                            raise ValueError("aidy_context_gold_movement_analogue_time_mismatch")
+                        if analogues.get("counterexamples_preserved") is not True:
+                            raise ValueError("aidy_context_gold_movement_counterexamples_required")
+                        if analogues.get("usable_for_live_edge_claim") is not False:
+                            raise ValueError("aidy_context_gold_movement_edge_claim_forbidden")
+                        if analogues.get("live_money_execution_allowed") is not False:
+                            raise ValueError("aidy_context_gold_movement_analogue_execution_forbidden")
             research = gold_state.get("research_surfaces")
             if not isinstance(research, dict):
                 raise TypeError("aidy_context_gold_state_research_invalid")
