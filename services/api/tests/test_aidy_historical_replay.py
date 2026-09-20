@@ -222,13 +222,17 @@ def test_main_lifecycle_starts_and_stops_replay_runtime_safely() -> None:
     assert source.index(stop) > source.index("finally:")
 
 
-def test_materializer_excludes_legacy_decision_reasons_from_real_replay_payload() -> None:
+def test_materializer_inherits_legacy_reason_exclusion_from_frozen_previous_contract() -> None:
     source = MODULE.read_text(encoding="utf-8")
-    assert '"decision_class": "approve"' in source
-    assert '"reasons": []' in source
-    assert '"legacy_decision_reasons_excluded": True' in source
-    assert '"selection_bias_possible": True' in source
-    assert '"usable_for_live_edge_claim": False' in source
+    assert '_PREVIOUS_INPUT_CONTRACT_VERSION = "aidy_historical_replay_input_v5"' in source
+    assert "payload = dict(base)" in source
+    assert 'provenance["derived_from_input_contract_version"]' in source
+    assert 'provenance["same_frozen_source_decision"] = True' in source
+    assert 'pit["derived_from_previous_frozen_contract"] = True' in source
+    # Build 4 must not reconstruct or reintroduce legacy decision reasons.
+    materialize = source.split("    def materialize(", 1)[1].split("    def _selected_cases", 1)[0]
+    assert 'payload["deterministic_decision"]' not in materialize
+    assert "d.reasons" not in materialize
 
 
 def test_replay_versions_cases_and_decisions_without_rewriting_prior_exams() -> None:
@@ -265,19 +269,28 @@ def test_materializer_uses_message_revision_exactly_as_of_signal_time() -> None:
     assert "ctx.signal_id IS NOT NULL" not in materialize
 
 
-def test_materializer_does_not_select_legacy_decision_reasons() -> None:
+def test_build4_materializer_reads_only_the_frozen_previous_case_contract() -> None:
     source = MODULE.read_text(encoding="utf-8")
-    materialize = source.split('_MATERIALIZE_SELECT = text(', 1)[1].split(
-        '_INSERT_CASE = text(', 1
+    previous = source.split("_LOAD_PREVIOUS_CASES = text(", 1)[1].split(
+        "_FORBIDDEN_INPUT_KEYS", 1
     )[0]
-    assert "d.reasons" not in materialize
-    assert "provider_execution_calibration_samples" in materialize
-    assert "execution_samples AS MATERIALIZED" in materialize
-    assert "FROM execution_samples c" in materialize
-    assert "c.closed_at<=d.signal_posted_at" in materialize
-    assert "load_provider_alpha_analogue_context" in source
-    assert '"provider_alpha_analogue_context": provider_alpha_analogue_context' in source
-    assert "WHERE d.decision_class='approve'" in materialize
+    assert "FROM aidy_historical_replay_cases" in previous
+    assert "input_contract_version=:previous_input_contract_version" in previous
+    assert "source_decision_id,source_id,signal_posted_at,partition,input_payload" in previous
+    for forbidden in (
+        "actual_pnl_usd",
+        "actual_realized_r",
+        "outcome_resolved_at",
+        "resolution",
+    ):
+        assert forbidden not in previous
+    assert "d.reasons" not in previous
+    materialize = source.split("    def materialize(", 1)[1].split(
+        "    def _selected_cases", 1
+    )[0]
+    assert "build_probability_ev_management_context" in materialize
+    assert "load_provider_alpha_analogue_context" not in materialize
+    assert "_MATERIALIZE_SELECT" not in materialize
 
 
 class _ReplayRetryEngine:
