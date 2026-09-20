@@ -29,6 +29,10 @@ from app.aidy_event_liquidity_execution import (
     execution_calibration_from_candidate,
 )
 from app.aidy_provider_alpha_analogue import load_provider_alpha_analogue_context
+from app.aidy_probability_ev_management import (
+    build_probability_ev_management_context,
+    load_management_evidence,
+)
 from app.aidy_reasoning_engine import (
     MODEL_VERSION,
     PROMPT_VERSION,
@@ -40,8 +44,8 @@ from app.aidy_reasoning_runner import AidyReasoningRunner
 
 logger = logging.getLogger(__name__)
 
-REPLAY_VERSION = "aidy_historical_time_machine_v6"
-INPUT_CONTRACT_VERSION = "aidy_historical_replay_input_v5"
+REPLAY_VERSION = "aidy_historical_time_machine_v7"
+INPUT_CONTRACT_VERSION = "aidy_historical_replay_input_v6"
 
 # Frozen partition cutoffs from the first exact-PIT eligible cohort on 2026-09-19.
 # These cutoffs never move when later rows are added.
@@ -53,6 +57,7 @@ _DEFAULT_BATCH = 12
 _DEFAULT_MAX_CALLS = 220
 _PROVIDER_CLAIM_RETRY_LIMIT = 1
 _EXPECTED_FROZEN_CASES = 140
+_PREVIOUS_INPUT_CONTRACT_VERSION = "aidy_historical_replay_input_v5"
 
 _FORBIDDEN_INPUT_KEYS = {
     "actual_pnl_usd",
@@ -73,6 +78,20 @@ _FORBIDDEN_INPUT_KEYS = {
     "mfe",
     "mae",
 }
+
+_SELECT_PREVIOUS_FROZEN_CASES = text(
+    """
+    SELECT p.source_decision_id,p.source_id,p.signal_posted_at,p.partition,p.input_payload
+    FROM aidy_historical_replay_cases p
+    LEFT JOIN aidy_historical_replay_cases c
+      ON c.source_decision_id=p.source_decision_id
+     AND c.input_contract_version=:current_input_contract_version
+    WHERE p.input_contract_version=:previous_input_contract_version
+      AND c.id IS NULL
+    ORDER BY p.signal_posted_at,p.id
+    LIMIT :limit
+    """
+)
 
 _MATERIALIZE_SELECT = text(
     """
@@ -442,6 +461,11 @@ def _signal_context_from_payload(payload: dict[str, Any]) -> SignalContext:
             if isinstance(payload.get("provider_alpha_analogue_context"), dict)
             else None
         ),
+        probability_ev_management_context=(
+            dict(payload["probability_ev_management_context"])
+            if isinstance(payload.get("probability_ev_management_context"), dict)
+            else None
+        ),
         preflight_evidence_calls=0,
     )
 
@@ -532,6 +556,86 @@ class AidyHistoricalReplayService:
     def _market_context(candidate: dict[str, Any]) -> dict[str, Any] | None:
         return AidyReasoningRunner._attached_market_context(candidate)
 
+    def _materialize_from_previous_frozen_contract(self, *, limit: int) -> int:
+        with self._session_factory() as session:
+            rows = [
+                dict(row)
+                for row in session.execute(
+                    _SELECT_PREVIOUS_FROZEN_CASES,
+                    {
+                        "previous_input_contract_version": _PREVIOUS_INPUT_CONTRACT_VERSION,
+                        "current_input_contract_version": INPUT_CONTRACT_VERSION,
+                        "limit": limit,
+                    },
+                ).mappings()
+            ]
+
+        written = 0
+        for row in rows:
+            payload = dict(row["input_payload"])
+            signal = payload.get("signal") if isinstance(payload.get("signal"), dict) else {}
+            provider_claims = (
+                list(payload.get("provider_evidence_claims") or [])
+                if isinstance(payload.get("provider_evidence_claims"), list)
+                else []
+            )
+            build2 = (
+                dict(payload["event_liquidity_execution_context"])
+                if isinstance(payload.get("event_liquidity_execution_context"), dict)
+                else None
+            )
+            build3 = (
+                dict(payload["provider_alpha_analogue_context"])
+                if isinstance(payload.get("provider_alpha_analogue_context"), dict)
+                else None
+            )
+            signal_at = row["signal_posted_at"].astimezone(UTC)
+            management_evidence = load_management_evidence(
+                self._session_factory,
+                source_id=row["source_id"],
+                as_of=signal_at,
+            )
+            build4 = build_probability_ev_management_context(
+                signal_posted_at=signal_at,
+                side=str(signal.get("side") or ""),
+                entry_low=signal.get("entry_low"),
+                entry_high=signal.get("entry_high"),
+                stop_loss=signal.get("stop_loss"),
+                take_profits=list(signal.get("take_profits") or []),
+                provider_evidence_claims=provider_claims,
+                provider_alpha_analogue_context=build3,
+                event_liquidity_execution_context=build2,
+                management_evidence=management_evidence,
+            )
+            payload["input_contract_version"] = INPUT_CONTRACT_VERSION
+            payload["probability_ev_management_context"] = build4
+            pit = dict(payload.get("pit_assertions") or {})
+            pit["build4_management_evidence_lte_signal"] = True
+            payload["pit_assertions"] = pit
+            _assert_no_future_fields(payload)
+            if not all(payload["pit_assertions"].values()):
+                raise ValueError(
+                    f"historical_replay_pit_assertion_failed:{row['source_decision_id']}"
+                )
+            with self._session_factory() as session:
+                result = session.execute(
+                    _INSERT_CASE,
+                    {
+                        "id": str(uuid4()),
+                        "source_decision_id": str(row["source_decision_id"]),
+                        "source_id": str(row["source_id"]),
+                        "signal_posted_at": signal_at,
+                        "partition": str(row["partition"]),
+                        "input_contract_version": INPUT_CONTRACT_VERSION,
+                        "input_payload": _canonical(payload),
+                        "input_digest": _digest(payload),
+                        "model_eligible": True,
+                    },
+                )
+                session.commit()
+                written += int(result.rowcount or 0)
+        return written
+
     def materialize(self, *, limit: int = 500) -> int:
         # The weekend exam uses a deliberately frozen 140-case cohort. Once the current
         # immutable input-contract version has all 140 rows, do not repeatedly rebuild the
@@ -548,6 +652,8 @@ class AidyHistoricalReplayService:
             )
         if existing >= _EXPECTED_FROZEN_CASES:
             return 0
+        if INPUT_CONTRACT_VERSION == "aidy_historical_replay_input_v6":
+            return self._materialize_from_previous_frozen_contract(limit=limit)
 
         with self._session_factory() as session:
             candidates = [
