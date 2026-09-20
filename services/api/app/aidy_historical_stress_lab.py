@@ -67,7 +67,7 @@ _DEFAULT_INTERVAL_SECONDS = 20
 _DEFAULT_BATCH = 12
 _DEFAULT_MAX_CALLS = 650
 _EXPECTED_COHORT = 803
-_MARKET_LOOKBACK = timedelta(hours=4)
+_MARKET_LOOKBACK = timedelta(hours=5)
 
 _CANDIDATES = text(
     """
@@ -158,7 +158,7 @@ _CANDIDATES = text(
     """
 )
 
-_PRIOR_ANALOGUES = text(
+_PRIOR_POOL = text(
     """
     WITH ranked AS (
         SELECT
@@ -192,11 +192,11 @@ _PRIOR_ANALOGUES = text(
             ORDER BY ps.scored_at DESC,ps.id DESC
             LIMIT 1
         ) ps ON true
-        WHERE d.signal_posted_at<:as_of
+        WHERE d.signal_posted_at<:cohort_end
           AND ps.last_bar_utc IS NOT NULL
-          AND ps.last_bar_utc<=:as_of
+          AND ps.last_bar_utc<=:cohort_end
           AND upper(COALESCE(o.symbol,'')) IN ('XAUUSD','GOLD')
-          AND upper(COALESCE(o.side,''))=:side
+          AND upper(COALESCE(o.side,'')) IN ('BUY','SELL')
           AND o.decision='new_trade'
           AND o.action='execute'
           AND o.executable IS TRUE
@@ -208,8 +208,7 @@ _PRIOR_ANALOGUES = text(
     SELECT *
     FROM ranked
     WHERE rn=1
-    ORDER BY (source_id=:source_id) DESC,signal_posted_at DESC
-    LIMIT 30
+    ORDER BY signal_posted_at,message_id
     """
 )
 
@@ -684,25 +683,40 @@ class AidyHistoricalStressLabService:
                 output[day.isoformat()] = []
         return output
 
+    def _prior_pool(self) -> list[dict[str, Any]]:
+        with self._session_factory() as session:
+            return [
+                dict(row)
+                for row in session.execute(
+                    _PRIOR_POOL,
+                    {"cohort_end": _COHORT_END},
+                ).mappings()
+            ]
+
+    @staticmethod
     def _prior_rows(
-        self,
+        pool: list[dict[str, Any]],
         *,
         as_of: datetime,
         source_id: Any,
         side: str,
     ) -> list[dict[str, Any]]:
-        with self._session_factory() as session:
-            return [
-                dict(row)
-                for row in session.execute(
-                    _PRIOR_ANALOGUES,
-                    {
-                        "as_of": as_of,
-                        "source_id": str(source_id),
-                        "side": side.upper(),
-                    },
-                ).mappings()
-            ]
+        eligible = [
+            row
+            for row in pool
+            if str(row.get("side") or "").upper() == side.upper()
+            and isinstance(row.get("signal_posted_at"), datetime)
+            and isinstance(row.get("prior_result_known_at"), datetime)
+            and row["signal_posted_at"].astimezone(UTC) < as_of.astimezone(UTC)
+            and row["prior_result_known_at"].astimezone(UTC) <= as_of.astimezone(UTC)
+        ]
+        eligible.sort(
+            key=lambda row: (
+                str(row.get("source_id")) != str(source_id),
+                -row["signal_posted_at"].astimezone(UTC).timestamp(),
+            )
+        )
+        return eligible[:30]
 
     async def materialize(self) -> int:
         with self._session_factory() as session:
@@ -725,98 +739,101 @@ class AidyHistoricalStressLabService:
         day_bars = await self._day_bars(
             [candidate["signal_posted_at"] for candidate in candidates]
         )
+        prior_pool = await asyncio.to_thread(self._prior_pool)
         written = 0
-        for candidate in candidates:
-            at = candidate["signal_posted_at"].astimezone(UTC)
-            signal = _signal(candidate)
-            bars = day_bars.get(at.date().isoformat(), [])
-            market = build_reconstructed_market_context(
-                signal_posted_at=at,
-                bars=bars,
-            )
-            build2 = build_event_liquidity_execution_context(
-                signal_posted_at=at,
-                side=signal["side"],
-                entry_low=signal["entry_low"],
-                entry_high=signal["entry_high"],
-                stop_loss=signal["stop_loss"],
-                take_profits=signal["take_profits"],
-                market_context=market,
-                execution_calibration=None,
-            )
-            prior_rows = self._prior_rows(
-                as_of=at,
-                source_id=candidate["source_id"],
-                side=signal["side"],
-            )
-            build3 = _stress_analogue_context(
-                prior_rows,
-                source_id=candidate["source_id"],
-                side=signal["side"],
-                signal_posted_at=at,
-            )
-            build4 = build_probability_ev_management_context(
-                signal=signal,
-                build2_context=build2,
-                build3_context=build3,
-            )
-            build5 = build_failure_self_critique_context(
-                market_context=market,
-                build2_context=build2,
-                build3_context=build3,
-                build4_context=build4,
-                self_calibration=None,
-                replay_self_feedback=None,
-            )
-            analogues = build3["historical_analogue"]["analogues"]
-            no_future_analogues = all(
-                datetime.fromisoformat(item["prior_result_known_at"]).astimezone(UTC) <= at
-                for item in analogues
-            )
-            payload = {
-                "input_contract_version": STRESS_INPUT_CONTRACT_VERSION,
-                "source_decision_id": str(candidate["source_decision_id"]),
-                "source_id": str(candidate["source_id"]),
-                "provider_name": str(candidate.get("provider_name") or ""),
-                "signal_posted_at": at.isoformat(),
-                "signal": signal,
-                "deterministic_decision": {
-                    "decision_class": "approve",
-                    "reasons": ["historical_stress_executable_provider_trade"],
-                },
-                "provider_evidence_claims": [],
-                "market_context": market,
-                "recent_messages": list(candidate.get("recent_messages") or []),
-                "event_liquidity_execution_context": build2,
-                "provider_alpha_analogue_context": build3,
-                "probability_ev_management_context": build4,
-                "failure_self_critique_context": build5,
-                "selection_provenance": {
-                    "cohort": "older_executable_resolved_unique_provider_messages",
-                    "cohort_start_utc": _COHORT_START.isoformat(),
-                    "cohort_end_utc_exclusive": _COHORT_END.isoformat(),
-                    "message_deduplication": "earliest_executable_revision_per_message",
-                    "market_evidence_tier": "retrospective_research_m1",
-                    "exact_pit_claimed": False,
-                    "official_18_case_holdout_excluded": True,
-                },
-                "pit_assertions": {
-                    "target_outcome_excluded_from_model_input": True,
-                    "research_market_window_ends_at_or_before_signal": True,
-                    "prior_analogue_results_known_at_or_before_signal": no_future_analogues,
-                    "retrospective_market_source_explicitly_tagged": True,
-                    "official_exact_pit_holdout_excluded": True,
-                    "research_only": True,
-                },
-            }
-            _assert_no_future_fields(payload)
-            if not all(payload["pit_assertions"].values()):
-                raise ValueError(
-                    f"historical_stress_time_boundary_failed:{candidate['source_decision_id']}"
+        write_session = self._session_factory()
+        try:
+            for index, candidate in enumerate(candidates, start=1):
+                at = candidate["signal_posted_at"].astimezone(UTC)
+                signal = _signal(candidate)
+                bars = day_bars.get(at.date().isoformat(), [])
+                market = build_reconstructed_market_context(
+                    signal_posted_at=at,
+                    bars=bars,
                 )
+                build2 = build_event_liquidity_execution_context(
+                    signal_posted_at=at,
+                    side=signal["side"],
+                    entry_low=signal["entry_low"],
+                    entry_high=signal["entry_high"],
+                    stop_loss=signal["stop_loss"],
+                    take_profits=signal["take_profits"],
+                    market_context=market,
+                    execution_calibration=None,
+                )
+                prior_rows = self._prior_rows(
+                    prior_pool,
+                    as_of=at,
+                    source_id=candidate["source_id"],
+                    side=signal["side"],
+                )
+                build3 = _stress_analogue_context(
+                    prior_rows,
+                    source_id=candidate["source_id"],
+                    side=signal["side"],
+                    signal_posted_at=at,
+                )
+                build4 = build_probability_ev_management_context(
+                    signal=signal,
+                    build2_context=build2,
+                    build3_context=build3,
+                )
+                build5 = build_failure_self_critique_context(
+                    market_context=market,
+                    build2_context=build2,
+                    build3_context=build3,
+                    build4_context=build4,
+                    self_calibration=None,
+                    replay_self_feedback=None,
+                )
+                analogues = build3["historical_analogue"]["analogues"]
+                no_future_analogues = all(
+                    datetime.fromisoformat(item["prior_result_known_at"]).astimezone(UTC) <= at
+                    for item in analogues
+                )
+                payload = {
+                    "input_contract_version": STRESS_INPUT_CONTRACT_VERSION,
+                    "source_decision_id": str(candidate["source_decision_id"]),
+                    "source_id": str(candidate["source_id"]),
+                    "provider_name": str(candidate.get("provider_name") or ""),
+                    "signal_posted_at": at.isoformat(),
+                    "signal": signal,
+                    "deterministic_decision": {
+                        "decision_class": "approve",
+                        "reasons": ["historical_stress_executable_provider_trade"],
+                    },
+                    "provider_evidence_claims": [],
+                    "market_context": market,
+                    "recent_messages": list(candidate.get("recent_messages") or []),
+                    "event_liquidity_execution_context": build2,
+                    "provider_alpha_analogue_context": build3,
+                    "probability_ev_management_context": build4,
+                    "failure_self_critique_context": build5,
+                    "selection_provenance": {
+                        "cohort": "older_executable_resolved_unique_provider_messages",
+                        "cohort_start_utc": _COHORT_START.isoformat(),
+                        "cohort_end_utc_exclusive": _COHORT_END.isoformat(),
+                        "message_deduplication": "earliest_executable_revision_per_message",
+                        "market_evidence_tier": "retrospective_research_m1",
+                        "exact_pit_claimed": False,
+                        "official_18_case_holdout_excluded": True,
+                    },
+                    "pit_assertions": {
+                        "target_outcome_excluded_from_model_input": True,
+                        "research_market_window_ends_at_or_before_signal": True,
+                        "prior_analogue_results_known_at_or_before_signal": no_future_analogues,
+                        "retrospective_market_source_explicitly_tagged": True,
+                        "official_exact_pit_holdout_excluded": True,
+                        "research_only": True,
+                    },
+                }
+                _assert_no_future_fields(payload)
+                if not all(payload["pit_assertions"].values()):
+                    raise ValueError(
+                        f"historical_stress_time_boundary_failed:{candidate['source_decision_id']}"
+                    )
 
-            with self._session_factory() as session:
-                result = session.execute(
+                result = write_session.execute(
                     _INSERT_CASE,
                     {
                         "id": str(uuid4()),
@@ -829,8 +846,12 @@ class AidyHistoricalStressLabService:
                         "input_digest": _digest(payload),
                     },
                 )
-                session.commit()
                 written += int(result.rowcount or 0)
+                if index % 100 == 0:
+                    write_session.commit()
+            write_session.commit()
+        finally:
+            write_session.close()
         return written
 
     def _selected_cases(self, *, limit: int) -> list[dict[str, Any]]:
