@@ -249,7 +249,7 @@ def test_market_context_is_sent_when_present_and_omitted_as_null_when_absent() -
     with_build5 = replace(
         _context(),
         failure_self_critique_context={
-            "contract_version": "aidy_failure_self_critique_v1",
+            "contract_version": "aidy_failure_self_critique_v2",
             "failure_attribution": {
                 "selected_feedback_scope": "same_provider",
                 "prior_self_feedback": {
@@ -264,6 +264,8 @@ def test_market_context_is_sent_when_present_and_omitted_as_null_when_absent() -
             },
             "risk_adjustment_guard": {
                 "reduce_requires_current_trade_specific_reason": True,
+                "current_trade_reduce_reasons": [],
+                "reduce_gate_open": False,
             },
             "research_only": True,
             "live_money_execution_allowed": False,
@@ -272,7 +274,7 @@ def test_market_context_is_sent_when_present_and_omitted_as_null_when_absent() -
     asyncio.run(engine.reason(with_build5))
     sent_with_build5 = json.loads(captured[-1]["input"][0]["content"])
     assert sent_with_build5["failure_self_critique_context"]["contract_version"] == (
-        "aidy_failure_self_critique_v1"
+        "aidy_failure_self_critique_v2"
     )
     assert (
         sent_with_build5["failure_self_critique_context"]["risk_adjustment_guard"][
@@ -542,3 +544,86 @@ def test_prompt_sends_atomic_claims_not_raw_provider_history() -> None:
     assert "provider_fingerprint" not in sent
     assert "provider_name" not in sent
     assert "provider_trades_resolved" not in sent
+
+
+def test_build5_reduce_without_current_trade_reason_is_calibrated_to_take() -> None:
+    reduce = {
+        **_ANNOTATION,
+        "lean": "caution",
+        "shadow_action": "reduce",
+        "risk_multiplier": 0.5,
+        "action_reason": "Some uncertainty remains.",
+    }
+    context = replace(
+        _context(),
+        failure_self_critique_context={
+            "contract_version": "aidy_failure_self_critique_v2",
+            "unknown_gate": {"status": "evidence_usable"},
+            "risk_adjustment_guard": {
+                "reduce_requires_current_trade_specific_reason": True,
+                "current_trade_reduce_reasons": [],
+                "reduce_gate_open": False,
+            },
+        },
+    )
+    engine = AidyReasoningEngine(
+        api_key="test-key", transport=_scripted_transport([_message_response(reduce)])
+    )
+    annotation = asyncio.run(engine.reason(context))
+    assert annotation.shadow_action == "take"
+    assert annotation.risk_multiplier == 1.0
+    assert annotation.action_calibration == "reduce_to_take_no_current_trade_reason"
+
+
+def test_build5_reduce_with_current_trade_reason_is_preserved() -> None:
+    reduce = {
+        **_ANNOTATION,
+        "lean": "caution",
+        "shadow_action": "reduce",
+        "risk_multiplier": 0.5,
+        "action_reason": "The setup is counter-trend.",
+    }
+    context = replace(
+        _context(),
+        failure_self_critique_context={
+            "contract_version": "aidy_failure_self_critique_v2",
+            "unknown_gate": {"status": "evidence_usable"},
+            "risk_adjustment_guard": {
+                "reduce_requires_current_trade_specific_reason": True,
+                "current_trade_reduce_reasons": ["clear_multi_timeframe_countertrend"],
+                "reduce_gate_open": True,
+            },
+        },
+    )
+    engine = AidyReasoningEngine(
+        api_key="test-key", transport=_scripted_transport([_message_response(reduce)])
+    )
+    annotation = asyncio.run(engine.reason(context))
+    assert annotation.shadow_action == "reduce"
+    assert annotation.risk_multiplier == 0.5
+    assert annotation.action_calibration == "none"
+
+
+def test_build5_unknown_required_forces_need_more_evidence() -> None:
+    context = replace(
+        _context(),
+        failure_self_critique_context={
+            "contract_version": "aidy_failure_self_critique_v2",
+            "unknown_gate": {
+                "status": "unknown_required",
+                "critical_reasons": ["invalid_or_missing_stop_distance"],
+            },
+            "risk_adjustment_guard": {
+                "reduce_requires_current_trade_specific_reason": True,
+                "current_trade_reduce_reasons": [],
+                "reduce_gate_open": False,
+            },
+        },
+    )
+    engine = AidyReasoningEngine(
+        api_key="test-key", transport=_scripted_transport([_message_response(_ANNOTATION)])
+    )
+    annotation = asyncio.run(engine.reason(context))
+    assert annotation.shadow_action == "need_more_evidence"
+    assert annotation.risk_multiplier == 0.0
+    assert annotation.action_calibration == "take_to_need_more_evidence_unknown_required"
