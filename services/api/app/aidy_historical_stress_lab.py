@@ -59,8 +59,8 @@ from app.aidy_reasoning_engine import (
 
 logger = logging.getLogger(__name__)
 
-STRESS_REPLAY_VERSION = "aidy_historical_stress_lab_v4_provider"
-STRESS_INPUT_CONTRACT_VERSION = "aidy_historical_stress_input_v3_provider"
+STRESS_REPLAY_VERSION = "aidy_historical_stress_lab_v5_effective_time"
+STRESS_INPUT_CONTRACT_VERSION = "aidy_historical_stress_input_v4_effective_time"
 STRESS_MARKET_CONTRACT_VERSION = "aidy_historical_stress_market_v1"
 STRESS_ANALOGUE_VERSION = "aidy_historical_stress_analogue_v1"
 STRESS_PROVIDER_EVIDENCE_VERSION = "aidy_historical_provider_evidence_v1"
@@ -127,7 +127,7 @@ _CANDIDATES = text(
             o.stop_loss,
             o.take_profits,
             d.id AS source_decision_id,
-            d.signal_posted_at,
+            COALESCE(target_rev.edited_at,d.signal_posted_at) AS signal_posted_at,
             COALESCE(NULLIF(src.chat_title,''),src.source_alias,'UNKNOWN') AS provider_name,
             ROW_NUMBER() OVER (
                 PARTITION BY o.message_id
@@ -151,13 +151,13 @@ _CANDIDATES = text(
                         SELECT mr.raw_text,mr.revision_index
                         FROM message_revisions mr
                         WHERE mr.message_id=m.id
-                          AND mr.edited_at<=d.signal_posted_at
+                          AND mr.edited_at<=COALESCE(target_rev.edited_at,d.signal_posted_at)
                         ORDER BY mr.revision_index DESC,mr.edited_at DESC
                         LIMIT 1
                     ) r ON true
                     WHERE m.source_id=o.source_id
-                      AND m.posted_at<=d.signal_posted_at
-                      AND (m.deleted_at IS NULL OR m.deleted_at>d.signal_posted_at)
+                      AND m.posted_at<=COALESCE(target_rev.edited_at,d.signal_posted_at)
+                      AND (m.deleted_at IS NULL OR m.deleted_at>COALESCE(target_rev.edited_at,d.signal_posted_at))
                     ORDER BY m.posted_at DESC,m.telegram_message_id DESC
                     LIMIT 5
                 ) q
@@ -182,8 +182,11 @@ _CANDIDATES = text(
         ) ps ON true
         JOIN aidy_decision_outcomes ao ON ao.decision_id=d.id
         JOIN sources src ON src.id=o.source_id
-        WHERE d.signal_posted_at>=:cohort_start
-          AND d.signal_posted_at<:cohort_end
+        LEFT JOIN message_revisions target_rev
+          ON target_rev.message_id=o.message_id
+         AND target_rev.revision_index=o.revision_index
+        WHERE COALESCE(target_rev.edited_at,d.signal_posted_at)>=:cohort_start
+          AND COALESCE(target_rev.edited_at,d.signal_posted_at)<:cohort_end
           AND o.decision='new_trade'
           AND o.action='execute'
           AND o.executable IS TRUE
@@ -208,7 +211,7 @@ _PRIOR_POOL = text(
             o.message_id,
             o.source_id,
             o.side,
-            d.signal_posted_at,
+            COALESCE(target_rev.edited_at,d.signal_posted_at) AS signal_posted_at,
             ps.last_bar_utc AS prior_result_known_at,
             ps.net_pnl_usd,
             ps.realized_r,
@@ -235,8 +238,11 @@ _PRIOR_POOL = text(
             ORDER BY ps.scored_at DESC,ps.id DESC
             LIMIT 1
         ) ps ON true
-        WHERE d.signal_posted_at>=:cohort_start
-          AND d.signal_posted_at<:cohort_end
+        LEFT JOIN message_revisions target_rev
+          ON target_rev.message_id=o.message_id
+         AND target_rev.revision_index=o.revision_index
+        WHERE COALESCE(target_rev.edited_at,d.signal_posted_at)>=:cohort_start
+          AND COALESCE(target_rev.edited_at,d.signal_posted_at)<:cohort_end
           AND ps.last_bar_utc IS NOT NULL
           AND ps.last_bar_utc<=:cohort_end
           AND upper(COALESCE(o.symbol,'')) IN ('XAUUSD','GOLD')
@@ -1060,6 +1066,7 @@ class AidyHistoricalStressLabService:
                         "cohort_start_utc": _COHORT_START.isoformat(),
                         "cohort_end_utc_exclusive": _COHORT_END.isoformat(),
                         "message_deduplication": "earliest_executable_revision_per_message",
+                        "signal_time_semantics": "revision_edit_time_when_edited_else_original_post_time",
                         "market_evidence_tier": "retrospective_research_m1",
                         "calendar_evidence_tier": "retrospective_official_schedule",
                         "exact_pit_claimed": False,
@@ -1067,6 +1074,7 @@ class AidyHistoricalStressLabService:
                     },
                     "pit_assertions": {
                         "target_outcome_excluded_from_model_input": True,
+                        "target_revision_available_by_signal_time": True,
                         "research_market_window_ends_at_or_before_signal": True,
                         "prior_analogue_results_known_at_or_before_signal": no_future_analogues,
                         "provider_claims_reconstructed_only_from_prior_known_results": True,
