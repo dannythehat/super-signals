@@ -65,8 +65,8 @@ from app.aidy_reasoning_engine import (
 
 logger = logging.getLogger(__name__)
 
-STRESS_REPLAY_VERSION = "aidy_historical_stress_lab_v5_effective_time"
-STRESS_INPUT_CONTRACT_VERSION = "aidy_historical_stress_input_v4_effective_time"
+STRESS_REPLAY_VERSION = "aidy_historical_stress_lab_v6_toolbox"
+STRESS_INPUT_CONTRACT_VERSION = "aidy_historical_stress_input_v5_toolbox"
 STRESS_MARKET_CONTRACT_VERSION = "aidy_historical_stress_market_v1"
 STRESS_ANALOGUE_VERSION = "aidy_historical_stress_analogue_v1"
 STRESS_PROVIDER_EVIDENCE_VERSION = "aidy_historical_provider_evidence_v1"
