@@ -109,6 +109,7 @@ def test_a_well_formed_response_is_parsed_into_a_typed_annotation() -> None:
     assert len(annotation.key_factors) == 2
     assert annotation.request_count == 1
     assert annotation.tool_calls_made == 0
+    assert annotation.tool_names_used == ()
     assert annotation.shadow_action == "take"
     assert annotation.risk_multiplier == 1.0
 
@@ -323,6 +324,7 @@ def test_a_tool_call_is_executed_and_its_result_fed_back() -> None:
     assert annotation.lean == "agree"
     assert annotation.request_count == 2
     assert annotation.tool_calls_made == 1
+    assert annotation.tool_names_used == (CANDLE_TOOL_NAME,)
     # Cost/tokens are summed across both rounds, not just the final one.
     assert annotation.input_tokens == 300 + 250
     assert annotation.output_tokens == 40 + 80
@@ -363,6 +365,7 @@ def test_tool_use_is_bounded_and_the_final_round_never_offers_tools() -> None:
     assert requests_seen[0].get("tools") and requests_seen[1].get("tools")
     assert annotation.request_count == 3
     assert annotation.tool_calls_made == 2
+    assert annotation.tool_names_used == (CANDLE_TOOL_NAME, CANDLE_TOOL_NAME)
 
 
 def test_a_failed_tool_fetch_result_is_still_fed_back_not_raised() -> None:
