@@ -189,6 +189,31 @@ def test_market_context_is_sent_when_present_and_omitted_as_null_when_absent() -
         "directional_prediction_allowed"
     ] is False
 
+    with_build3 = replace(
+        _context(),
+        provider_alpha_analogue_context={
+            "contract_version": "aidy_provider_alpha_analogue_v1",
+            "conditional_alpha": {"usable_as_pretrade_alpha": False},
+            "historical_analogue": {
+                "descriptive_only": True,
+                "usable_for_live_edge_claim": False,
+            },
+            "research_only": True,
+            "live_money_execution_allowed": False,
+        },
+    )
+    asyncio.run(engine.reason(with_build3))
+    sent_with_build3 = json.loads(captured[-1]["input"][0]["content"])
+    assert sent_with_build3["provider_alpha_analogue_context"]["contract_version"] == (
+        "aidy_provider_alpha_analogue_v1"
+    )
+    assert (
+        sent_with_build3["provider_alpha_analogue_context"]["conditional_alpha"][
+            "usable_as_pretrade_alpha"
+        ]
+        is False
+    )
+
 
 def test_no_tool_executor_never_offers_the_candle_tool() -> None:
     captured: list[dict] = []
