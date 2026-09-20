@@ -37,6 +37,10 @@ from app.aidy_evidence_contract import (
 )
 from app.aidy_market_client import AidyMarketClient
 from app.aidy_provider_alpha_analogue import load_provider_alpha_analogue_context
+from app.aidy_probability_ev_management import (
+    build_probability_ev_management_context,
+    load_management_evidence,
+)
 from app.aidy_reasoning_calendar_tools import (
     build_calendar_tool_executor,
     fetch_calendar_summary,
@@ -685,6 +689,24 @@ class AidyReasoningRunner:
                 market_context=market_context,
                 target_payload=build3_target_payload,
             )
+            management_evidence = await asyncio.to_thread(
+                load_management_evidence,
+                self._session_factory,
+                source_id=candidate["source_id"],
+                as_of=candidate["signal_posted_at"],
+            )
+            probability_ev_management_context = build_probability_ev_management_context(
+                signal_posted_at=candidate["signal_posted_at"],
+                side=str(candidate.get("side") or ""),
+                entry_low=candidate.get("entry_low"),
+                entry_high=candidate.get("entry_high"),
+                stop_loss=candidate.get("stop_loss"),
+                take_profits=list(candidate.get("take_profits") or []),
+                provider_evidence_claims=provider_evidence_claims,
+                provider_alpha_analogue_context=provider_alpha_analogue_context,
+                event_liquidity_execution_context=event_liquidity_execution_context,
+                management_evidence=management_evidence,
+            )
             context = SignalContext(
                 decision_id=str(candidate["decision_id"]),
                 provider_name=str(candidate["provider_name"]),
@@ -721,6 +743,7 @@ class AidyReasoningRunner:
                 supplemental_evidence=supplemental_evidence,
                 event_liquidity_execution_context=event_liquidity_execution_context,
                 provider_alpha_analogue_context=provider_alpha_analogue_context,
+                probability_ev_management_context=probability_ev_management_context,
                 preflight_evidence_calls=preflight_calls,
             )
             tool_schemas, tool_executor = self._tools_for(candidate["signal_posted_at"])

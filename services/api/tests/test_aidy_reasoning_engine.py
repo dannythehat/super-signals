@@ -214,6 +214,40 @@ def test_market_context_is_sent_when_present_and_omitted_as_null_when_absent() -
         is False
     )
 
+    with_build4 = replace(
+        _context(),
+        probability_ev_management_context={
+            "contract_version": "aidy_probability_ev_management_v1",
+            "probability": {
+                "primary": {
+                    "status": "provider_cohort_probability_available",
+                    "calibrated_probability": False,
+                }
+            },
+            "expected_value": {
+                "allocation_weighted_ev_r": None,
+                "allocation_weighted_ev_status": "UNKNOWN_NO_SAFE_TP_ALLOCATION_WEIGHTS",
+            },
+            "authority": {
+                "live_management_allowed": False,
+                "live_variable_sizing_allowed": False,
+            },
+            "research_only": True,
+            "live_money_execution_allowed": False,
+        },
+    )
+    asyncio.run(engine.reason(with_build4))
+    sent_with_build4 = json.loads(captured[-1]["input"][0]["content"])
+    assert sent_with_build4["probability_ev_management_context"]["contract_version"] == (
+        "aidy_probability_ev_management_v1"
+    )
+    assert (
+        sent_with_build4["probability_ev_management_context"]["authority"][
+            "live_management_allowed"
+        ]
+        is False
+    )
+
 
 def test_no_tool_executor_never_offers_the_candle_tool() -> None:
     captured: list[dict] = []

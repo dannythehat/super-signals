@@ -33,7 +33,7 @@ from app.aidy_evidence_contract import (
 )
 
 MODEL_VERSION = "aidy_reasoning_engine_v5"
-PROMPT_VERSION = "aidy_reasoning_prompt_v8"
+PROMPT_VERSION = "aidy_reasoning_prompt_v9"
 
 # Bounded on purpose: each round trip is a real OpenAI request, so this caps both cost and
 # how long one signal can take to reason about, not just how many timeframes/hours it may
@@ -263,6 +263,16 @@ historical_analogue contains only prior cases whose outcomes were resolved befor
 Treat those analogues as descriptive context, not proof of edge: selection_bias_possible and
 usable_for_live_edge_claim=false are hard constraints. Missing/insufficient analogues mean UNKNOWN.
 
+probability_ev_management_context is a transparent research calculation, not execution authority.
+Its primary probability is a named point-in-time provider win-rate cohort with a real sample count;
+it is explicitly a proxy, not a calibrated target-hit probability. The analogue probability is
+secondary and deliberately not blended to avoid double-counting correlated evidence. EV is shown
+per TP only; allocation-weighted EV remains UNKNOWN unless safe TP allocation weights exist. Use
+the CI range and break-even probability, not just the midpoint. The management section preserves
+the current canonical TP2/TP3 protection ladder as the untouched baseline and exposes only
+non-executable counterfactual questions. Never change size, stop, TP, close timing, paper trades,
+or live trades from this context. Day 17 sizing and Day 20 management authority remain WAITING.
+
 In addition to lean, produce a SHADOW-ONLY final action. This action has no broker authority.
 take means the valid signal would be accepted at normal configured risk; reduce means it would be
 accepted at smaller risk and risk_multiplier must be between 0 and 1; hold means wait rather than
@@ -309,6 +319,7 @@ class SignalContext:
     supplemental_evidence: dict[str, Any] | None = None
     event_liquidity_execution_context: dict[str, Any] | None = None
     provider_alpha_analogue_context: dict[str, Any] | None = None
+    probability_ev_management_context: dict[str, Any] | None = None
     preflight_evidence_calls: int = 0
 
 
@@ -357,6 +368,7 @@ def _prompt_payload(context: SignalContext) -> dict[str, Any]:
         "supplemental_evidence": context.supplemental_evidence,
         "event_liquidity_execution_context": context.event_liquidity_execution_context,
         "provider_alpha_analogue_context": context.provider_alpha_analogue_context,
+        "probability_ev_management_context": context.probability_ev_management_context,
     }
 
 
