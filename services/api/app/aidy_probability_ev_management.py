@@ -74,6 +74,8 @@ def _wilson(successes: int, n: int, *, z: float = 1.959963984540054) -> tuple[fl
 
 def _provider_probability_claim(
     claims: list[dict[str, Any]],
+    *,
+    as_of: datetime,
 ) -> dict[str, Any]:
     priorities = (
         "provider_side_performance",
@@ -105,6 +107,14 @@ def _provider_probability_claim(
             "calibrated_probability": False,
             "probability_semantics": "provider_win_rate_proxy",
         }
+
+    claim_as_of_raw = selected.get("as_of_utc")
+    if claim_as_of_raw:
+        claim_as_of = datetime.fromisoformat(
+            str(claim_as_of_raw).replace("Z", "+00:00")
+        ).astimezone(UTC)
+        if claim_as_of > as_of.astimezone(UTC):
+            raise ValueError("provider_probability_claim_from_future")
 
     value = selected.get("value") if isinstance(selected.get("value"), Mapping) else {}
     wins = int(value.get("wins") or 0)
@@ -289,8 +299,8 @@ def _ev_rows(
                 "reward_r": str(reward_r),
                 "break_even_probability": str(break_even_p),
                 "net_ev_r_mid_p50_cost": ev(p, "p50_cost_r"),
-                "net_ev_r_ci_low_p50_cost": ev(p_low, "p50_cost_r"),
-                "net_ev_r_ci_high_p95_cost": ev(p_high, "p95_cost_r"),
+                "net_ev_r_ci_low_p95_cost": ev(p_low, "p95_cost_r"),
+                "net_ev_r_ci_high_p50_cost": ev(p_high, "p50_cost_r"),
                 "status": "proxy_ev_available" if p is not None else "probability_unavailable",
             }
         )
@@ -420,7 +430,7 @@ def build_probability_ev_management_context(
     if management_as_of is not None and management_as_of > as_of:
         raise ValueError("management_evidence_from_future")
 
-    primary_probability = _provider_probability_claim(provider_evidence_claims)
+    primary_probability = _provider_probability_claim(provider_evidence_claims, as_of=as_of)
     analogue_probability = _analogue_probability(provider_alpha_analogue_context)
     ev = _ev_rows(
         side=side,
