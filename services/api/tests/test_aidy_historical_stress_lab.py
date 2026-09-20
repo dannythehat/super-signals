@@ -31,7 +31,7 @@ def _bar(minute: int, close: str, *, high: str | None = None, low: str | None = 
 
 
 def test_stress_lab_versions_are_separate_from_exact_pit_replay() -> None:
-    assert STRESS_REPLAY_VERSION == "aidy_historical_stress_lab_v8_preflight_router"
+    assert STRESS_REPLAY_VERSION == "aidy_historical_stress_lab_v9_gold_first"
     assert STRESS_INPUT_CONTRACT_VERSION == "aidy_historical_stress_input_v5_toolbox"
 
 
@@ -286,3 +286,17 @@ def test_historical_v8_persists_preflight_tool_telemetry_and_valid_run_scope() -
     assert '"all_evidence_tool_names": sorted(' in reason_block
     assert '"partition_scope": self._scope' in run_block
     assert 'f"stress_{self._scope}"' not in run_block
+
+
+
+def test_gold_first_stress_output_freezes_independent_market_view() -> None:
+    source = MODULE.read_text(encoding="utf-8")
+    decide = source.split("    async def decide(", 1)[1].split("    def score(", 1)[0]
+    for field in (
+        '"gold_view_direction": annotation.gold_view_direction',
+        '"gold_view_confidence": annotation.gold_view_confidence',
+        '"gold_view_horizon_minutes": annotation.gold_view_horizon_minutes',
+        '"gold_view_reason": annotation.gold_view_reason',
+        '"provider_alignment": annotation.provider_alignment',
+    ):
+        assert field in decide
