@@ -40,7 +40,7 @@ def _payload(*, illegal_research: bool = False) -> dict:
             "gold_state": {
                 "contract_version": "aidy_provider_gold_state_v2",
                 "gold_state_engine_version": "aidy_gold_state_engine_v1",
-                "gold_state_digest": "g" * 64,
+                "gold_state_digest": "b" * 64,
                 "as_of_utc": stamp,
                 "symbol": "XAUUSD",
                 "mode": "pit",
@@ -76,7 +76,7 @@ def _payload(*, illegal_research: bool = False) -> dict:
                 },
                 "movement_investigation": {
                     "investigator_version": "aidy_gold_movement_investigator_v1",
-                    "investigation_digest": "i" * 64,
+                    "investigation_digest": "c" * 64,
                     "as_of_utc": stamp,
                     "symbol": "XAUUSD",
                     "state": "investigated",
