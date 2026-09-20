@@ -73,15 +73,19 @@ def test_stress_module_keeps_official_holdout_separate() -> None:
     assert "aidy_historical_time_machine_v9" not in source
 
 
-def test_stress_default_capacity_covers_entire_803_case_cohort() -> None:
+def test_stress_default_capacity_covers_entire_scoreable_cohort() -> None:
     import inspect
     import app.aidy_historical_stress_lab as module
 
     source = inspect.getsource(module)
-    assert "_DEFAULT_MAX_CALLS = 803" in source
+    assert "_SOURCE_UNIVERSE_WITH_DECISION_OUTCOMES = 803" in source
+    assert "_EXPECTED_COHORT = 800" in source
+    assert "_DEFAULT_MAX_CALLS = 800" in source
     assert '"research_train": 571' in source
-    assert '"research_validation": 70' in source
-    assert '"research_oos": 162' in source
+    assert '"research_validation": 69' in source
+    assert '"research_oos": 160' in source
+    assert "_EXPECTED_COHORT_SHA256" in source
+    assert "historical_stress_candidate_identity_changed" in source
 
 
 def test_validation_and_oos_are_separately_locked(monkeypatch) -> None:
