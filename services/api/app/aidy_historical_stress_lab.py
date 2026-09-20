@@ -1118,7 +1118,7 @@ class AidyHistoricalStressLabService:
                     },
                 }
                 payload["supplemental_evidence"] = {
-                    "historical_toolbox_manifest": historical_toolbox_manifest(payload)
+                    "toolbox_manifest": historical_toolbox_manifest(payload)
                 }
                 _assert_no_future_fields(payload)
                 if not all(payload["pit_assertions"].values()):
