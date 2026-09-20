@@ -7,6 +7,7 @@ from app.aidy_historical_stress_lab import (
     STRESS_INPUT_CONTRACT_VERSION,
     STRESS_REPLAY_VERSION,
     _partition,
+    _scope_from_env,
     build_reconstructed_market_context,
 )
 from app.aidy_market_client import AidyM1Bar
@@ -69,3 +70,34 @@ def test_stress_module_keeps_official_holdout_separate() -> None:
     assert "reconstructed_research" in source
     assert "AIDY_HISTORICAL_STRESS_ENABLED" in source
     assert "aidy_historical_time_machine_v9" not in source
+
+
+def test_stress_default_capacity_covers_entire_803_case_cohort() -> None:
+    import inspect
+    import app.aidy_historical_stress_lab as module
+
+    source = inspect.getsource(module)
+    assert "_DEFAULT_MAX_CALLS = 803" in source
+    assert '"research_train": 571' in source
+    assert '"research_validation": 70' in source
+    assert '"research_oos": 162' in source
+
+
+def test_validation_and_oos_are_separately_locked(monkeypatch) -> None:
+    monkeypatch.setenv("AIDY_HISTORICAL_STRESS_SCOPE", "all")
+    monkeypatch.delenv("AIDY_HISTORICAL_STRESS_OPEN_VALIDATION", raising=False)
+    monkeypatch.delenv("AIDY_HISTORICAL_STRESS_OPEN_OOS", raising=False)
+    assert _scope_from_env() == "train"
+
+    monkeypatch.setenv("AIDY_HISTORICAL_STRESS_OPEN_VALIDATION", "1")
+    assert _scope_from_env() == "train_validation"
+
+    monkeypatch.setenv("AIDY_HISTORICAL_STRESS_OPEN_OOS", "1")
+    assert _scope_from_env() == "all"
+
+
+def test_oos_flag_alone_does_not_open_validation(monkeypatch) -> None:
+    monkeypatch.setenv("AIDY_HISTORICAL_STRESS_SCOPE", "all")
+    monkeypatch.delenv("AIDY_HISTORICAL_STRESS_OPEN_VALIDATION", raising=False)
+    monkeypatch.setenv("AIDY_HISTORICAL_STRESS_OPEN_OOS", "1")
+    assert _scope_from_env() == "train"
