@@ -355,6 +355,41 @@ _INSERT_SCORE = text(
     """
 )
 
+_SELECT_UNSCORED_GOLD_VIEWS = text(
+    """
+    SELECT d.id AS replay_decision_id,d.output_payload,
+           c.source_decision_id,c.partition,c.signal_posted_at,c.input_payload
+    FROM aidy_historical_replay_decisions d
+    JOIN aidy_historical_replay_cases c ON c.id=d.case_id
+    LEFT JOIN aidy_historical_gold_view_scores g ON g.replay_decision_id=d.id
+    WHERE g.id IS NULL
+      AND d.replay_version=:replay_version
+    ORDER BY d.decided_at,d.id
+    LIMIT :limit
+    """
+)
+
+_INSERT_GOLD_VIEW_SCORE = text(
+    """
+    INSERT INTO aidy_historical_gold_view_scores (
+        id,replay_decision_id,source_decision_id,partition,signal_posted_at,
+        provider_side,provider_alignment,gold_view_direction,gold_view_confidence,
+        horizon_minutes,reference_time_utc,reference_price,terminal_time_utc,terminal_price,
+        directional_move_points,favorable_excursion_points,adverse_excursion_points,
+        outcome_class,market_path_complete,evidence_tier,research_only,
+        live_money_execution_allowed
+    ) VALUES (
+        :id,:replay_decision_id,:source_decision_id,:partition,:signal_posted_at,
+        :provider_side,:provider_alignment,:gold_view_direction,:gold_view_confidence,
+        :horizon_minutes,:reference_time_utc,:reference_price,:terminal_time_utc,:terminal_price,
+        :directional_move_points,:favorable_excursion_points,:adverse_excursion_points,
+        :outcome_class,:market_path_complete,'retrospective_research',true,false
+    )
+    ON CONFLICT (replay_decision_id) DO NOTHING
+    """
+)
+
+
 _INSERT_RUN = text(
     """
     INSERT INTO aidy_historical_replay_runs (
@@ -818,6 +853,7 @@ class StressLabSummary:
     decisions_written: int = 0
     decisions_failed: int = 0
     scores_written: int = 0
+    gold_views_scored: int = 0
     total_replay_delta_usd: Decimal = Decimal("0")
     total_replay_shadow_pnl_usd: Decimal = Decimal("0")
     failures: list[str] = field(default_factory=list)
@@ -1498,6 +1534,116 @@ class AidyHistoricalStressLabService:
                     total_shadow += shadow
         return written, total_delta, total_shadow
 
+    @staticmethod
+    def _ceil_next_minute(value: datetime) -> datetime:
+        stamp = value.astimezone(UTC).replace(second=0, microsecond=0)
+        return stamp + timedelta(minutes=1)
+
+    async def score_gold_views(self, *, limit: int = 1000) -> int:
+        """Score AIDY's independent market view without pretending it is broker P&L.
+
+        The model never sees these bars. They are fetched only after the immutable
+        replay decision exists, beginning with the first full M1 bar after the signal.
+        """
+        with self._session_factory() as session:
+            rows = [
+                dict(row)
+                for row in session.execute(
+                    _SELECT_UNSCORED_GOLD_VIEWS,
+                    {"replay_version": STRESS_REPLAY_VERSION, "limit": limit},
+                ).mappings()
+            ]
+
+        written = 0
+        for row in rows:
+            output = row.get("output_payload")
+            payload = row.get("input_payload")
+            if not isinstance(output, dict) or not isinstance(payload, dict):
+                continue
+            direction = str(output.get("gold_view_direction") or "unknown")
+            confidence = _decimal(output.get("gold_view_confidence"))
+            horizon = int(output.get("gold_view_horizon_minutes") or 0)
+            alignment = str(output.get("provider_alignment") or "unclear")
+            signal = payload.get("signal")
+            signal = signal if isinstance(signal, dict) else {}
+            provider_side = str(signal.get("side") or "").upper()
+            if provider_side not in {"BUY", "SELL"}:
+                provider_side = None
+
+            values: dict[str, Any] = {
+                "id": str(uuid4()),
+                "replay_decision_id": str(row["replay_decision_id"]),
+                "source_decision_id": str(row["source_decision_id"]),
+                "partition": row["partition"],
+                "signal_posted_at": row["signal_posted_at"],
+                "provider_side": provider_side,
+                "provider_alignment": alignment if alignment in {"aligned","conflicts","unclear"} else "unclear",
+                "gold_view_direction": direction,
+                "gold_view_confidence": confidence if confidence is not None else Decimal("0"),
+                "horizon_minutes": horizon,
+                "reference_time_utc": None,
+                "reference_price": None,
+                "terminal_time_utc": None,
+                "terminal_price": None,
+                "directional_move_points": None,
+                "favorable_excursion_points": None,
+                "adverse_excursion_points": None,
+                "outcome_class": (
+                    "abstain_neutral"
+                    if direction == "neutral"
+                    else "abstain_unknown"
+                    if direction == "unknown"
+                    else "insufficient_market_path"
+                ),
+                "market_path_complete": False,
+            }
+
+            if direction in {"bullish", "bearish"} and horizon > 0:
+                start = self._ceil_next_minute(row["signal_posted_at"])
+                end = start + timedelta(minutes=horizon)
+                try:
+                    window = await self._market_client.fetch_research_m1(
+                        start=start,
+                        end=end,
+                    )
+                except Exception:  # noqa: BLE001 - outcome scorer fails closed
+                    window = None
+                bars = list(window.bars) if window is not None else []
+                bars.sort(key=lambda item: item.open_time_utc)
+                if bars:
+                    reference = bars[0].open
+                    terminal = bars[-1].close
+                    if direction == "bullish":
+                        signed = terminal - reference
+                        favorable = max(bar.high for bar in bars) - reference
+                        adverse = reference - min(bar.low for bar in bars)
+                    else:
+                        signed = reference - terminal
+                        favorable = reference - min(bar.low for bar in bars)
+                        adverse = max(bar.high for bar in bars) - reference
+                    outcome = (
+                        "favorable" if signed > 0 else "adverse" if signed < 0 else "flat"
+                    )
+                    values.update(
+                        {
+                            "reference_time_utc": bars[0].open_time_utc,
+                            "reference_price": reference,
+                            "terminal_time_utc": bars[-1].open_time_utc + timedelta(minutes=1),
+                            "terminal_price": terminal,
+                            "directional_move_points": signed,
+                            "favorable_excursion_points": max(favorable, Decimal("0")),
+                            "adverse_excursion_points": max(adverse, Decimal("0")),
+                            "outcome_class": outcome,
+                            "market_path_complete": bool(window.complete),
+                        }
+                    )
+
+            with self._session_factory() as session:
+                result = session.execute(_INSERT_GOLD_VIEW_SCORE, values)
+                session.commit()
+                written += int(result.rowcount or 0)
+        return written
+
     async def run_once(self, *, batch: int = _DEFAULT_BATCH) -> StressLabSummary:
         started = datetime.now(UTC)
         summary = StressLabSummary()
@@ -1512,6 +1658,7 @@ class AidyHistoricalStressLabService:
             summary.total_replay_delta_usd,
             summary.total_replay_shadow_pnl_usd,
         ) = await asyncio.to_thread(self.score)
+        summary.gold_views_scored = await self.score_gold_views()
 
         finished = datetime.now(UTC)
         with self._session_factory() as session:
@@ -1531,7 +1678,10 @@ class AidyHistoricalStressLabService:
                     "total_replay_shadow_pnl_usd": summary.total_replay_shadow_pnl_usd,
                     "started_at": started,
                     "finished_at": finished,
-                    "details": _canonical({"failures": summary.failures[:25]}),
+                    "details": _canonical({
+                        "failures": summary.failures[:25],
+                        "gold_views_scored": summary.gold_views_scored,
+                    }),
                 },
             )
             session.commit()
