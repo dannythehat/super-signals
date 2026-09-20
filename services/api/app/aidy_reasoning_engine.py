@@ -32,8 +32,8 @@ from app.aidy_evidence_contract import (
     validate_provider_claim_refs,
 )
 
-MODEL_VERSION = "aidy_reasoning_engine_v5"
-PROMPT_VERSION = "aidy_reasoning_prompt_v9"
+MODEL_VERSION = "aidy_reasoning_engine_v6"
+PROMPT_VERSION = "aidy_reasoning_prompt_v10"
 
 # Bounded on purpose: each round trip is a real OpenAI request, so this caps both cost and
 # how long one signal can take to reason about, not just how many timeframes/hours it may
@@ -272,6 +272,18 @@ The management section reflects the existing Day 20 counterfactual authority gat
 broker TP2/TP3 profit-protection ladder. AIDY must not invent a second live management system,
 override the canonical ladder, or imply paper/live management authority while those flags are false.
 
+failure_self_critique_context is Build 5's point-in-time self-review layer. It never contains the
+current or future result. Its failure_attribution section may summarize only AIDY's own earlier
+shadow decisions whose results were already known before this signal. Treat that as descriptive
+feedback about your own decision behaviour, not provider alpha. If it says prior reductions harmed
+more than they helped, do not mechanically flip to TAKE; instead require a CURRENT-TRADE-specific
+reason before reducing again. The unknown_gate separates hard UNKNOWN from ordinary uncertainty:
+unknown_required means material evidence/geometry is genuinely missing and need_more_evidence is
+appropriate; unknown_permitted means uncertainty exists but is not, by itself, a reason to avoid an
+otherwise coherent trade. Never use reduce as a generic way to express caution. A reduction must be
+supported by a concrete current-signal/current-market flaw. Prior self-feedback can discipline your
+behaviour but can never override broken geometry, a real current risk, or any authority gate.
+
 In addition to lean, produce a SHADOW-ONLY final action. This action has no broker authority.
 take means the valid signal would be accepted at normal configured risk; reduce means it would be
 accepted at smaller risk and risk_multiplier must be between 0 and 1; hold means wait rather than
@@ -319,6 +331,7 @@ class SignalContext:
     event_liquidity_execution_context: dict[str, Any] | None = None
     provider_alpha_analogue_context: dict[str, Any] | None = None
     probability_ev_management_context: dict[str, Any] | None = None
+    failure_self_critique_context: dict[str, Any] | None = None
     preflight_evidence_calls: int = 0
 
 
@@ -368,6 +381,7 @@ def _prompt_payload(context: SignalContext) -> dict[str, Any]:
         "event_liquidity_execution_context": context.event_liquidity_execution_context,
         "provider_alpha_analogue_context": context.provider_alpha_analogue_context,
         "probability_ev_management_context": context.probability_ev_management_context,
+        "failure_self_critique_context": context.failure_self_critique_context,
     }
 
 
