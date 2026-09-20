@@ -186,34 +186,50 @@ def _ev_proxy(
     geometry: Mapping[str, Any],
     costs: Mapping[str, Any],
 ) -> dict[str, Any]:
+    """Keep empirical realised-R EV separate from target-hit break-even geometry.
+
+    P(prior realised R > 0) is not P(current TP hit). Combining those two would create a
+    false target EV. The only EV estimate here is the sample mean of prior resolved R,
+    explicitly selection-biased and descriptive.
+    """
     n = int(probability.get("sample_n") or 0)
-    p_raw = probability.get("beta11_posterior_positive_probability")
-    p = float(p_raw) if p_raw is not None else None
+    empirical_r = _decimal(probability.get("mean_prior_realized_r"))
     first_r = _decimal(geometry.get("first_target_r"))
-    mean_r = _decimal(geometry.get("equal_weight_mean_target_r"))
-    cost_r = _decimal(costs.get("estimated_execution_cost_r_p50")) or Decimal("0")
-    if n < _MIN_PROBABILITY_SAMPLE or p is None or first_r is None or mean_r is None:
+    mean_target_r = _decimal(geometry.get("equal_weight_mean_target_r"))
+    if n < _MIN_PROBABILITY_SAMPLE or empirical_r is None:
         return {
             "status": "insufficient_evidence",
-            "first_target_binary_ev_r": None,
-            "mean_target_binary_ev_r": None,
+            "analogue_empirical_ev_r": None,
             "first_target_break_even_probability": None,
             "mean_target_break_even_probability": None,
+            "target_hit_probability_available": False,
+            "geometry_binary_ev_computed": False,
+            "current_execution_cost_r_p50": None,
         }
 
-    p_dec = Decimal(str(p))
-    loss_p = Decimal("1") - p_dec
-    first_ev = p_dec * first_r - loss_p - cost_r
-    mean_ev = p_dec * mean_r - loss_p - cost_r
     return {
-        "status": "descriptive_binary_geometry_proxy",
-        "first_target_binary_ev_r": str(first_ev),
-        "mean_target_binary_ev_r": str(mean_ev),
-        "first_target_break_even_probability": str(Decimal("1") / (Decimal("1") + first_r)),
-        "mean_target_break_even_probability": str(Decimal("1") / (Decimal("1") + mean_r)),
-        "execution_cost_r_p50_applied": str(cost_r),
-        "binary_assumption": "full_minus_1R_loss_vs_full_target_reward",
-        "multi_target_allocation_known": False,
+        "status": "descriptive_empirical_analogue_ev",
+        "analogue_empirical_ev_r": str(empirical_r),
+        "first_target_break_even_probability": (
+            str(Decimal("1") / (Decimal("1") + first_r))
+            if first_r is not None
+            else None
+        ),
+        "mean_target_break_even_probability": (
+            str(Decimal("1") / (Decimal("1") + mean_target_r))
+            if mean_target_r is not None
+            else None
+        ),
+        "target_hit_probability_available": False,
+        "geometry_binary_ev_computed": False,
+        "current_execution_cost_r_p50": (
+            costs.get("estimated_execution_cost_r_p50")
+            if costs.get("status") == "engineering_calibrated_proxy"
+            else None
+        ),
+        "execution_cost_not_double_counted_into_prior_realized_r": True,
+        "selection_bias_possible": True,
+        "descriptive_only": True,
         "usable_for_live_edge_claim": False,
         "usable_for_entry_override": False,
     }
