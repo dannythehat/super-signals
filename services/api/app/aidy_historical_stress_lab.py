@@ -73,12 +73,14 @@ _VALIDATION_END = datetime(2026, 9, 5, tzinfo=UTC)
 
 _DEFAULT_INTERVAL_SECONDS = 20
 _DEFAULT_BATCH = 12
-_DEFAULT_MAX_CALLS = 803
-_EXPECTED_COHORT = 803
+_DEFAULT_MAX_CALLS = 800
+_SOURCE_UNIVERSE_WITH_DECISION_OUTCOMES = 803
+_EXPECTED_COHORT = 800
+_EXPECTED_COHORT_SHA256 = "f66d69237d0a550d67cd123e204b9f1aeb0bb581fa9bbef71078f3c9c8df39cb"
 _EXPECTED_PARTITIONS = {
     "research_train": 571,
-    "research_validation": 70,
-    "research_oos": 162,
+    "research_validation": 69,
+    "research_oos": 160,
 }
 _MARKET_LOOKBACK = timedelta(hours=5)
 
@@ -954,6 +956,11 @@ class AidyHistoricalStressLabService:
         candidates = self._candidates()
         if len(candidates) != _EXPECTED_COHORT:
             raise ValueError(f"historical_stress_candidate_count_changed:{len(candidates)}")
+        cohort_sha256 = sha256(
+            ",".join(str(candidate["source_decision_id"]) for candidate in candidates).encode()
+        ).hexdigest()
+        if cohort_sha256 != _EXPECTED_COHORT_SHA256:
+            raise ValueError(f"historical_stress_candidate_identity_changed:{cohort_sha256}")
         observed_partitions: dict[str, int] = {}
         for candidate in candidates:
             name = _partition(candidate["signal_posted_at"])
