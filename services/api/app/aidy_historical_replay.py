@@ -13,7 +13,7 @@ import asyncio
 import json
 import logging
 import os
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from decimal import Decimal
 from hashlib import sha256
@@ -446,11 +446,18 @@ async def _reason_with_provider_claim_retry(
     *,
     retry_limit: int = _PROVIDER_CLAIM_RETRY_LIMIT,
 ) -> tuple[Any, int]:
-    """Retry only stochastic provider-claim prose violations; never weaken validation."""
+    """Retry provider-claim violations fail-closed, never by weakening validation.
+
+    If a model response cannot obey the structured provider-history contract, the one
+    bounded retry removes provider history from the model context entirely. The retry can
+    still use the signal, PIT market state and Build 2 execution evidence, but it cannot
+    cite or paraphrase provider history. This keeps the anti-drift validator unchanged.
+    """
     retries = 0
+    retry_context = context
     while True:
         try:
-            return await engine.reason(context), retries
+            return await engine.reason(retry_context), retries
         except AidyReasoningUnavailable as exc:
             if (
                 str(exc) != "aidy_reasoning_provider_claim_invalid"
@@ -458,6 +465,12 @@ async def _reason_with_provider_claim_retry(
             ):
                 raise
             retries += 1
+            retry_context = replace(
+                context,
+                provider_evidence_claims=[],
+                provider_intelligence=None,
+                provider_profile=None,
+            )
 
 
 def _shadow_score(
