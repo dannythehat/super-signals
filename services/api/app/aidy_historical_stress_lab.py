@@ -31,19 +31,24 @@ from uuid import uuid4
 from sqlalchemy import text
 from sqlalchemy.orm import Session, sessionmaker
 
+from app.aidy_candle_aggregation import (
+    UnsupportedTimeframe,
+    aggregate_m1_bars,
+    lookback_window,
+)
 from app.aidy_event_liquidity_execution import build_event_liquidity_execution_context
 from app.aidy_failure_self_critique import build_failure_self_critique_context
 from app.aidy_historical_replay import (
     _assert_no_future_fields,
     _canonical,
     _digest,
-    _reason_with_provider_claim_retry,
     _shadow_score,
     _signal_context_from_payload,
 )
 from app.aidy_market_client import AidyM1Bar, AidyMarketClient
 from app.aidy_probability_ev_management import build_probability_ev_management_context
 from app.aidy_reasoning_engine import (
+    CANDLE_TOOL_NAME,
     MODEL_VERSION,
     PROMPT_VERSION,
     AidyReasoningEngine,
@@ -52,7 +57,7 @@ from app.aidy_reasoning_engine import (
 
 logger = logging.getLogger(__name__)
 
-STRESS_REPLAY_VERSION = "aidy_historical_stress_lab_v1"
+STRESS_REPLAY_VERSION = "aidy_historical_stress_lab_v2_tools"
 STRESS_INPUT_CONTRACT_VERSION = "aidy_historical_stress_input_v1"
 STRESS_MARKET_CONTRACT_VERSION = "aidy_historical_stress_market_v1"
 STRESS_ANALOGUE_VERSION = "aidy_historical_stress_analogue_v1"
@@ -65,9 +70,41 @@ _VALIDATION_END = datetime(2026, 9, 5, tzinfo=UTC)
 
 _DEFAULT_INTERVAL_SECONDS = 20
 _DEFAULT_BATCH = 12
-_DEFAULT_MAX_CALLS = 650
+_DEFAULT_MAX_CALLS = 803
 _EXPECTED_COHORT = 803
+_EXPECTED_PARTITIONS = {
+    "research_train": 571,
+    "research_validation": 70,
+    "research_oos": 162,
+}
 _MARKET_LOOKBACK = timedelta(hours=5)
+
+
+_STRESS_CANDLE_TOOL_SCHEMA: dict[str, Any] = {
+    "type": "function",
+    "name": CANDLE_TOOL_NAME,
+    "description": (
+        "Fetch retrospective-research XAUUSD candles ending at or before this historical "
+        "signal time. This is research evidence, not exact point-in-time capture. Use it "
+        "to inspect local price structure without ever seeing bars after the signal."
+    ),
+    "parameters": {
+        "type": "object",
+        "additionalProperties": False,
+        "properties": {
+            "timeframe_minutes": {
+                "type": "integer",
+                "enum": [1, 5, 15, 30, 45, 60],
+            },
+            "lookback_count": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 20,
+            },
+        },
+        "required": ["timeframe_minutes", "lookback_count"],
+    },
+}
 
 _CANDIDATES = text(
     """
@@ -619,8 +656,34 @@ def _positive_int(name: str, default: int) -> int:
 
 
 def _scope_from_env() -> str:
-    scope = os.getenv("AIDY_HISTORICAL_STRESS_SCOPE", "train").strip()
-    return scope if scope in {"train", "validation", "train_validation", "oos", "all"} else "train"
+    """Resolve a research scope without allowing accidental evaluation leakage.
+
+    Training is always available when the lab is enabled. Validation and OOS are
+    separately sealed and require explicit one-way operator flags. This prevents a
+    broad scope env var from silently turning evaluation data into tuning data.
+    """
+    requested = os.getenv("AIDY_HISTORICAL_STRESS_SCOPE", "train").strip()
+    if requested not in {"train", "validation", "train_validation", "oos", "all"}:
+        return "train"
+
+    validation_open = (
+        os.getenv("AIDY_HISTORICAL_STRESS_OPEN_VALIDATION", "0").strip() == "1"
+    )
+    oos_open = os.getenv("AIDY_HISTORICAL_STRESS_OPEN_OOS", "0").strip() == "1"
+
+    if requested == "train":
+        return "train"
+    if requested in {"validation", "train_validation"}:
+        return requested if validation_open else "train"
+    if requested == "oos":
+        return "oos" if oos_open else ("train_validation" if validation_open else "train")
+    if requested == "all":
+        if oos_open and validation_open:
+            return "all"
+        if validation_open:
+            return "train_validation"
+        return "train"
+    return "train"
 
 
 def _api_key() -> str:
@@ -655,6 +718,57 @@ class AidyHistoricalStressLabService:
         self._market_client = market_client
         self._scope = scope
         self._max_calls = max_calls
+
+    def _stress_candle_tool_executor(self, *, signal_posted_at: datetime):
+        """Research-only candle tool with the same bounded interface as live AIDY.
+
+        It deliberately uses fetch_research_m1 rather than the live/PIT endpoint because
+        these older candles were backfilled after the fact. The tool result carries that
+        provenance on every call and excludes the signal minute itself.
+        """
+
+        async def executor(name: str, arguments: dict[str, Any]) -> dict[str, Any]:
+            if name != CANDLE_TOOL_NAME:
+                return {"error": "unknown_tool"}
+            try:
+                timeframe_minutes = int(arguments["timeframe_minutes"])
+                requested_count = int(arguments["lookback_count"])
+                lookback_count = max(1, min(requested_count, 20))
+                start, end = lookback_window(
+                    as_of=signal_posted_at,
+                    timeframe_minutes=timeframe_minutes,
+                    lookback_count=lookback_count,
+                )
+            except (KeyError, TypeError, ValueError, UnsupportedTimeframe) as exc:
+                return {"error": f"invalid_arguments:{str(exc)[:120]}"}
+
+            try:
+                window = await self._market_client.fetch_research_m1(start=start, end=end)
+            except Exception as exc:  # noqa: BLE001 - tool failure must not abort reasoning
+                return {"error": f"research_candle_fetch_failed:{type(exc).__name__}"}
+
+            eligible = [
+                bar
+                for bar in window.bars
+                if bar.open_time_utc < end
+            ]
+            candles = aggregate_m1_bars(
+                list(eligible),
+                timeframe_minutes=timeframe_minutes,
+            )
+            return {
+                "timeframe_minutes": timeframe_minutes,
+                "candles": [item.as_dict() for item in candles[-lookback_count:]],
+                "data_complete": window.complete,
+                "evidence_tier": "retrospective_research_m1",
+                "pit_eligible": False,
+                "decision_admitted": False,
+                "research_only": True,
+                "live_money_execution_allowed": False,
+                "window_end_lte_signal": end <= signal_posted_at.astimezone(UTC),
+            }
+
+        return executor
 
     def _candidates(self) -> list[dict[str, Any]]:
         with self._session_factory() as session:
@@ -736,6 +850,15 @@ class AidyHistoricalStressLabService:
         candidates = self._candidates()
         if len(candidates) != _EXPECTED_COHORT:
             raise ValueError(f"historical_stress_candidate_count_changed:{len(candidates)}")
+        observed_partitions: dict[str, int] = {}
+        for candidate in candidates:
+            name = _partition(candidate["signal_posted_at"])
+            observed_partitions[name] = observed_partitions.get(name, 0) + 1
+        if observed_partitions != _EXPECTED_PARTITIONS:
+            raise ValueError(
+                "historical_stress_partition_count_changed:"
+                f"{observed_partitions}"
+            )
 
         day_bars = await self._day_bars(
             [candidate["signal_posted_at"] for candidate in candidates]
@@ -904,10 +1027,15 @@ class AidyHistoricalStressLabService:
                 assertions = payload.get("pit_assertions") or {}
                 if not isinstance(assertions, dict) or not all(assertions.values()):
                     raise ValueError("historical_stress_assertion_not_clean")
-                annotation, retries = await _reason_with_provider_claim_retry(
-                    self._engine,
-                    _signal_context_from_payload(payload),
+                context = _signal_context_from_payload(payload)
+                annotation = await self._engine.reason(
+                    context,
+                    tool_executor=self._stress_candle_tool_executor(
+                        signal_posted_at=case["signal_posted_at"],
+                    ),
+                    tool_schemas=[_STRESS_CANDLE_TOOL_SCHEMA],
                 )
+                retries = 0
                 output = {
                     "lean": annotation.lean,
                     "confidence": annotation.confidence,
@@ -920,7 +1048,14 @@ class AidyHistoricalStressLabService:
                     "provider_claim_refs": list(annotation.provider_claim_refs),
                     "provider_claim_validation_retries": retries,
                     "outcome_visible_to_model": False,
-                    "tools_offered": False,
+                    "tools_offered": True,
+                    "tool_surface": {
+                        "retrospective_candles": True,
+                        "historical_calendar": False,
+                        "historical_calendar_reason": "no accepted retrospective schedule endpoint",
+                    },
+                    "request_count": annotation.request_count,
+                    "tool_calls_made": annotation.tool_calls_made,
                     "evidence_tier": "reconstructed_research",
                 }
                 with self._session_factory() as session:
@@ -1097,10 +1232,11 @@ class AidyHistoricalStressLabRuntime:
             name="super-signals-aidy-historical-stress-lab",
         )
         logger.info(
-            "AIDY historical stress lab started scope=%s interval=%ss batch=%s",
+            "AIDY historical stress lab started scope=%s interval=%ss batch=%s max_calls=%s",
             scope,
             self._interval_seconds,
             self._batch,
+            service._max_calls,
         )
         return True
 

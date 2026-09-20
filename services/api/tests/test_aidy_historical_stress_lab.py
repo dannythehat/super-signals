@@ -7,6 +7,7 @@ from app.aidy_historical_stress_lab import (
     STRESS_INPUT_CONTRACT_VERSION,
     STRESS_REPLAY_VERSION,
     _partition,
+    _scope_from_env,
     build_reconstructed_market_context,
 )
 from app.aidy_market_client import AidyM1Bar
@@ -28,7 +29,7 @@ def _bar(minute: int, close: str, *, high: str | None = None, low: str | None = 
 
 
 def test_stress_lab_versions_are_separate_from_exact_pit_replay() -> None:
-    assert STRESS_REPLAY_VERSION == "aidy_historical_stress_lab_v1"
+    assert STRESS_REPLAY_VERSION == "aidy_historical_stress_lab_v2_tools"
     assert STRESS_INPUT_CONTRACT_VERSION == "aidy_historical_stress_input_v1"
 
 
@@ -69,3 +70,48 @@ def test_stress_module_keeps_official_holdout_separate() -> None:
     assert "reconstructed_research" in source
     assert "AIDY_HISTORICAL_STRESS_ENABLED" in source
     assert "aidy_historical_time_machine_v9" not in source
+
+
+def test_stress_default_capacity_covers_entire_803_case_cohort() -> None:
+    import inspect
+    import app.aidy_historical_stress_lab as module
+
+    source = inspect.getsource(module)
+    assert "_DEFAULT_MAX_CALLS = 803" in source
+    assert '"research_train": 571' in source
+    assert '"research_validation": 70' in source
+    assert '"research_oos": 162' in source
+
+
+def test_validation_and_oos_are_separately_locked(monkeypatch) -> None:
+    monkeypatch.setenv("AIDY_HISTORICAL_STRESS_SCOPE", "all")
+    monkeypatch.delenv("AIDY_HISTORICAL_STRESS_OPEN_VALIDATION", raising=False)
+    monkeypatch.delenv("AIDY_HISTORICAL_STRESS_OPEN_OOS", raising=False)
+    assert _scope_from_env() == "train"
+
+    monkeypatch.setenv("AIDY_HISTORICAL_STRESS_OPEN_VALIDATION", "1")
+    assert _scope_from_env() == "train_validation"
+
+    monkeypatch.setenv("AIDY_HISTORICAL_STRESS_OPEN_OOS", "1")
+    assert _scope_from_env() == "all"
+
+
+def test_oos_flag_alone_does_not_open_validation(monkeypatch) -> None:
+    monkeypatch.setenv("AIDY_HISTORICAL_STRESS_SCOPE", "all")
+    monkeypatch.delenv("AIDY_HISTORICAL_STRESS_OPEN_VALIDATION", raising=False)
+    monkeypatch.setenv("AIDY_HISTORICAL_STRESS_OPEN_OOS", "1")
+    assert _scope_from_env() == "train"
+
+
+def test_stress_reasoning_offers_research_candle_tool_not_live_pit_tool() -> None:
+    import inspect
+    import app.aidy_historical_stress_lab as module
+
+    source = inspect.getsource(module)
+    assert "fetch_research_m1" in source
+    assert "tool_schemas=[_STRESS_CANDLE_TOOL_SCHEMA]" in source
+    assert '"pit_eligible": False' in source
+    assert '"decision_admitted": False' in source
+    reason_block = source.split("    async def reason(", 1)[1].split("    def score(", 1)[0]
+    assert '"tools_offered": True' in reason_block
+    assert '"historical_calendar": False' in reason_block
