@@ -360,3 +360,40 @@ def test_replay_bounds_repeated_provider_claim_failure_to_one_retry() -> None:
             )
         )
     assert engine.calls == 2
+
+
+class _ReplayToolAwareRetryEngine:
+    def __init__(self) -> None:
+        self.calls = 0
+        self.kwargs = []
+        self.annotation = object()
+
+    async def reason(self, context, **kwargs):  # noqa: ANN001, ANN201
+        self.calls += 1
+        self.kwargs.append(kwargs)
+        if self.calls == 1:
+            raise AidyReasoningUnavailable("aidy_reasoning_provider_claim_invalid")
+        return self.annotation
+
+
+def test_provider_claim_retry_preserves_supplied_tools() -> None:
+    engine = _ReplayToolAwareRetryEngine()
+
+    async def executor(name, arguments):  # noqa: ANN001, ANN202
+        return {"name": name, "arguments": arguments}
+
+    annotation, retries = asyncio.run(
+        _reason_with_provider_claim_retry(
+            engine,
+            _signal_context_from_payload(_payload()),
+            tool_executor=executor,
+            tool_schemas=[{"type": "function", "name": "example"}],
+        )
+    )
+    assert annotation is engine.annotation
+    assert retries == 1
+    assert engine.calls == 2
+    assert engine.kwargs[0]["tool_executor"] is executor
+    assert engine.kwargs[1]["tool_executor"] is executor
+    assert engine.kwargs[0]["tool_schemas"] == [{"type": "function", "name": "example"}]
+    assert engine.kwargs[1]["tool_schemas"] == [{"type": "function", "name": "example"}]

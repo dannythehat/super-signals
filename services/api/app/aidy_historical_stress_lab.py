@@ -42,9 +42,11 @@ from app.aidy_historical_replay import (
     _assert_no_future_fields,
     _canonical,
     _digest,
+    _reason_with_provider_claim_retry,
     _shadow_score,
     _signal_context_from_payload,
 )
+from app.aidy_historical_research_calendar import attach_historical_schedule
 from app.aidy_market_client import AidyM1Bar, AidyMarketClient
 from app.aidy_probability_ev_management import build_probability_ev_management_context
 from app.aidy_reasoning_engine import (
@@ -57,10 +59,11 @@ from app.aidy_reasoning_engine import (
 
 logger = logging.getLogger(__name__)
 
-STRESS_REPLAY_VERSION = "aidy_historical_stress_lab_v2_tools"
-STRESS_INPUT_CONTRACT_VERSION = "aidy_historical_stress_input_v1"
+STRESS_REPLAY_VERSION = "aidy_historical_stress_lab_v4_provider"
+STRESS_INPUT_CONTRACT_VERSION = "aidy_historical_stress_input_v3_provider"
 STRESS_MARKET_CONTRACT_VERSION = "aidy_historical_stress_market_v1"
 STRESS_ANALOGUE_VERSION = "aidy_historical_stress_analogue_v1"
+STRESS_PROVIDER_EVIDENCE_VERSION = "aidy_historical_provider_evidence_v1"
 
 # Reconstructed cohort ends before the exact-PIT cohort begins.
 _COHORT_START = datetime(2026, 8, 1, tzinfo=UTC)
@@ -631,6 +634,107 @@ def _stress_analogue_context(
     }
 
 
+def _reconstructed_provider_claims(
+    pool: list[dict[str, Any]],
+    *,
+    source_id: Any,
+    side: str,
+    signal_posted_at: datetime,
+) -> list[dict[str, Any]]:
+    """Rebuild only provider results that were already knowable before the target trade."""
+
+    cutoff = signal_posted_at.astimezone(UTC)
+    eligible: list[dict[str, Any]] = []
+    for row in pool:
+        prior_signal = row.get("signal_posted_at")
+        known_at = row.get("prior_result_known_at")
+        if (
+            str(row.get("source_id")) != str(source_id)
+            or not isinstance(prior_signal, datetime)
+            or not isinstance(known_at, datetime)
+            or prior_signal.astimezone(UTC) >= cutoff
+            or known_at.astimezone(UTC) > cutoff
+        ):
+            continue
+        eligible.append(row)
+
+    def stats(rows: list[dict[str, Any]]) -> dict[str, Any]:
+        pnl = [Decimal(str(row.get("net_pnl_usd") or 0)) for row in rows]
+        wins = sum(1 for value in pnl if value > 0)
+        losses = sum(1 for value in pnl if value < 0)
+        flat = len(pnl) - wins - losses
+        net = sum(pnl, Decimal("0"))
+        return {
+            "trades": len(rows),
+            "wins": wins,
+            "losses": losses,
+            "flat": flat,
+            "win_rate_percent": (
+                round(wins / len(rows) * 100, 2) if rows else None
+            ),
+            "net_pnl_usd": str(net),
+            "avg_pnl_usd": str(net / Decimal(len(rows))) if rows else None,
+        }
+
+    claims: list[dict[str, Any]] = []
+    overall = stats(eligible)
+    if overall["trades"] >= 8:
+        claims.append(
+            {
+                "id": "provider.performance.overall",
+                "kind": "provider_performance",
+                "source": "historical_stress_reconstruction",
+                "path": "historical_provider.performance.overall",
+                "value": overall,
+                "sample_n": overall["trades"],
+                "version": STRESS_PROVIDER_EVIDENCE_VERSION,
+                "as_of_utc": cutoff.isoformat(),
+            }
+        )
+
+    side_key = str(side or "").upper()
+    side_rows = [
+        row for row in eligible if str(row.get("side") or "").upper() == side_key
+    ]
+    side_stats = stats(side_rows)
+    if side_stats["trades"] >= 5:
+        claims.append(
+            {
+                "id": f"provider.performance.side.{side_key}",
+                "kind": "provider_side_performance",
+                "source": "historical_stress_reconstruction",
+                "path": f"historical_provider.performance.side.{side_key}",
+                "value": side_stats,
+                "sample_n": side_stats["trades"],
+                "version": STRESS_PROVIDER_EVIDENCE_VERSION,
+                "as_of_utc": cutoff.isoformat(),
+            }
+        )
+
+    session_key = _session(cutoff)
+    session_rows = [
+        row
+        for row in eligible
+        if isinstance(row.get("signal_posted_at"), datetime)
+        and _session(row["signal_posted_at"]) == session_key
+    ]
+    session_stats = stats(session_rows)
+    if session_stats["trades"] >= 5:
+        claims.append(
+            {
+                "id": f"provider.performance.session.{session_key}",
+                "kind": "provider_session_performance",
+                "source": "historical_stress_reconstruction",
+                "path": f"historical_provider.performance.session.{session_key}",
+                "value": session_stats,
+                "sample_n": session_stats["trades"],
+                "version": STRESS_PROVIDER_EVIDENCE_VERSION,
+                "as_of_utc": cutoff.isoformat(),
+            }
+        )
+    return claims
+
+
 def _signal(candidate: Mapping[str, Any]) -> dict[str, Any]:
     raw_targets = candidate.get("take_profits")
     targets = raw_targets if isinstance(raw_targets, list) else []
@@ -875,6 +979,10 @@ class AidyHistoricalStressLabService:
                     signal_posted_at=at,
                     bars=bars,
                 )
+                market = attach_historical_schedule(
+                    market,
+                    signal_posted_at=at,
+                )
                 build2 = build_event_liquidity_execution_context(
                     signal_posted_at=at,
                     side=signal["side"],
@@ -893,6 +1001,12 @@ class AidyHistoricalStressLabService:
                 )
                 build3 = _stress_analogue_context(
                     prior_rows,
+                    source_id=candidate["source_id"],
+                    side=signal["side"],
+                    signal_posted_at=at,
+                )
+                provider_claims = _reconstructed_provider_claims(
+                    prior_pool,
                     source_id=candidate["source_id"],
                     side=signal["side"],
                     signal_posted_at=at,
@@ -926,7 +1040,7 @@ class AidyHistoricalStressLabService:
                         "decision_class": "approve",
                         "reasons": ["historical_stress_executable_provider_trade"],
                     },
-                    "provider_evidence_claims": [],
+                    "provider_evidence_claims": provider_claims,
                     "market_context": market,
                     "recent_messages": list(candidate.get("recent_messages") or []),
                     "event_liquidity_execution_context": build2,
@@ -939,6 +1053,7 @@ class AidyHistoricalStressLabService:
                         "cohort_end_utc_exclusive": _COHORT_END.isoformat(),
                         "message_deduplication": "earliest_executable_revision_per_message",
                         "market_evidence_tier": "retrospective_research_m1",
+                        "calendar_evidence_tier": "retrospective_official_schedule",
                         "exact_pit_claimed": False,
                         "official_18_case_holdout_excluded": True,
                     },
@@ -946,7 +1061,9 @@ class AidyHistoricalStressLabService:
                         "target_outcome_excluded_from_model_input": True,
                         "research_market_window_ends_at_or_before_signal": True,
                         "prior_analogue_results_known_at_or_before_signal": no_future_analogues,
+                        "provider_claims_reconstructed_only_from_prior_known_results": True,
                         "retrospective_market_source_explicitly_tagged": True,
+                        "retrospective_calendar_source_explicitly_tagged": True,
                         "official_exact_pit_holdout_excluded": True,
                         "research_only": True,
                     },
@@ -1028,14 +1145,14 @@ class AidyHistoricalStressLabService:
                 if not isinstance(assertions, dict) or not all(assertions.values()):
                     raise ValueError("historical_stress_assertion_not_clean")
                 context = _signal_context_from_payload(payload)
-                annotation = await self._engine.reason(
+                annotation, retries = await _reason_with_provider_claim_retry(
+                    self._engine,
                     context,
                     tool_executor=self._stress_candle_tool_executor(
                         signal_posted_at=case["signal_posted_at"],
                     ),
                     tool_schemas=[_STRESS_CANDLE_TOOL_SCHEMA],
                 )
-                retries = 0
                 output = {
                     "lean": annotation.lean,
                     "confidence": annotation.confidence,
@@ -1051,8 +1168,8 @@ class AidyHistoricalStressLabService:
                     "tools_offered": True,
                     "tool_surface": {
                         "retrospective_candles": True,
-                        "historical_calendar": False,
-                        "historical_calendar_reason": "no accepted retrospective schedule endpoint",
+                        "historical_calendar": True,
+                        "historical_calendar_mode": "standing_reconstructed_official_schedule",
                     },
                     "request_count": annotation.request_count,
                     "tool_calls_made": annotation.tool_calls_made,

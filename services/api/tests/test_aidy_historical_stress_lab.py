@@ -7,6 +7,7 @@ from app.aidy_historical_stress_lab import (
     STRESS_INPUT_CONTRACT_VERSION,
     STRESS_REPLAY_VERSION,
     _partition,
+    _reconstructed_provider_claims,
     _scope_from_env,
     build_reconstructed_market_context,
 )
@@ -29,8 +30,8 @@ def _bar(minute: int, close: str, *, high: str | None = None, low: str | None = 
 
 
 def test_stress_lab_versions_are_separate_from_exact_pit_replay() -> None:
-    assert STRESS_REPLAY_VERSION == "aidy_historical_stress_lab_v2_tools"
-    assert STRESS_INPUT_CONTRACT_VERSION == "aidy_historical_stress_input_v1"
+    assert STRESS_REPLAY_VERSION == "aidy_historical_stress_lab_v4_provider"
+    assert STRESS_INPUT_CONTRACT_VERSION == "aidy_historical_stress_input_v3_provider"
 
 
 def test_stress_partition_is_chronological() -> None:
@@ -114,4 +115,66 @@ def test_stress_reasoning_offers_research_candle_tool_not_live_pit_tool() -> Non
     assert '"decision_admitted": False' in source
     reason_block = source.split("    async def reason(", 1)[1].split("    def score(", 1)[0]
     assert '"tools_offered": True' in reason_block
-    assert '"historical_calendar": False' in reason_block
+    assert '"historical_calendar": True' in reason_block
+
+
+def test_stress_materializer_attaches_research_calendar_before_build2() -> None:
+    import inspect
+    import app.aidy_historical_stress_lab as module
+
+    source = inspect.getsource(module)
+    materialize = source.split("    async def materialize(", 1)[1].split(
+        "    def _selected_cases", 1
+    )[0]
+    assert "attach_historical_schedule(" in materialize
+    assert "calendar_evidence_tier" in materialize
+    assert "retrospective_calendar_source_explicitly_tagged" in materialize
+
+
+def test_reconstructed_provider_claims_use_only_prior_known_results() -> None:
+    source = "provider-1"
+    target = datetime(2026, 8, 20, 12, 0, tzinfo=UTC)
+    pool = []
+    for index in range(8):
+        pool.append(
+            {
+                "source_id": source,
+                "side": "BUY",
+                "signal_posted_at": target - timedelta(days=9 - index),
+                "prior_result_known_at": target - timedelta(days=8 - index),
+                "net_pnl_usd": Decimal("10") if index < 6 else Decimal("-5"),
+            }
+        )
+    pool.append(
+        {
+            "source_id": source,
+            "side": "BUY",
+            "signal_posted_at": target - timedelta(hours=1),
+            "prior_result_known_at": target + timedelta(hours=1),
+            "net_pnl_usd": Decimal("9999"),
+        }
+    )
+
+    claims = _reconstructed_provider_claims(
+        pool,
+        source_id=source,
+        side="BUY",
+        signal_posted_at=target,
+    )
+    overall = next(item for item in claims if item["id"] == "provider.performance.overall")
+    assert overall["sample_n"] == 8
+    assert overall["value"]["wins"] == 6
+    assert overall["value"]["losses"] == 2
+    assert overall["value"]["net_pnl_usd"] == "50"
+    assert overall["as_of_utc"] == target.isoformat()
+
+
+def test_stress_reasoning_uses_bounded_provider_retry_with_candle_tools() -> None:
+    import inspect
+    import app.aidy_historical_stress_lab as module
+
+    source = inspect.getsource(module)
+    reason_block = source.split("    async def reason(", 1)[1].split("    def score(", 1)[0]
+    assert "_reason_with_provider_claim_retry(" in reason_block
+    assert "tool_executor=self._stress_candle_tool_executor(" in reason_block
+    assert "tool_schemas=[_STRESS_CANDLE_TOOL_SCHEMA]" in reason_block

@@ -477,6 +477,8 @@ async def _reason_with_provider_claim_retry(
     context: SignalContext,
     *,
     retry_limit: int = _PROVIDER_CLAIM_RETRY_LIMIT,
+    tool_executor: Any | None = None,
+    tool_schemas: list[dict[str, Any]] | None = None,
 ) -> tuple[Any, int]:
     """Retry provider-claim violations fail-closed, never by weakening validation.
 
@@ -489,7 +491,15 @@ async def _reason_with_provider_claim_retry(
     retry_context = context
     while True:
         try:
-            return await engine.reason(retry_context), retries
+            if tool_executor is not None and tool_schemas:
+                annotation = await engine.reason(
+                    retry_context,
+                    tool_executor=tool_executor,
+                    tool_schemas=tool_schemas,
+                )
+            else:
+                annotation = await engine.reason(retry_context)
+            return annotation, retries
         except AidyReasoningUnavailable as exc:
             if (
                 str(exc) != "aidy_reasoning_provider_claim_invalid"
