@@ -28,6 +28,7 @@ from app.aidy_event_liquidity_execution import (
     build_event_liquidity_execution_context,
     execution_calibration_from_candidate,
 )
+from app.aidy_provider_alpha_analogue import load_provider_alpha_analogue_context
 from app.aidy_reasoning_engine import (
     MODEL_VERSION,
     PROMPT_VERSION,
@@ -39,8 +40,8 @@ from app.aidy_reasoning_runner import AidyReasoningRunner
 
 logger = logging.getLogger(__name__)
 
-REPLAY_VERSION = "aidy_historical_time_machine_v5"
-INPUT_CONTRACT_VERSION = "aidy_historical_replay_input_v4"
+REPLAY_VERSION = "aidy_historical_time_machine_v6"
+INPUT_CONTRACT_VERSION = "aidy_historical_replay_input_v5"
 
 # Frozen partition cutoffs from the first exact-PIT eligible cohort on 2026-09-19.
 # These cutoffs never move when later rows are added.
@@ -436,6 +437,11 @@ def _signal_context_from_payload(payload: dict[str, Any]) -> SignalContext:
             if isinstance(payload.get("event_liquidity_execution_context"), dict)
             else None
         ),
+        provider_alpha_analogue_context=(
+            dict(payload["provider_alpha_analogue_context"])
+            if isinstance(payload.get("provider_alpha_analogue_context"), dict)
+            else None
+        ),
         preflight_evidence_calls=0,
     )
 
@@ -581,6 +587,34 @@ class AidyHistoricalReplayService:
                 market_context=market_context,
                 execution_calibration=execution_calibration_from_candidate(candidate),
             )
+            build3_target_payload = {
+                "signal": {
+                    "side": candidate.get("side"),
+                    "symbol": candidate.get("symbol"),
+                    "entry_low": (
+                        str(candidate["entry_low"]) if candidate.get("entry_low") is not None else None
+                    ),
+                    "entry_high": (
+                        str(candidate["entry_high"]) if candidate.get("entry_high") is not None else None
+                    ),
+                    "stop_loss": (
+                        str(candidate["stop_loss"]) if candidate.get("stop_loss") is not None else None
+                    ),
+                    "take_profits": [
+                        str(value) for value in (candidate.get("take_profits") or [])
+                    ],
+                },
+                "market_context": market_context,
+                "event_liquidity_execution_context": event_liquidity_execution_context,
+            }
+            provider_alpha_analogue_context = load_provider_alpha_analogue_context(
+                self._session_factory,
+                signal_posted_at=signal_at,
+                source_id=candidate["source_id"],
+                side=str(candidate.get("side") or ""),
+                market_context=market_context,
+                target_payload=build3_target_payload,
+            )
             payload = {
                 "input_contract_version": INPUT_CONTRACT_VERSION,
                 "source_decision_id": str(candidate["source_decision_id"]),
@@ -620,6 +654,7 @@ class AidyHistoricalReplayService:
                 "provider_evidence_claims": claims,
                 "market_context": market_context,
                 "event_liquidity_execution_context": event_liquidity_execution_context,
+                "provider_alpha_analogue_context": provider_alpha_analogue_context,
                 "recent_messages": candidate.get("recent_messages") or [],
                 "self_calibration": None,
                 "supplemental_evidence": None,
