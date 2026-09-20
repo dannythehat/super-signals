@@ -65,7 +65,7 @@ from app.aidy_reasoning_engine import (
 
 logger = logging.getLogger(__name__)
 
-STRESS_REPLAY_VERSION = "aidy_historical_stress_lab_v6_toolbox"
+STRESS_REPLAY_VERSION = "aidy_historical_stress_lab_v7_tooltrace"
 STRESS_INPUT_CONTRACT_VERSION = "aidy_historical_stress_input_v5_toolbox"
 STRESS_MARKET_CONTRACT_VERSION = "aidy_historical_stress_market_v1"
 STRESS_ANALOGUE_VERSION = "aidy_historical_stress_analogue_v1"
@@ -1235,6 +1235,12 @@ class AidyHistoricalStressLabService:
                     },
                     "request_count": annotation.request_count,
                     "tool_calls_made": annotation.tool_calls_made,
+                    "tool_names_used": list(annotation.tool_names_used),
+                    "tools_offered_names": [
+                        CANDLE_TOOL_NAME,
+                        HISTORICAL_CALENDAR_TOOL_SCHEMA["name"],
+                        HISTORICAL_EVIDENCE_TOOL_SCHEMA["name"],
+                    ],
                     "evidence_tier": "reconstructed_research",
                 }
                 with self._session_factory() as session:
