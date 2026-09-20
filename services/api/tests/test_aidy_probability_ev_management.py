@@ -60,7 +60,10 @@ def test_build4_geometry_probability_ev_and_management_are_research_only() -> No
     assert result["probability"]["sample_n"] == 5
     assert result["probability"]["status"] == "descriptive_low_sample"
     assert result["probability"]["usable_for_entry_override"] is False
-    assert result["expected_value"]["status"] == "descriptive_binary_geometry_proxy"
+    assert result["expected_value"]["status"] == "descriptive_empirical_analogue_ev"
+    assert Decimal(result["expected_value"]["analogue_empirical_ev_r"]) == Decimal("0.4")
+    assert result["expected_value"]["target_hit_probability_available"] is False
+    assert result["expected_value"]["geometry_binary_ev_computed"] is False
     assert result["expected_value"]["usable_for_live_edge_claim"] is False
     assert result["management_profit_extraction"]["aidy_live_management_allowed"] is False
     assert result["management_profit_extraction"]["aidy_paper_management_allowed"] is False
@@ -86,7 +89,7 @@ def test_build4_probability_and_ev_stay_unknown_below_five_resolved_analogues() 
     )
     assert result["probability"]["status"] == "insufficient_prior_outcomes"
     assert result["expected_value"]["status"] == "insufficient_evidence"
-    assert result["expected_value"]["first_target_binary_ev_r"] is None
+    assert result["expected_value"]["analogue_empirical_ev_r"] is None
 
 
 def test_build4_does_not_invent_execution_cost_when_calibration_unknown() -> None:
@@ -96,7 +99,8 @@ def test_build4_does_not_invent_execution_cost_when_calibration_unknown() -> Non
         build3_context=_build3(),
     )
     assert result["execution_cost_proxy"]["status"] == "unknown"
-    assert result["expected_value"]["execution_cost_r_p50_applied"] == "0"
+    assert result["expected_value"]["status"] == "descriptive_empirical_analogue_ev"
+    assert result["expected_value"]["current_execution_cost_r_p50"] is None
 
 
 def test_build4_management_reuses_day20_waiting_gate_and_canonical_ladder() -> None:
