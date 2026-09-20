@@ -239,7 +239,7 @@ def test_replay_versions_cases_and_decisions_without_rewriting_prior_exams() -> 
     assert "UNIQUE (case_id,replay_version)" in source
 
     module = MODULE.read_text(encoding="utf-8")
-    assert 'REPLAY_VERSION = "aidy_historical_time_machine_v5"' in module
+    assert 'REPLAY_VERSION = "aidy_historical_time_machine_v6"' in module
     assert 'INPUT_CONTRACT_VERSION = "aidy_historical_replay_input_v4"' in module
     assert "rc.input_contract_version=:input_contract_version" in module
     assert "rd.replay_version=:replay_version" in module
