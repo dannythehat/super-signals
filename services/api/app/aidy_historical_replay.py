@@ -29,6 +29,7 @@ from app.aidy_event_liquidity_execution import (
     execution_calibration_from_candidate,
 )
 from app.aidy_provider_alpha_analogue import load_provider_alpha_analogue_context
+from app.aidy_probability_ev_management import build_probability_ev_management_context
 from app.aidy_reasoning_engine import (
     MODEL_VERSION,
     PROMPT_VERSION,
@@ -40,8 +41,8 @@ from app.aidy_reasoning_runner import AidyReasoningRunner
 
 logger = logging.getLogger(__name__)
 
-REPLAY_VERSION = "aidy_historical_time_machine_v6"
-INPUT_CONTRACT_VERSION = "aidy_historical_replay_input_v5"
+REPLAY_VERSION = "aidy_historical_time_machine_v7"
+INPUT_CONTRACT_VERSION = "aidy_historical_replay_input_v6"
 
 # Frozen partition cutoffs from the first exact-PIT eligible cohort on 2026-09-19.
 # These cutoffs never move when later rows are added.
@@ -53,6 +54,17 @@ _DEFAULT_BATCH = 12
 _DEFAULT_MAX_CALLS = 220
 _PROVIDER_CLAIM_RETRY_LIMIT = 1
 _EXPECTED_FROZEN_CASES = 140
+_PREVIOUS_INPUT_CONTRACT_VERSION = "aidy_historical_replay_input_v5"
+
+_LOAD_PREVIOUS_CASES = text(
+    """
+    SELECT source_decision_id,source_id,signal_posted_at,partition,input_payload
+    FROM aidy_historical_replay_cases
+    WHERE input_contract_version=:previous_input_contract_version
+    ORDER BY signal_posted_at,id
+    LIMIT :limit
+    """
+)
 
 _FORBIDDEN_INPUT_KEYS = {
     "actual_pnl_usd",
@@ -442,6 +454,11 @@ def _signal_context_from_payload(payload: dict[str, Any]) -> SignalContext:
             if isinstance(payload.get("provider_alpha_analogue_context"), dict)
             else None
         ),
+        probability_ev_management_context=(
+            dict(payload["probability_ev_management_context"])
+            if isinstance(payload.get("probability_ev_management_context"), dict)
+            else None
+        ),
         preflight_evidence_calls=0,
     )
 
@@ -533,9 +550,8 @@ class AidyHistoricalReplayService:
         return AidyReasoningRunner._attached_market_context(candidate)
 
     def materialize(self, *, limit: int = 500) -> int:
-        # The weekend exam uses a deliberately frozen 140-case cohort. Once the current
-        # immutable input-contract version has all 140 rows, do not repeatedly rebuild the
-        # expensive PIT source query on every reasoning batch.
+        # Build 4 inherits the exact frozen Build 3 cohort rather than re-querying mutable
+        # source tables. Only the new probability/EV/management evidence is appended.
         with self._session_factory() as session:
             existing = int(
                 session.execute(
@@ -546,159 +562,85 @@ class AidyHistoricalReplayService:
                     {"input_contract_version": INPUT_CONTRACT_VERSION},
                 ).scalar_one()
             )
-        if existing >= _EXPECTED_FROZEN_CASES:
-            return 0
-
-        with self._session_factory() as session:
-            candidates = [
+            if existing >= _EXPECTED_FROZEN_CASES:
+                return 0
+            previous = [
                 dict(row)
                 for row in session.execute(
-                    _MATERIALIZE_SELECT,
-                    {"limit": limit, "input_contract_version": INPUT_CONTRACT_VERSION},
+                    _LOAD_PREVIOUS_CASES,
+                    {
+                        "previous_input_contract_version": _PREVIOUS_INPUT_CONTRACT_VERSION,
+                        "limit": limit,
+                    },
                 ).mappings()
             ]
 
-        written = 0
-        for candidate in candidates:
-            signal_at = candidate["signal_posted_at"].astimezone(UTC)
-            profile, intelligence = self._profile_and_intelligence(candidate)
-            market_context = self._market_context(candidate)
-            if profile is None or market_context is None:
-                continue
+        if len(previous) != _EXPECTED_FROZEN_CASES:
+            raise ValueError(
+                f"historical_replay_previous_frozen_cohort_incomplete:{len(previous)}"
+            )
 
-            claims = build_provider_evidence_claims(
-                provider_profile=profile,
-                provider_intelligence=intelligence,
-                provider_fingerprint=(
-                    dict(candidate["provider_fingerprint_snapshot"])
-                    if isinstance(candidate.get("provider_fingerprint_snapshot"), dict)
-                    else None
-                ),
-                signal_side=str(candidate.get("side") or ""),
-                signal_session=str((market_context or {}).get("session") or ""),
+        written = 0
+        for case in previous:
+            base = case.get("input_payload")
+            if not isinstance(base, dict):
+                raise ValueError("historical_replay_previous_payload_not_object")
+            signal = base.get("signal")
+            if not isinstance(signal, dict):
+                raise ValueError("historical_replay_previous_signal_not_object")
+
+            build2 = (
+                dict(base["event_liquidity_execution_context"])
+                if isinstance(base.get("event_liquidity_execution_context"), dict)
+                else None
             )
-            event_liquidity_execution_context = build_event_liquidity_execution_context(
-                signal_posted_at=signal_at,
-                side=str(candidate.get("side") or ""),
-                entry_low=candidate.get("entry_low"),
-                entry_high=candidate.get("entry_high"),
-                stop_loss=candidate.get("stop_loss"),
-                take_profits=list(candidate.get("take_profits") or []),
-                market_context=market_context,
-                execution_calibration=execution_calibration_from_candidate(candidate),
+            build3 = (
+                dict(base["provider_alpha_analogue_context"])
+                if isinstance(base.get("provider_alpha_analogue_context"), dict)
+                else None
             )
-            build3_target_payload = {
-                "signal": {
-                    "side": candidate.get("side"),
-                    "symbol": candidate.get("symbol"),
-                    "entry_low": (
-                        str(candidate["entry_low"]) if candidate.get("entry_low") is not None else None
-                    ),
-                    "entry_high": (
-                        str(candidate["entry_high"]) if candidate.get("entry_high") is not None else None
-                    ),
-                    "stop_loss": (
-                        str(candidate["stop_loss"]) if candidate.get("stop_loss") is not None else None
-                    ),
-                    "take_profits": [
-                        str(value) for value in (candidate.get("take_profits") or [])
-                    ],
-                },
-                "market_context": market_context,
-                "event_liquidity_execution_context": event_liquidity_execution_context,
-            }
-            provider_alpha_analogue_context = load_provider_alpha_analogue_context(
-                self._session_factory,
-                signal_posted_at=signal_at,
-                source_id=candidate["source_id"],
-                side=str(candidate.get("side") or ""),
-                market_context=market_context,
-                target_payload=build3_target_payload,
+            probability_ev_management_context = build_probability_ev_management_context(
+                signal=signal,
+                build2_context=build2,
+                build3_context=build3,
             )
-            payload = {
-                "input_contract_version": INPUT_CONTRACT_VERSION,
-                "source_decision_id": str(candidate["source_decision_id"]),
-                "source_id": str(candidate["source_id"]),
-                "signal_posted_at": signal_at.isoformat(),
-                "provider_name_for_validation_only": str(candidate.get("provider_name") or "UNKNOWN"),
-                "signal": {
-                    "side": candidate.get("side"),
-                    "symbol": candidate.get("symbol"),
-                    "entry_low": (
-                        str(candidate["entry_low"]) if candidate.get("entry_low") is not None else None
-                    ),
-                    "entry_high": (
-                        str(candidate["entry_high"]) if candidate.get("entry_high") is not None else None
-                    ),
-                    "stop_loss": (
-                        str(candidate["stop_loss"]) if candidate.get("stop_loss") is not None else None
-                    ),
-                    "take_profits": [
-                        str(value) for value in (candidate.get("take_profits") or [])
-                    ],
-                },
-                "deterministic_decision": {
-                    "decision_class": "approve",
-                    "reasons": [],
-                },
-                "selection_provenance": {
-                    "population": "legacy_aidy_approved_resolved_exact_pit",
-                    "legacy_decision_reasons_excluded": True,
-                    "selection_bias_possible": True,
-                    "usable_for_live_edge_claim": False,
-                },
-                "provider_profile_version_no": candidate.get("provider_profile_version_no"),
-                "provider_profile_effective_at": _dt_iso(
-                    candidate.get("provider_profile_effective_at")
-                ),
-                "provider_evidence_claims": claims,
-                "market_context": market_context,
-                "event_liquidity_execution_context": event_liquidity_execution_context,
-                "provider_alpha_analogue_context": provider_alpha_analogue_context,
-                "recent_messages": candidate.get("recent_messages") or [],
-                "self_calibration": None,
-                "supplemental_evidence": None,
-                "pit_assertions": {
-                    "profile_effective_at_lte_signal": (
-                        candidate["provider_profile_effective_at"] <= signal_at
-                    ),
-                    "context_as_of_lte_signal": (
-                        candidate["attached_context_as_of_utc"] <= signal_at
-                    ),
-                    "recent_messages_lte_signal": all(
-                        (
-                            item.get("posted_at") is None
-                            or (
-                                item["posted_at"].astimezone(UTC)
-                                if isinstance(item["posted_at"], datetime)
-                                else datetime.fromisoformat(
-                                    str(item["posted_at"]).replace("Z", "+00:00")
-                                ).astimezone(UTC)
-                            )
-                            <= signal_at
-                        )
-                        for item in (candidate.get("recent_messages") or [])
-                    ),
-                    "outcome_values_absent": True,
-                    "legacy_decision_reasons_excluded": True,
-                },
-            }
+
+            payload = dict(base)
+            payload["input_contract_version"] = INPUT_CONTRACT_VERSION
+            payload["probability_ev_management_context"] = probability_ev_management_context
+            provenance = (
+                dict(payload["selection_provenance"])
+                if isinstance(payload.get("selection_provenance"), dict)
+                else {}
+            )
+            provenance["derived_from_input_contract_version"] = (
+                _PREVIOUS_INPUT_CONTRACT_VERSION
+            )
+            provenance["same_frozen_source_decision"] = True
+            payload["selection_provenance"] = provenance
+            pit = (
+                dict(payload["pit_assertions"])
+                if isinstance(payload.get("pit_assertions"), dict)
+                else {}
+            )
+            pit["derived_from_previous_frozen_contract"] = True
+            payload["pit_assertions"] = pit
+
             _assert_no_future_fields(payload)
             if not all(payload["pit_assertions"].values()):
                 raise ValueError(
-                    f"historical_replay_pit_assertion_failed:{candidate['source_decision_id']}"
+                    f"historical_replay_pit_assertion_failed:{case['source_decision_id']}"
                 )
 
-            partition = _partition(signal_at)
             with self._session_factory() as session:
                 result = session.execute(
                     _INSERT_CASE,
                     {
                         "id": str(uuid4()),
-                        "source_decision_id": str(candidate["source_decision_id"]),
-                        "source_id": str(candidate["source_id"]),
-                        "signal_posted_at": signal_at,
-                        "partition": partition,
+                        "source_decision_id": str(case["source_decision_id"]),
+                        "source_id": str(case["source_id"]),
+                        "signal_posted_at": case["signal_posted_at"],
+                        "partition": str(case["partition"]),
                         "input_contract_version": INPUT_CONTRACT_VERSION,
                         "input_payload": _canonical(payload),
                         "input_digest": _digest(payload),
