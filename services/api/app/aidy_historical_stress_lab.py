@@ -192,7 +192,8 @@ _PRIOR_POOL = text(
             ORDER BY ps.scored_at DESC,ps.id DESC
             LIMIT 1
         ) ps ON true
-        WHERE d.signal_posted_at<:cohort_end
+        WHERE d.signal_posted_at>=:cohort_start
+          AND d.signal_posted_at<:cohort_end
           AND ps.last_bar_utc IS NOT NULL
           AND ps.last_bar_utc<=:cohort_end
           AND upper(COALESCE(o.symbol,'')) IN ('XAUUSD','GOLD')
@@ -689,7 +690,7 @@ class AidyHistoricalStressLabService:
                 dict(row)
                 for row in session.execute(
                     _PRIOR_POOL,
-                    {"cohort_end": _COHORT_END},
+                    {"cohort_start": _COHORT_START, "cohort_end": _COHORT_END},
                 ).mappings()
             ]
 
