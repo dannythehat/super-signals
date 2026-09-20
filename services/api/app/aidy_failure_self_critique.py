@@ -21,7 +21,7 @@ from typing import Any, Mapping
 from sqlalchemy import text
 from sqlalchemy.orm import Session, sessionmaker
 
-CONTEXT_VERSION = "aidy_failure_self_critique_v1"
+CONTEXT_VERSION = "aidy_failure_self_critique_v2"
 _BUILD4_REPLAY_VERSION = "aidy_historical_time_machine_v7"
 _BUILD4_INPUT_CONTRACT_VERSION = "aidy_historical_replay_input_v6"
 _MIN_PROVIDER_SELF_SAMPLE = 5
@@ -300,6 +300,60 @@ def _evidence_gaps(
     return sorted(set(gaps)), sorted(set(critical))
 
 
+def _current_trade_reduce_reasons(
+    *,
+    market_context: Mapping[str, Any] | None,
+    build2_context: Mapping[str, Any] | None,
+    build4_context: Mapping[str, Any] | None,
+) -> list[str]:
+    """Return only concrete current-trade reasons that can justify a reduced shadow size.
+
+    This is deliberately narrow. Missing/uncertain evidence is handled by the UNKNOWN gate,
+    not by silently reducing risk. Historical self-feedback can tell AIDY that it used reduce
+    badly before, but cannot itself create a reason to reduce the current trade.
+    """
+    market = market_context if isinstance(market_context, Mapping) else {}
+    build2 = build2_context if isinstance(build2_context, Mapping) else {}
+    build4 = build4_context if isinstance(build4_context, Mapping) else {}
+    reasons: list[str] = []
+
+    geometry = (
+        build4.get("signal_geometry")
+        if isinstance(build4.get("signal_geometry"), Mapping)
+        else {}
+    )
+    side = str(geometry.get("side") or "").upper()
+    mean_target_r = _decimal(geometry.get("equal_weight_mean_target_r"))
+    if mean_target_r is not None and mean_target_r < Decimal("1"):
+        reasons.append("mean_target_reward_r_below_1")
+
+    trend = str(market.get("trend_structure") or "").lower()
+    if (side == "BUY" and trend == "bearish_trend") or (
+        side == "SELL" and trend == "bullish_trend"
+    ):
+        reasons.append("clear_multi_timeframe_countertrend")
+
+    event = (
+        build2.get("event")
+        if isinstance(build2.get("event"), Mapping)
+        else {}
+    )
+    nearest = (
+        event.get("nearest_scheduled_event")
+        if isinstance(event.get("nearest_scheduled_event"), Mapping)
+        else {}
+    )
+    impact = str(nearest.get("impact") or "").lower()
+    try:
+        event_minutes = abs(int(nearest.get("minutes_from_signal")))
+    except (TypeError, ValueError):
+        event_minutes = None
+    if impact == "high" and event_minutes is not None and event_minutes <= 60:
+        reasons.append("high_impact_event_within_60m")
+
+    return reasons
+
+
 def build_failure_self_critique_context(
     *,
     market_context: Mapping[str, Any] | None,
@@ -313,6 +367,11 @@ def build_failure_self_critique_context(
         market_context=market_context,
         build2_context=build2_context,
         build3_context=build3_context,
+        build4_context=build4_context,
+    )
+    current_reduce_reasons = _current_trade_reduce_reasons(
+        market_context=market_context,
+        build2_context=build2_context,
         build4_context=build4_context,
     )
     feedback = (
@@ -383,6 +442,11 @@ def build_failure_self_critique_context(
         "risk_adjustment_guard": {
             "status": adjustment_guard,
             "reduce_requires_current_trade_specific_reason": True,
+            "current_trade_reduce_reasons": current_reduce_reasons,
+            "reduce_gate_open": bool(current_reduce_reasons),
+            "reduce_gate_rule": (
+                "allow_reduce_only_for_mean_target_r_below_1_or_clear_countertrend_or_high_impact_event_within_60m"
+            ),
             "uncertainty_alone_is_not_a_reduce_reason": True,
             "prior_self_feedback_cannot_override_current_hard_evidence": True,
         },

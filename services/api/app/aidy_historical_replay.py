@@ -45,8 +45,8 @@ from app.aidy_reasoning_runner import AidyReasoningRunner
 
 logger = logging.getLogger(__name__)
 
-REPLAY_VERSION = "aidy_historical_time_machine_v8"
-INPUT_CONTRACT_VERSION = "aidy_historical_replay_input_v7"
+REPLAY_VERSION = "aidy_historical_time_machine_v9"
+INPUT_CONTRACT_VERSION = "aidy_historical_replay_input_v8"
 
 # Frozen partition cutoffs from the first exact-PIT eligible cohort on 2026-09-19.
 # These cutoffs never move when later rows are added.
@@ -58,7 +58,7 @@ _DEFAULT_BATCH = 12
 _DEFAULT_MAX_CALLS = 220
 _PROVIDER_CLAIM_RETRY_LIMIT = 1
 _EXPECTED_FROZEN_CASES = 140
-_PREVIOUS_INPUT_CONTRACT_VERSION = "aidy_historical_replay_input_v6"
+_PREVIOUS_INPUT_CONTRACT_VERSION = "aidy_historical_replay_input_v7"
 
 _LOAD_PREVIOUS_CASES = text(
     """
@@ -559,8 +559,9 @@ class AidyHistoricalReplayService:
         return AidyReasoningRunner._attached_market_context(candidate)
 
     def materialize(self, *, limit: int = 500) -> int:
-        # Build 5 inherits the exact frozen Build 4 cohort rather than re-querying mutable
-        # source tables. Only PIT-safe failure-attribution/self-critique evidence is appended.
+        # Build 5 final calibration inherits the exact frozen Build 5-v1 cohort rather than
+        # re-querying mutable source tables. Only the deterministic current-trade reduce gate
+        # and UNKNOWN discipline are refreshed; the 140 source decisions/partitions stay fixed.
         with self._session_factory() as session:
             existing = int(
                 session.execute(
@@ -735,6 +736,7 @@ class AidyHistoricalReplayService:
                     "shadow_action": annotation.shadow_action,
                     "risk_multiplier": annotation.risk_multiplier,
                     "action_reason": annotation.action_reason,
+                    "action_calibration": annotation.action_calibration,
                     "provider_claim_refs": list(annotation.provider_claim_refs),
                     "provider_claim_validation_retries": provider_claim_retries,
                     "outcome_visible_to_model": False,

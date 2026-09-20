@@ -21,9 +21,11 @@ def _build3():
 def _build4():
     return {
         "signal_geometry": {
+            "side": "BUY",
             "stop_distance_points": "10",
             "target_count": 3,
             "positive_target_r_count": 3,
+            "equal_weight_mean_target_r": "1.5",
         },
         "probability": {"status": "descriptive_low_sample"},
         "execution_cost_proxy": {"status": "engineering_calibrated_proxy"},
@@ -50,6 +52,8 @@ def test_build5_flags_prior_over_reduction_without_turning_it_into_edge() -> Non
         "require_current_trade_specific_reason_before_reduce"
     )
     assert result["risk_adjustment_guard"]["reduce_requires_current_trade_specific_reason"] is True
+    assert result["risk_adjustment_guard"]["reduce_gate_open"] is False
+    assert result["risk_adjustment_guard"]["current_trade_reduce_reasons"] == []
     assert result["failure_attribution"]["usable_for_live_edge_claim"] is False
     assert result["live_money_execution_allowed"] is False
 
@@ -128,3 +132,56 @@ def test_build5_replay_feedback_query_is_strictly_point_in_time() -> None:
     assert "c.input_contract_version=:input_contract_version" in source
     assert '_BUILD4_REPLAY_VERSION = "aidy_historical_time_machine_v7"' in source
     assert '_BUILD4_INPUT_CONTRACT_VERSION = "aidy_historical_replay_input_v6"' in source
+
+
+def test_build5_opens_reduce_gate_for_weak_mean_reward_geometry() -> None:
+    build4 = _build4()
+    build4["signal_geometry"] = {
+        **build4["signal_geometry"],
+        "equal_weight_mean_target_r": "0.8",
+    }
+    result = build_failure_self_critique_context(
+        market_context={"trend_structure": "mixed"},
+        build2_context=_build2(),
+        build3_context=_build3(),
+        build4_context=build4,
+    )
+    assert result["risk_adjustment_guard"]["reduce_gate_open"] is True
+    assert result["risk_adjustment_guard"]["current_trade_reduce_reasons"] == [
+        "mean_target_reward_r_below_1"
+    ]
+
+
+def test_build5_opens_reduce_gate_for_clear_countertrend() -> None:
+    result = build_failure_self_critique_context(
+        market_context={"trend_structure": "bearish_trend"},
+        build2_context=_build2(),
+        build3_context=_build3(),
+        build4_context=_build4(),
+    )
+    assert result["risk_adjustment_guard"]["reduce_gate_open"] is True
+    assert "clear_multi_timeframe_countertrend" in (
+        result["risk_adjustment_guard"]["current_trade_reduce_reasons"]
+    )
+
+
+def test_build5_opens_reduce_gate_for_near_high_impact_event() -> None:
+    build2 = {
+        **_build2(),
+        "event": {
+            "nearest_scheduled_event": {
+                "impact": "high",
+                "minutes_from_signal": 45,
+            }
+        },
+    }
+    result = build_failure_self_critique_context(
+        market_context={"trend_structure": "mixed"},
+        build2_context=build2,
+        build3_context=_build3(),
+        build4_context=_build4(),
+    )
+    assert result["risk_adjustment_guard"]["reduce_gate_open"] is True
+    assert "high_impact_event_within_60m" in (
+        result["risk_adjustment_guard"]["current_trade_reduce_reasons"]
+    )
