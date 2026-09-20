@@ -224,7 +224,7 @@ def test_main_lifecycle_starts_and_stops_replay_runtime_safely() -> None:
 
 def test_materializer_inherits_legacy_reason_exclusion_from_frozen_previous_contract() -> None:
     source = MODULE.read_text(encoding="utf-8")
-    assert '_PREVIOUS_INPUT_CONTRACT_VERSION = "aidy_historical_replay_input_v8"' in source
+    assert '_PREVIOUS_INPUT_CONTRACT_VERSION = "aidy_historical_replay_input_v7"' in source
     assert "payload = dict(base)" in source
     assert 'provenance["derived_from_input_contract_version"]' in source
     assert 'provenance["same_frozen_source_decision"] = True' in source
@@ -244,7 +244,7 @@ def test_replay_versions_cases_and_decisions_without_rewriting_prior_exams() -> 
 
     module = MODULE.read_text(encoding="utf-8")
     assert 'REPLAY_VERSION = "aidy_historical_time_machine_v9"' in module
-    assert 'INPUT_CONTRACT_VERSION = "aidy_historical_replay_input_v7"' in module
+    assert 'INPUT_CONTRACT_VERSION = "aidy_historical_replay_input_v8"' in module
     assert "rc.input_contract_version=:input_contract_version" in module
     assert "rd.replay_version=:replay_version" in module
     assert "c.input_contract_version=:input_contract_version" in module
