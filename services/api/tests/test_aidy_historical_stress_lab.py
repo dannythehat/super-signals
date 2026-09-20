@@ -29,7 +29,7 @@ def _bar(minute: int, close: str, *, high: str | None = None, low: str | None = 
 
 
 def test_stress_lab_versions_are_separate_from_exact_pit_replay() -> None:
-    assert STRESS_REPLAY_VERSION == "aidy_historical_stress_lab_v1"
+    assert STRESS_REPLAY_VERSION == "aidy_historical_stress_lab_v2_tools"
     assert STRESS_INPUT_CONTRACT_VERSION == "aidy_historical_stress_input_v1"
 
 
@@ -101,3 +101,17 @@ def test_oos_flag_alone_does_not_open_validation(monkeypatch) -> None:
     monkeypatch.delenv("AIDY_HISTORICAL_STRESS_OPEN_VALIDATION", raising=False)
     monkeypatch.setenv("AIDY_HISTORICAL_STRESS_OPEN_OOS", "1")
     assert _scope_from_env() == "train"
+
+
+def test_stress_reasoning_offers_research_candle_tool_not_live_pit_tool() -> None:
+    import inspect
+    import app.aidy_historical_stress_lab as module
+
+    source = inspect.getsource(module)
+    assert "fetch_research_m1" in source
+    assert "tool_schemas=[_STRESS_CANDLE_TOOL_SCHEMA]" in source
+    assert '"pit_eligible": False' in source
+    assert '"decision_admitted": False' in source
+    reason_block = source.split("    async def reason(", 1)[1].split("    def score(", 1)[0]
+    assert '"tools_offered": True' in reason_block
+    assert '"historical_calendar": False' in reason_block
