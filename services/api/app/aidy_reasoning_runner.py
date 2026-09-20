@@ -63,6 +63,11 @@ from app.provider_day19_explainer_budget import (
 logger = logging.getLogger(__name__)
 
 _SELECTABLE = """
+    WITH execution_samples AS MATERIALIZED (
+        SELECT *
+        FROM provider_execution_calibration_samples
+        WHERE account_environment='demo'
+    )
     SELECT d.id AS decision_id, d.decision_class, d.reasons, d.source_id,
            d.signal_posted_at,
            o.message_id,o.signal_id,o.side,o.symbol,o.entry_low,o.entry_high,o.stop_loss,o.take_profits,
@@ -233,9 +238,8 @@ _SELECTABLE = """
                 )
             )::numeric AS charge_p95,
             MAX(c.closed_at) AS evidence_as_of_utc
-        FROM provider_execution_calibration_samples c
-        WHERE c.account_environment='demo'
-          AND c.closed_at<=d.signal_posted_at
+        FROM execution_samples c
+        WHERE c.closed_at<=d.signal_posted_at
     ) execution ON true
     WHERE d.decision_class='approve'
       AND a.id IS NULL
