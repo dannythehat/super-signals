@@ -317,7 +317,7 @@ def build_historical_analogue_context(
         key=lambda item: (
             -float(item["similarity"]),
             -int(bool(item["same_provider"])),
-            item["signal_posted_at"],
+            -datetime.fromisoformat(item["signal_posted_at"]).timestamp(),
             item["case_id"],
         )
     )
@@ -337,7 +337,7 @@ def build_historical_analogue_context(
         "positive_outcome_rate": (
             round(positive / len(top), 6) if enough and top else None
         ),
-        "mean_actual_pnl_usd": str(mean_pnl) if enough and mean_pnl is not None else None,
+        "mean_prior_pnl_usd": str(mean_pnl) if enough and mean_pnl is not None else None,
         "analogues": top,
         "selection_bias_possible": True,
         "descriptive_only": True,
