@@ -136,6 +136,7 @@ def test_stress_materializer_attaches_research_calendar_before_build2() -> None:
     assert "attach_historical_schedule(" in materialize
     assert "calendar_evidence_tier" in materialize
     assert "retrospective_calendar_source_explicitly_tagged" in materialize
+    assert '"toolbox_manifest": historical_toolbox_manifest(payload)' in materialize
 
 
 def test_reconstructed_provider_claims_use_only_prior_known_results() -> None:
