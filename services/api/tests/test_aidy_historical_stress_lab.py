@@ -29,8 +29,8 @@ def _bar(minute: int, close: str, *, high: str | None = None, low: str | None = 
 
 
 def test_stress_lab_versions_are_separate_from_exact_pit_replay() -> None:
-    assert STRESS_REPLAY_VERSION == "aidy_historical_stress_lab_v2_tools"
-    assert STRESS_INPUT_CONTRACT_VERSION == "aidy_historical_stress_input_v1"
+    assert STRESS_REPLAY_VERSION == "aidy_historical_stress_lab_v3_calendar"
+    assert STRESS_INPUT_CONTRACT_VERSION == "aidy_historical_stress_input_v2_calendar"
 
 
 def test_stress_partition_is_chronological() -> None:
@@ -114,4 +114,17 @@ def test_stress_reasoning_offers_research_candle_tool_not_live_pit_tool() -> Non
     assert '"decision_admitted": False' in source
     reason_block = source.split("    async def reason(", 1)[1].split("    def score(", 1)[0]
     assert '"tools_offered": True' in reason_block
-    assert '"historical_calendar": False' in reason_block
+    assert '"historical_calendar": True' in reason_block
+
+
+def test_stress_materializer_attaches_research_calendar_before_build2() -> None:
+    import inspect
+    import app.aidy_historical_stress_lab as module
+
+    source = inspect.getsource(module)
+    materialize = source.split("    async def materialize(", 1)[1].split(
+        "    def _selected_cases", 1
+    )[0]
+    assert "attach_historical_schedule(" in materialize
+    assert "calendar_evidence_tier" in materialize
+    assert "retrospective_calendar_source_explicitly_tagged" in materialize
