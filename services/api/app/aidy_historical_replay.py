@@ -45,8 +45,8 @@ from app.aidy_reasoning_runner import AidyReasoningRunner
 
 logger = logging.getLogger(__name__)
 
-REPLAY_VERSION = "aidy_historical_time_machine_v9"
-INPUT_CONTRACT_VERSION = "aidy_historical_replay_input_v8"
+REPLAY_VERSION = "aidy_historical_time_machine_v10_effective_time"
+INPUT_CONTRACT_VERSION = "aidy_historical_replay_input_v9_effective_time"
 
 # Frozen partition cutoffs from the first exact-PIT eligible cohort on 2026-09-19.
 # These cutoffs never move when later rows are added.
@@ -58,7 +58,7 @@ _DEFAULT_BATCH = 12
 _DEFAULT_MAX_CALLS = 220
 _PROVIDER_CLAIM_RETRY_LIMIT = 1
 _EXPECTED_FROZEN_CASES = 140
-_PREVIOUS_INPUT_CONTRACT_VERSION = "aidy_historical_replay_input_v7"
+_PREVIOUS_INPUT_CONTRACT_VERSION = "aidy_historical_replay_input_v8"
 
 _LOAD_PREVIOUS_CASES = text(
     """
@@ -67,6 +67,24 @@ _LOAD_PREVIOUS_CASES = text(
     WHERE input_contract_version=:previous_input_contract_version
     ORDER BY signal_posted_at,id
     LIMIT :limit
+    """
+)
+
+
+_EFFECTIVE_SIGNAL_TIME = text(
+    """
+    SELECT
+        d.signal_posted_at AS original_signal_posted_at,
+        o.revision_index,
+        mr.edited_at AS revision_edited_at,
+        COALESCE(mr.edited_at,d.signal_posted_at) AS effective_signal_posted_at
+    FROM aidy_decisions d
+    JOIN provider_trade_observations o ON o.id=d.observation_id
+    LEFT JOIN message_revisions mr
+      ON mr.message_id=o.message_id
+     AND mr.revision_index=o.revision_index
+    WHERE d.id=:source_decision_id
+    LIMIT 1
     """
 )
 
@@ -609,32 +627,69 @@ class AidyHistoricalReplayService:
             if not isinstance(signal, dict):
                 raise ValueError("historical_replay_previous_signal_not_object")
 
-            build2 = (
+            with self._session_factory() as session:
+                timing = session.execute(
+                    _EFFECTIVE_SIGNAL_TIME,
+                    {"source_decision_id": str(case["source_decision_id"])},
+                ).mappings().one_or_none()
+            if timing is None:
+                raise ValueError("historical_replay_effective_signal_time_missing")
+
+            original_at = timing["original_signal_posted_at"]
+            effective_at = timing["effective_signal_posted_at"]
+            revision_index = int(timing["revision_index"] or 0)
+            revision_edited_at = timing["revision_edited_at"]
+            if not isinstance(original_at, datetime) or not isinstance(effective_at, datetime):
+                raise ValueError("historical_replay_effective_signal_time_invalid")
+            original_at = original_at.astimezone(UTC)
+            effective_at = effective_at.astimezone(UTC)
+            if effective_at < original_at:
+                raise ValueError("historical_replay_effective_signal_time_before_post")
+            if revision_index > 0 and not isinstance(revision_edited_at, datetime):
+                raise ValueError("historical_replay_revision_edit_time_missing")
+
+            market_context = (
+                dict(base["market_context"])
+                if isinstance(base.get("market_context"), dict)
+                else None
+            )
+            previous_build2 = (
                 dict(base["event_liquidity_execution_context"])
                 if isinstance(base.get("event_liquidity_execution_context"), dict)
+                else {}
+            )
+            execution_calibration = (
+                dict(previous_build2["broker_execution_calibration"])
+                if isinstance(previous_build2.get("broker_execution_calibration"), dict)
                 else None
+            )
+            build2 = build_event_liquidity_execution_context(
+                signal_posted_at=effective_at,
+                side=str(signal.get("side") or ""),
+                entry_low=signal.get("entry_low"),
+                entry_high=signal.get("entry_high"),
+                stop_loss=signal.get("stop_loss"),
+                take_profits=list(signal.get("take_profits") or []),
+                market_context=market_context,
+                execution_calibration=execution_calibration,
             )
             build3 = (
                 dict(base["provider_alpha_analogue_context"])
                 if isinstance(base.get("provider_alpha_analogue_context"), dict)
                 else None
             )
-            build4 = (
-                dict(base["probability_ev_management_context"])
-                if isinstance(base.get("probability_ev_management_context"), dict)
-                else None
+            build4 = build_probability_ev_management_context(
+                signal=signal,
+                build2_context=build2,
+                build3_context=build3,
             )
             replay_self_feedback = load_replay_self_feedback(
                 self._session_factory,
-                signal_posted_at=case["signal_posted_at"],
+                signal_posted_at=effective_at,
                 source_id=case["source_id"],
             )
             failure_self_critique_context = build_failure_self_critique_context(
-                market_context=(
-                    dict(base["market_context"])
-                    if isinstance(base.get("market_context"), dict)
-                    else None
-                ),
+                market_context=market_context,
                 build2_context=build2,
                 build3_context=build3,
                 build4_context=build4,
@@ -644,6 +699,9 @@ class AidyHistoricalReplayService:
 
             payload = dict(base)
             payload["input_contract_version"] = INPUT_CONTRACT_VERSION
+            payload["signal_posted_at"] = effective_at.isoformat()
+            payload["event_liquidity_execution_context"] = build2
+            payload["probability_ev_management_context"] = build4
             payload["failure_self_critique_context"] = failure_self_critique_context
             provenance = (
                 dict(payload["selection_provenance"])
@@ -654,6 +712,17 @@ class AidyHistoricalReplayService:
                 _PREVIOUS_INPUT_CONTRACT_VERSION
             )
             provenance["same_frozen_source_decision"] = True
+            provenance["signal_time_semantics"] = (
+                "revision_edit_time_when_edited_else_original_post_time"
+            )
+            provenance["previous_signal_posted_at"] = original_at.isoformat()
+            provenance["effective_signal_posted_at"] = effective_at.isoformat()
+            provenance["target_revision_index"] = revision_index
+            provenance["target_revision_edited_at"] = (
+                revision_edited_at.astimezone(UTC).isoformat()
+                if isinstance(revision_edited_at, datetime)
+                else None
+            )
             payload["selection_provenance"] = provenance
             pit = (
                 dict(payload["pit_assertions"])
@@ -661,6 +730,15 @@ class AidyHistoricalReplayService:
                 else {}
             )
             pit["derived_from_previous_frozen_contract"] = True
+            pit["effective_signal_time_gte_original_post"] = effective_at >= original_at
+            pit["target_revision_available_by_effective_signal_time"] = (
+                revision_index == 0
+                or (
+                    isinstance(revision_edited_at, datetime)
+                    and revision_edited_at.astimezone(UTC) <= effective_at
+                )
+            )
+            pit["inherited_evidence_was_already_known_by_original_signal_time"] = True
             payload["pit_assertions"] = pit
 
             _assert_no_future_fields(payload)
@@ -676,8 +754,8 @@ class AidyHistoricalReplayService:
                         "id": str(uuid4()),
                         "source_decision_id": str(case["source_decision_id"]),
                         "source_id": str(case["source_id"]),
-                        "signal_posted_at": case["signal_posted_at"],
-                        "partition": str(case["partition"]),
+                        "signal_posted_at": effective_at,
+                        "partition": _partition(effective_at),
                         "input_contract_version": INPUT_CONTRACT_VERSION,
                         "input_payload": _canonical(payload),
                         "input_digest": _digest(payload),
