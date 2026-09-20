@@ -1,0 +1,71 @@
+from __future__ import annotations
+
+from datetime import UTC, datetime, timedelta
+from decimal import Decimal
+
+from app.aidy_historical_stress_lab import (
+    STRESS_INPUT_CONTRACT_VERSION,
+    STRESS_REPLAY_VERSION,
+    _partition,
+    build_reconstructed_market_context,
+)
+from app.aidy_market_client import AidyM1Bar
+
+
+def _bar(minute: int, close: str, *, high: str | None = None, low: str | None = None) -> AidyM1Bar:
+    opened = datetime(2026, 8, 20, 8, 0, tzinfo=UTC) + timedelta(minutes=minute)
+    value = Decimal(close)
+    return AidyM1Bar(
+        open_time_utc=opened,
+        open=value,
+        high=Decimal(high) if high is not None else value + Decimal("0.4"),
+        low=Decimal(low) if low is not None else value - Decimal("0.4"),
+        close=value,
+        revision_index=0,
+        first_observed_at=opened + timedelta(days=30),
+        payload_digest="a" * 64,
+    )
+
+
+def test_stress_lab_versions_are_separate_from_exact_pit_replay() -> None:
+    assert STRESS_REPLAY_VERSION == "aidy_historical_stress_lab_v1"
+    assert STRESS_INPUT_CONTRACT_VERSION == "aidy_historical_stress_input_v1"
+
+
+def test_stress_partition_is_chronological() -> None:
+    assert _partition(datetime(2026, 9, 3, 23, 59, tzinfo=UTC)) == "research_train"
+    assert _partition(datetime(2026, 9, 4, 12, 0, tzinfo=UTC)) == "research_validation"
+    assert _partition(datetime(2026, 9, 6, 12, 0, tzinfo=UTC)) == "research_oos"
+
+
+def test_reconstructed_market_never_claims_exact_pit() -> None:
+    bars = [_bar(i, str(4000 + i * 0.1)) for i in range(240)]
+    signal_at = datetime(2026, 8, 20, 12, 0, 30, tzinfo=UTC)
+    packet = build_reconstructed_market_context(signal_posted_at=signal_at, bars=bars)
+
+    assert packet["reconstruction_tier"] == "retrospective_research_m1"
+    assert packet["pit_eligible"] is False
+    assert packet["decision_admitted"] is False
+    assert packet["reconstruction_provenance"]["future_bars_in_model_input"] is False
+    assert packet["reconstruction_provenance"]["exact_pit_claimed"] is False
+    assert packet["research_only"] is True
+    assert packet["live_money_execution_allowed"] is False
+
+
+def test_reconstructed_market_excludes_bar_opening_at_signal_minute() -> None:
+    bars = [_bar(i, "4000") for i in range(240)]
+    bars.append(_bar(240, "9999"))
+    signal_at = datetime(2026, 8, 20, 12, 0, 30, tzinfo=UTC)
+    packet = build_reconstructed_market_context(signal_posted_at=signal_at, bars=bars)
+    assert packet["market"]["quote_context"]["mid"] == "4000"
+
+
+def test_stress_module_keeps_official_holdout_separate() -> None:
+    import inspect
+    import app.aidy_historical_stress_lab as module
+
+    source = inspect.getsource(module)
+    assert "official_18_case_holdout_excluded" in source
+    assert "reconstructed_research" in source
+    assert "AIDY_HISTORICAL_STRESS_ENABLED" in source
+    assert "aidy_historical_time_machine_v9" not in source
