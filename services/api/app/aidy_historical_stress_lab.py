@@ -416,6 +416,37 @@ def _decimal(value: Any) -> Decimal | None:
         return None
 
 
+def _score_gold_view_path(
+    *, direction: str, bars: list[AidyM1Bar]
+) -> dict[str, Any] | None:
+    """Score one already-frozen directional view from post-decision M1 bars only."""
+    if direction not in {"bullish", "bearish"} or not bars:
+        return None
+    ordered = sorted(bars, key=lambda item: item.open_time_utc)
+    reference = ordered[0].open
+    terminal = ordered[-1].close
+    if direction == "bullish":
+        signed = terminal - reference
+        favorable = max(bar.high for bar in ordered) - reference
+        adverse = reference - min(bar.low for bar in ordered)
+    else:
+        signed = reference - terminal
+        favorable = reference - min(bar.low for bar in ordered)
+        adverse = max(bar.high for bar in ordered) - reference
+    return {
+        "reference_time_utc": ordered[0].open_time_utc,
+        "reference_price": reference,
+        "terminal_time_utc": ordered[-1].open_time_utc + timedelta(minutes=1),
+        "terminal_price": terminal,
+        "directional_move_points": signed,
+        "favorable_excursion_points": max(favorable, Decimal("0")),
+        "adverse_excursion_points": max(adverse, Decimal("0")),
+        "outcome_class": (
+            "favorable" if signed > 0 else "adverse" if signed < 0 else "flat"
+        ),
+    }
+
+
 def _partition(at: datetime) -> str:
     point = at.astimezone(UTC)
     if point < _TRAIN_END:
@@ -1610,33 +1641,10 @@ class AidyHistoricalStressLabService:
                     window = None
                 bars = list(window.bars) if window is not None else []
                 bars.sort(key=lambda item: item.open_time_utc)
-                if bars:
-                    reference = bars[0].open
-                    terminal = bars[-1].close
-                    if direction == "bullish":
-                        signed = terminal - reference
-                        favorable = max(bar.high for bar in bars) - reference
-                        adverse = reference - min(bar.low for bar in bars)
-                    else:
-                        signed = reference - terminal
-                        favorable = reference - min(bar.low for bar in bars)
-                        adverse = max(bar.high for bar in bars) - reference
-                    outcome = (
-                        "favorable" if signed > 0 else "adverse" if signed < 0 else "flat"
-                    )
-                    values.update(
-                        {
-                            "reference_time_utc": bars[0].open_time_utc,
-                            "reference_price": reference,
-                            "terminal_time_utc": bars[-1].open_time_utc + timedelta(minutes=1),
-                            "terminal_price": terminal,
-                            "directional_move_points": signed,
-                            "favorable_excursion_points": max(favorable, Decimal("0")),
-                            "adverse_excursion_points": max(adverse, Decimal("0")),
-                            "outcome_class": outcome,
-                            "market_path_complete": bool(window.complete),
-                        }
-                    )
+                path_score = _score_gold_view_path(direction=direction, bars=bars)
+                if path_score is not None:
+                    values.update(path_score)
+                    values["market_path_complete"] = bool(window.complete)
 
             with self._session_factory() as session:
                 result = session.execute(_INSERT_GOLD_VIEW_SCORE, values)
