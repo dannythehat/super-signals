@@ -86,6 +86,10 @@ def test_stress_default_capacity_covers_entire_scoreable_cohort() -> None:
     assert '"research_oos": 160' in source
     assert "_EXPECTED_COHORT_SHA256" in source
     assert "historical_stress_candidate_identity_changed" in source
+    assert "_EXPECTED_TRAIN_COHORT = 571" in source
+    assert '_EXPECTED_TRAIN_SHA256 = "18326c515d12a7e55046828f6fe59198de50b0b7538193174528bf56f7829168"' in source
+    assert 'if self._scope == "train"' in source
+    assert "historical_stress_train_candidate_identity_changed" in source
 
 
 def test_validation_and_oos_are_separately_locked(monkeypatch) -> None:

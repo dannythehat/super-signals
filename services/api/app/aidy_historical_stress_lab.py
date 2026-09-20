@@ -84,6 +84,8 @@ _DEFAULT_MAX_CALLS = 800
 _SOURCE_UNIVERSE_WITH_DECISION_OUTCOMES = 803
 _EXPECTED_COHORT = 800
 _EXPECTED_COHORT_SHA256 = "f66d69237d0a550d67cd123e204b9f1aeb0bb581fa9bbef71078f3c9c8df39cb"
+_EXPECTED_TRAIN_COHORT = 571
+_EXPECTED_TRAIN_SHA256 = "18326c515d12a7e55046828f6fe59198de50b0b7538193174528bf56f7829168"
 _EXPECTED_PARTITIONS = {
     "research_train": 571,
     "research_validation": 69,
@@ -990,26 +992,59 @@ class AidyHistoricalStressLabService:
                     {"v": STRESS_INPUT_CONTRACT_VERSION},
                 ).scalar_one()
             )
-        if existing >= _EXPECTED_COHORT:
+        expected_existing = (
+            _EXPECTED_TRAIN_COHORT if self._scope == "train" else _EXPECTED_COHORT
+        )
+        if existing >= expected_existing:
             return 0
 
-        candidates = self._candidates()
-        if len(candidates) != _EXPECTED_COHORT:
-            raise ValueError(f"historical_stress_candidate_count_changed:{len(candidates)}")
-        cohort_sha256 = sha256(
-            ",".join(str(candidate["source_decision_id"]) for candidate in candidates).encode()
-        ).hexdigest()
-        if cohort_sha256 != _EXPECTED_COHORT_SHA256:
-            raise ValueError(f"historical_stress_candidate_identity_changed:{cohort_sha256}")
-        observed_partitions: dict[str, int] = {}
-        for candidate in candidates:
-            name = _partition(candidate["signal_posted_at"])
-            observed_partitions[name] = observed_partitions.get(name, 0) + 1
-        if observed_partitions != _EXPECTED_PARTITIONS:
-            raise ValueError(
-                "historical_stress_partition_count_changed:"
-                f"{observed_partitions}"
-            )
+        all_candidates = self._candidates()
+        if self._scope == "train":
+            candidates = [
+                candidate
+                for candidate in all_candidates
+                if _partition(candidate["signal_posted_at"]) == "research_train"
+            ]
+            if len(candidates) != _EXPECTED_TRAIN_COHORT:
+                raise ValueError(
+                    f"historical_stress_train_candidate_count_changed:{len(candidates)}"
+                )
+            cohort_sha256 = sha256(
+                ",".join(
+                    str(candidate["source_decision_id"]) for candidate in candidates
+                ).encode()
+            ).hexdigest()
+            if cohort_sha256 != _EXPECTED_TRAIN_SHA256:
+                raise ValueError(
+                    f"historical_stress_train_candidate_identity_changed:{cohort_sha256}"
+                )
+            observed_partitions = {
+                "research_train": len(candidates),
+            }
+        else:
+            candidates = all_candidates
+            if len(candidates) != _EXPECTED_COHORT:
+                raise ValueError(
+                    f"historical_stress_candidate_count_changed:{len(candidates)}"
+                )
+            cohort_sha256 = sha256(
+                ",".join(
+                    str(candidate["source_decision_id"]) for candidate in candidates
+                ).encode()
+            ).hexdigest()
+            if cohort_sha256 != _EXPECTED_COHORT_SHA256:
+                raise ValueError(
+                    f"historical_stress_candidate_identity_changed:{cohort_sha256}"
+                )
+            observed_partitions: dict[str, int] = {}
+            for candidate in candidates:
+                name = _partition(candidate["signal_posted_at"])
+                observed_partitions[name] = observed_partitions.get(name, 0) + 1
+            if observed_partitions != _EXPECTED_PARTITIONS:
+                raise ValueError(
+                    "historical_stress_partition_count_changed:"
+                    f"{observed_partitions}"
+                )
 
         day_bars = await self._day_bars(
             [candidate["signal_posted_at"] for candidate in candidates]
