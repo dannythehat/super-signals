@@ -7,6 +7,7 @@ from app.aidy_historical_stress_lab import (
     STRESS_INPUT_CONTRACT_VERSION,
     STRESS_REPLAY_VERSION,
     AidyHistoricalStressLabService,
+    _score_gold_view_path,
     _partition,
     _reconstructed_provider_claims,
     _scope_from_env,
