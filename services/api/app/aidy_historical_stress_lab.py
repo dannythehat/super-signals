@@ -73,12 +73,12 @@ _VALIDATION_END = datetime(2026, 9, 5, tzinfo=UTC)
 
 _DEFAULT_INTERVAL_SECONDS = 20
 _DEFAULT_BATCH = 12
-_DEFAULT_MAX_CALLS = 803
-_EXPECTED_COHORT = 803
+_DEFAULT_MAX_CALLS = 800
+_EXPECTED_COHORT = 800
 _EXPECTED_PARTITIONS = {
     "research_train": 571,
-    "research_validation": 70,
-    "research_oos": 162,
+    "research_validation": 69,
+    "research_oos": 160,
 }
 _MARKET_LOOKBACK = timedelta(hours=5)
 
