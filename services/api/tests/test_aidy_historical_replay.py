@@ -203,6 +203,13 @@ def test_runtime_is_disabled_by_default_and_has_separate_enable_flag() -> None:
     assert REPLAY_VERSION in source
 
 
+def test_frozen_cohort_short_circuits_rematerialization_after_140_cases() -> None:
+    source = MODULE.read_text(encoding="utf-8")
+    assert "_EXPECTED_FROZEN_CASES = 140" in source
+    assert "if existing >= _EXPECTED_FROZEN_CASES" in source
+    assert "return 0" in source
+
+
 def test_main_lifecycle_starts_and_stops_replay_runtime_safely() -> None:
     source = MAIN.read_text(encoding="utf-8")
     construct = "aidy_historical_replay_runtime = AidyHistoricalReplayRuntime(session_factory)"
