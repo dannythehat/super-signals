@@ -65,8 +65,9 @@ _VALIDATION_END = datetime(2026, 9, 5, tzinfo=UTC)
 
 _DEFAULT_INTERVAL_SECONDS = 20
 _DEFAULT_BATCH = 12
-_DEFAULT_MAX_CALLS = 650
+_DEFAULT_MAX_CALLS = 803
 _EXPECTED_COHORT = 803
+_EXPECTED_PARTITIONS = {"research_train": 571, "research_validation": 70, "research_oos": 162}
 _MARKET_LOOKBACK = timedelta(hours=5)
 
 _CANDIDATES = text(
@@ -619,8 +620,34 @@ def _positive_int(name: str, default: int) -> int:
 
 
 def _scope_from_env() -> str:
-    scope = os.getenv("AIDY_HISTORICAL_STRESS_SCOPE", "train").strip()
-    return scope if scope in {"train", "validation", "train_validation", "oos", "all"} else "train"
+    """Resolve a research scope without allowing accidental evaluation leakage.
+
+    Training is always available when the lab is enabled. Validation and OOS are
+    separately sealed and require explicit one-way operator flags. This prevents a
+    broad scope env var from silently turning evaluation data into tuning data.
+    """
+    requested = os.getenv("AIDY_HISTORICAL_STRESS_SCOPE", "train").strip()
+    if requested not in {"train", "validation", "train_validation", "oos", "all"}:
+        return "train"
+
+    validation_open = (
+        os.getenv("AIDY_HISTORICAL_STRESS_OPEN_VALIDATION", "0").strip() == "1"
+    )
+    oos_open = os.getenv("AIDY_HISTORICAL_STRESS_OPEN_OOS", "0").strip() == "1"
+
+    if requested == "train":
+        return "train"
+    if requested in {"validation", "train_validation"}:
+        return requested if validation_open else "train"
+    if requested == "oos":
+        return "oos" if oos_open else ("train_validation" if validation_open else "train")
+    if requested == "all":
+        if oos_open and validation_open:
+            return "all"
+        if validation_open:
+            return "train_validation"
+        return "train"
+    return "train"
 
 
 def _api_key() -> str:
@@ -736,6 +763,15 @@ class AidyHistoricalStressLabService:
         candidates = self._candidates()
         if len(candidates) != _EXPECTED_COHORT:
             raise ValueError(f"historical_stress_candidate_count_changed:{len(candidates)}")
+        observed_partitions: dict[str, int] = {}
+        for candidate in candidates:
+            name = _partition(candidate["signal_posted_at"])
+            observed_partitions[name] = observed_partitions.get(name, 0) + 1
+        if observed_partitions != _EXPECTED_PARTITIONS:
+            raise ValueError(
+                "historical_stress_partition_count_changed:"
+                f"{observed_partitions}"
+            )
 
         day_bars = await self._day_bars(
             [candidate["signal_posted_at"] for candidate in candidates]
@@ -1097,10 +1133,11 @@ class AidyHistoricalStressLabRuntime:
             name="super-signals-aidy-historical-stress-lab",
         )
         logger.info(
-            "AIDY historical stress lab started scope=%s interval=%ss batch=%s",
+            "AIDY historical stress lab started scope=%s interval=%ss batch=%s max_calls=%s",
             scope,
             self._interval_seconds,
             self._batch,
+            service._max_calls,
         )
         return True
 
