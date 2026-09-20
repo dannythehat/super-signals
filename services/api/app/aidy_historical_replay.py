@@ -30,6 +30,10 @@ from app.aidy_event_liquidity_execution import (
 )
 from app.aidy_provider_alpha_analogue import load_provider_alpha_analogue_context
 from app.aidy_probability_ev_management import build_probability_ev_management_context
+from app.aidy_failure_self_critique import (
+    build_failure_self_critique_context,
+    load_replay_self_feedback,
+)
 from app.aidy_reasoning_engine import (
     MODEL_VERSION,
     PROMPT_VERSION,
@@ -41,8 +45,8 @@ from app.aidy_reasoning_runner import AidyReasoningRunner
 
 logger = logging.getLogger(__name__)
 
-REPLAY_VERSION = "aidy_historical_time_machine_v7"
-INPUT_CONTRACT_VERSION = "aidy_historical_replay_input_v6"
+REPLAY_VERSION = "aidy_historical_time_machine_v8"
+INPUT_CONTRACT_VERSION = "aidy_historical_replay_input_v7"
 
 # Frozen partition cutoffs from the first exact-PIT eligible cohort on 2026-09-19.
 # These cutoffs never move when later rows are added.
@@ -54,7 +58,7 @@ _DEFAULT_BATCH = 12
 _DEFAULT_MAX_CALLS = 220
 _PROVIDER_CLAIM_RETRY_LIMIT = 1
 _EXPECTED_FROZEN_CASES = 140
-_PREVIOUS_INPUT_CONTRACT_VERSION = "aidy_historical_replay_input_v5"
+_PREVIOUS_INPUT_CONTRACT_VERSION = "aidy_historical_replay_input_v6"
 
 _LOAD_PREVIOUS_CASES = text(
     """
@@ -459,6 +463,11 @@ def _signal_context_from_payload(payload: dict[str, Any]) -> SignalContext:
             if isinstance(payload.get("probability_ev_management_context"), dict)
             else None
         ),
+        failure_self_critique_context=(
+            dict(payload["failure_self_critique_context"])
+            if isinstance(payload.get("failure_self_critique_context"), dict)
+            else None
+        ),
         preflight_evidence_calls=0,
     )
 
@@ -550,8 +559,8 @@ class AidyHistoricalReplayService:
         return AidyReasoningRunner._attached_market_context(candidate)
 
     def materialize(self, *, limit: int = 500) -> int:
-        # Build 4 inherits the exact frozen Build 3 cohort rather than re-querying mutable
-        # source tables. Only the new probability/EV/management evidence is appended.
+        # Build 5 inherits the exact frozen Build 4 cohort rather than re-querying mutable
+        # source tables. Only PIT-safe failure-attribution/self-critique evidence is appended.
         with self._session_factory() as session:
             existing = int(
                 session.execute(
@@ -599,15 +608,32 @@ class AidyHistoricalReplayService:
                 if isinstance(base.get("provider_alpha_analogue_context"), dict)
                 else None
             )
-            probability_ev_management_context = build_probability_ev_management_context(
-                signal=signal,
+            build4 = (
+                dict(base["probability_ev_management_context"])
+                if isinstance(base.get("probability_ev_management_context"), dict)
+                else None
+            )
+            replay_self_feedback = load_replay_self_feedback(
+                self._session_factory,
+                signal_posted_at=case["signal_posted_at"],
+                source_id=case["source_id"],
+            )
+            failure_self_critique_context = build_failure_self_critique_context(
+                market_context=(
+                    dict(base["market_context"])
+                    if isinstance(base.get("market_context"), dict)
+                    else None
+                ),
                 build2_context=build2,
                 build3_context=build3,
+                build4_context=build4,
+                self_calibration=None,
+                replay_self_feedback=replay_self_feedback,
             )
 
             payload = dict(base)
             payload["input_contract_version"] = INPUT_CONTRACT_VERSION
-            payload["probability_ev_management_context"] = probability_ev_management_context
+            payload["failure_self_critique_context"] = failure_self_critique_context
             provenance = (
                 dict(payload["selection_provenance"])
                 if isinstance(payload.get("selection_provenance"), dict)

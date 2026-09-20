@@ -224,12 +224,12 @@ def test_main_lifecycle_starts_and_stops_replay_runtime_safely() -> None:
 
 def test_materializer_inherits_legacy_reason_exclusion_from_frozen_previous_contract() -> None:
     source = MODULE.read_text(encoding="utf-8")
-    assert '_PREVIOUS_INPUT_CONTRACT_VERSION = "aidy_historical_replay_input_v5"' in source
+    assert '_PREVIOUS_INPUT_CONTRACT_VERSION = "aidy_historical_replay_input_v6"' in source
     assert "payload = dict(base)" in source
     assert 'provenance["derived_from_input_contract_version"]' in source
     assert 'provenance["same_frozen_source_decision"] = True' in source
     assert 'pit["derived_from_previous_frozen_contract"] = True' in source
-    # Build 4 must not reconstruct or reintroduce legacy decision reasons.
+    # Build 5 must not reconstruct or reintroduce legacy decision reasons.
     materialize = source.split("    def materialize(", 1)[1].split("    def _selected_cases", 1)[0]
     assert 'payload["deterministic_decision"]' not in materialize
     assert "d.reasons" not in materialize
@@ -243,16 +243,17 @@ def test_replay_versions_cases_and_decisions_without_rewriting_prior_exams() -> 
     assert "UNIQUE (case_id,replay_version)" in source
 
     module = MODULE.read_text(encoding="utf-8")
-    assert 'REPLAY_VERSION = "aidy_historical_time_machine_v7"' in module
-    assert 'INPUT_CONTRACT_VERSION = "aidy_historical_replay_input_v6"' in module
+    assert 'REPLAY_VERSION = "aidy_historical_time_machine_v8"' in module
+    assert 'INPUT_CONTRACT_VERSION = "aidy_historical_replay_input_v7"' in module
     assert "rc.input_contract_version=:input_contract_version" in module
     assert "rd.replay_version=:replay_version" in module
     assert "c.input_contract_version=:input_contract_version" in module
-    assert '_PREVIOUS_INPUT_CONTRACT_VERSION = "aidy_historical_replay_input_v5"' in module
+    assert '_PREVIOUS_INPUT_CONTRACT_VERSION = "aidy_historical_replay_input_v6"' in module
     assert "_LOAD_PREVIOUS_CASES" in module
     assert "derived_from_previous_frozen_contract" in module
-    assert "build_probability_ev_management_context" in module
-    assert '"probability_ev_management_context"' in module
+    assert "build_failure_self_critique_context" in module
+    assert "load_replay_self_feedback" in module
+    assert '"failure_self_critique_context"' in module
 
 
 def test_materializer_uses_message_revision_exactly_as_of_signal_time() -> None:
@@ -269,7 +270,7 @@ def test_materializer_uses_message_revision_exactly_as_of_signal_time() -> None:
     assert "ctx.signal_id IS NOT NULL" not in materialize
 
 
-def test_build4_materializer_reads_only_the_frozen_previous_case_contract() -> None:
+def test_build5_materializer_reads_only_the_frozen_build4_contract() -> None:
     source = MODULE.read_text(encoding="utf-8")
     previous = source.split("_LOAD_PREVIOUS_CASES = text(", 1)[1].split(
         "_FORBIDDEN_INPUT_KEYS", 1
@@ -288,7 +289,10 @@ def test_build4_materializer_reads_only_the_frozen_previous_case_contract() -> N
     materialize = source.split("    def materialize(", 1)[1].split(
         "    def _selected_cases", 1
     )[0]
-    assert "build_probability_ev_management_context" in materialize
+    assert "build_failure_self_critique_context" in materialize
+    assert "load_replay_self_feedback" in materialize
+    assert 'payload["failure_self_critique_context"]' in materialize
+    assert "build_probability_ev_management_context(" not in materialize
     assert "load_provider_alpha_analogue_context" not in materialize
     assert "_MATERIALIZE_SELECT" not in materialize
 

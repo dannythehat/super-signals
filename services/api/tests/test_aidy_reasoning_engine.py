@@ -246,6 +246,41 @@ def test_market_context_is_sent_when_present_and_omitted_as_null_when_absent() -
         is False
     )
 
+    with_build5 = replace(
+        _context(),
+        failure_self_critique_context={
+            "contract_version": "aidy_failure_self_critique_v1",
+            "failure_attribution": {
+                "selected_feedback_scope": "same_provider",
+                "prior_self_feedback": {
+                    "dominant_failure_mode": "over_reduction_of_profitable_trades",
+                    "descriptive_only": True,
+                },
+                "usable_for_live_edge_claim": False,
+            },
+            "unknown_gate": {
+                "status": "unknown_permitted",
+                "unknown_is_not_default_caution": True,
+            },
+            "risk_adjustment_guard": {
+                "reduce_requires_current_trade_specific_reason": True,
+            },
+            "research_only": True,
+            "live_money_execution_allowed": False,
+        },
+    )
+    asyncio.run(engine.reason(with_build5))
+    sent_with_build5 = json.loads(captured[-1]["input"][0]["content"])
+    assert sent_with_build5["failure_self_critique_context"]["contract_version"] == (
+        "aidy_failure_self_critique_v1"
+    )
+    assert (
+        sent_with_build5["failure_self_critique_context"]["risk_adjustment_guard"][
+            "reduce_requires_current_trade_specific_reason"
+        ]
+        is True
+    )
+
 
 def test_no_tool_executor_never_offers_the_candle_tool() -> None:
     captured: list[dict] = []
