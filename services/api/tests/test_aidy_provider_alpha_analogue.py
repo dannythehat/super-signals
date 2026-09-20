@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
-from uuid import UUID\nfrom decimal import Decimal
+from uuid import UUID
+from decimal import Decimal
 
 import pytest
 
