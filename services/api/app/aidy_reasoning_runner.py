@@ -37,7 +37,8 @@ from app.aidy_evidence_contract import (
 )
 from app.aidy_market_client import AidyMarketClient
 from app.aidy_provider_alpha_analogue import load_provider_alpha_analogue_context
-from app.aidy_probability_ev_management import build_probability_ev_management_context\nfrom app.aidy_failure_self_critique import build_failure_self_critique_context
+from app.aidy_probability_ev_management import build_probability_ev_management_context
+from app.aidy_failure_self_critique import build_failure_self_critique_context
 from app.aidy_reasoning_calendar_tools import (
     build_calendar_tool_executor,
     fetch_calendar_summary,
