@@ -210,6 +210,15 @@ def test_frozen_cohort_short_circuits_rematerialization_after_140_cases() -> Non
     assert "return 0" in source
 
 
+def test_build4_carries_forward_frozen_build3_inputs_before_adding_ev_context() -> None:
+    source = MODULE.read_text(encoding="utf-8")
+    assert '_PREVIOUS_INPUT_CONTRACT_VERSION = "aidy_historical_replay_input_v5"' in source
+    assert "_SELECT_PREVIOUS_FROZEN_CASES" in source
+    assert "p.input_contract_version=:previous_input_contract_version" in source
+    assert 'payload["probability_ev_management_context"] = build4' in source
+    assert 'pit["build4_management_evidence_lte_signal"] = True' in source
+
+
 def test_main_lifecycle_starts_and_stops_replay_runtime_safely() -> None:
     source = MAIN.read_text(encoding="utf-8")
     construct = "aidy_historical_replay_runtime = AidyHistoricalReplayRuntime(session_factory)"
@@ -239,8 +248,8 @@ def test_replay_versions_cases_and_decisions_without_rewriting_prior_exams() -> 
     assert "UNIQUE (case_id,replay_version)" in source
 
     module = MODULE.read_text(encoding="utf-8")
-    assert 'REPLAY_VERSION = "aidy_historical_time_machine_v6"' in module
-    assert 'INPUT_CONTRACT_VERSION = "aidy_historical_replay_input_v5"' in module
+    assert 'REPLAY_VERSION = "aidy_historical_time_machine_v7"' in module
+    assert 'INPUT_CONTRACT_VERSION = "aidy_historical_replay_input_v6"' in module
     assert "rc.input_contract_version=:input_contract_version" in module
     assert "rd.replay_version=:replay_version" in module
     assert "c.input_contract_version=:input_contract_version" in module
