@@ -303,13 +303,13 @@ def build_historical_analogue_context(
             {
                 "case_id": str(row.get("case_id")),
                 "signal_posted_at": prior_signal.astimezone(UTC).isoformat(),
-                "outcome_resolved_at": resolved_at.astimezone(UTC).isoformat(),
+                "prior_result_known_at": resolved_at.astimezone(UTC).isoformat(),
                 "same_provider": same_provider,
                 "similarity": round(score, 6),
                 "matched_features": matched,
-                "actual_pnl_usd": str(pnl),
-                "actual_realized_r": str(r_value) if r_value is not None else None,
-                "resolution": str(row.get("resolution") or "unknown"),
+                "prior_pnl_usd": str(pnl),
+                "prior_realized_r": str(r_value) if r_value is not None else None,
+                "prior_result_class": str(row.get("resolution") or "unknown"),
             }
         )
 
@@ -323,7 +323,7 @@ def build_historical_analogue_context(
     )
     top = ranked[:_MAX_ANALOGUES]
     enough = len(top) >= _MIN_ANALOGUES_FOR_SUMMARY
-    pnl_values = [Decimal(item["actual_pnl_usd"]) for item in top]
+    pnl_values = [Decimal(item["prior_pnl_usd"]) for item in top]
     positive = sum(1 for value in pnl_values if value > 0)
     mean_pnl = (
         sum(pnl_values, Decimal("0")) / Decimal(len(pnl_values)) if pnl_values else None
