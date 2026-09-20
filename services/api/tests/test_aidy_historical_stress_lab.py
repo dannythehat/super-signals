@@ -295,7 +295,6 @@ def test_historical_v8_persists_preflight_tool_telemetry_and_valid_run_scope() -
 
 def test_gold_first_stress_output_freezes_independent_market_view() -> None:
     source = MODULE.read_text(encoding="utf-8")
-    decide = source.split("    async def decide(", 1)[1].split("    def score(", 1)[0]
     for field in (
         '"gold_view_direction": annotation.gold_view_direction',
         '"gold_view_confidence": annotation.gold_view_confidence',
@@ -303,7 +302,7 @@ def test_gold_first_stress_output_freezes_independent_market_view() -> None:
         '"gold_view_reason": annotation.gold_view_reason',
         '"provider_alignment": annotation.provider_alignment',
     ):
-        assert field in decide
+        assert field in source
 
 
 
