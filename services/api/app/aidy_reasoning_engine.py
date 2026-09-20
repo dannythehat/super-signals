@@ -32,8 +32,8 @@ from app.aidy_evidence_contract import (
     validate_provider_claim_refs,
 )
 
-MODEL_VERSION = "aidy_reasoning_engine_v7"
-PROMPT_VERSION = "aidy_reasoning_prompt_v12_toolbox"
+MODEL_VERSION = "aidy_reasoning_engine_v8"
+PROMPT_VERSION = "aidy_reasoning_prompt_v13_gold_first"
 
 # Bounded on purpose: each round trip is a real OpenAI request, so this caps both cost and
 # how long one signal can take to reason about, not just how many timeframes/hours it may
@@ -128,6 +128,13 @@ REASONING_SCHEMA: dict[str, Any] = {
     "properties": {
         "lean": {"type": "string", "enum": ["agree", "caution", "disagree"]},
         "confidence": {"type": "number", "minimum": 0, "maximum": 1},
+        "gold_view_direction": {
+            "type": "string",
+            "enum": ["bullish", "bearish", "neutral", "unknown"],
+        },
+        "gold_view_confidence": {"type": "number", "minimum": 0, "maximum": 1},
+        "gold_view_horizon_minutes": {"type": "integer", "minimum": 0, "maximum": 240},
+        "gold_view_reason": {"type": "string"},
         "rationale": {"type": "string"},
         "key_factors": {"type": "array", "items": {"type": "string"}, "maxItems": 5},
         "shadow_action": {
@@ -145,6 +152,10 @@ REASONING_SCHEMA: dict[str, Any] = {
     "required": [
         "lean",
         "confidence",
+        "gold_view_direction",
+        "gold_view_confidence",
+        "gold_view_horizon_minutes",
+        "gold_view_reason",
         "rationale",
         "key_factors",
         "shadow_action",
@@ -182,6 +193,25 @@ current/recent message semantics and tool evidence. Provider history is represen
 provider_claim_refs, which are validated and persisted alongside the exact evidence snapshot.
 If no provider evidence is relevant, use an empty provider_claim_refs array.
 
+GOLD-FIRST RULE: before deciding what to do with the provider signal, form an independent
+point-in-time Gold view from market evidence. Output gold_view_direction as bullish, bearish,
+neutral or unknown; gold_view_confidence from 0 to 1; gold_view_horizon_minutes for the horizon
+you are actually judging (use 0 when direction is unknown); and gold_view_reason as a concise
+market-evidence explanation. The independent Gold view must NOT be derived from provider identity,
+provider win rate, provider history, or the provider merely saying BUY/SELL. Provider information
+is a separate human-alpha input considered only after the Gold view is formed. Neutral means the
+market evidence supports no directional edge. Unknown means material evidence is missing or
+unqualified. Do not force bullish/bearish just because a trade signal exists.
+
+If market_context.gold_state contains movement_investigation, treat it as AIDY's deterministic
+Gold-move diagnosis. When investigation_required=true, read triggered_by, attribution_state,
+leading_mechanism, mechanism_candidates, missing_evidence and required_follow_up_tools. A
+plausible_unconfirmed mechanism is not a known cause. A supported_mechanism is stronger evidence
+but still not permission to claim certainty beyond the contract. cause_unknown must remain
+unknown. If an available tool directly addresses a required_follow_up_tools gap and could
+materially change the Gold view, use it. Never invent a headline, macro print, yield reaction,
+news catalyst or cross-asset move that is not present in evidence.
+
 You may also be given market_context: an objective, point-in-time snapshot of gold (XAUUSD)
 conditions as of when this signal actually posted -- never anything known after the fact.
 trend_by_timeframe gives each of M15/H1/H4's own directional read (bullish/bearish/flat/
@@ -202,12 +232,15 @@ risk, independent of whether you also call get_economic_calendar for a narrower 
 
 market_context may also include gold_state, a versioned point-in-time Gold-state dossier from
 the standalone AIDY Gold brain. Use a surface ONLY when its own decision_input_allowed field is
-true. price_liquidity contains measured session ranges, prior-period structure, breakout/
-reversion state, wick/swing structure and feed health. volatility contains realised-volatility
-and jump/continuity evidence when available. Research surfaces explicitly marked
+true. Gold State v2 is descriptive evidence: market_structure is completed-bar close-path
+structure, location is price versus observed reference levels, liquidity contains measured
+penetration/reclaim proxies (never hidden order flow), volatility contains realised/jump state,
+and move_observation detects abnormal displacement/range expansion. movement_investigation is the
+causal-learning bridge described above. Research surfaces explicitly marked
 decision_input_allowed=false are NOT evidence for this decision; their presence documents an
-unknown/unqualified research gap. gold_state is descriptive context, not a directional edge
-claim. Never convert an UNKNOWN or research-only field into a bullish/bearish conclusion.
+unknown/unqualified research gap. Descriptive evidence may contribute to the independent Gold
+view when combined coherently, but it is not itself a prediction. Never convert UNKNOWN,
+research-only evidence, a proxy, or event proximity into a fabricated bullish/bearish conclusion.
 
 When market_context is given, you may note whether this signal's own direction (side) runs with or
 against the current multi-timeframe trend, and whether the session or a nearby event timing
@@ -351,6 +384,11 @@ class SignalContext:
 class ReasoningAnnotation:
     lean: str
     confidence: float
+    gold_view_direction: str
+    gold_view_confidence: float
+    gold_view_horizon_minutes: int
+    gold_view_reason: str
+    provider_alignment: str
     rationale: str
     key_factors: list[str]
     model_name: str
@@ -539,6 +577,29 @@ class AidyReasoningEngine:
         confidence = float(parsed["confidence"])
         if not 0.0 <= confidence <= 1.0:
             raise AidyReasoningUnavailable("aidy_reasoning_confidence_invalid")
+
+        gold_view_direction = str(parsed["gold_view_direction"])
+        if gold_view_direction not in {"bullish", "bearish", "neutral", "unknown"}:
+            raise AidyReasoningUnavailable("aidy_reasoning_gold_view_direction_invalid")
+        gold_view_confidence = float(parsed["gold_view_confidence"])
+        if not 0.0 <= gold_view_confidence <= 1.0:
+            raise AidyReasoningUnavailable("aidy_reasoning_gold_view_confidence_invalid")
+        gold_view_horizon_minutes = int(parsed["gold_view_horizon_minutes"])
+        if not 0 <= gold_view_horizon_minutes <= 240:
+            raise AidyReasoningUnavailable("aidy_reasoning_gold_view_horizon_invalid")
+        if gold_view_direction == "unknown" and gold_view_horizon_minutes != 0:
+            raise AidyReasoningUnavailable("aidy_reasoning_unknown_gold_view_horizon_invalid")
+        gold_view_reason = str(parsed["gold_view_reason"])[:1000]
+        side = str(context.side or "").upper()
+        if gold_view_direction in {"neutral", "unknown"} or side not in {"BUY", "SELL"}:
+            provider_alignment = "unclear"
+        elif (side == "BUY" and gold_view_direction == "bullish") or (
+            side == "SELL" and gold_view_direction == "bearish"
+        ):
+            provider_alignment = "aligned"
+        else:
+            provider_alignment = "conflicts"
+
         shadow_action = str(parsed["shadow_action"])
         if shadow_action not in {"take", "reduce", "hold", "reject", "need_more_evidence"}:
             raise AidyReasoningUnavailable("aidy_reasoning_shadow_action_invalid")
@@ -600,7 +661,7 @@ class AidyReasoningEngine:
             )
             assert_no_freeform_provider_history(
                 provider_name=context.provider_name,
-                rationale=rationale,
+                rationale=f"{rationale} {gold_view_reason}",
                 key_factors=key_factors,
                 action_reason=action_reason,
             )
@@ -615,6 +676,11 @@ class AidyReasoningEngine:
         return ReasoningAnnotation(
             lean=lean,
             confidence=confidence,
+            gold_view_direction=gold_view_direction,
+            gold_view_confidence=gold_view_confidence,
+            gold_view_horizon_minutes=gold_view_horizon_minutes,
+            gold_view_reason=gold_view_reason,
+            provider_alignment=provider_alignment,
             rationale=rationale,
             key_factors=key_factors,
             model_name=self._model,
