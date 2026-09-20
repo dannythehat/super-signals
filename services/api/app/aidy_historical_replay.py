@@ -51,6 +51,7 @@ _DEFAULT_INTERVAL_SECONDS = 30
 _DEFAULT_BATCH = 12
 _DEFAULT_MAX_CALLS = 220
 _PROVIDER_CLAIM_RETRY_LIMIT = 1
+_EXPECTED_FROZEN_CASES = 140
 
 _FORBIDDEN_INPUT_KEYS = {
     "actual_pnl_usd",
@@ -513,6 +514,22 @@ class AidyHistoricalReplayService:
         return AidyReasoningRunner._attached_market_context(candidate)
 
     def materialize(self, *, limit: int = 500) -> int:
+        # The weekend exam uses a deliberately frozen 140-case cohort. Once the current
+        # immutable input-contract version has all 140 rows, do not repeatedly rebuild the
+        # expensive PIT source query on every reasoning batch.
+        with self._session_factory() as session:
+            existing = int(
+                session.execute(
+                    text(
+                        "SELECT count(*) FROM aidy_historical_replay_cases "
+                        "WHERE input_contract_version=:input_contract_version"
+                    ),
+                    {"input_contract_version": INPUT_CONTRACT_VERSION},
+                ).scalar_one()
+            )
+        if existing >= _EXPECTED_FROZEN_CASES:
+            return 0
+
         with self._session_factory() as session:
             candidates = [
                 dict(row)
