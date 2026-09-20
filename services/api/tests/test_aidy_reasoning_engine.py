@@ -627,3 +627,13 @@ def test_build5_unknown_required_forces_need_more_evidence() -> None:
     assert annotation.shadow_action == "need_more_evidence"
     assert annotation.risk_multiplier == 0.0
     assert annotation.action_calibration == "take_to_need_more_evidence_unknown_required"
+
+
+def test_system_instructions_teach_toolbox_awareness_without_forcing_noise() -> None:
+    from app import aidy_reasoning_engine as module
+
+    instructions = " ".join(module._SYSTEM_INSTRUCTIONS.split())
+    assert "toolbox_manifest" in instructions
+    assert "Consider every standing evidence surface marked available" in instructions
+    assert "Do not call a tool just to satisfy a checklist" in instructions
+    assert "remains UNKNOWN" in instructions

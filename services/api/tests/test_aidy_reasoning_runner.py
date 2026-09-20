@@ -641,3 +641,40 @@ def test_calendar_client_is_wired_end_to_end_through_run(conn, source_id, sessio
     summary = asyncio.run(runner.run())
 
     assert summary.written == 1
+
+
+def test_live_toolbox_manifest_reports_available_and_unknown_surfaces() -> None:
+    runner = AidyReasoningRunner.__new__(AidyReasoningRunner)
+    runner._candle_client = FakeCandleClient()
+    runner._calendar_client = None
+
+    manifest = runner._live_toolbox_manifest(
+        market_context={
+            "session": "london",
+            "gold_state": {
+                "research_surfaces": {
+                    "rates_macro": {"state": "unknown"},
+                    "cme_contract_state": {"state": "known"},
+                }
+            },
+        },
+        provider_evidence_claims=[{"id": "provider.performance.overall"}],
+        recent_messages=["Buy Gold"],
+        event_liquidity_execution_context={"status": "known"},
+        provider_alpha_analogue_context={"historical_analogue": {}},
+        probability_ev_management_context={"state": "available"},
+        failure_self_critique_context={"unknown_gate": {}},
+    )
+
+    tools = {item["name"]: item["status"] for item in manifest["on_demand_tools"]}
+    assert tools[CANDLE_TOOL_NAME] == "available"
+    assert tools[CALENDAR_TOOL_NAME] == "unavailable"
+    standing = {item["surface"]: item["status"] for item in manifest["standing_surfaces"]}
+    assert standing["provider_history"] == "available"
+    assert standing["market_context"] == "available"
+    research = {item["surface"]: item for item in manifest["research_surfaces"]}
+    assert research["rates_macro"]["state"] == "unknown"
+    assert research["cme_contract_state"]["state"] == "known"
+    assert research["cme_contract_state"]["callable"] is False
+    assert manifest["target_outcome_available"] is False
+    assert manifest["live_execution_authority"] is False

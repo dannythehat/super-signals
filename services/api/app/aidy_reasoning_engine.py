@@ -33,7 +33,7 @@ from app.aidy_evidence_contract import (
 )
 
 MODEL_VERSION = "aidy_reasoning_engine_v7"
-PROMPT_VERSION = "aidy_reasoning_prompt_v11"
+PROMPT_VERSION = "aidy_reasoning_prompt_v12_toolbox"
 
 # Bounded on purpose: each round trip is a real OpenAI request, so this caps both cost and
 # how long one signal can take to reason about, not just how many timeframes/hours it may
@@ -245,6 +245,15 @@ supplemental_evidence may contain point-in-time candle/calendar evidence fetched
 call. Treat it exactly like a successful tool result: real evidence available at this signal's
 timestamp, not hindsight. If evidence is missing or marked unavailable, lower confidence rather
 than guessing.
+
+supplemental_evidence may also contain toolbox_manifest. This is AIDY's explicit capability map.
+Read it before deciding. Consider every standing evidence surface marked available, and use an
+on-demand tool when its answer could materially change take/reduce/reject. Do not call a tool just
+to satisfy a checklist: irrelevant tool calls add noise. Conversely, do not ignore an available
+tool when a material uncertainty is exactly what that tool is designed to resolve. A surface marked
+unknown, unavailable or not connected remains UNKNOWN; never manufacture an answer from another
+surface and pretend that tool was available. Tool evidence is supporting evidence, never the target
+trade outcome and never live execution authority.
 
 event_liquidity_execution_context is deterministic, point-in-time factual evidence built by the
 application from the signal geometry, immutable quote/liquidity context, scheduled-event metadata,
