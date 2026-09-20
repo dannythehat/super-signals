@@ -114,12 +114,15 @@ def test_stress_reasoning_offers_research_candle_tool_not_live_pit_tool() -> Non
 
     source = inspect.getsource(module)
     assert "fetch_research_m1" in source
-    assert "tool_schemas=[_STRESS_CANDLE_TOOL_SCHEMA]" in source
+    assert "HISTORICAL_CALENDAR_TOOL_SCHEMA" in source
+    assert "HISTORICAL_EVIDENCE_TOOL_SCHEMA" in source
     assert '"pit_eligible": False' in source
     assert '"decision_admitted": False' in source
     reason_block = source.split("    async def reason(", 1)[1].split("    def score(", 1)[0]
     assert '"tools_offered": True' in reason_block
     assert '"historical_calendar": True' in reason_block
+    assert '"focused_evidence_inspector": True' in reason_block
+    assert '"toolbox_manifest": True' in reason_block
 
 
 def test_stress_materializer_attaches_research_calendar_before_build2() -> None:
@@ -180,8 +183,9 @@ def test_stress_reasoning_uses_bounded_provider_retry_with_candle_tools() -> Non
     source = inspect.getsource(module)
     reason_block = source.split("    async def reason(", 1)[1].split("    def score(", 1)[0]
     assert "_reason_with_provider_claim_retry(" in reason_block
-    assert "tool_executor=self._stress_candle_tool_executor(" in reason_block
-    assert "tool_schemas=[_STRESS_CANDLE_TOOL_SCHEMA]" in reason_block
+    assert "tool_executor=self._stress_tool_executor(" in reason_block
+    assert "HISTORICAL_CALENDAR_TOOL_SCHEMA" in reason_block
+    assert "HISTORICAL_EVIDENCE_TOOL_SCHEMA" in reason_block
 
 
 def test_stress_runtime_defers_heavy_work_until_after_startup_grace() -> None:
