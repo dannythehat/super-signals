@@ -239,8 +239,8 @@ def test_replay_versions_cases_and_decisions_without_rewriting_prior_exams() -> 
     assert "UNIQUE (case_id,replay_version)" in source
 
     module = MODULE.read_text(encoding="utf-8")
-    assert 'REPLAY_VERSION = "aidy_historical_time_machine_v5"' in module
-    assert 'INPUT_CONTRACT_VERSION = "aidy_historical_replay_input_v4"' in module
+    assert 'REPLAY_VERSION = "aidy_historical_time_machine_v6"' in module
+    assert 'INPUT_CONTRACT_VERSION = "aidy_historical_replay_input_v5"' in module
     assert "rc.input_contract_version=:input_contract_version" in module
     assert "rd.replay_version=:replay_version" in module
     assert "c.input_contract_version=:input_contract_version" in module
@@ -270,6 +270,8 @@ def test_materializer_does_not_select_legacy_decision_reasons() -> None:
     assert "execution_samples AS MATERIALIZED" in materialize
     assert "FROM execution_samples c" in materialize
     assert "c.closed_at<=d.signal_posted_at" in materialize
+    assert "load_provider_alpha_analogue_context" in source
+    assert '"provider_alpha_analogue_context": provider_alpha_analogue_context' in source
     assert "WHERE d.decision_class='approve'" in materialize
 
 
