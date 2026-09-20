@@ -72,6 +72,7 @@ _TRAIN_END = datetime(2026, 9, 4, tzinfo=UTC)
 _VALIDATION_END = datetime(2026, 9, 5, tzinfo=UTC)
 
 _DEFAULT_INTERVAL_SECONDS = 20
+_DEFAULT_STARTUP_DELAY_SECONDS = 120
 _DEFAULT_BATCH = 12
 _DEFAULT_MAX_CALLS = 800
 _SOURCE_UNIVERSE_WITH_DECISION_OUTCOMES = 803
@@ -1316,6 +1317,10 @@ class AidyHistoricalStressLabRuntime:
         self._interval_seconds = interval_seconds or _positive_int(
             "AIDY_HISTORICAL_STRESS_INTERVAL_SECONDS", _DEFAULT_INTERVAL_SECONDS
         )
+        self._startup_delay_seconds = _positive_int(
+            "AIDY_HISTORICAL_STRESS_STARTUP_DELAY_SECONDS",
+            _DEFAULT_STARTUP_DELAY_SECONDS,
+        )
         self._batch = batch or _positive_int(
             "AIDY_HISTORICAL_STRESS_BATCH", _DEFAULT_BATCH
         )
@@ -1356,8 +1361,10 @@ class AidyHistoricalStressLabRuntime:
             name="super-signals-aidy-historical-stress-lab",
         )
         logger.info(
-            "AIDY historical stress lab started scope=%s interval=%ss batch=%s max_calls=%s",
+            "AIDY historical stress lab started scope=%s startup_delay=%ss interval=%ss "
+            "batch=%s max_calls=%s",
             scope,
+            self._startup_delay_seconds,
             self._interval_seconds,
             self._batch,
             service._max_calls,
@@ -1378,6 +1385,19 @@ class AidyHistoricalStressLabRuntime:
         self._task = None
 
     async def _run(self, service: AidyHistoricalStressLabService) -> None:
+        # This research job can perform large SQL/materialization reads. Never let it
+        # compete with migrations, canonical startup reconciliation, or web port binding.
+        # The task exists immediately but does no research work until the startup grace
+        # period has elapsed.
+        try:
+            await asyncio.wait_for(
+                self._stopping.wait(),
+                timeout=self._startup_delay_seconds,
+            )
+            return
+        except TimeoutError:
+            pass
+
         while not self._stopping.is_set():
             try:
                 summary = await service.run_once(batch=self._batch)
