@@ -21,7 +21,7 @@ import math
 import os
 import statistics
 from collections import defaultdict
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal, InvalidOperation
 from hashlib import sha256
@@ -49,6 +49,7 @@ from app.aidy_historical_replay import (
 from app.aidy_historical_research_calendar import attach_historical_schedule
 from app.aidy_historical_toolbox import (
     HISTORICAL_CALENDAR_TOOL_SCHEMA,
+    HISTORICAL_EVIDENCE_TOOL_NAME,
     HISTORICAL_EVIDENCE_TOOL_SCHEMA,
     build_historical_tool_executor,
     historical_toolbox_manifest,
@@ -65,7 +66,7 @@ from app.aidy_reasoning_engine import (
 
 logger = logging.getLogger(__name__)
 
-STRESS_REPLAY_VERSION = "aidy_historical_stress_lab_v7_tooltrace"
+STRESS_REPLAY_VERSION = "aidy_historical_stress_lab_v8_preflight_router"
 STRESS_INPUT_CONTRACT_VERSION = "aidy_historical_stress_input_v5_toolbox"
 STRESS_MARKET_CONTRACT_VERSION = "aidy_historical_stress_market_v1"
 STRESS_ANALOGUE_VERSION = "aidy_historical_stress_analogue_v1"
@@ -918,6 +919,119 @@ class AidyHistoricalStressLabService:
 
         return dispatch
 
+    @staticmethod
+    def _historical_preflight_plan(payload: dict[str, Any]) -> list[dict[str, Any]]:
+        """Route only material research tools before the model judges the trade.
+
+        This mirrors the live AIDY runner's deterministic evidence preflight rather than
+        hoping the model elects to use an offered tool. Every routed call is bounded by the
+        historical signal timestamp and remains reconstructed research evidence.
+        """
+        market = payload.get("market_context")
+        market = market if isinstance(market, dict) else {}
+        trend = str(market.get("trend_structure") or "unknown").lower()
+        volatility = str(market.get("volatility_band") or "unknown").lower()
+
+        plan: list[dict[str, Any]] = [
+            {
+                "name": CANDLE_TOOL_NAME,
+                "arguments": {"timeframe_minutes": 15, "lookback_count": 8},
+                "reason": "baseline_m15_structure",
+            }
+        ]
+
+        if trend in {"mixed", "range", "unknown", "none", ""} or volatility in {
+            "high",
+            "unknown",
+            "none",
+            "",
+        }:
+            plan.append(
+                {
+                    "name": CANDLE_TOOL_NAME,
+                    "arguments": {"timeframe_minutes": 60, "lookback_count": 6},
+                    "reason": "unclear_or_high_risk_structure",
+                }
+            )
+
+        build2 = payload.get("event_liquidity_execution_context")
+        build2 = build2 if isinstance(build2, dict) else {}
+        event = build2.get("event")
+        event = event if isinstance(event, dict) else {}
+        nearest = event.get("nearest_scheduled_event")
+        nearest = nearest if isinstance(nearest, dict) else {}
+        minutes_raw = nearest.get("minutes_from_signal")
+        try:
+            minutes_from_signal = int(minutes_raw) if minutes_raw is not None else None
+        except (TypeError, ValueError):
+            minutes_from_signal = None
+        event_timing = str(market.get("event_timing") or "unknown").lower()
+
+        if event_timing in {"unknown", "blocked", "none", ""} or (
+            minutes_from_signal is not None and abs(minutes_from_signal) <= 360
+        ):
+            plan.append(
+                {
+                    "name": HISTORICAL_CALENDAR_TOOL_SCHEMA["name"],
+                    "arguments": {
+                        "hours_before": 6,
+                        "hours_after": 6,
+                        "min_impact": "high",
+                    },
+                    "reason": "material_event_proximity_or_unknown",
+                }
+            )
+
+        if bool(payload.get("provider_evidence_claims")):
+            plan.append(
+                {
+                    "name": HISTORICAL_EVIDENCE_TOOL_NAME,
+                    "arguments": {"surface": "provider_history"},
+                    "reason": "provider_history_available_for_current_signal",
+                }
+            )
+        return plan
+
+    async def _routed_preflight_evidence(
+        self,
+        *,
+        signal_posted_at: datetime,
+        payload: dict[str, Any],
+    ) -> tuple[dict[str, Any], list[str]]:
+        dispatch = self._stress_tool_executor(
+            signal_posted_at=signal_posted_at,
+            payload=payload,
+        )
+        calls: list[dict[str, Any]] = []
+        names: list[str] = []
+        for item in self._historical_preflight_plan(payload):
+            name = str(item["name"])
+            arguments = dict(item["arguments"])
+            try:
+                result = await dispatch(name, arguments)
+            except Exception as exc:  # noqa: BLE001 - evidence failure becomes explicit UNKNOWN
+                result = {"error": f"preflight_tool_failed:{type(exc).__name__}"}
+            names.append(name)
+            calls.append(
+                {
+                    "name": name,
+                    "arguments": arguments,
+                    "reason": item["reason"],
+                    "result": result,
+                }
+            )
+
+        packet = {
+            "contract_version": "aidy_historical_preflight_router_v1",
+            "calls": calls,
+            "tool_names": names,
+            "call_count": len(calls),
+            "target_outcome_available": False,
+            "research_only": True,
+            "live_money_execution_allowed": False,
+        }
+        return packet, names
+
     def _candidates(self) -> list[dict[str, Any]]:
         with self._session_factory() as session:
             return [
@@ -1232,6 +1346,21 @@ class AidyHistoricalStressLabService:
                 if not isinstance(assertions, dict) or not all(assertions.values()):
                     raise ValueError("historical_stress_assertion_not_clean")
                 context = _signal_context_from_payload(payload)
+                preflight_evidence, preflight_tool_names = await self._routed_preflight_evidence(
+                    signal_posted_at=case["signal_posted_at"],
+                    payload=payload,
+                )
+                supplemental = (
+                    dict(context.supplemental_evidence)
+                    if isinstance(context.supplemental_evidence, dict)
+                    else {}
+                )
+                supplemental["routed_preflight_evidence"] = preflight_evidence
+                context = replace(
+                    context,
+                    supplemental_evidence=supplemental,
+                    preflight_evidence_calls=len(preflight_tool_names),
+                )
                 annotation, retries = await _reason_with_provider_claim_retry(
                     self._engine,
                     context,
@@ -1271,6 +1400,12 @@ class AidyHistoricalStressLabService:
                     "request_count": annotation.request_count,
                     "tool_calls_made": annotation.tool_calls_made,
                     "tool_names_used": list(annotation.tool_names_used),
+                    "preflight_evidence_calls": annotation.preflight_evidence_calls,
+                    "preflight_tool_names": list(preflight_tool_names),
+                    "preflight_tool_evidence": preflight_evidence,
+                    "all_evidence_tool_names": sorted(
+                        set(preflight_tool_names) | set(annotation.tool_names_used)
+                    ),
                     "tools_offered_names": [
                         CANDLE_TOOL_NAME,
                         HISTORICAL_CALENDAR_TOOL_SCHEMA["name"],
@@ -1382,7 +1517,7 @@ class AidyHistoricalStressLabService:
                     "replay_version": STRESS_REPLAY_VERSION,
                     "model_version": MODEL_VERSION,
                     "prompt_version": PROMPT_VERSION,
-                    "partition_scope": f"stress_{self._scope}",
+                    "partition_scope": self._scope,
                     "cases_materialized": summary.cases_materialized,
                     "decisions_written": summary.decisions_written,
                     "decisions_failed": summary.decisions_failed,
