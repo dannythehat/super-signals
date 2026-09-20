@@ -1,3 +1,5 @@
+from pathlib import Path
+
 from __future__ import annotations
 
 from app.aidy_failure_self_critique import build_failure_self_critique_context
@@ -114,3 +116,15 @@ def test_build5_insufficient_self_sample_makes_no_behavioural_adjustment() -> No
     assert result["failure_attribution"]["selected_feedback_scope"] == "none"
     assert result["risk_adjustment_guard"]["status"] == "no_prior_failure_adjustment"
     assert result["research_only"] is True
+
+
+def test_build5_replay_feedback_query_is_strictly_point_in_time() -> None:
+    source = (
+        Path(__file__).resolve().parents[1] / "app" / "aidy_failure_self_critique.py"
+    ).read_text(encoding="utf-8")
+    assert "c.signal_posted_at<:as_of" in source
+    assert "s.outcome_resolved_at<:as_of" in source
+    assert "d.replay_version=:replay_version" in source
+    assert "c.input_contract_version=:input_contract_version" in source
+    assert '_BUILD4_REPLAY_VERSION = "aidy_historical_time_machine_v7"' in source
+    assert '_BUILD4_INPUT_CONTRACT_VERSION = "aidy_historical_replay_input_v6"' in source
