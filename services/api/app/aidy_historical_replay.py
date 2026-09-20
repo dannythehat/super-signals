@@ -74,6 +74,11 @@ _FORBIDDEN_INPUT_KEYS = {
 
 _MATERIALIZE_SELECT = text(
     """
+    WITH execution_samples AS MATERIALIZED (
+        SELECT *
+        FROM provider_execution_calibration_samples
+        WHERE account_environment='demo'
+    )
     SELECT d.id AS source_decision_id,d.source_id,
            d.signal_posted_at,
            o.message_id,o.signal_id,o.side,o.symbol,o.entry_low,o.entry_high,o.stop_loss,o.take_profits,
@@ -218,9 +223,8 @@ _MATERIALIZE_SELECT = text(
                 WHERE c.broker_cash_charge_usd_per_lot IS NOT NULL
             ))::numeric AS charge_p95,
             MAX(c.closed_at) AS evidence_as_of_utc
-        FROM provider_execution_calibration_samples c
-        WHERE c.account_environment='demo'
-          AND c.closed_at<=d.signal_posted_at
+        FROM execution_samples c
+        WHERE c.closed_at<=d.signal_posted_at
     ) execution ON true
     WHERE d.decision_class='approve'
       AND rc.id IS NULL
