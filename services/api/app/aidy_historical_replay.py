@@ -39,7 +39,7 @@ from app.aidy_reasoning_runner import AidyReasoningRunner
 
 logger = logging.getLogger(__name__)
 
-REPLAY_VERSION = "aidy_historical_time_machine_v5"
+REPLAY_VERSION = "aidy_historical_time_machine_v6"
 INPUT_CONTRACT_VERSION = "aidy_historical_replay_input_v4"
 
 # Frozen partition cutoffs from the first exact-PIT eligible cohort on 2026-09-19.
