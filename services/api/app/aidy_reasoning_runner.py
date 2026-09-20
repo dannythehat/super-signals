@@ -501,6 +501,85 @@ class AidyReasoningRunner:
             "gold_state": candidate.get("attached_gold_state_json") or {},
         }
 
+    def _live_toolbox_manifest(
+        self,
+        *,
+        market_context: dict[str, Any] | None,
+        provider_evidence_claims: list[dict[str, Any]],
+        recent_messages: list[Any],
+        event_liquidity_execution_context: dict[str, Any] | None,
+        provider_alpha_analogue_context: dict[str, Any] | None,
+        probability_ev_management_context: dict[str, Any] | None,
+        failure_self_critique_context: dict[str, Any] | None,
+    ) -> dict[str, Any]:
+        """Tell AIDY exactly which capabilities exist for this decision.
+
+        This is capability awareness, not an instruction to call everything. It prevents a
+        silent failure mode where a built surface is ignored or an unavailable one is guessed.
+        """
+        standing = {
+            "provider_history": bool(provider_evidence_claims),
+            "market_context": bool(market_context),
+            "recent_messages": bool(recent_messages),
+            "event_liquidity": bool(event_liquidity_execution_context),
+            "historical_analogues": bool(provider_alpha_analogue_context),
+            "probability_ev": bool(probability_ev_management_context),
+            "self_critique": bool(failure_self_critique_context),
+        }
+        gold_state = (
+            market_context.get("gold_state")
+            if isinstance(market_context, dict)
+            and isinstance(market_context.get("gold_state"), dict)
+            else {}
+        )
+        research = (
+            gold_state.get("research_surfaces")
+            if isinstance(gold_state, dict)
+            and isinstance(gold_state.get("research_surfaces"), dict)
+            else {}
+        )
+        return {
+            "contract_version": "aidy_live_toolbox_manifest_v1",
+            "decision_rule": (
+                "Consider every available standing surface. Call a tool when it can materially "
+                "resolve uncertainty relevant to take/reduce/reject. Never invent unavailable evidence."
+            ),
+            "on_demand_tools": [
+                {
+                    "name": CANDLE_TOOL_NAME,
+                    "status": "available" if self._candle_client is not None else "unavailable",
+                    "use_when": "recent price structure could materially change the decision",
+                },
+                {
+                    "name": CALENDAR_TOOL_NAME,
+                    "status": "available" if self._calendar_client is not None else "unavailable",
+                    "use_when": "scheduled macro-event proximity could materially change holding risk",
+                },
+            ],
+            "standing_surfaces": [
+                {
+                    "surface": name,
+                    "status": "available" if available else "unknown_unavailable",
+                }
+                for name, available in standing.items()
+            ],
+            "research_surfaces": [
+                {
+                    "surface": name,
+                    "state": (
+                        str(value.get("state") or "unknown")
+                        if isinstance(value, dict)
+                        else "unknown"
+                    ),
+                    "callable": False,
+                    "mode": "standing_context_state_only",
+                }
+                for name, value in sorted(research.items())
+            ],
+            "target_outcome_available": False,
+            "live_execution_authority": False,
+        }
+
     async def _prefetch_evidence(
         self, *, signal_posted_at, market_context: dict[str, Any] | None
     ) -> tuple[dict[str, Any] | None, int]:
@@ -703,6 +782,17 @@ class AidyReasoningRunner:
                 build3_context=provider_alpha_analogue_context,
                 build4_context=probability_ev_management_context,
                 self_calibration=self_calibration,
+            )
+            if supplemental_evidence is None:
+                supplemental_evidence = {}
+            supplemental_evidence["toolbox_manifest"] = self._live_toolbox_manifest(
+                market_context=market_context,
+                provider_evidence_claims=provider_evidence_claims,
+                recent_messages=list(candidate.get("recent_messages") or []),
+                event_liquidity_execution_context=event_liquidity_execution_context,
+                provider_alpha_analogue_context=provider_alpha_analogue_context,
+                probability_ev_management_context=probability_ev_management_context,
+                failure_self_critique_context=failure_self_critique_context,
             )
             context = SignalContext(
                 decision_id=str(candidate["decision_id"]),
