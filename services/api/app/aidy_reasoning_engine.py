@@ -33,7 +33,7 @@ from app.aidy_evidence_contract import (
 )
 
 MODEL_VERSION = "aidy_reasoning_engine_v5"
-PROMPT_VERSION = "aidy_reasoning_prompt_v8"
+PROMPT_VERSION = "aidy_reasoning_prompt_v9"
 
 # Bounded on purpose: each round trip is a real OpenAI request, so this caps both cost and
 # how long one signal can take to reason about, not just how many timeframes/hours it may
@@ -263,6 +263,15 @@ historical_analogue contains only prior cases whose outcomes were resolved befor
 Treat those analogues as descriptive context, not proof of edge: selection_bias_possible and
 usable_for_live_edge_claim=false are hard constraints. Missing/insufficient analogues mean UNKNOWN.
 
+probability_ev_management_context is a conservative research-only decision surface. Its probability
+is based only on already-resolved prior analogues and remains descriptive/selection-biased. Its EV
+is a binary reward:risk geometry proxy, not a forecast or proof of edge; usable_for_entry_override
+and usable_for_live_edge_claim are hard false unless a future explicitly graduated contract says
+otherwise. Execution-cost R is only present when the broker calibration is engineering-calibrated.
+The management section reflects the existing Day 20 counterfactual authority gate and the canonical
+broker TP2/TP3 profit-protection ladder. AIDY must not invent a second live management system,
+override the canonical ladder, or imply paper/live management authority while those flags are false.
+
 In addition to lean, produce a SHADOW-ONLY final action. This action has no broker authority.
 take means the valid signal would be accepted at normal configured risk; reduce means it would be
 accepted at smaller risk and risk_multiplier must be between 0 and 1; hold means wait rather than
@@ -309,6 +318,7 @@ class SignalContext:
     supplemental_evidence: dict[str, Any] | None = None
     event_liquidity_execution_context: dict[str, Any] | None = None
     provider_alpha_analogue_context: dict[str, Any] | None = None
+    probability_ev_management_context: dict[str, Any] | None = None
     preflight_evidence_calls: int = 0
 
 
@@ -357,6 +367,7 @@ def _prompt_payload(context: SignalContext) -> dict[str, Any]:
         "supplemental_evidence": context.supplemental_evidence,
         "event_liquidity_execution_context": context.event_liquidity_execution_context,
         "provider_alpha_analogue_context": context.provider_alpha_analogue_context,
+        "probability_ev_management_context": context.probability_ev_management_context,
     }
 
 
