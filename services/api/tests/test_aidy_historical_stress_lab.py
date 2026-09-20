@@ -182,3 +182,16 @@ def test_stress_reasoning_uses_bounded_provider_retry_with_candle_tools() -> Non
     assert "_reason_with_provider_claim_retry(" in reason_block
     assert "tool_executor=self._stress_candle_tool_executor(" in reason_block
     assert "tool_schemas=[_STRESS_CANDLE_TOOL_SCHEMA]" in reason_block
+
+
+def test_stress_runtime_defers_heavy_work_until_after_startup_grace() -> None:
+    import inspect
+    import app.aidy_historical_stress_lab as module
+
+    source = inspect.getsource(module.AidyHistoricalStressLabRuntime)
+    assert "AIDY_HISTORICAL_STRESS_STARTUP_DELAY_SECONDS" in source
+    run_block = source.split("    async def _run(", 1)[1]
+    assert "timeout=self._startup_delay_seconds" in run_block
+    assert run_block.index("timeout=self._startup_delay_seconds") < run_block.index(
+        "service.run_once("
+    )
