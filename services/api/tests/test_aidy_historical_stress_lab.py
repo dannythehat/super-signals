@@ -6,6 +6,7 @@ from decimal import Decimal
 from app.aidy_historical_stress_lab import (
     STRESS_INPUT_CONTRACT_VERSION,
     STRESS_REPLAY_VERSION,
+    AidyHistoricalStressLabService,
     _partition,
     _reconstructed_provider_claims,
     _scope_from_env,
@@ -30,7 +31,7 @@ def _bar(minute: int, close: str, *, high: str | None = None, low: str | None = 
 
 
 def test_stress_lab_versions_are_separate_from_exact_pit_replay() -> None:
-    assert STRESS_REPLAY_VERSION == "aidy_historical_stress_lab_v7_tooltrace"
+    assert STRESS_REPLAY_VERSION == "aidy_historical_stress_lab_v8_preflight_router"
     assert STRESS_INPUT_CONTRACT_VERSION == "aidy_historical_stress_input_v5_toolbox"
 
 
@@ -219,3 +220,69 @@ def test_stress_uses_revision_edit_time_as_effective_signal_time() -> None:
     assert "target_rev.revision_index=o.revision_index" in prior_sql
     assert "signal_time_semantics" in source
     assert "target_revision_available_by_signal_time" in source
+
+
+def test_historical_preflight_router_forces_structure_evidence_when_context_is_unclear() -> None:
+    payload = {
+        "market_context": {
+            "trend_structure": "unknown",
+            "volatility_band": "unknown",
+            "event_timing": "verified_no_nearby_high_impact_event",
+        },
+        "event_liquidity_execution_context": {
+            "event": {"nearest_scheduled_event": None},
+        },
+        "provider_evidence_claims": [],
+    }
+    plan = AidyHistoricalStressLabService._historical_preflight_plan(payload)
+    names = [item["name"] for item in plan]
+    candle_args = [
+        item["arguments"]
+        for item in plan
+        if item["name"] == "get_recent_candles"
+    ]
+    assert names.count("get_recent_candles") == 2
+    assert {"timeframe_minutes": 15, "lookback_count": 8} in candle_args
+    assert {"timeframe_minutes": 60, "lookback_count": 6} in candle_args
+
+
+def test_historical_preflight_router_focuses_event_and_provider_tools_when_material() -> None:
+    payload = {
+        "market_context": {
+            "trend_structure": "bullish_trend",
+            "volatility_band": "normal",
+            "event_timing": "verified_high_impact_event_same_utc_day",
+        },
+        "event_liquidity_execution_context": {
+            "event": {
+                "nearest_scheduled_event": {
+                    "minutes_from_signal": 120,
+                }
+            }
+        },
+        "provider_evidence_claims": [
+            {"id": "provider.performance.overall", "value": {"sample_n": 12}}
+        ],
+    }
+    plan = AidyHistoricalStressLabService._historical_preflight_plan(payload)
+    names = [item["name"] for item in plan]
+    assert names.count("get_recent_candles") == 1
+    assert "get_economic_calendar" in names
+    assert "inspect_historical_evidence" in names
+
+
+def test_historical_v8_persists_preflight_tool_telemetry_and_valid_run_scope() -> None:
+    import inspect
+    import app.aidy_historical_stress_lab as module
+
+    source = inspect.getsource(module)
+    reason_block = source.split("    async def reason(", 1)[1].split("    def score(", 1)[0]
+    run_block = source.split("    async def run_once(", 1)[1].split(
+        "\n\nclass AidyHistoricalStressLabRuntime", 1
+    )[0]
+    assert '"preflight_evidence_calls": annotation.preflight_evidence_calls' in reason_block
+    assert '"preflight_tool_names": list(preflight_tool_names)' in reason_block
+    assert '"preflight_tool_evidence": preflight_evidence' in reason_block
+    assert '"all_evidence_tool_names": sorted(' in reason_block
+    assert '"partition_scope": self._scope' in run_block
+    assert 'f"stress_{self._scope}"' not in run_block
