@@ -36,6 +36,7 @@ from app.aidy_evidence_contract import (
     build_provider_evidence_claims,
 )
 from app.aidy_market_client import AidyMarketClient
+from app.aidy_provider_alpha_analogue import load_provider_alpha_analogue_context
 from app.aidy_reasoning_calendar_tools import (
     build_calendar_tool_executor,
     fetch_calendar_summary,
@@ -651,6 +652,39 @@ class AidyReasoningRunner:
                 market_context=market_context,
                 execution_calibration=execution_calibration_from_candidate(candidate),
             )
+            build3_target_payload = {
+                "signal": {
+                    "side": str(candidate.get("side") or ""),
+                    "symbol": str(candidate.get("symbol") or ""),
+                    "entry_low": (
+                        str(candidate["entry_low"])
+                        if candidate.get("entry_low") is not None
+                        else None
+                    ),
+                    "entry_high": (
+                        str(candidate["entry_high"])
+                        if candidate.get("entry_high") is not None
+                        else None
+                    ),
+                    "stop_loss": (
+                        str(candidate["stop_loss"])
+                        if candidate.get("stop_loss") is not None
+                        else None
+                    ),
+                    "take_profits": list(candidate.get("take_profits") or []),
+                },
+                "market_context": market_context,
+                "event_liquidity_execution_context": event_liquidity_execution_context,
+            }
+            provider_alpha_analogue_context = await asyncio.to_thread(
+                load_provider_alpha_analogue_context,
+                self._session_factory,
+                signal_posted_at=candidate["signal_posted_at"],
+                source_id=candidate["source_id"],
+                side=str(candidate.get("side") or ""),
+                market_context=market_context,
+                target_payload=build3_target_payload,
+            )
             context = SignalContext(
                 decision_id=str(candidate["decision_id"]),
                 provider_name=str(candidate["provider_name"]),
@@ -686,6 +720,7 @@ class AidyReasoningRunner:
                 ),
                 supplemental_evidence=supplemental_evidence,
                 event_liquidity_execution_context=event_liquidity_execution_context,
+                provider_alpha_analogue_context=provider_alpha_analogue_context,
                 preflight_evidence_calls=preflight_calls,
             )
             tool_schemas, tool_executor = self._tools_for(candidate["signal_posted_at"])
