@@ -136,6 +136,24 @@ def test_build4_management_keeps_existing_profit_protection_as_baseline_only() -
     assert mgmt["paper_management_allowed"] is False
 
 
+def test_build4_rejects_future_provider_probability_claim() -> None:
+    claims = _claims()
+    claims[0]["as_of_utc"] = (NOW + timedelta(seconds=1)).isoformat()
+    with pytest.raises(ValueError, match="provider_probability_claim_from_future"):
+        build_probability_ev_management_context(
+            signal_posted_at=NOW,
+            side="BUY",
+            entry_low="100",
+            entry_high="100",
+            stop_loss="90",
+            take_profits=["120"],
+            provider_evidence_claims=claims,
+            provider_alpha_analogue_context={},
+            event_liquidity_execution_context={},
+            management_evidence={},
+        )
+
+
 def test_build4_rejects_future_management_evidence() -> None:
     with pytest.raises(ValueError, match="management_evidence_from_future"):
         build_probability_ev_management_context(
