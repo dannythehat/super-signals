@@ -277,10 +277,12 @@ class _ReplayRetryEngine:
     def __init__(self, errors: list[str]) -> None:
         self.errors = list(errors)
         self.calls = 0
+        self.contexts = []
         self.annotation = object()
 
     async def reason(self, context):  # noqa: ANN001, ANN201 - tiny test double
         self.calls += 1
+        self.contexts.append(context)
         if self.errors:
             raise AidyReasoningUnavailable(self.errors.pop(0))
         return self.annotation
@@ -297,6 +299,10 @@ def test_replay_retries_exact_provider_claim_validation_once() -> None:
     assert annotation is engine.annotation
     assert retries == 1
     assert engine.calls == 2
+    assert engine.contexts[0].provider_evidence_claims
+    assert engine.contexts[1].provider_evidence_claims == []
+    assert engine.contexts[1].provider_intelligence is None
+    assert engine.contexts[1].provider_profile is None
 
 
 def test_replay_does_not_retry_other_reasoning_failures() -> None:
