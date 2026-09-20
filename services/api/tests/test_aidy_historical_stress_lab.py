@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
+from pathlib import Path
 
 from app.aidy_historical_stress_lab import (
     STRESS_INPUT_CONTRACT_VERSION,
@@ -14,6 +15,8 @@ from app.aidy_historical_stress_lab import (
     build_reconstructed_market_context,
 )
 from app.aidy_market_client import AidyM1Bar
+
+MODULE = Path(__file__).parents[1] / "app" / "aidy_historical_stress_lab.py"
 
 
 def _bar(minute: int, close: str, *, high: str | None = None, low: str | None = None) -> AidyM1Bar:
