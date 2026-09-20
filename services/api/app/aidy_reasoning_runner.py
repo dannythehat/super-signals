@@ -37,7 +37,7 @@ from app.aidy_evidence_contract import (
 )
 from app.aidy_market_client import AidyMarketClient
 from app.aidy_provider_alpha_analogue import load_provider_alpha_analogue_context
-from app.aidy_probability_ev_management import build_probability_ev_management_context
+from app.aidy_probability_ev_management import build_probability_ev_management_context\nfrom app.aidy_failure_self_critique import build_failure_self_critique_context
 from app.aidy_reasoning_calendar_tools import (
     build_calendar_tool_executor,
     fetch_calendar_summary,
@@ -691,6 +691,18 @@ class AidyReasoningRunner:
                 build2_context=event_liquidity_execution_context,
                 build3_context=provider_alpha_analogue_context,
             )
+            self_calibration = (
+                dict(candidate["self_calibration"])
+                if isinstance(candidate.get("self_calibration"), dict)
+                else None
+            )
+            failure_self_critique_context = build_failure_self_critique_context(
+                market_context=market_context,
+                build2_context=event_liquidity_execution_context,
+                build3_context=provider_alpha_analogue_context,
+                build4_context=probability_ev_management_context,
+                self_calibration=self_calibration,
+            )
             context = SignalContext(
                 decision_id=str(candidate["decision_id"]),
                 provider_name=str(candidate["provider_name"]),
@@ -719,15 +731,12 @@ class AidyReasoningRunner:
                 provider_intelligence=provider_intelligence,
                 provider_profile=provider_profile,
                 recent_messages=list(candidate.get("recent_messages") or []),
-                self_calibration=(
-                    dict(candidate["self_calibration"])
-                    if isinstance(candidate.get("self_calibration"), dict)
-                    else None
-                ),
+                self_calibration=self_calibration,
                 supplemental_evidence=supplemental_evidence,
                 event_liquidity_execution_context=event_liquidity_execution_context,
                 provider_alpha_analogue_context=provider_alpha_analogue_context,
                 probability_ev_management_context=probability_ev_management_context,
+                failure_self_critique_context=failure_self_critique_context,
                 preflight_evidence_calls=preflight_calls,
             )
             tool_schemas, tool_executor = self._tools_for(candidate["signal_posted_at"])
