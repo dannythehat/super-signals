@@ -465,7 +465,11 @@ def _signal_context_from_payload(payload: dict[str, Any]) -> SignalContext:
         ),
         recent_messages=list(payload.get("recent_messages") or []),
         self_calibration=None,
-        supplemental_evidence=None,
+        supplemental_evidence=(
+            dict(payload["supplemental_evidence"])
+            if isinstance(payload.get("supplemental_evidence"), dict)
+            else None
+        ),
         event_liquidity_execution_context=(
             dict(payload["event_liquidity_execution_context"])
             if isinstance(payload.get("event_liquidity_execution_context"), dict)

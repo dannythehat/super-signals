@@ -47,6 +47,12 @@ from app.aidy_historical_replay import (
     _signal_context_from_payload,
 )
 from app.aidy_historical_research_calendar import attach_historical_schedule
+from app.aidy_historical_toolbox import (
+    HISTORICAL_CALENDAR_TOOL_SCHEMA,
+    HISTORICAL_EVIDENCE_TOOL_SCHEMA,
+    build_historical_tool_executor,
+    historical_toolbox_manifest,
+)
 from app.aidy_market_client import AidyM1Bar, AidyMarketClient
 from app.aidy_probability_ev_management import build_probability_ev_management_context
 from app.aidy_reasoning_engine import (
@@ -59,8 +65,8 @@ from app.aidy_reasoning_engine import (
 
 logger = logging.getLogger(__name__)
 
-STRESS_REPLAY_VERSION = "aidy_historical_stress_lab_v5_effective_time"
-STRESS_INPUT_CONTRACT_VERSION = "aidy_historical_stress_input_v4_effective_time"
+STRESS_REPLAY_VERSION = "aidy_historical_stress_lab_v6_toolbox"
+STRESS_INPUT_CONTRACT_VERSION = "aidy_historical_stress_input_v5_toolbox"
 STRESS_MARKET_CONTRACT_VERSION = "aidy_historical_stress_market_v1"
 STRESS_ANALOGUE_VERSION = "aidy_historical_stress_analogue_v1"
 STRESS_PROVIDER_EVIDENCE_VERSION = "aidy_historical_provider_evidence_v1"
@@ -883,6 +889,33 @@ class AidyHistoricalStressLabService:
 
         return executor
 
+    def _stress_tool_executor(
+        self,
+        *,
+        signal_posted_at: datetime,
+        payload: dict[str, Any],
+    ):
+        """Dispatch every research tool that is genuinely available for this case.
+
+        Candles come from the reconstructed M1 research feed. Calendar and focused evidence
+        inspection come from the frozen case payload. Anything not connected to this historical
+        contract stays UNKNOWN in the toolbox manifest rather than being guessed.
+        """
+        candle_executor = self._stress_candle_tool_executor(
+            signal_posted_at=signal_posted_at,
+        )
+        historical_executor = build_historical_tool_executor(
+            payload=payload,
+            signal_posted_at=signal_posted_at,
+        )
+
+        async def dispatch(name: str, arguments: dict[str, Any]) -> dict[str, Any]:
+            if name == CANDLE_TOOL_NAME:
+                return await candle_executor(name, arguments)
+            return await historical_executor(name, arguments)
+
+        return dispatch
+
     def _candidates(self) -> list[dict[str, Any]]:
         with self._session_factory() as session:
             return [
@@ -1084,6 +1117,9 @@ class AidyHistoricalStressLabService:
                         "research_only": True,
                     },
                 }
+                payload["supplemental_evidence"] = {
+                    "historical_toolbox_manifest": historical_toolbox_manifest(payload)
+                }
                 _assert_no_future_fields(payload)
                 if not all(payload["pit_assertions"].values()):
                     raise ValueError(
@@ -1164,10 +1200,15 @@ class AidyHistoricalStressLabService:
                 annotation, retries = await _reason_with_provider_claim_retry(
                     self._engine,
                     context,
-                    tool_executor=self._stress_candle_tool_executor(
+                    tool_executor=self._stress_tool_executor(
                         signal_posted_at=case["signal_posted_at"],
+                        payload=payload,
                     ),
-                    tool_schemas=[_STRESS_CANDLE_TOOL_SCHEMA],
+                    tool_schemas=[
+                        _STRESS_CANDLE_TOOL_SCHEMA,
+                        HISTORICAL_CALENDAR_TOOL_SCHEMA,
+                        HISTORICAL_EVIDENCE_TOOL_SCHEMA,
+                    ],
                 )
                 output = {
                     "lean": annotation.lean,
@@ -1185,7 +1226,12 @@ class AidyHistoricalStressLabService:
                     "tool_surface": {
                         "retrospective_candles": True,
                         "historical_calendar": True,
-                        "historical_calendar_mode": "standing_reconstructed_official_schedule",
+                        "historical_calendar_mode": (
+                            "standing_and_on_demand_reconstructed_official_schedule"
+                        ),
+                        "focused_evidence_inspector": True,
+                        "toolbox_manifest": True,
+                        "on_demand_tool_count": 3,
                     },
                     "request_count": annotation.request_count,
                     "tool_calls_made": annotation.tool_calls_made,
