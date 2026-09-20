@@ -258,7 +258,10 @@ _MONTHLY_USAGE_SQL = """
 
 _INSERT = """
     INSERT INTO aidy_reasoning_annotations (
-        id, decision_id, lean, confidence, rationale, key_factors,
+        id, decision_id, lean, confidence,
+        gold_view_direction, gold_view_confidence, gold_view_horizon_minutes,
+        gold_view_reason, provider_alignment,
+        rationale, key_factors,
         model_version, prompt_version, model_name, response_id,
         input_tokens, output_tokens, estimated_cost_usd, latency_ms,
         market_context_available, provider_context_available,
@@ -267,7 +270,10 @@ _INSERT = """
         shadow_action_reason, evidence_contract_version, provider_evidence_snapshot,
         provider_claim_refs, claim_validation_status, unsupported_claim_count
     ) VALUES (
-        :id, :decision_id, :lean, :confidence, :rationale, CAST(:key_factors AS jsonb),
+        :id, :decision_id, :lean, :confidence,
+        :gold_view_direction, :gold_view_confidence, :gold_view_horizon_minutes,
+        :gold_view_reason, :provider_alignment,
+        :rationale, CAST(:key_factors AS jsonb),
         :model_version, :prompt_version, :model_name, :response_id,
         :input_tokens, :output_tokens, :estimated_cost_usd, :latency_ms,
         :market_context_available, :provider_context_available,
@@ -405,6 +411,7 @@ class AidyReasoningRunner:
             "quote_freshness": data_quality.get("quote_freshness"),
             "quote_state": data_quality.get("quote_state"),
             "market": context.market or {},
+            "gold_state": context.gold_state or {},
         }
 
     @staticmethod
@@ -517,9 +524,16 @@ class AidyReasoningRunner:
         This is capability awareness, not an instruction to call everything. It prevents a
         silent failure mode where a built surface is ignored or an unavailable one is guessed.
         """
+        movement = (
+            market_context.get("gold_state", {}).get("movement_investigation", {})
+            if isinstance(market_context, dict)
+            and isinstance(market_context.get("gold_state"), dict)
+            else {}
+        )
         standing = {
             "provider_history": bool(provider_evidence_claims),
             "market_context": bool(market_context),
+            "gold_movement_investigation": bool(movement),
             "recent_messages": bool(recent_messages),
             "event_liquidity": bool(event_liquidity_execution_context),
             "historical_analogues": bool(provider_alpha_analogue_context),
@@ -585,6 +599,19 @@ class AidyReasoningRunner:
     ) -> tuple[dict[str, Any] | None, int]:
         evidence: dict[str, Any] = {}
         calls = 0
+        gold_state = (
+            (market_context or {}).get("gold_state")
+            if isinstance((market_context or {}).get("gold_state"), dict)
+            else {}
+        )
+        movement = (
+            gold_state.get("movement_investigation")
+            if isinstance(gold_state.get("movement_investigation"), dict)
+            else {}
+        )
+        investigation_required = movement.get("investigation_required") is True
+        requested_follow_up = set(movement.get("required_follow_up_tools") or [])
+
         if self._candle_client is not None:
             evidence["m15_structure"] = await fetch_candle_summary(
                 self._candle_client,
@@ -593,6 +620,14 @@ class AidyReasoningRunner:
                 lookback_count=8,
             )
             calls += 1
+            if investigation_required:
+                evidence["spike_m5_structure"] = await fetch_candle_summary(
+                    self._candle_client,
+                    as_of=signal_posted_at,
+                    timeframe_minutes=5,
+                    lookback_count=12,
+                )
+                calls += 1
             trend = str((market_context or {}).get("trend_structure") or "unknown").lower()
             if trend in {"mixed", "range", "unknown", "none"}:
                 evidence["h1_structure"] = await fetch_candle_summary(
@@ -604,7 +639,10 @@ class AidyReasoningRunner:
                 calls += 1
 
         event_timing = str((market_context or {}).get("event_timing") or "unknown").lower()
-        if self._calendar_client is not None and event_timing in {"unknown", "blocked", "none", ""}:
+        calendar_requested = "economic_calendar" in requested_follow_up
+        if self._calendar_client is not None and (
+            event_timing in {"unknown", "blocked", "none", ""} or calendar_requested
+        ):
             evidence["nearby_high_impact_events"] = await fetch_calendar_summary(
                 self._calendar_client,
                 as_of=signal_posted_at,
@@ -613,6 +651,21 @@ class AidyReasoningRunner:
                 min_impact="high",
             )
             calls += 1
+
+        if investigation_required:
+            evidence["gold_movement_follow_up_status"] = {
+                "required_follow_up_tools": sorted(requested_follow_up),
+                "connected_now": sorted(
+                    name
+                    for name in requested_follow_up
+                    if name == "economic_calendar" and self._calendar_client is not None
+                ),
+                "still_unavailable": sorted(
+                    name
+                    for name in requested_follow_up
+                    if name != "economic_calendar"
+                ),
+            }
 
         return (evidence or None), calls
 
@@ -845,6 +898,11 @@ class AidyReasoningRunner:
                 "decision_id": candidate["decision_id"],
                 "lean": annotation.lean,
                 "confidence": annotation.confidence,
+                "gold_view_direction": annotation.gold_view_direction,
+                "gold_view_confidence": annotation.gold_view_confidence,
+                "gold_view_horizon_minutes": annotation.gold_view_horizon_minutes,
+                "gold_view_reason": annotation.gold_view_reason,
+                "provider_alignment": annotation.provider_alignment,
                 "rationale": annotation.rationale,
                 "key_factors": json.dumps(annotation.key_factors),
                 "model_version": MODEL_VERSION,

@@ -7,6 +7,7 @@ from app.aidy_historical_stress_lab import (
     STRESS_INPUT_CONTRACT_VERSION,
     STRESS_REPLAY_VERSION,
     AidyHistoricalStressLabService,
+    _score_gold_view_path,
     _partition,
     _reconstructed_provider_claims,
     _scope_from_env,
@@ -31,7 +32,7 @@ def _bar(minute: int, close: str, *, high: str | None = None, low: str | None = 
 
 
 def test_stress_lab_versions_are_separate_from_exact_pit_replay() -> None:
-    assert STRESS_REPLAY_VERSION == "aidy_historical_stress_lab_v8_preflight_router"
+    assert STRESS_REPLAY_VERSION == "aidy_historical_stress_lab_v9_gold_first"
     assert STRESS_INPUT_CONTRACT_VERSION == "aidy_historical_stress_input_v5_toolbox"
 
 
@@ -286,3 +287,57 @@ def test_historical_v8_persists_preflight_tool_telemetry_and_valid_run_scope() -
     assert '"all_evidence_tool_names": sorted(' in reason_block
     assert '"partition_scope": self._scope' in run_block
     assert 'f"stress_{self._scope}"' not in run_block
+
+
+
+def test_gold_first_stress_output_freezes_independent_market_view() -> None:
+    source = MODULE.read_text(encoding="utf-8")
+    decide = source.split("    async def decide(", 1)[1].split("    def score(", 1)[0]
+    for field in (
+        '"gold_view_direction": annotation.gold_view_direction',
+        '"gold_view_confidence": annotation.gold_view_confidence',
+        '"gold_view_horizon_minutes": annotation.gold_view_horizon_minutes',
+        '"gold_view_reason": annotation.gold_view_reason',
+        '"provider_alignment": annotation.provider_alignment',
+    ):
+        assert field in decide
+
+
+
+def _path_bar(minute: int, *, open_: str, high: str, low: str, close: str) -> AidyM1Bar:
+    opened = datetime(2026, 9, 1, 10, minute, tzinfo=UTC)
+    return AidyM1Bar(
+        open_time_utc=opened,
+        open=Decimal(open_),
+        high=Decimal(high),
+        low=Decimal(low),
+        close=Decimal(close),
+        revision_index=0,
+        first_observed_at=opened + timedelta(minutes=1),
+        payload_digest="a" * 64,
+    )
+
+
+def test_gold_view_path_scorer_credits_correct_opposite_direction_view() -> None:
+    bars = [
+        _path_bar(1, open_="4400", high="4402", low="4395", close="4397"),
+        _path_bar(2, open_="4397", high="4398", low="4388", close="4390"),
+        _path_bar(3, open_="4390", high="4392", low="4380", close="4382"),
+    ]
+
+    bearish = _score_gold_view_path(direction="bearish", bars=bars)
+    bullish = _score_gold_view_path(direction="bullish", bars=bars)
+
+    assert bearish is not None and bullish is not None
+    assert bearish["outcome_class"] == "favorable"
+    assert bearish["directional_move_points"] == Decimal("18")
+    assert bearish["favorable_excursion_points"] == Decimal("20")
+    assert bearish["adverse_excursion_points"] == Decimal("2")
+    assert bullish["outcome_class"] == "adverse"
+    assert bullish["directional_move_points"] == Decimal("-18")
+
+
+def test_gold_view_path_scorer_does_not_invent_a_trade_for_neutral_or_unknown() -> None:
+    bars = [_path_bar(1, open_="4400", high="4402", low="4398", close="4401")]
+    assert _score_gold_view_path(direction="neutral", bars=bars) is None
+    assert _score_gold_view_path(direction="unknown", bars=bars) is None

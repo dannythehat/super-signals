@@ -39,11 +39,56 @@ def _payload(*, illegal_research: bool = False) -> dict:
             "market": {"quote_context": {"mid": "4380"}},
             "gold_state": {
                 "contract_version": "aidy_provider_gold_state_v2",
+                "gold_state_engine_version": "aidy_gold_state_engine_v1",
+                "gold_state_digest": "g" * 64,
                 "as_of_utc": stamp,
                 "symbol": "XAUUSD",
+                "mode": "pit",
+                "research_only": True,
+                "future_values_used": False,
                 "descriptive_context_only": True,
                 "predictive_edge_claimed": False,
                 "live_money_execution_allowed": False,
+                "session": {"state": "known", "decision_input_allowed": True},
+                "market_structure": {
+                    "state": "known",
+                    "decision_input_allowed": True,
+                    "predictive_edge_claimed": False,
+                    "timeframes": {},
+                },
+                "liquidity": {
+                    "state": "known",
+                    "decision_input_allowed": True,
+                    "proxy_not_order_flow": True,
+                    "hidden_order_flow_claimed": False,
+                    "sweep_reclaim_proxies": [],
+                },
+                "location": {
+                    "state": "known",
+                    "decision_input_allowed": True,
+                    "mid": "4380",
+                },
+                "move_observation": {
+                    "state": "known",
+                    "decision_input_allowed": True,
+                    "causal_attribution_proven": False,
+                    "cause_unknown": True,
+                },
+                "movement_investigation": {
+                    "investigator_version": "aidy_gold_movement_investigator_v1",
+                    "investigation_digest": "i" * 64,
+                    "as_of_utc": stamp,
+                    "symbol": "XAUUSD",
+                    "state": "investigated",
+                    "investigation_required": True,
+                    "attribution_state": "cause_unknown",
+                    "cause_known": False,
+                    "cause_unknown": True,
+                    "research_only": True,
+                    "predictive_edge_claimed": False,
+                    "live_money_execution_allowed": False,
+                    "future_values_used": False,
+                },
                 "price_liquidity": {
                     "state": "known",
                     "decision_input_allowed": True,
@@ -208,3 +253,40 @@ def test_context_client_rejects_non_descriptive_gold_state(
 
     with pytest.raises(ValueError, match="aidy_context_gold_state_not_descriptive_only"):
         asyncio.run(client.fetch_context(as_of=datetime(2026, 9, 18, 16, 0, tzinfo=UTC)))
+
+
+
+def test_context_client_accepts_verified_movement_investigation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import app.aidy_context_client as module
+
+    _AsyncClient.payload = _payload()
+    monkeypatch.setattr(module.httpx, "AsyncClient", _AsyncClient)
+    client = AidyContextClient(base_url="https://aidy.test", bearer_token="token")
+
+    context = asyncio.run(
+        client.fetch_context(as_of=datetime(2026, 9, 18, 16, 0, tzinfo=UTC))
+    )
+
+    movement = context.gold_state["movement_investigation"]
+    assert movement["investigator_version"] == "aidy_gold_movement_investigator_v1"
+    assert movement["attribution_state"] == "cause_unknown"
+    assert movement["live_money_execution_allowed"] is False
+
+
+def test_context_client_rejects_future_tainted_movement_investigation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import app.aidy_context_client as module
+
+    payload = _payload()
+    payload["context"]["gold_state"]["movement_investigation"]["future_values_used"] = True
+    _AsyncClient.payload = payload
+    monkeypatch.setattr(module.httpx, "AsyncClient", _AsyncClient)
+    client = AidyContextClient(base_url="https://aidy.test", bearer_token="token")
+
+    with pytest.raises(ValueError, match="aidy_context_gold_movement_future_values_forbidden"):
+        asyncio.run(
+            client.fetch_context(as_of=datetime(2026, 9, 18, 16, 0, tzinfo=UTC))
+        )

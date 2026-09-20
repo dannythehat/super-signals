@@ -71,6 +71,11 @@ class FakeEngine:
         return ReasoningAnnotation(
             lean=self.lean,
             confidence=0.65,
+            gold_view_direction="bullish",
+            gold_view_confidence=0.72,
+            gold_view_horizon_minutes=30,
+            gold_view_reason="Independent Gold structure is bullish.",
+            provider_alignment="aligned",
             rationale="test rationale",
             key_factors=["factor one"],
             model_name="fake-model",
@@ -107,6 +112,14 @@ def _fake_context(*, as_of: datetime) -> AidyCanonicalContext:
         },
         data_quality={"quote_freshness": "fresh", "quote_state": "known"},
         market={},
+        gold_state={
+            "contract_version": "aidy_provider_gold_state_v2",
+            "movement_investigation": {
+                "investigator_version": "aidy_gold_movement_investigator_v1",
+                "investigation_required": False,
+                "state": "not_triggered",
+            },
+        },
         provenance={"private_forward_only": True, "live_money_execution_allowed": False},
     )
 
@@ -444,15 +457,23 @@ def test_market_context_is_fetched_and_passed_to_the_engine_when_available(
     assert fake_engine.calls[0].market_context is not None
     assert fake_engine.calls[0].market_context["trend_structure"] == "bullish_trend"
     assert fake_engine.calls[0].market_context["session"] == "london"
+    assert fake_engine.calls[0].market_context["gold_state"]["contract_version"] == (
+        "aidy_provider_gold_state_v2"
+    )
 
     row = conn.execute(
         text(
-            "SELECT market_context_available FROM aidy_reasoning_annotations "
+            "SELECT market_context_available,gold_view_direction,gold_view_confidence,"
+            "gold_view_horizon_minutes,provider_alignment FROM aidy_reasoning_annotations "
             "WHERE decision_id IN (SELECT id FROM aidy_decisions WHERE observation_id=:obs)"
         ),
         {"obs": observation_id},
     ).mappings().one()
     assert row["market_context_available"] is True
+    assert row["gold_view_direction"] == "bullish"
+    assert float(row["gold_view_confidence"]) == pytest.approx(0.72)
+    assert row["gold_view_horizon_minutes"] == 30
+    assert row["provider_alignment"] == "aligned"
 
 
 def test_a_stale_or_failed_market_context_lookup_never_blocks_reasoning(
@@ -672,9 +693,50 @@ def test_live_toolbox_manifest_reports_available_and_unknown_surfaces() -> None:
     standing = {item["surface"]: item["status"] for item in manifest["standing_surfaces"]}
     assert standing["provider_history"] == "available"
     assert standing["market_context"] == "available"
+    assert standing["gold_movement_investigation"] == "unknown_unavailable"
     research = {item["surface"]: item for item in manifest["research_surfaces"]}
     assert research["rates_macro"]["state"] == "unknown"
     assert research["cme_contract_state"]["state"] == "known"
     assert research["cme_contract_state"]["callable"] is False
     assert manifest["target_outcome_available"] is False
     assert manifest["live_execution_authority"] is False
+
+
+
+def test_triggered_gold_movement_prefetches_spike_structure_and_calendar() -> None:
+    runner = AidyReasoningRunner.__new__(AidyReasoningRunner)
+    runner._candle_client = FakeCandleClient()
+    runner._calendar_client = FakeCalendarClient()
+
+    market_context = {
+        "trend_structure": "bullish_trend",
+        "event_timing": "clear_current_window",
+        "gold_state": {
+            "movement_investigation": {
+                "investigation_required": True,
+                "required_follow_up_tools": [
+                    "economic_calendar",
+                    "intraday_cross_asset_reaction",
+                    "breaking_news_event_search",
+                ],
+            }
+        },
+    }
+    evidence, calls = asyncio.run(
+        runner._prefetch_evidence(
+            signal_posted_at=datetime.now(UTC),
+            market_context=market_context,
+        )
+    )
+
+    assert evidence is not None
+    assert "m15_structure" in evidence
+    assert "spike_m5_structure" in evidence
+    assert "nearby_high_impact_events" in evidence
+    status = evidence["gold_movement_follow_up_status"]
+    assert status["connected_now"] == ["economic_calendar"]
+    assert status["still_unavailable"] == [
+        "breaking_news_event_search",
+        "intraday_cross_asset_reaction",
+    ]
+    assert calls == 3
