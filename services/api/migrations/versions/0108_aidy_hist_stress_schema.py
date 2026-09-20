@@ -20,7 +20,35 @@ branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
 
+def _recreate_scoreboard_view() -> None:
+    op.execute(
+        """
+        CREATE VIEW aidy_historical_replay_scoreboard AS
+        SELECT
+            c.partition,
+            d.replay_version,
+            d.model_version,
+            d.prompt_version,
+            count(*) AS scored,
+            round(sum(s.actual_pnl_usd), 2) AS taken_pnl_usd,
+            round(sum(s.replay_shadow_pnl_usd), 2) AS replay_shadow_pnl_usd,
+            round(sum(s.replay_delta_vs_taken_usd), 2) AS replay_delta_vs_taken_usd,
+            round(avg(s.replay_delta_vs_taken_usd), 4) AS avg_delta_usd,
+            count(*) FILTER (WHERE s.replay_delta_vs_taken_usd > 0) AS improved,
+            count(*) FILTER (WHERE s.replay_delta_vs_taken_usd < 0) AS harmed,
+            count(*) FILTER (WHERE s.replay_delta_vs_taken_usd = 0) AS unchanged
+        FROM aidy_historical_replay_scores s
+        JOIN aidy_historical_replay_decisions d ON d.id=s.replay_decision_id
+        JOIN aidy_historical_replay_cases c ON c.id=d.case_id
+        GROUP BY c.partition,d.replay_version,d.model_version,d.prompt_version
+        """
+    )
+
+
 def upgrade() -> None:
+    # PostgreSQL will not alter a column type while a view depends on it.
+    # Drop/recreate only the research scoreboard view inside this transactional migration.
+    op.execute("DROP VIEW IF EXISTS aidy_historical_replay_scoreboard")
     op.execute(
         """
         ALTER TABLE aidy_historical_replay_cases
@@ -107,9 +135,11 @@ def upgrade() -> None:
         )
         """
     )
+    _recreate_scoreboard_view()
 
 
 def downgrade() -> None:
+    op.execute("DROP VIEW IF EXISTS aidy_historical_replay_scoreboard")
     # A downgrade is only valid after reconstructed stress rows have been removed;
     # restoring the original narrow constraints intentionally fails otherwise.
     op.execute(
@@ -179,3 +209,4 @@ def downgrade() -> None:
         CHECK (partition IN ('development','validation','holdout'))
         """
     )
+    _recreate_scoreboard_view()
