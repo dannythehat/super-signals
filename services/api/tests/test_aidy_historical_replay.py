@@ -260,6 +260,8 @@ def test_materializer_does_not_select_legacy_decision_reasons() -> None:
     )[0]
     assert "d.reasons" not in materialize
     assert "provider_execution_calibration_samples" in materialize
+    assert "execution_samples AS MATERIALIZED" in materialize
+    assert "FROM execution_samples c" in materialize
     assert "c.closed_at<=d.signal_posted_at" in materialize
     assert "WHERE d.decision_class='approve'" in materialize
 
