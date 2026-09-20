@@ -84,6 +84,10 @@ def _scripted_transport(bodies: list[dict]) -> httpx.MockTransport:
 _ANNOTATION = {
     "lean": "agree",
     "confidence": 0.7,
+    "gold_view_direction": "bullish",
+    "gold_view_confidence": 0.65,
+    "gold_view_horizon_minutes": 30,
+    "gold_view_reason": "Gold structure is bullish over the chosen horizon.",
     "rationale": "Stop distance and reward:risk look disciplined.",
     "key_factors": ["R:R roughly 1:2", "stop on correct side of entry"],
     "shadow_action": "take",
@@ -102,6 +106,10 @@ def test_a_well_formed_response_is_parsed_into_a_typed_annotation() -> None:
 
     assert annotation.lean == "agree"
     assert annotation.confidence == 0.7
+    assert annotation.gold_view_direction == "bullish"
+    assert annotation.gold_view_confidence == 0.65
+    assert annotation.gold_view_horizon_minutes == 30
+    assert annotation.provider_alignment == "aligned"
     assert annotation.input_tokens == 250
     assert annotation.output_tokens == 80
     assert annotation.estimated_cost_usd > 0
@@ -640,3 +648,62 @@ def test_system_instructions_teach_toolbox_awareness_without_forcing_noise() -> 
     assert "Consider every standing evidence surface marked available" in instructions
     assert "Do not call a tool just to satisfy a checklist" in instructions
     assert "remains UNKNOWN" in instructions
+
+
+
+def test_independent_gold_view_can_conflict_with_provider_direction() -> None:
+    context = replace(_context(), side="SELL")
+    engine = AidyReasoningEngine(
+        api_key="test-key", transport=_scripted_transport([_message_response(_ANNOTATION)])
+    )
+
+    annotation = asyncio.run(engine.reason(context))
+
+    assert annotation.gold_view_direction == "bullish"
+    assert annotation.provider_alignment == "conflicts"
+
+
+def test_unknown_gold_view_requires_zero_horizon() -> None:
+    bad = {
+        **_ANNOTATION,
+        "gold_view_direction": "unknown",
+        "gold_view_confidence": 0.1,
+        "gold_view_horizon_minutes": 30,
+        "gold_view_reason": "Market evidence is incomplete.",
+    }
+    engine = AidyReasoningEngine(
+        api_key="test-key", transport=_scripted_transport([_message_response(bad)])
+    )
+
+    with pytest.raises(
+        AidyReasoningUnavailable,
+        match="aidy_reasoning_unknown_gold_view_horizon_invalid",
+    ):
+        asyncio.run(engine.reason(_context()))
+
+
+def test_gold_view_reason_cannot_smuggle_provider_history_into_free_text() -> None:
+    payload = {
+        **_ANNOTATION,
+        "gold_view_reason": "Test Provider historically wins more BUY trades.",
+    }
+    engine = AidyReasoningEngine(
+        api_key="test-key", transport=_scripted_transport([_message_response(payload)])
+    )
+
+    with pytest.raises(
+        AidyReasoningUnavailable,
+        match="aidy_reasoning_provider_claim_invalid",
+    ):
+        asyncio.run(engine.reason(_context()))
+
+
+def test_gold_first_prompt_requires_independent_view_and_reads_movement_investigation() -> None:
+    from app import aidy_reasoning_engine as module
+
+    instructions = " ".join(module._SYSTEM_INSTRUCTIONS.split())
+    assert "GOLD-FIRST RULE" in instructions
+    assert "form an independent point-in-time Gold view" in instructions
+    assert "movement_investigation" in instructions
+    assert "cause_unknown must remain unknown" in instructions
+    assert "must NOT be derived from provider identity" in instructions
