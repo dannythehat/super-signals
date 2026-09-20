@@ -239,11 +239,16 @@ def test_replay_versions_cases_and_decisions_without_rewriting_prior_exams() -> 
     assert "UNIQUE (case_id,replay_version)" in source
 
     module = MODULE.read_text(encoding="utf-8")
-    assert 'REPLAY_VERSION = "aidy_historical_time_machine_v6"' in module
-    assert 'INPUT_CONTRACT_VERSION = "aidy_historical_replay_input_v5"' in module
+    assert 'REPLAY_VERSION = "aidy_historical_time_machine_v7"' in module
+    assert 'INPUT_CONTRACT_VERSION = "aidy_historical_replay_input_v6"' in module
     assert "rc.input_contract_version=:input_contract_version" in module
     assert "rd.replay_version=:replay_version" in module
     assert "c.input_contract_version=:input_contract_version" in module
+    assert '_PREVIOUS_INPUT_CONTRACT_VERSION = "aidy_historical_replay_input_v5"' in module
+    assert "_LOAD_PREVIOUS_CASES" in module
+    assert "derived_from_previous_frozen_contract" in module
+    assert "build_probability_ev_management_context" in module
+    assert '"probability_ev_management_context"' in module
 
 
 def test_materializer_uses_message_revision_exactly_as_of_signal_time() -> None:

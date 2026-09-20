@@ -37,6 +37,7 @@ from app.aidy_evidence_contract import (
 )
 from app.aidy_market_client import AidyMarketClient
 from app.aidy_provider_alpha_analogue import load_provider_alpha_analogue_context
+from app.aidy_probability_ev_management import build_probability_ev_management_context
 from app.aidy_reasoning_calendar_tools import (
     build_calendar_tool_executor,
     fetch_calendar_summary,
@@ -685,6 +686,11 @@ class AidyReasoningRunner:
                 market_context=market_context,
                 target_payload=build3_target_payload,
             )
+            probability_ev_management_context = build_probability_ev_management_context(
+                signal=build3_target_payload["signal"],
+                build2_context=event_liquidity_execution_context,
+                build3_context=provider_alpha_analogue_context,
+            )
             context = SignalContext(
                 decision_id=str(candidate["decision_id"]),
                 provider_name=str(candidate["provider_name"]),
@@ -721,6 +727,7 @@ class AidyReasoningRunner:
                 supplemental_evidence=supplemental_evidence,
                 event_liquidity_execution_context=event_liquidity_execution_context,
                 provider_alpha_analogue_context=provider_alpha_analogue_context,
+                probability_ev_management_context=probability_ev_management_context,
                 preflight_evidence_calls=preflight_calls,
             )
             tool_schemas, tool_executor = self._tools_for(candidate["signal_posted_at"])
