@@ -20,6 +20,8 @@ def test_historical_stress_migration_expands_only_research_schema_contracts() ->
     assert "ck_aidy_hist_score_partition" in migration
     assert "ck_aidy_hist_case_tier" in migration
     assert "ck_aidy_hist_run_scope" in migration
+    assert 'DROP VIEW IF EXISTS aidy_historical_replay_scoreboard' in migration
+    assert 'CREATE VIEW aidy_historical_replay_scoreboard AS' in migration
 
 
 def test_historical_stress_migration_does_not_add_execution_authority() -> None:
