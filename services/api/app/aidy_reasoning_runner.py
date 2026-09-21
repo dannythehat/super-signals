@@ -552,8 +552,19 @@ class AidyReasoningRunner:
             and isinstance(gold_state.get("research_surfaces"), dict)
             else {}
         )
+        gold_toolbox = (
+            gold_state.get("toolbox_manifest")
+            if isinstance(gold_state, dict)
+            and isinstance(gold_state.get("toolbox_manifest"), dict)
+            else {}
+        )
+        gold_capabilities = (
+            list(gold_toolbox.get("capabilities") or [])
+            if isinstance(gold_toolbox, dict)
+            else []
+        )
         return {
-            "contract_version": "aidy_live_toolbox_manifest_v1",
+            "contract_version": "aidy_live_toolbox_manifest_v2",
             "decision_rule": (
                 "Consider every available standing surface. Call a tool when it can materially "
                 "resolve uncertainty relevant to take/reduce/reject. Never invent unavailable evidence."
@@ -577,6 +588,9 @@ class AidyReasoningRunner:
                 }
                 for name, available in standing.items()
             ],
+            "gold_toolbox_contract_version": gold_toolbox.get("contract_version"),
+            "gold_known_capability_count": gold_toolbox.get("known_capability_count", 0),
+            "gold_capability_catalog": gold_capabilities,
             "research_surfaces": [
                 {
                     "surface": name,
