@@ -33,7 +33,7 @@ from app.aidy_evidence_contract import (
 )
 
 MODEL_VERSION = "aidy_reasoning_engine_v8"
-PROMPT_VERSION = "aidy_reasoning_prompt_v13_gold_first"
+PROMPT_VERSION = "aidy_reasoning_prompt_v14_gold_toolbox"
 
 # Bounded on purpose: each round trip is a real OpenAI request, so this caps both cost and
 # how long one signal can take to reason about, not just how many timeframes/hours it may
@@ -287,6 +287,17 @@ tool when a material uncertainty is exactly what that tool is designed to resolv
 unknown, unavailable or not connected remains UNKNOWN; never manufacture an answer from another
 surface and pretend that tool was available. Tool evidence is supporting evidence, never the target
 trade outcome and never live execution authority.
+
+toolbox_manifest may also contain gold_capability_catalog from the standalone AIDY Gold brain.
+This is the canonical map of the wider arsenal: candles across timeframes, session/day map,
+structure/location, liquidity proxies, realised/jump volatility, economic-calendar/event tools,
+rates/yields/inflation vintages, cross-market context, CME state, GVZ, breaking-news search,
+movement memory/analogues, provider intelligence, execution evidence, EV/management and
+self-critique. Read the catalogue so you know these capabilities exist. A capability marked
+live_here is present in the Gold packet. super_signals_runtime_resolves means this runtime decides
+whether its local client/evidence is actually available. research_exists_not_live_connected means
+the capability exists in the wider system but must remain UNKNOWN for this decision until a
+live PIT-safe adapter connects it. Never confuse capability awareness with evidence availability.
 
 event_liquidity_execution_context is deterministic, point-in-time factual evidence built by the
 application from the signal geometry, immutable quote/liquidity context, scheduled-event metadata,
