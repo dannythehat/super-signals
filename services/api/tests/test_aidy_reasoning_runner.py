@@ -676,7 +676,22 @@ def test_live_toolbox_manifest_reports_available_and_unknown_surfaces() -> None:
                 "research_surfaces": {
                     "rates_macro": {"state": "unknown"},
                     "cme_contract_state": {"state": "known"},
-                }
+                },
+                "toolbox_manifest": {
+                    "contract_version": "aidy_gold_toolbox_manifest_v1",
+                    "known_capability_count": 3,
+                    "capabilities": [
+                        {"name": "gold_m1_candles", "status": "live_here"},
+                        {
+                            "name": "economic_calendar_on_demand",
+                            "status": "super_signals_runtime_resolves",
+                        },
+                        {
+                            "name": "rates_macro_vintages",
+                            "status": "research_exists_not_live_connected",
+                        },
+                    ],
+                },
             },
         },
         provider_evidence_claims=[{"id": "provider.performance.overall"}],
@@ -685,6 +700,20 @@ def test_live_toolbox_manifest_reports_available_and_unknown_surfaces() -> None:
         provider_alpha_analogue_context={"historical_analogue": {}},
         probability_ev_management_context={"state": "available"},
         failure_self_critique_context={"unknown_gate": {}},
+    )
+
+    assert manifest["contract_version"] == "aidy_live_toolbox_manifest_v2"
+    assert manifest["gold_toolbox_contract_version"] == "aidy_gold_toolbox_manifest_v1"
+    assert manifest["gold_known_capability_count"] == 3
+    gold_capabilities = {
+        item["name"]: item["status"] for item in manifest["gold_capability_catalog"]
+    }
+    assert gold_capabilities["gold_m1_candles"] == "live_here"
+    assert gold_capabilities["economic_calendar_on_demand"] == (
+        "super_signals_runtime_resolves"
+    )
+    assert gold_capabilities["rates_macro_vintages"] == (
+        "research_exists_not_live_connected"
     )
 
     tools = {item["name"]: item["status"] for item in manifest["on_demand_tools"]}

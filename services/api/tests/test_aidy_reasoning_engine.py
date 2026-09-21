@@ -645,8 +645,11 @@ def test_system_instructions_teach_toolbox_awareness_without_forcing_noise() -> 
 
     instructions = " ".join(module._SYSTEM_INSTRUCTIONS.split())
     assert "toolbox_manifest" in instructions
+    assert "gold_capability_catalog" in instructions
+    assert "canonical map of the wider arsenal" in instructions
     assert "Consider every standing evidence surface marked available" in instructions
     assert "Do not call a tool just to satisfy a checklist" in instructions
+    assert "research_exists_not_live_connected" in instructions
     assert "remains UNKNOWN" in instructions
 
 
