@@ -31,7 +31,7 @@ class _Entry:
 
 
 def test_provider_policy_generation_is_current_owner_authority() -> None:
-    assert POLICY_GENERATION == "owner-authority-2026-09-22-v3-one-percent-total-trade"
+    assert POLICY_GENERATION == "owner-authority-2026-09-09-v2-one-percent-per-tp"
 
 
 @pytest.mark.parametrize(
@@ -48,16 +48,13 @@ def test_provider_policy_generation_is_current_owner_authority() -> None:
         ("Another Provider", "SELL"),
     ],
 )
-def test_every_enabled_trade_uses_one_percent_total(source: str, side: str) -> None:
+def test_every_enabled_trade_uses_one_percent_per_target(source: str, side: str) -> None:
     assert provider_side_enabled(source_name=source, side=side)
-    profile = provider_risk_profile(source_name=source, side=side, position_count=4)
-    assert profile == (
-        Decimal("0.25"),
-        Decimal("0.25"),
-        Decimal("0.25"),
-        Decimal("0.25"),
-    )
-    assert sum(profile, Decimal("0")) == Decimal("1")
+    assert provider_risk_profile(
+        source_name=source,
+        side=side,
+        position_count=4,
+    ) == (Decimal("1"), Decimal("1"), Decimal("1"), Decimal("1"))
 
 
 def test_named_provider_identity_helpers_remain_available() -> None:
@@ -84,7 +81,7 @@ def test_existing_direction_eligibility_stays_fail_closed() -> None:
         ) == (Decimal("0"), Decimal("0"), Decimal("0"))
 
 
-def test_fx_keeps_three_target_limit_with_one_percent_total() -> None:
+def test_fx_keeps_three_target_limit_but_each_target_is_one_percent() -> None:
     source = "FXTradingVision l Forex & Crypto Signals 🚀"
     for side in ("BUY", "SELL"):
         assert provider_tp_limit(source_name=source, side=side) == 3
@@ -92,7 +89,7 @@ def test_fx_keeps_three_target_limit_with_one_percent_total() -> None:
             source_name=source,
             side=side,
             position_count=3,
-        ) == (Decimal("0.3334"), Decimal("0.3333"), Decimal("0.3333"))
+        ) == (Decimal("1"), Decimal("1"), Decimal("1"))
 
 
 def test_tig_has_no_hidden_tp_cap() -> None:
@@ -101,7 +98,7 @@ def test_tig_has_no_hidden_tp_cap() -> None:
     assert provider_tp_limit(source_name=source, side="SELL") is None
 
 
-def test_four_targets_equal_one_percent_total() -> None:
+def test_four_targets_equal_four_percent_not_eight_percent() -> None:
     profile = provider_risk_profile(
         source_name="TIG’s Asia Trades",
         side="BUY",
@@ -118,13 +115,13 @@ def test_four_targets_equal_one_percent_total() -> None:
         volume_rules=_rules(),
     )
     assert [item.risk_budget for item in result.positions] == [
-        Decimal("3.7500"),
-        Decimal("3.7500"),
-        Decimal("3.7500"),
-        Decimal("3.7500"),
+        Decimal("15"),
+        Decimal("15"),
+        Decimal("15"),
+        Decimal("15"),
     ]
-    assert result.total_risk_budget == Decimal("15.0000")
-    assert result.total_risk_budget / result.balance * Decimal("100") == Decimal("1.00")
+    assert result.total_risk_budget == Decimal("60")
+    assert result.total_risk_budget / result.balance * Decimal("100") == Decimal("4")
 
 
 def test_two_entries_and_four_targets_still_create_four_target_legs() -> None:
@@ -144,7 +141,7 @@ def test_two_entries_and_four_targets_still_create_four_target_legs() -> None:
         position_count=len(plan),
     )
     assert profile is not None
-    assert sum(profile, Decimal("0")) == Decimal("1")
+    assert sum(profile, Decimal("0")) == Decimal("4")
 
 
 def test_disabled_profile_still_fails_before_broker_sizing() -> None:
@@ -184,7 +181,7 @@ def test_locked_one_percent_is_absolute_even_if_signal_says_double_lot() -> None
             signal_requests_double_lot=True,
             double_lot_approved=True,
         )
-        assert result.effective_risk_percent == Decimal("0.25")
+        assert result.effective_risk_percent == Decimal("1")
         assert not result.double_lot_applied
         total += result.effective_risk_percent
-    assert total == Decimal("1")
+    assert total == Decimal("4")
