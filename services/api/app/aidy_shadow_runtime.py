@@ -171,7 +171,8 @@ class AidyShadowRuntime:
             logger.warning(message)
             return False
 
-        gold_state = context.gold_state if isinstance(context.gold_state, dict) else {}
+        raw_gold_state = getattr(context, "gold_state", None)
+        gold_state = raw_gold_state if isinstance(raw_gold_state, dict) else {}
         toolbox = (
             gold_state.get("toolbox_manifest")
             if isinstance(gold_state.get("toolbox_manifest"), dict)
