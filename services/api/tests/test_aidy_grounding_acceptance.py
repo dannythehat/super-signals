@@ -103,7 +103,7 @@ def test_acceptance_migration_is_research_only_and_has_no_live_money_path() -> N
 
 def test_main_lifecycle_starts_and_stops_acceptance_monitor() -> None:
     source = MAIN.read_text(encoding="utf-8")
-    construct = "aidy_grounding_acceptance_runtime = AidyGroundingAcceptanceRuntime(session_factory)"
+    construct = "aidy_grounding_acceptance_runtime = AidyGroundingAcceptanceRuntime(research_session_factory)"
     start = "await aidy_grounding_acceptance_runtime.start()"
     stop = "await aidy_grounding_acceptance_runtime.stop()"
     assert construct in source
