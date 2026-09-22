@@ -1,3 +1,4 @@
+# ruff: noqa: E501
 """Canonical Super Signals Telegram/member publication manager.
 
 Member output is a live mirror of broker-confirmed Super Signals activity, not a replay
