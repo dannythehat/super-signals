@@ -210,16 +210,15 @@ def test_frozen_cohort_short_circuits_rematerialization_after_140_cases() -> Non
     assert "return 0" in source
 
 
-def test_main_lifecycle_starts_and_stops_replay_runtime_safely() -> None:
+def test_main_lifecycle_registers_replay_runtime_in_isolated_research_lane() -> None:
     source = MAIN.read_text(encoding="utf-8")
-    construct = "aidy_historical_replay_runtime = AidyHistoricalReplayRuntime(research_session_factory)"
-    start = "await aidy_historical_replay_runtime.start()"
-    stop = "await aidy_historical_replay_runtime.stop()"
-    assert construct in source
-    assert start in source
-    assert stop in source
-    assert source.index(construct) < source.index(start) < source.index("try:\n        yield")
-    assert source.index(stop) > source.index("finally:")
+    assert '("aidy_historical_replay_runtime", AidyHistoricalReplayRuntime)' in source
+    assert "runtime = runtime_type(research_session_factory)" in source
+    assert 'name="super-signals-research-startup"' in source
+    assert source.index("await publisher.start()") < source.index(
+        'name="super-signals-research-startup"'
+    )
+    assert "await asyncio.wait_for(runtime.stop(), timeout=5)" in source
 
 
 def test_materializer_inherits_legacy_reason_exclusion_from_frozen_previous_contract() -> None:
