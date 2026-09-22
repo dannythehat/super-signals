@@ -1,6 +1,6 @@
 """Restore the profitable provider basket to owner forward execution.
 
-Revision ID: 0111_profitable_provider_execution
+Revision ID: 0111_profitable_exec
 Revises: 0110_aidy_gold_view_scores
 Create Date: 2026-09-22
 
@@ -18,7 +18,7 @@ from collections.abc import Sequence
 
 from alembic import op
 
-revision: str = "0111_profitable_provider_execution"
+revision: str = "0111_profitable_exec"
 down_revision: str | None = "0110_aidy_gold_view_scores"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
