@@ -98,7 +98,7 @@ def test_origin_day_all_windows_accumulate_from_same_permanent_start(
 ) -> None:
     monkeypatch.setenv("SUPER_SIGNALS_DAY28_OWNER_ID", str(OWNER))
     service = _PerformanceHarness()
-    now = datetime(2026, 8, 31, 6, 0, tzinfo=UTC)
+    now = datetime(2026, 8, 6, 6, 0, tzinfo=UTC)
 
     windows = service.read_windows(OWNER, now=now)
 
