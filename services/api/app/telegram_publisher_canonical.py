@@ -174,10 +174,7 @@ class CanonicalTelegramPublisherManager(Day34CutoverTelegramPublisherManager):
                     WHERE pub.lifecycle_event_id=ev.id
                       AND pub.publication_kind='lifecycle_event'
                       AND pub.status='pending'
-                      AND (
-                          ev.occurred_at<:fresh_after
-                          OR ev.created_at<:fresh_after
-                      )
+                      AND ev.created_at<:fresh_after
                     """
                 ),
                 {"fresh_after": fresh_after},
@@ -191,8 +188,7 @@ class CanonicalTelegramPublisherManager(Day34CutoverTelegramPublisherManager):
                     )
                     SELECT ev.signal_id,ev.id,'lifecycle_event','pending'
                     FROM signal_lifecycle_events AS ev
-                    WHERE ev.occurred_at>=:fresh_after
-                      AND ev.created_at>=:fresh_after
+                    WHERE ev.created_at>=:fresh_after
                       AND (
                           EXISTS (
                               SELECT 1 FROM telegram_publications AS root
