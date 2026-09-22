@@ -33,6 +33,10 @@ _CLOSE_ALL = re.compile(
     r"\b(?:CLOSE(?:D)?\s+ALL|CLOSE\s+EVERYTHING|OUT\s+AT\s+ENTRY\s+ON\s+THE\s+REST(?:\s+OF\s+(?:MY|THE)\s+POSITION)?|OUT\s+ON\s+THE\s+REST)\b",
     re.IGNORECASE,
 )
+_PROVIDER_CLOSED_ALL = re.compile(
+    r"\b(?:I|WE|PERSONALLY\s+I)\b.{0,40}\bCLOSED\s+ALL\b",
+    re.IGNORECASE | re.DOTALL,
+)
 _EXIT_NOW = re.compile(
     r"\b(?:EXIT|CLOSE)\s+(?:IT|NOW|THE\s+(?:TRADE|POSITIONS?|LOT|BUY|SELL))\b"
     r"|\bCLOSE\s+(?:(?:OUR|MY|YOUR|THE|THIS)\s+)?(?:TRADE|SETUP|SET\s*UP)\b"
@@ -216,7 +220,7 @@ def _dedupe(actions: list[dict[str, str | None]]) -> tuple[dict[str, str | None]
 
 
 def _decisive_close(text: str) -> bool:
-    if _CLOSE_ALL.search(text) or _OUT_THIS_SETUP.search(text) or _CLOSE_LOSS.search(text):
+    if _PROVIDER_CLOSED_ALL.search(text) or _OUT_THIS_SETUP.search(text) or _CLOSE_LOSS.search(text):
         return True
     if _TARGETED_OR_PARTIAL_CLOSE.search(text):
         return False
