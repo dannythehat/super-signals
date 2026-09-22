@@ -1,0 +1,24 @@
+name: Telegram Lifecycle Freshness Gate
+
+on:
+  pull_request:
+    branches: [feature/day-10-shared-telegram-sources]
+    paths:
+      - "services/api/app/telegram_publisher_canonical.py"
+      - "services/api/tests/test_telegram_lifecycle_freshness.py"
+      - ".github/workflows/telegram-lifecycle-freshness.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  telegram-lifecycle-freshness:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: Run focused regression
+        run: python -m pytest -q services/api/tests/test_telegram_lifecycle_freshness.py
