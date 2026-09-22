@@ -66,7 +66,19 @@ from app.provider_day19_explainer_budget import (
 logger = logging.getLogger(__name__)
 
 _SELECTABLE = """
-    WITH execution_samples AS MATERIALIZED (
+    WITH pending AS MATERIALIZED (
+        SELECT d.id
+        FROM aidy_decisions d
+        WHERE d.decision_class='approve'
+          AND NOT EXISTS (
+              SELECT 1
+              FROM aidy_reasoning_annotations a
+              WHERE a.decision_id=d.id
+          )
+        ORDER BY d.decided_at
+        LIMIT :limit
+    ),
+    execution_samples AS MATERIALIZED (
         SELECT *
         FROM provider_execution_calibration_samples
         WHERE account_environment='demo'
@@ -109,12 +121,12 @@ _SELECTABLE = """
            execution.charge_p50 AS execution_charge_p50,
            execution.charge_p95 AS execution_charge_p95,
            execution.evidence_as_of_utc AS execution_evidence_as_of_utc
-    FROM aidy_decisions d
+    FROM pending p
+    JOIN aidy_decisions d ON d.id=p.id
     JOIN provider_trade_observations o ON o.id=d.observation_id
     JOIN sources s ON s.id=d.source_id
     JOIN messages m ON m.id=o.message_id
     LEFT JOIN provider_trade_scoreboard b ON b.source_id=d.source_id
-    LEFT JOIN aidy_reasoning_annotations a ON a.decision_id=d.id
     LEFT JOIN LATERAL (
         SELECT f.summary,to_jsonb(f) AS snapshot
         FROM provider_trade_fingerprints f
@@ -244,10 +256,7 @@ _SELECTABLE = """
         FROM execution_samples c
         WHERE c.closed_at<=d.signal_posted_at
     ) execution ON true
-    WHERE d.decision_class='approve'
-      AND a.id IS NULL
     ORDER BY d.decided_at
-    LIMIT :limit
 """
 
 _MONTHLY_USAGE_SQL = """
@@ -724,6 +733,20 @@ class AidyReasoningRunner:
 
     def _select(self, limit: int) -> list[dict]:
         with self._session_factory() as session:
+            # Render deploy cutovers can briefly run two application instances.
+            # Only one AIDY reasoning selector may run across the whole database;
+            # if another instance owns the research lock, this pass yields immediately.
+            locked = bool(
+                session.execute(
+                    text(
+                        "SELECT pg_try_advisory_xact_lock("
+                        "hashtext('super-signals-aidy-reasoning-select-v1'))"
+                    )
+                ).scalar()
+            )
+            if not locked:
+                logger.info("AIDY reasoning selection skipped: research lock already held")
+                return []
             rows = session.execute(text(_SELECTABLE), {"limit": limit}).mappings().all()
         return [dict(row) for row in rows]
 
