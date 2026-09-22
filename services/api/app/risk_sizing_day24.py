@@ -337,13 +337,17 @@ class Day24RiskSizer:
     ) -> None:
         if balance <= _ZERO:
             raise Day24RiskSizingError("balance_invalid")
-        allowed = (
-            _ALLOWED_PROFILE_RISK_PERCENTS
-            if allow_profile_risk
-            else _ALLOWED_BASE_RISK_PERCENTS
-        )
-        if base_risk not in allowed:
-            raise Day24RiskSizingError("risk_percent_invalid")
+        if isinstance(base_risk, ApprovedProviderRisk):
+            if base_risk <= _ZERO or base_risk > max(_ALLOWED_PROFILE_RISK_PERCENTS):
+                raise Day24RiskSizingError("risk_percent_invalid")
+        else:
+            allowed = (
+                _ALLOWED_PROFILE_RISK_PERCENTS
+                if allow_profile_risk
+                else _ALLOWED_BASE_RISK_PERCENTS
+            )
+            if base_risk not in allowed:
+                raise Day24RiskSizingError("risk_percent_invalid")
         if entry <= _ZERO or stop <= _ZERO or entry == stop:
             raise Day24RiskSizingError("signal_entry_stop_invalid")
         if tick_size <= _ZERO:
