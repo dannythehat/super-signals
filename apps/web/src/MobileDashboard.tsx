@@ -332,24 +332,24 @@ export function MobileDashboard({ apiBaseUrl, displayName, roleLabel, active, on
       <span className="day32-account-kind">{accountEnvironment}</span>
     </div>
 
-    <section className="day32-balance-card" aria-label="Live MT5 account values">
+    <section className="day32-balance-card" aria-label="Live Vantage account value">
       <div className="day32-balance-copy">
-        <span>MT5 Balance</span>
-        <strong>{money(data.account?.balance, currency)}</strong>
+        <span>Vantage account value</span>
+        <strong>{money(data.account?.equity, currency)}</strong>
         <small>
           {data.connection.login_masked
             ? `${data.connection.login_masked} · ${data.connection.server ?? 'Vantage MT5'}`
             : 'Connect your Vantage MT5 account in Settings'}
         </small>
-        <small>{usingLastConfirmedAccount ? 'Last confirmed MT5 value' : `Live MetaAPI · refreshed ${mt5ReadLabel}`}</small>
+        <small>{usingLastConfirmedAccount ? 'Last confirmed Vantage value' : `Live MetaAPI · refreshed ${mt5ReadLabel}`}</small>
       </div>
       <div className="day32-equity-copy">
-        <span>MT5 Equity</span>
-        <strong>{money(data.account?.equity, currency)}</strong>
-        <small className={pnlClass(mt5FloatingPnl)}>Floating P/L {money(mt5FloatingPnl, currency)}</small>
+        <span>Closed balance</span>
+        <strong>{money(data.account?.balance, currency)}</strong>
+        <small className={pnlClass(mt5FloatingPnl)}>Open trades {money(mt5FloatingPnl, currency)}</small>
         <small>Free margin {money(data.account?.free_margin, currency)}</small>
       </div>
-      <button className="day32-refresh" type="button" onClick={() => void refresh()} disabled={refreshing}>{refreshing ? 'Refreshing…' : 'Refresh MT5'}</button>
+      <button className="day32-refresh" type="button" onClick={() => void refresh()} disabled={refreshing}>{refreshing ? 'Refreshing…' : 'Refresh Vantage'}</button>
     </section>
 
     {active && <TodayTradingSummary apiBaseUrl={apiBaseUrl} currency={currency} timezoneName={timezoneName} />}

@@ -5,8 +5,10 @@ on:
     branches: [feature/day-10-shared-telegram-sources]
     paths:
       - "services/api/app/dashboard_runtime.py"
+      - "services/api/app/routes/gold_quote.py"
       - "services/api/tests/test_canonical_paper_run_epoch.py"
       - "services/api/tests/test_dashboard_broker_truth_contract.py"
+      - "services/api/tests/test_incident_20260826_reporting_override.py"
       - "apps/web/src/MobileDashboard.tsx"
       - ".github/workflows/mt5-balance-truth.yml"
 
@@ -28,7 +30,10 @@ jobs:
           python -m pip install pytest pytest-asyncio
       - name: Compile dashboard runtime
         run: |
-          PYTHONPATH=services/api python -m compileall -q services/api/app/dashboard_runtime.py
+          PYTHONPATH=services/api python -m compileall -q services/api/app/dashboard_runtime.py services/api/app/routes/gold_quote.py
       - name: Run MT5 balance regressions
         run: |
-          PYTHONPATH=services/api python -m pytest -q             services/api/tests/test_canonical_paper_run_epoch.py             services/api/tests/test_dashboard_broker_truth_contract.py
+          PYTHONPATH=services/api python -m pytest -q \
+            services/api/tests/test_canonical_paper_run_epoch.py \
+            services/api/tests/test_dashboard_broker_truth_contract.py \
+            services/api/tests/test_incident_20260826_reporting_override.py
