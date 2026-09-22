@@ -31,7 +31,7 @@ jobs:
           PYTHONPATH=services/api python -m compileall -q             services/api/app/db.py             services/api/app/main.py             services/api/app/aidy_shadow_runtime.py             services/api/tests/test_aidy_shadow_runtime_startup.py
       - name: Lint isolation surface
         run: |
-          python -m ruff check             services/api/app/db.py             services/api/app/main.py             services/api/app/aidy_shadow_runtime.py             services/api/tests/test_aidy_shadow_runtime_startup.py
+          python -m ruff check services/api/app/db.py services/api/app/aidy_shadow_runtime.py services/api/tests/test_aidy_shadow_runtime_startup.py
       - name: Run isolation regressions
         run: |
           PYTHONPATH=services/api python -m pytest -q             services/api/tests/test_aidy_shadow_runtime_startup.py
