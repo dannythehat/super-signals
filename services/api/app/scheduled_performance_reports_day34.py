@@ -1,6 +1,6 @@
 """Scheduled Telegram performance reports on the Owner-approved Sofia clock.
 
-Daily reports cover 21:00 -> 21:00 Europe/Sofia. Weekly reports close every
+Daily reports run Monday-Friday and cover 21:00 -> 21:00 Europe/Sofia. Weekly reports close every
 Friday at 21:00 and cover the preceding seven days. Monthly reports are sent on
 the first day of the month at 08:00 and cover the complete previous calendar
 month. A short settlement grace keeps trades closing exactly on the boundary
@@ -70,7 +70,7 @@ def due_report_periods(last_checked_at: datetime, now: datetime) -> tuple[Schedu
     while cursor <= final_day:
         daily_end_local = _local(cursor, 21)
         daily_trigger = (daily_end_local + _SETTLEMENT_GRACE).astimezone(UTC)
-        if previous < daily_trigger <= point:
+        if cursor.weekday() < 5 and previous < daily_trigger <= point:
             daily_start_local = _local(cursor - timedelta(days=1), 21)
             periods.append(
                 ScheduledReportPeriod(
