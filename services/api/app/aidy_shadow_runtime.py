@@ -47,6 +47,10 @@ class AidyShadowRuntime:
         self._startup_pass_limit = startup_pass_limit
         self._stopping = asyncio.Event()
         self._task: asyncio.Task[None] | None = None
+        self._supervisor_task: asyncio.Task[None] | None = None
+        self.aidy_context_ready = False
+        self.aidy_context_last_probe_utc: datetime | None = None
+        self.aidy_context_consecutive_failures = 0
 
     @property
     def running(self) -> bool:
@@ -85,22 +89,68 @@ class AidyShadowRuntime:
             self._run(market_resolver, context_resolver, context_client),
             name="super-signals-provider-aidy-research",
         )
+        if not os.getenv("PYTEST_CURRENT_TEST", "").strip():
+            self._supervisor_task = asyncio.create_task(
+                self._supervise(),
+                name="super-signals-aidy-runtime-supervisor",
+            )
         print("AIDY Provider Lab resolver loop started", flush=True)
         logger.info("AIDY Provider Lab resolver loop started")
         return True
 
     async def stop(self) -> None:
-        task = self._task
-        if task is None:
-            return
         self._stopping.set()
-        if not task.done():
-            task.cancel()
-        try:
-            await task
-        except asyncio.CancelledError:
-            pass
+        supervisor = self._supervisor_task
+        if supervisor is not None and not supervisor.done():
+            supervisor.cancel()
+            try:
+                await supervisor
+            except asyncio.CancelledError:
+                pass
+        self._supervisor_task = None
+
+        task = self._task
+        if task is not None:
+            if not task.done():
+                task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
         self._task = None
+
+    async def _supervise(self) -> None:
+        """Keep the research loop alive without ever escalating into the live lane."""
+        while not self._stopping.is_set():
+            try:
+                await asyncio.wait_for(self._stopping.wait(), timeout=60)
+                continue
+            except TimeoutError:
+                pass
+
+            if market_week_frozen() or self.running:
+                continue
+
+            task = self._task
+            failure_name = "none"
+            if task is not None and task.done():
+                try:
+                    failure = task.exception()
+                except BaseException as exc:  # pragma: no cover - defensive logging
+                    failure = exc
+                if failure is not None:
+                    failure_name = type(failure).__name__
+            logger.error(
+                "AIDY Provider Lab runtime stopped unexpectedly; restarting error=%s",
+                failure_name,
+            )
+            self._task = None
+            try:
+                await self.start()
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.exception("AIDY Provider Lab automatic restart failed safely")
 
     async def _probe_current_context(self, context_client: AidyContextClient) -> bool:
         """Prove the deployed Super Signals runtime can read fresh canonical AIDY context."""
@@ -135,7 +185,6 @@ class AidyShadowRuntime:
     ) -> None:
         draining_startup_backlog = True
         startup_pass = 0
-        context_probe_ready = False
         intelligence_builder = ProviderIntelligenceBuilder(self._session_factory)
         while not self._stopping.is_set():
             # Production research sleeps during the weekly market closure. Pytest's
@@ -151,8 +200,14 @@ class AidyShadowRuntime:
                     pass
                 continue
 
-            if context_client is not None and not context_probe_ready:
-                context_probe_ready = await self._probe_current_context(context_client)
+            if context_client is not None:
+                ready = await self._probe_current_context(context_client)
+                self.aidy_context_ready = ready
+                self.aidy_context_last_probe_utc = datetime.now(UTC)
+                if ready:
+                    self.aidy_context_consecutive_failures = 0
+                else:
+                    self.aidy_context_consecutive_failures += 1
 
             # Attach immutable signal context first. M1 replay can be a long-running
             # backlog operation, so it must never sit in front of the context needed by
