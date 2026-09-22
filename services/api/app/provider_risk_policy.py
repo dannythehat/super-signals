@@ -111,7 +111,8 @@ def provider_risk_profile(
         return (_DISABLED_PROFILE_RISK,) * position_count
 
     per_leg = (_TOTAL_TRADE_RISK / Decimal(position_count)).quantize(Decimal("0.0001"))
-    profile = [per_leg] * position_count
+    profile = [_approved(format(per_leg, "f")) for _ in range(position_count)]
     # Preserve exactly 1% after decimal quantisation by placing any residual on TP1.
-    profile[0] += _TOTAL_TRADE_RISK - sum(profile, Decimal("0"))
+    residual = _TOTAL_TRADE_RISK - sum(profile, Decimal("0"))
+    profile[0] = _approved(format(profile[0] + residual, "f"))
     return tuple(profile)
