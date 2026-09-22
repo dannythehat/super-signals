@@ -5,10 +5,9 @@ old migration comments and provider-performance experiments must never alter liv
 eligibility or risk. Production execution imports this module directly; no other module
 may invent a provider direction veto or a hidden TP risk ladder.
 
-Owner authority from 9 September 2026: every enabled TP/runner broker leg carries exactly
-1% planned risk. Entry sections distribute those target legs; they never multiply the
-risk budget. Four TP/runner legs therefore mean 4% planned signal risk, whether the
-provider supplied one entry or several entry sections.
+Owner authority: every enabled provider trade carries exactly 1% planned risk in total.
+That one-percent trade budget is divided evenly across the trade's TP/runner broker legs.
+Entry sections distribute those target legs; they never multiply the risk budget.
 """
 
 from __future__ import annotations
@@ -17,14 +16,14 @@ from decimal import Decimal
 
 from app.risk_sizing_day24 import ApprovedProviderRisk
 
-POLICY_GENERATION = "owner-authority-2026-09-09-v2-one-percent-per-tp"
+POLICY_GENERATION = "owner-authority-2026-09-22-v3-one-percent-total-trade"
 
 
 def _approved(value: str) -> ApprovedProviderRisk:
     return ApprovedProviderRisk(value)
 
 
-_ONE_PERCENT_PER_TARGET = _approved("1")
+_TOTAL_TRADE_RISK = Decimal("1")
 _DISABLED_PROFILE_RISK = Decimal("0")
 
 
@@ -99,11 +98,10 @@ def provider_risk_profile(
     side: str,
     position_count: int,
 ) -> tuple[Decimal, ...] | None:
-    """Return the owner's global 1%-per-TP/runner allocation.
+    """Return the owner's global 1%-total-trade allocation.
 
     ``position_count`` is the executed target/runner leg count, not entry_count ×
-    target_count. Multiple entry sections only decide where those target legs are placed.
-    They must never turn four targets into eight percent of planned risk.
+    target_count. The one-percent trade budget is shared equally across those legs.
     """
     if position_count < 1:
         raise ValueError("provider_position_count_invalid")
@@ -112,4 +110,8 @@ def provider_risk_profile(
     if not provider_side_enabled(source_name=source_name, side=side):
         return (_DISABLED_PROFILE_RISK,) * position_count
 
-    return (_ONE_PERCENT_PER_TARGET,) * position_count
+    per_leg = (_TOTAL_TRADE_RISK / Decimal(position_count)).quantize(Decimal("0.0001"))
+    profile = [per_leg] * position_count
+    # Preserve exactly 1% after decimal quantisation by placing any residual on TP1.
+    profile[0] += _TOTAL_TRADE_RISK - sum(profile, Decimal("0"))
+    return tuple(profile)
