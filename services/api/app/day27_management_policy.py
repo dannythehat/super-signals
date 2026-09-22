@@ -137,7 +137,8 @@ _MOVE_BE = re.compile(
     r"|\b(?:MOVE|SET)\s+(?:TO\s+)?(?:FULLY\s+)?(?:BE|BREAKEVEN|BREAK\s+EVEN)\b"
     r"|^\s*(?:BE|BREAKEVEN|BREAK\s+EVEN)\s+NOW\s*[.!✅🔥]*\s*$"
     r"|\bBREAKEVEN\s+SET\b"
-    r"|\bMAKE\s+(?:(?:YOUR|MY|THE)\s+)?(?:TRADE|SETUP|SET\s*UP|POSITION)\s+(?:OVERALL\s+)?RISK\s*[- ]?FREE\b"
+    r"|\bMAKE\s+(?:(?:YOUR|MY|THE)\s+)?"
+    r"(?:TRADE|SETUP|SET\s*UP|POSITION)\s+(?:OVERALL\s+)?RISK\s*[- ]?FREE\b"
     r"|\bI\s+WILL\s+MAKE\s+(?:MY|THE)\s+TRADE\s+RISK\s*[- ]?FREE\s+NOW\b"
     r"|\b(?:LOCK|LOCKING)\s+IN\s+(?:SOME\s+|THE\s+)?PROFITS?\b"
     r"|\b(?:SECURE|PROTECT)\s+(?:SOME\s+|THE\s+|YOUR\s+)?PROFITS?\b"
@@ -268,7 +269,13 @@ def _extract_actions(text: str) -> list[dict[str, str | None]]:
     for match in _TP_CHANGE.finditer(text):
         value = _price(match.group(2))
         if value is not None:
-            actions.append({"type": "edit_take_profit", "target": f"TP{match.group(1)}", "value": value})
+            actions.append(
+                {
+                    "type": "edit_take_profit",
+                    "target": f"TP{match.group(1)}",
+                    "value": value,
+                }
+            )
 
     protective = numeric_sl_found or bool(
         _MOVE_BE.search(text) and not _FUTURE_CONDITIONAL_BE.search(text)
