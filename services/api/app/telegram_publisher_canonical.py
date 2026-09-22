@@ -554,7 +554,7 @@ class CanonicalTelegramPublisherManager(Day34CutoverTelegramPublisherManager):
                     LIMIT 1
                     """
                 ),
-                {"fresh_after": fresh_after, "reference_user_id": self._reference_user_id},
+                {"fresh_after": fresh_after},
             ).mappings().first()
             if row is None:
                 session.rollback()
@@ -634,7 +634,7 @@ class CanonicalTelegramPublisherManager(Day34CutoverTelegramPublisherManager):
                     LIMIT 1
                     """
                 ),
-                {"fresh_after": fresh_after},
+                {"fresh_after": fresh_after, "reference_user_id": self._reference_user_id},
             ).mappings().first()
             if row is None:
                 session.rollback()
