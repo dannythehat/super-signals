@@ -174,10 +174,7 @@ class CanonicalTelegramPublisherManager(Day34CutoverTelegramPublisherManager):
                     WHERE pub.lifecycle_event_id=ev.id
                       AND pub.publication_kind='lifecycle_event'
                       AND pub.status='pending'
-                      AND (
-                          ev.occurred_at<:fresh_after
-                          OR ev.created_at<:fresh_after
-                      )
+                      AND ev.created_at<:fresh_after
                     """
                 ),
                 {"fresh_after": fresh_after},
@@ -191,8 +188,7 @@ class CanonicalTelegramPublisherManager(Day34CutoverTelegramPublisherManager):
                     )
                     SELECT ev.signal_id,ev.id,'lifecycle_event','pending'
                     FROM signal_lifecycle_events AS ev
-                    WHERE ev.occurred_at>=:fresh_after
-                      AND ev.created_at>=:fresh_after
+                    WHERE ev.created_at>=:fresh_after
                       AND (
                           EXISTS (
                               SELECT 1 FROM telegram_publications AS root
@@ -380,8 +376,7 @@ class CanonicalTelegramPublisherManager(Day34CutoverTelegramPublisherManager):
                     )
                 FROM signal_lifecycle_events AS ev
                 JOIN signals AS sig ON sig.id=ev.signal_id
-                WHERE ev.occurred_at>=:fresh_after
-                  AND ev.created_at>=:fresh_after
+                WHERE ev.created_at>=:fresh_after
                   AND EXISTS (
                       SELECT 1 FROM telegram_publications AS root
                       WHERE root.signal_id=ev.signal_id
@@ -406,7 +401,7 @@ class CanonicalTelegramPublisherManager(Day34CutoverTelegramPublisherManager):
                 FROM signal_lifecycle_events AS ev
                 WHERE n.lifecycle_event_id=ev.id
                   AND n.audience='shared'
-                  AND n.created_at>ev.occurred_at+interval '5 minutes'
+                  AND n.created_at>ev.created_at+interval '5 minutes'
                 """
             )
         )
@@ -502,7 +497,6 @@ class CanonicalTelegramPublisherManager(Day34CutoverTelegramPublisherManager):
                       AND pub.publication_kind='lifecycle_event'
                       AND root.status='sent'
                       AND root.telegram_message_id IS NOT NULL
-                      AND ev.occurred_at>=:fresh_after
                       AND ev.created_at>=:fresh_after
                     ORDER BY ev.occurred_at,ev.created_at,pub.id
                     FOR UPDATE OF pub SKIP LOCKED
