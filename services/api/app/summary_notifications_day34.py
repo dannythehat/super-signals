@@ -30,7 +30,7 @@ from app.scheduled_performance_reports_day34 import (
     SummarySeedResult,
 )
 from app.telegram_publisher import TelegramPublishError, _bot_api_call
-from app.trading_accounting import CanonicalTradingAccountingService
+from app.telegram_trade_ledger import TelegramTradeLedger
 
 logger = logging.getLogger(__name__)
 
@@ -110,32 +110,13 @@ class Day34SummaryNotificationService(Day34ScheduledPerformanceReportService):
                 )
         metrics["period_net_pnl"] = period_net
 
-        accounting = CanonicalTradingAccountingService(self._session_factory)
-        broker_balance = session.execute(
-            text(
-                """
-                SELECT last_confirmed_balance
-                FROM mt5_accounts
-                WHERE owner_user_id=:user_id
-                  AND status<>'revoked'
-                ORDER BY created_at DESC
-                LIMIT 1
-                """
-            ),
-            {"user_id": self._reference_user_id},
-        ).scalar_one_or_none()
-        windows = accounting.windows(
+        reference = TelegramTradeLedger(
+            self._session_factory,
             self._reference_user_id,
-            timezone_name="Europe/Sofia",
-            now=report_time,
-        )
-        metrics["canonical_balance"] = accounting.displayed_balance(
-            self._reference_user_id,
-            broker_balance=Decimal(str(broker_balance or 0)),
-            now=report_time,
-        )
-        metrics["today_pnl"] = windows.today
-        metrics["month_to_date_pnl"] = windows.month
+        ).account(now=report_time)
+        metrics["canonical_balance"] = reference.balance
+        metrics["today_pnl"] = reference.today_pnl
+        metrics["month_to_date_pnl"] = reference.month_to_date_pnl
         return metrics
 
     @staticmethod
@@ -237,7 +218,7 @@ class Day34SummaryNotificationService(Day34ScheduledPerformanceReportService):
                 f"BE: {metrics['breakeven']}"
             ),
             f"Open at cutoff: {metrics['open_positions']}",
-            "Reference ledger: $1,000 starting 6 Aug 2026 · 1% total risk per trade",
+            "Reference ledger: $1,000 starting 6 Aug 2026",
             "Broker-derived results · open P/L is not counted as realised",
         ]
         return f"📊 {label} SUPER SIGNALS P/L", "\n".join(lines)
