@@ -23,6 +23,7 @@ logger = logging.getLogger(__name__)
 
 _DEFAULT_POLL_SECONDS = 300
 _DEFAULT_STARTUP_PASS_LIMIT = 96
+_DEFAULT_PASS_TIMEOUT_SECONDS = 5.0
 
 
 class AidyShadowRuntime:
@@ -34,14 +35,18 @@ class AidyShadowRuntime:
         *,
         poll_seconds: int = _DEFAULT_POLL_SECONDS,
         startup_pass_limit: int = _DEFAULT_STARTUP_PASS_LIMIT,
+        pass_timeout_seconds: float = _DEFAULT_PASS_TIMEOUT_SECONDS,
     ) -> None:
         if poll_seconds <= 0:
             raise ValueError("aidy_shadow_poll_seconds_must_be_positive")
         if startup_pass_limit <= 0:
             raise ValueError("aidy_shadow_startup_pass_limit_must_be_positive")
+        if pass_timeout_seconds <= 0:
+            raise ValueError("aidy_shadow_pass_timeout_must_be_positive")
         self._session_factory = session_factory
         self._poll_seconds = poll_seconds
         self._startup_pass_limit = startup_pass_limit
+        self._pass_timeout_seconds = float(pass_timeout_seconds)
         self._stopping = asyncio.Event()
         self._task: asyncio.Task[None] | None = None
 
@@ -139,9 +144,19 @@ class AidyShadowRuntime:
                 context_probe_ready = await self._probe_current_context(context_client)
 
             try:
-                processed, market_failures = await market_resolver.resolve_once()
+                processed, market_failures = await asyncio.wait_for(
+                    market_resolver.resolve_once(),
+                    timeout=self._pass_timeout_seconds,
+                )
             except asyncio.CancelledError:
                 raise
+            except TimeoutError:
+                logger.warning(
+                    "AIDY Provider Lab M1 resolver timed out after %.1fs; "
+                    "research pass skipped, live trading unchanged",
+                    self._pass_timeout_seconds,
+                )
+                processed, market_failures = 0, 1
             except Exception:
                 logger.exception("AIDY Provider Lab M1 resolver loop failed safely")
                 processed, market_failures = 0, 1
@@ -161,10 +176,20 @@ class AidyShadowRuntime:
                 # terminal PIT-stale outcomes are persisted once.
                 # They cannot block either market resolution or live signal routing.
                 try:
-                    attached, context_failures = await context_resolver.resolve_once()
+                    attached, context_failures = await asyncio.wait_for(
+                        context_resolver.resolve_once(),
+                        timeout=self._pass_timeout_seconds,
+                    )
                     terminal_misses = context_resolver.last_terminal_misses
                 except asyncio.CancelledError:
                     raise
+                except TimeoutError:
+                    logger.warning(
+                        "AIDY Provider Lab context attachment timed out after %.1fs; "
+                        "research pass skipped, live trading unchanged",
+                        self._pass_timeout_seconds,
+                    )
+                    attached, context_failures, terminal_misses = 0, 1, 0
                 except Exception:
                     logger.exception(
                         "AIDY Provider Lab context attachment loop failed safely"
