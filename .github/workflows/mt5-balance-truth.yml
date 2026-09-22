@@ -1,0 +1,34 @@
+name: MT5 Balance Truth Gate
+
+on:
+  pull_request:
+    branches: [feature/day-10-shared-telegram-sources]
+    paths:
+      - "services/api/app/dashboard_runtime.py"
+      - "services/api/tests/test_canonical_paper_run_epoch.py"
+      - "services/api/tests/test_dashboard_broker_truth_contract.py"
+      - "apps/web/src/MobileDashboard.tsx"
+      - ".github/workflows/mt5-balance-truth.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  mt5-balance-truth:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: Install API test dependencies
+        run: |
+          python -m pip install -r services/api/requirements.txt
+          python -m pip install pytest pytest-asyncio
+      - name: Compile dashboard runtime
+        run: |
+          PYTHONPATH=services/api python -m compileall -q services/api/app/dashboard_runtime.py
+      - name: Run MT5 balance regressions
+        run: |
+          PYTHONPATH=services/api python -m pytest -q             services/api/tests/test_canonical_paper_run_epoch.py             services/api/tests/test_dashboard_broker_truth_contract.py
