@@ -101,13 +101,12 @@ def test_acceptance_migration_is_research_only_and_has_no_live_money_path() -> N
     assert "CHECK (live_money_execution_allowed = false)" in source
 
 
-def test_main_lifecycle_starts_and_stops_acceptance_monitor() -> None:
+def test_main_lifecycle_registers_acceptance_monitor_in_isolated_research_lane() -> None:
     source = MAIN.read_text(encoding="utf-8")
-    construct = "aidy_grounding_acceptance_runtime = AidyGroundingAcceptanceRuntime(research_session_factory)"
-    start = "await aidy_grounding_acceptance_runtime.start()"
-    stop = "await aidy_grounding_acceptance_runtime.stop()"
-    assert construct in source
-    assert start in source
-    assert stop in source
-    assert source.index(construct) < source.index(start) < source.index("try:\n        yield")
-    assert source.index(stop) > source.index("finally:")
+    assert '("aidy_grounding_acceptance_runtime", AidyGroundingAcceptanceRuntime)' in source
+    assert "runtime = runtime_type(research_session_factory)" in source
+    assert 'name="super-signals-research-startup"' in source
+    assert source.index("await publisher.start()") < source.index(
+        'name="super-signals-research-startup"'
+    )
+    assert "await asyncio.wait_for(runtime.stop(), timeout=5)" in source
