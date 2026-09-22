@@ -212,7 +212,7 @@ def test_frozen_cohort_short_circuits_rematerialization_after_140_cases() -> Non
 
 def test_main_lifecycle_starts_and_stops_replay_runtime_safely() -> None:
     source = MAIN.read_text(encoding="utf-8")
-    construct = "aidy_historical_replay_runtime = AidyHistoricalReplayRuntime(session_factory)"
+    construct = "aidy_historical_replay_runtime = AidyHistoricalReplayRuntime(research_session_factory)"
     start = "await aidy_historical_replay_runtime.start()"
     stop = "await aidy_historical_replay_runtime.stop()"
     assert construct in source
