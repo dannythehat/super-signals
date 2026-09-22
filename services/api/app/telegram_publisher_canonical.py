@@ -376,8 +376,7 @@ class CanonicalTelegramPublisherManager(Day34CutoverTelegramPublisherManager):
                     )
                 FROM signal_lifecycle_events AS ev
                 JOIN signals AS sig ON sig.id=ev.signal_id
-                WHERE ev.occurred_at>=:fresh_after
-                  AND ev.created_at>=:fresh_after
+                WHERE ev.created_at>=:fresh_after
                   AND EXISTS (
                       SELECT 1 FROM telegram_publications AS root
                       WHERE root.signal_id=ev.signal_id
@@ -402,7 +401,7 @@ class CanonicalTelegramPublisherManager(Day34CutoverTelegramPublisherManager):
                 FROM signal_lifecycle_events AS ev
                 WHERE n.lifecycle_event_id=ev.id
                   AND n.audience='shared'
-                  AND n.created_at>ev.occurred_at+interval '5 minutes'
+                  AND n.created_at>ev.created_at+interval '5 minutes'
                 """
             )
         )
