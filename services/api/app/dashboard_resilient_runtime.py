@@ -81,11 +81,18 @@ class ResilientDashboardRuntimeService(CanonicalDashboardRuntimeService):
         if view.account is None:
             return view
         accounting = CanonicalTradingAccountingService(self._session_factory)
-        balance = float(accounting.displayed_balance(user_id, broker_balance=view.account.balance))
-        floating = sum(float(item.profit) for item in view.open_positions if item.profit is not None)
-        equity = balance + floating
-        free_margin = equity - float(view.account.margin)
-        account = replace(view.account, balance=balance, equity=equity, free_margin=free_margin)
+        account_value = float(
+            accounting.displayed_balance(
+                user_id, broker_account_value=view.account.equity
+            )
+        )
+        free_margin = account_value - float(view.account.margin)
+        account = replace(
+            view.account,
+            balance=account_value,
+            equity=account_value,
+            free_margin=free_margin,
+        )
         return replace(view, account=account)
 
     @staticmethod

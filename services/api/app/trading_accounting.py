@@ -33,7 +33,6 @@ from sqlalchemy import text
 from sqlalchemy.orm import Session, sessionmaker
 
 from app.paper_run_epoch import (
-    PAPER_RUN_BASELINE_BALANCE,
     PAPER_RUN_STARTED_AT,
     active_paper_epoch,
 )
@@ -45,7 +44,6 @@ from app.reporting_overrides import (
 
 DEFAULT_TRADING_TIMEZONE = "UTC"
 OWNER_DEMO_ACCOUNTING_ZONE = ZoneInfo("Europe/Sofia")
-OWNER_DEMO_BASELINE_BALANCE = PAPER_RUN_BASELINE_BALANCE
 OWNER_DEMO_CARRY_IN_PNL = Decimal("0.00")
 OWNER_DEMO_SERIES_STARTED_AT = PAPER_RUN_STARTED_AT
 
@@ -247,12 +245,22 @@ class CanonicalTradingAccountingService:
         self,
         user_id: UUID,
         *,
-        broker_balance: Decimal | float | str,
-        now: datetime | None = None,
+        broker_account_value: Decimal | float | str,
     ) -> Decimal:
-        if not self.uses_synthetic_demo_balance(user_id):
-            return _money(Decimal(str(broker_balance)))
-        return _money(OWNER_DEMO_BASELINE_BALANCE + self.all_time_pnl(user_id, now=now))
+        """The balance. Vantage's account value, unmodified, for every surface.
+
+        There is exactly one balance in this product and the broker owns it. This method
+        exists as the single door so that no caller can reintroduce a second definition:
+        it adds no baseline, no carry-in, and no cash that the broker did not report.
+
+        It previously returned ``OWNER_DEMO_BASELINE_BALANCE + all_time_pnl`` for the
+        Owner demo account, a Super Signals derivation anchored to a hard-coded 1517.23
+        on 31 Aug. That produced a figure the account never held and put six mutually
+        inconsistent balances in front of the owner at once. The broker's account value
+        is authoritative; anything that disagrees with it is wrong by definition.
+        """
+        del user_id  # No account derives its balance from anything but the broker.
+        return _money(Decimal(str(broker_account_value)))
 
     def windows(
         self,
@@ -430,7 +438,7 @@ class CanonicalTradingAccountingService:
         self,
         user_id: UUID,
         *,
-        broker_balance: Decimal | float | str,
+        broker_account_value: Decimal | float | str,
         timezone_name: str | None,
         now: datetime | None = None,
     ) -> tuple[DailyTradingProfit, ...]:
@@ -452,29 +460,28 @@ class CanonicalTradingAccountingService:
             timezone_name=resolved_timezone,
         )
 
+        # Every account, Owner demo included, reconstructs its calendar backwards from
+        # the broker's current account value through the broker's own balance-changing
+        # deals. The Owner demo branch used to compound forward from a hard-coded
+        # 1517.23 instead, so the calendar drifted away from Vantage by construction.
+        # _daily_total_balance_changes covers capital movements as well as trade exits,
+        # which is what keeps a DEAL_TYPE_BALANCE correction - a real result recovered by
+        # hand after a MetaAPI placement failure - inside the reconstructed ledger.
         opening_by_day: dict[date, Decimal] = {}
-        if self.uses_synthetic_demo_balance(user_id):
-            running = _money(OWNER_DEMO_BASELINE_BALANCE + OWNER_DEMO_CARRY_IN_PNL)
-            cursor = start_local
-            while cursor <= end_local:
-                opening_by_day[cursor] = running
-                running = _money(running + by_day.get(cursor, Decimal("0.00")))
-                cursor += timedelta(days=1)
-        else:
-            changes = self._daily_total_balance_changes(
-                user_id,
-                account_id,
-                start=history_start,
-                end=point,
-                timezone_name=resolved_timezone,
-            )
-            running_end = _money(Decimal(str(broker_balance)))
-            cursor = end_local
-            while cursor >= start_local:
-                opening = _money(running_end - changes.get(cursor, Decimal("0.00")))
-                opening_by_day[cursor] = opening
-                running_end = opening
-                cursor -= timedelta(days=1)
+        changes = self._daily_total_balance_changes(
+            user_id,
+            account_id,
+            start=history_start,
+            end=point,
+            timezone_name=resolved_timezone,
+        )
+        running_end = _money(Decimal(str(broker_account_value)))
+        cursor = end_local
+        while cursor >= start_local:
+            opening = _money(running_end - changes.get(cursor, Decimal("0.00")))
+            opening_by_day[cursor] = opening
+            running_end = opening
+            cursor -= timedelta(days=1)
 
         values: list[DailyTradingProfit] = []
         cursor = start_local
@@ -502,7 +509,6 @@ __all__ = [
     "CanonicalTradingAccountingService",
     "DailyTradingProfit",
     "DEFAULT_TRADING_TIMEZONE",
-    "OWNER_DEMO_BASELINE_BALANCE",
     "OWNER_DEMO_CARRY_IN_PNL",
     "OWNER_DEMO_SERIES_STARTED_AT",
     "TradingProfitWindows",

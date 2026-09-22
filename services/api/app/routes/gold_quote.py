@@ -249,7 +249,7 @@ def _canonical_displayed_balance(service: Day33PerformanceLedgerServiceV2, user_
         row = session.execute(
             text(
                 """
-                SELECT last_confirmed_balance
+                SELECT last_confirmed_equity
                 FROM mt5_accounts
                 WHERE owner_user_id=:user_id
                   AND status<>'revoked'
@@ -259,10 +259,10 @@ def _canonical_displayed_balance(service: Day33PerformanceLedgerServiceV2, user_
             ),
             {"user_id": user_id},
         ).mappings().first()
-    broker_balance = row["last_confirmed_balance"] if row is not None else Decimal("0")
+    account_value = row["last_confirmed_equity"] if row is not None else Decimal("0")
     return accounting.displayed_balance(
         user_id,
-        broker_balance=broker_balance,
+        broker_account_value=account_value,
     )
 
 

@@ -324,7 +324,7 @@ async def account_dashboard(
             )
             for item in accounting.daily(
                 identity["id"],
-                broker_balance=view.account.balance,
+                broker_account_value=view.account.equity,
                 timezone_name=timezone_name,
             )
         )
