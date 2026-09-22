@@ -122,7 +122,7 @@ class _StartDayWindowHarness(CanonicalPerformanceRuntimeService):
 
 def test_origin_day_every_window_accumulates_from_same_permanent_start() -> None:
     owner = UUID("11111111-1111-4111-8111-111111111111")
-    point = datetime(2026, 8, 31, 6, 0, tzinfo=UTC)
+    point = datetime(2026, 8, 6, 6, 0, tzinfo=UTC)
     service = _StartDayWindowHarness()
     windows = service.read_windows(owner, now=point)
 
