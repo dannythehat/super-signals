@@ -26,7 +26,7 @@ from sqlalchemy import text
 
 from app.telegram_publisher import PublicationAttempt, TelegramPublishError, _bot_api_call
 from app.telegram_publisher_day20 import LifecyclePublicationAttempt
-from app.telegram_publisher_day34 import SummaryPublicationAttempt
+from app.telegram_publisher_day34 import Day34TelegramPublisherManager, SummaryPublicationAttempt
 from app.telegram_publisher_day34_cutover import Day34CutoverTelegramPublisherManager
 from app.telegram_trade_ledger import TelegramTradeLedger, money, provider_badge
 from app.trade_identity import public_trade_identity
@@ -119,6 +119,16 @@ def _render_root(row: Any) -> str:
 
 
 class CanonicalTelegramPublisherManager(Day34CutoverTelegramPublisherManager):
+    def _sync_live_board(self) -> None:
+        """Strict no-spam board policy.
+
+        The canonical board may edit its one stored Telegram message in place, and it may
+        create the board only when no message has ever been recorded. It must never create
+        a replacement post after an edit/pin failure. A stale/missing Telegram message is
+        an operations problem, not permission to spam the member channel.
+        """
+        Day34TelegramPublisherManager._sync_live_board(self)
+
     """Fresh-only member publication path plus broker-backed live board."""
 
     def __init__(self, *, reference_user_id: UUID | None = None, **kwargs: Any) -> None:
@@ -901,11 +911,10 @@ class CanonicalTelegramPublisherManager(Day34CutoverTelegramPublisherManager):
             )
 
     def _render_live_board(self, rows: list[Any]) -> str:
-        open_count = sum(1 for row in rows if row["open_tp_indices"])
-        pending_count = sum(1 for row in rows if row["pending_tp_indices"])
+        active_count = len(rows)
         lines = [
             "📌 <b>SUPER SIGNALS · LIVE TRADES</b>",
-            f"OPEN <b>{open_count}</b> · PENDING <b>{pending_count}</b>",
+            f"ACTIVE <b>{active_count}</b>",
         ]
 
         if self._trade_ledger is not None:
@@ -932,13 +941,20 @@ class CanonicalTelegramPublisherManager(Day34CutoverTelegramPublisherManager):
             )
             symbol = str(row["symbol"] or "").upper()
             side = str(row["side"] or "").upper()
-            open_indices = [int(value) for value in (row["open_tp_indices"] or [])]
-            pending_indices = [int(value) for value in (row["pending_tp_indices"] or [])]
-            states: list[str] = []
-            if open_indices:
-                states.append("/".join(f"TP{index}" for index in open_indices) + " OPEN")
-            if pending_indices:
-                states.append("/".join(f"TP{index}" for index in pending_indices) + " PENDING")
+            active_indices = sorted(
+                {
+                    int(value)
+                    for value in [
+                        *(row["open_tp_indices"] or []),
+                        *(row["pending_tp_indices"] or []),
+                    ]
+                }
+            )
+            state = (
+                "/".join(f"TP{index}" for index in active_indices) + " ACTIVE"
+                if active_indices
+                else "ACTIVE"
+            )
             provider_line = self._provider_line(
                 row["source_id"], str(row["provider_name"] or "Unknown provider")
             )
@@ -948,7 +964,7 @@ class CanonicalTelegramPublisherManager(Day34CutoverTelegramPublisherManager):
                     provider_line,
                     (
                         f"<b>{_html(identity.label)}</b> · "
-                        f"{_html(symbol)} {_html(side)} · {_html(' · '.join(states))}"
+                        f"{_html(symbol)} {_html(side)} · {_html(state)}"
                     ),
                 ]
             )
