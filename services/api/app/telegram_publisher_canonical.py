@@ -497,7 +497,6 @@ class CanonicalTelegramPublisherManager(Day34CutoverTelegramPublisherManager):
                       AND pub.publication_kind='lifecycle_event'
                       AND root.status='sent'
                       AND root.telegram_message_id IS NOT NULL
-                      AND ev.occurred_at>=:fresh_after
                       AND ev.created_at>=:fresh_after
                     ORDER BY ev.occurred_at,ev.created_at,pub.id
                     FOR UPDATE OF pub SKIP LOCKED
