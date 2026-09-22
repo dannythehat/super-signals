@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from decimal import Decimal, ROUND_HALF_UP
+from decimal import ROUND_HALF_UP, Decimal
 from hashlib import sha256
 from uuid import UUID
 from zoneinfo import ZoneInfo
@@ -162,7 +162,11 @@ class TelegramTradeLedger:
         )
 
     @staticmethod
-    def account_lines(snapshot: AccountLedgerSnapshot, *, include_origin: bool = False) -> list[str]:
+    def account_lines(
+        snapshot: AccountLedgerSnapshot,
+        *,
+        include_origin: bool = False,
+    ) -> list[str]:
         lines: list[str] = []
         if snapshot.weekday_trading_day:
             lines.append(f"📅 Today: {money(snapshot.today_pnl)}")
