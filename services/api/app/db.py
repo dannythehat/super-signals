@@ -11,9 +11,18 @@ from app.config import get_settings
 
 @lru_cache
 def get_engine() -> Engine:
+    # Production runs several independent background loops. Keep the pool deliberately
+    # bounded so a burst of research/reconciliation work cannot swamp the small Render
+    # Postgres instance and starve the trading listener. Recycle connections frequently
+    # to recover cleanly from Render/Postgres connection resets.
     return create_engine(
         get_settings().database_url,
         pool_pre_ping=True,
+        pool_recycle=120,
+        pool_use_lifo=True,
+        pool_size=5,
+        max_overflow=3,
+        pool_timeout=15,
         future=True,
     )
 
