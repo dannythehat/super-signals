@@ -14,6 +14,9 @@ active without replaying their historical updates.
 
 from __future__ import annotations
 
+import asyncio
+import html
+import json
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal, InvalidOperation
 from typing import Any
@@ -21,7 +24,7 @@ from uuid import UUID
 
 from sqlalchemy import text
 
-from app.telegram_publisher import PublicationAttempt
+from app.telegram_publisher import PublicationAttempt, TelegramPublishError, _bot_api_call
 from app.telegram_publisher_day20 import LifecyclePublicationAttempt
 from app.telegram_publisher_day34 import SummaryPublicationAttempt
 from app.telegram_publisher_day34_cutover import Day34CutoverTelegramPublisherManager
@@ -44,8 +47,44 @@ def _decimal_text(value: Any) -> str:
     return format(parsed.normalize(), "f")
 
 
+def _html(value: Any) -> str:
+    return html.escape(str(value), quote=False)
+
+
+def _balance_money(value: Any) -> str:
+    if value is None:
+        return "unavailable"
+    try:
+        amount = Decimal(str(value)).quantize(Decimal("0.01"))
+    except (InvalidOperation, TypeError, ValueError):
+        return "unavailable"
+    return "$" + f"{amount:,.2f}"
+
+
+def _clean_update_text(value: Any) -> str:
+    lines: list[str] = []
+    for raw in str(value or "").splitlines():
+        line = raw.strip()
+        if not line:
+            continue
+        if line in {
+            "TRADE UPDATE",
+            "Instructions received:",
+            "Broker execution confirmation follows separately.",
+        }:
+            continue
+        if line == "SL moved to entry — trade remains open with break-even protection.":
+            return "SL moved to entry."
+        if line == "Provider completed trade details in the original Telegram message.":
+            return "Trade details updated."
+        if line.startswith("• "):
+            line = "• " + line[2:].rstrip(".")
+        lines.append(line)
+    return "\n".join(lines[:4]) or "Trade updated."
+
+
 def _render_root(row: Any) -> str:
-    """Render broker-confirmed execution without inventing provider evidence."""
+    """Render only the details members actually need for a newly placed trade."""
     symbol = str(row["symbol"] or "").upper()
     side = str(row["side"] or "").upper()
     entry_low = row["entry_low"]
@@ -67,16 +106,15 @@ def _render_root(row: Any) -> str:
         take_profits = list(row["broker_take_profits"] or [])
 
     lines = [
-        f"{symbol} {side}",
-        f"Entry: {entry_text}",
-        f"Stop Loss: {_decimal_text(stop_loss)}",
+        f"<b>{_html(symbol)} {_html(side)}</b>",
+        "",
+        f"Entry: <b>{_html(entry_text)}</b>",
+        f"SL: <b>{_html(_decimal_text(stop_loss))}</b>",
     ]
     for index, target in enumerate(take_profits, start=1):
-        lines.append(f"TP{index}: {_decimal_text(target)}")
+        lines.append(f"TP{index}: <b>{_html(_decimal_text(target))}</b>")
     if bool(row["has_open_runner"]):
-        lines.append(f"TP{len(take_profits) + 1}: OPEN")
-    multiplier = Decimal(str(row["risk_multiplier"] or "1"))
-    lines.append("Size: Double" if multiplier == Decimal("2") else "Size: Standard")
+        lines.append(f"TP{len(take_profits) + 1}: <b>OPEN</b>")
     return "\n".join(lines)
 
 
@@ -102,7 +140,7 @@ class CanonicalTelegramPublisherManager(Day34CutoverTelegramPublisherManager):
 
     @staticmethod
     def _provider_line(source_id: UUID | str | None, provider_name: str) -> str:
-        return f"{provider_badge(source_id)} {provider_name}"
+        return f"{provider_badge(source_id)} <b>{_html(provider_name)}</b>"
 
     @staticmethod
     def _placement_exists_sql(alias: str) -> str:
@@ -204,6 +242,34 @@ class CanonicalTelegramPublisherManager(Day34CutoverTelegramPublisherManager):
                 {"fresh_after": fresh_after},
             )
 
+            # Aggregate broker_result_* rows duplicate the position-settlement message
+            # when both are generated for the same broker close. Keep only the concise
+            # position event in Telegram so members do not receive the same result twice.
+            session.execute(
+                text(
+                    """
+                    UPDATE telegram_publications AS pub
+                    SET status='suppressed',
+                        failure_code='duplicate_broker_result_summary',
+                        failure_reason='Position settlement already carries the broker result.',
+                        updated_at=now()
+                    FROM signal_lifecycle_events AS ev
+                    WHERE pub.lifecycle_event_id=ev.id
+                      AND pub.status='pending'
+                      AND ev.event_type LIKE 'broker_result_%'
+                      AND EXISTS (
+                          SELECT 1
+                          FROM signal_lifecycle_events AS sibling
+                          WHERE sibling.signal_id=ev.signal_id
+                            AND sibling.event_type='broker_position_settled'
+                            AND sibling.created_at>=:fresh_after
+                            AND ABS(EXTRACT(EPOCH FROM (sibling.occurred_at-ev.occurred_at)))<=30
+                      )
+                    """
+                ),
+                {"fresh_after": fresh_after},
+            )
+
             session.execute(
                 text(
                     f"""
@@ -213,6 +279,17 @@ class CanonicalTelegramPublisherManager(Day34CutoverTelegramPublisherManager):
                     SELECT ev.signal_id,ev.id,'lifecycle_event','pending'
                     FROM signal_lifecycle_events AS ev
                     WHERE ev.created_at>=:fresh_after
+                      AND NOT (
+                          ev.event_type LIKE 'broker_result_%'
+                          AND EXISTS (
+                              SELECT 1
+                              FROM signal_lifecycle_events AS sibling
+                              WHERE sibling.signal_id=ev.signal_id
+                                AND sibling.event_type='broker_position_settled'
+                                AND sibling.created_at>=:fresh_after
+                                AND ABS(EXTRACT(EPOCH FROM (sibling.occurred_at-ev.occurred_at)))<=30
+                          )
+                      )
                       AND (
                           EXISTS (
                               SELECT 1 FROM telegram_publications AS root
@@ -477,7 +554,7 @@ class CanonicalTelegramPublisherManager(Day34CutoverTelegramPublisherManager):
                     LIMIT 1
                     """
                 ),
-                {"fresh_after": fresh_after},
+                {"fresh_after": fresh_after, "reference_user_id": self._reference_user_id},
             ).mappings().first()
             if row is None:
                 session.rollback()
@@ -488,13 +565,10 @@ class CanonicalTelegramPublisherManager(Day34CutoverTelegramPublisherManager):
             )
             parts = [
                 provider_line,
-                f"🚨 NEW TRADE — {identity.label}",
+                f"🚨 <b>NEW TRADE · {_html(identity.label)}</b>",
                 "",
                 _render_root(row),
             ]
-            account_lines = self._account_lines(include_origin=True)
-            if account_lines:
-                parts.extend(["", *account_lines])
             rendered = "\n".join(parts)
             session.execute(
                 text(
@@ -532,12 +606,20 @@ class CanonicalTelegramPublisherManager(Day34CutoverTelegramPublisherManager):
                         sig.source_id,
                         COALESCE(NULLIF(src.chat_title,''),src.source_alias,'Unknown provider')
                             AS provider_name,
-                        ev.event_type,ev.rendered_text,
+                        ev.event_type,ev.rendered_text,ev.aggregate_result,
+                        event_position.tp_index AS event_tp_index,
+                        event_outcome.cash_pnl AS event_cash_pnl,
+                        event_outcome.status AS event_outcome_status,
                         root.telegram_message_id AS reply_to_message_id
                     FROM telegram_publications AS pub
                     JOIN signal_lifecycle_events AS ev ON ev.id=pub.lifecycle_event_id
                     JOIN signals AS sig ON sig.id=pub.signal_id
                     JOIN sources AS src ON src.id=sig.source_id
+                    LEFT JOIN positions AS event_position
+                      ON event_position.id::text=COALESCE(ev.aggregate_result->>'position_id','')
+                    LEFT JOIN performance_trade_outcomes AS event_outcome
+                      ON event_outcome.position_id=event_position.id
+                     AND event_outcome.user_id=:reference_user_id
                     JOIN telegram_publications AS root
                       ON root.signal_id=pub.signal_id
                      AND root.publication_kind='signal_created'
@@ -562,42 +644,92 @@ class CanonicalTelegramPublisherManager(Day34CutoverTelegramPublisherManager):
                 row["source_id"], str(row["provider_name"] or "Unknown provider")
             )
             trade = self._trade_ledger.trade(row["signal_id"]) if self._trade_ledger else None
-            broker_result = str(row["event_type"] or "").startswith("broker_result_")
-            if trade is not None and trade.complete:
-                heading = f"✅ TRADE COMPLETE — {identity.label}"
-            elif broker_result:
-                heading = f"🎯 TP / POSITION CLOSED — {identity.label}"
-            else:
-                heading = f"🔄 TRADE UPDATE — {identity.label}"
-            parts = [
-                provider_line,
-                heading,
-                "",
-                str(row["rendered_text"] or "Trade update."),
-            ]
-            if trade is not None and trade.total_legs:
-                if trade.complete:
-                    parts.extend(
-                        [
-                            "",
-                            f"💵 FINAL TRADE P/L: {money(trade.realised_pnl)}",
-                            f"Closed legs: {trade.closed_legs}/{trade.total_legs}",
-                        ]
-                    )
+            account = self._trade_ledger.account() if self._trade_ledger else None
+            event_type = str(row["event_type"] or "")
+            aggregate = row["aggregate_result"] if isinstance(row["aggregate_result"], dict) else {}
+            event_outcome = str(
+                row["event_outcome_status"] or aggregate.get("outcome") or ""
+            ).lower()
+            raw_tp = row["event_tp_index"] if row["event_tp_index"] is not None else aggregate.get("tp_index")
+            try:
+                tp_index = int(raw_tp) if raw_tp is not None else None
+            except (TypeError, ValueError):
+                tp_index = None
+            tp_label = f"TP{tp_index}" if tp_index is not None else "POSITION"
+            event_pnl = row["event_cash_pnl"]
+
+            has_more_settlements = bool(
+                session.execute(
+                    text(
+                        """
+                        SELECT 1
+                        FROM telegram_publications AS next_pub
+                        JOIN signal_lifecycle_events AS next_ev
+                          ON next_ev.id=next_pub.lifecycle_event_id
+                        WHERE next_pub.signal_id=:signal_id
+                          AND next_pub.id<>:publication_id
+                          AND next_pub.status='pending'
+                          AND next_ev.event_type='broker_position_settled'
+                        LIMIT 1
+                        """
+                    ),
+                    {
+                        "signal_id": row["signal_id"],
+                        "publication_id": row["publication_id"],
+                    },
+                ).scalar_one_or_none()
+            )
+            final_settlement = (
+                event_type == "broker_position_settled"
+                and trade is not None
+                and trade.complete
+                and not has_more_settlements
+            )
+
+            if event_type == "broker_position_settled":
+                if event_outcome == "won":
+                    heading = f"🎯 <b>{_html(identity.label)} · {tp_label} HIT</b>"
+                elif event_outcome == "lost":
+                    heading = f"❌ <b>{_html(identity.label)} · {tp_label} LOSS</b>"
+                elif event_outcome == "breakeven":
+                    heading = f"➖ <b>{_html(identity.label)} · {tp_label} BREAK EVEN</b>"
                 else:
+                    heading = f"⏹ <b>{_html(identity.label)} · {tp_label} CLOSED</b>"
+
+                parts = [provider_line, heading]
+                if event_pnl is not None:
+                    parts.extend(["", f"{tp_label}: <b>{money(event_pnl)}</b>"])
+                if final_settlement and trade is not None:
                     parts.extend(
                         [
                             "",
-                            f"💵 Trade P/L so far: {money(trade.realised_pnl)}",
-                            (
-                                f"Legs: {trade.closed_legs} closed · "
-                                f"{trade.open_legs} open · {trade.pending_legs} pending"
-                            ),
+                            "🏁 <b>TRADE COMPLETE</b>",
+                            f"Total trade P/L: <b>{money(trade.realised_pnl)}</b>",
                         ]
                     )
-            account_lines = self._account_lines()
-            if account_lines:
-                parts.extend(["", *account_lines])
+                if account is not None and account.account_value is not None:
+                    parts.extend(
+                        ["", f"💰 <b>BALANCE {_balance_money(account.account_value)}</b>"]
+                    )
+            elif event_type.startswith("broker_result_"):
+                parts = [
+                    provider_line,
+                    f"🏁 <b>{_html(identity.label)} COMPLETE</b>",
+                ]
+                if trade is not None:
+                    parts.extend(["", f"Total trade P/L: <b>{money(trade.realised_pnl)}</b>"])
+                if account is not None and account.account_value is not None:
+                    parts.extend(
+                        ["", f"💰 <b>BALANCE {_balance_money(account.account_value)}</b>"]
+                    )
+            else:
+                update_text = _clean_update_text(row["rendered_text"])
+                parts = [
+                    provider_line,
+                    f"🔄 <b>{_html(identity.label)} UPDATE</b>",
+                    "",
+                    _html(update_text),
+                ]
             rendered = "\n".join(parts)
             reply_id = int(row["reply_to_message_id"])
             session.execute(
@@ -626,6 +758,48 @@ class CanonicalTelegramPublisherManager(Day34CutoverTelegramPublisherManager):
                 text=rendered,
                 reply_to_message_id=reply_id,
             )
+
+    async def _deliver(
+        self,
+        attempt: PublicationAttempt | SummaryPublicationAttempt,
+    ) -> None:
+        if isinstance(attempt, SummaryPublicationAttempt):
+            await super()._deliver(attempt)
+            return
+
+        assert self._bot_token is not None
+        assert self._destination_chat_id is not None
+        payload: dict[str, Any] = {
+            "chat_id": self._destination_chat_id,
+            "text": attempt.text,
+            "parse_mode": "HTML",
+            "disable_web_page_preview": "true",
+        }
+        if isinstance(attempt, LifecyclePublicationAttempt):
+            payload["reply_parameters"] = json.dumps(
+                {
+                    "message_id": attempt.reply_to_message_id,
+                    "allow_sending_without_reply": False,
+                }
+            )
+        try:
+            result = await asyncio.to_thread(
+                _bot_api_call,
+                self._bot_token,
+                "sendMessage",
+                payload,
+            )
+            telegram_message_id = int(result["message_id"])
+        except (TelegramPublishError, KeyError, TypeError, ValueError) as exc:
+            if isinstance(exc, TelegramPublishError):
+                code, reason = exc.code, exc.reason
+            else:
+                code = "telegram_invalid_success_response"
+                reason = "Telegram did not return a usable destination message ID."
+            await asyncio.to_thread(self._record_failure, attempt, code, reason)
+            return
+
+        await asyncio.to_thread(self._record_success, attempt, telegram_message_id)
 
     def _claim_summary(self) -> SummaryPublicationAttempt | None:
         assert self._destination_chat_id is not None
@@ -730,16 +904,28 @@ class CanonicalTelegramPublisherManager(Day34CutoverTelegramPublisherManager):
         open_count = sum(1 for row in rows if row["open_tp_indices"])
         pending_count = sum(1 for row in rows if row["pending_tp_indices"])
         lines = [
-            "📌 SUPER SIGNALS · LIVE TRADES",
-            f"OPEN {open_count} · PENDING {pending_count}",
+            "📌 <b>SUPER SIGNALS · LIVE TRADES</b>",
+            f"OPEN <b>{open_count}</b> · PENDING <b>{pending_count}</b>",
         ]
-        account_lines = self._account_lines(include_origin=True)
-        if account_lines:
-            lines.extend(account_lines)
+
+        if self._trade_ledger is not None:
+            account = self._trade_ledger.account()
+            if account.account_value is not None:
+                lines.extend(
+                    [
+                        "",
+                        f"💰 <b>BALANCE {_balance_money(account.account_value)}</b>",
+                        (
+                            f"Today: <b>{money(account.today_pnl)}</b> · "
+                            f"Month: <b>{money(account.month_to_date_pnl)}</b>"
+                        ),
+                    ]
+                )
+
         if not rows:
             lines.extend(["", "No active trades."])
             return "\n".join(lines)
-        lines.append("")
+
         for row in rows:
             identity = public_trade_identity(
                 row["signal_id"], row["member_trade_number"]
@@ -750,16 +936,24 @@ class CanonicalTelegramPublisherManager(Day34CutoverTelegramPublisherManager):
             pending_indices = [int(value) for value in (row["pending_tp_indices"] or [])]
             states: list[str] = []
             if open_indices:
-                states.append("/".join(f"TP{index}" for index in open_indices) + " open")
+                states.append("/".join(f"TP{index}" for index in open_indices) + " OPEN")
             if pending_indices:
-                states.append("/".join(f"TP{index}" for index in pending_indices) + " pending")
+                states.append("/".join(f"TP{index}" for index in pending_indices) + " PENDING")
             provider_line = self._provider_line(
                 row["source_id"], str(row["provider_name"] or "Unknown provider")
             )
-            lines.append(
-                f"{provider_line} · {identity.label} · {symbol} {side} · {' · '.join(states)}"
+            lines.extend(
+                [
+                    "",
+                    provider_line,
+                    (
+                        f"<b>{_html(identity.label)}</b> · "
+                        f"{_html(symbol)} {_html(side)} · {_html(' · '.join(states))}"
+                    ),
+                ]
             )
         return "\n".join(lines)
+
 
 
 __all__ = ["CanonicalTelegramPublisherManager"]
