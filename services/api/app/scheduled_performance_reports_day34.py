@@ -53,7 +53,10 @@ def _previous_month_start(month_start: datetime) -> datetime:
     return datetime(previous_day.year, previous_day.month, 1, tzinfo=SOFIA)
 
 
-def due_report_periods(last_checked_at: datetime, now: datetime) -> tuple[ScheduledReportPeriod, ...]:
+def due_report_periods(
+    last_checked_at: datetime,
+    now: datetime,
+) -> tuple[ScheduledReportPeriod, ...]:
     """Return scheduled reports whose grace-trigger crossed since the previous check."""
 
     previous = last_checked_at.astimezone(UTC)
