@@ -397,7 +397,8 @@ class CanonicalTelegramPublisherManager(Day34CutoverTelegramPublisherManager):
                         'broker_result',ev.event_type LIKE 'broker_result_%',
                         'public_trade_reference','TRADE ' || sig.member_trade_number::text,
                         'canonical_signal_reference','SS-' || upper(left(replace(ev.signal_id::text,'-',''),10)),
-                        'provider_identity_exposed',false,
+                        'provider_identity_exposed',true,
+                        'provider_name',COALESCE(NULLIF(src.chat_title,''),src.source_alias,'Unknown provider'),
                         'trade_action_created',false
                     )
                 FROM signal_lifecycle_events AS ev
@@ -707,16 +708,16 @@ class CanonicalTelegramPublisherManager(Day34CutoverTelegramPublisherManager):
                         )
                         SELECT
                             signal_id,
-                            MAX(member_trade_number) AS member_trade_number,
-                            MAX(source_id) AS source_id,
-                            MAX(provider_name) AS provider_name,
+                            member_trade_number,
+                            source_id,
+                            provider_name,
                             MAX(symbol) AS symbol,MAX(side) AS side,
                             ARRAY_AGG(DISTINCT tp_index ORDER BY tp_index)
                                 FILTER (WHERE effective_status='open') AS open_tp_indices,
                             ARRAY_AGG(DISTINCT tp_index ORDER BY tp_index)
                                 FILTER (WHERE effective_status='pending') AS pending_tp_indices
                         FROM leg_state
-                        GROUP BY signal_id
+                        GROUP BY signal_id,member_trade_number,source_id,provider_name
                         HAVING BOOL_OR(effective_status='open') OR BOOL_OR(effective_status='pending')
                         ORDER BY signal_id
                         """
