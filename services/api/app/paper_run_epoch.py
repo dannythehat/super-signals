@@ -1,7 +1,7 @@
 """Immutable active paper-run origin for the Owner reference account.
 
-The current live paper record begins on 31 August 2026 at 00:00 Europe/Sofia
-(30 August 21:00 UTC), from a virtual balance of USD 1,517.23. This origin is product
+The canonical Super Signals reference ledger begins on 6 August 2026 at 00:00
+Europe/Sofia (5 August 21:00 UTC), from a virtual balance of USD 1,000.00. This origin is product
 truth, not a runtime reset control. Deploys, restarts, environment changes and future
 dates must never move it or erase post-origin performance.
 
@@ -20,8 +20,8 @@ from datetime import UTC, datetime
 from decimal import Decimal
 from uuid import UUID
 
-PAPER_RUN_STARTED_AT = datetime(2026, 8, 30, 21, 0, tzinfo=UTC)
-PAPER_RUN_BASELINE_BALANCE = Decimal("1517.23")
+PAPER_RUN_STARTED_AT = datetime(2026, 8, 5, 21, 0, tzinfo=UTC)
+PAPER_RUN_BASELINE_BALANCE = Decimal("1000.00")
 
 
 @dataclass(frozen=True, slots=True)
