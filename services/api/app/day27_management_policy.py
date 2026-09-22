@@ -220,7 +220,11 @@ def _dedupe(actions: list[dict[str, str | None]]) -> tuple[dict[str, str | None]
 
 
 def _decisive_close(text: str) -> bool:
-    if _PROVIDER_CLOSED_ALL.search(text) or _OUT_THIS_SETUP.search(text) or _CLOSE_LOSS.search(text):
+    if (
+        _PROVIDER_CLOSED_ALL.search(text)
+        or _OUT_THIS_SETUP.search(text)
+        or _CLOSE_LOSS.search(text)
+    ):
         return True
     if _TARGETED_OR_PARTIAL_CLOSE.search(text):
         return False
