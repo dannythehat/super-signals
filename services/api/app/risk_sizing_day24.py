@@ -10,7 +10,7 @@ No order placement or MetaAPI network request exists in this module.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from decimal import Decimal, ROUND_FLOOR
+from decimal import ROUND_FLOOR, Decimal
 from typing import TypeAlias
 
 DecimalInput: TypeAlias = Decimal | str | int | float
@@ -68,7 +68,7 @@ class BrokerVolumeRules:
         minimum: DecimalInput,
         maximum: DecimalInput,
         step: DecimalInput,
-    ) -> "BrokerVolumeRules":
+    ) -> BrokerVolumeRules:
         rules = cls(
             minimum=_decimal(minimum),
             maximum=_decimal(maximum),
