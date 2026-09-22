@@ -149,36 +149,46 @@ async def _lifespan(application: FastAPI) -> AsyncIterator[None]:
     publisher_settings = get_publisher_settings()
     session_factory = get_session_factory()
     research_session_factory = get_research_session_factory()
-    aidy_shadow_runtime = AidyShadowRuntime(research_session_factory)
-    application.state.aidy_shadow_runtime = aidy_shadow_runtime
-    await aidy_shadow_runtime.start()
-    provider_scoring_runtime = ProviderTradeScoringRuntime(research_session_factory)
-    application.state.provider_scoring_runtime = provider_scoring_runtime
-    await provider_scoring_runtime.start()
-    aidy_decision_runtime = AidyDecisionRuntime(research_session_factory)
-    application.state.aidy_decision_runtime = aidy_decision_runtime
-    await aidy_decision_runtime.start()
-    aidy_decision_outcome_runtime = AidyDecisionOutcomeRuntime(research_session_factory)
-    application.state.aidy_decision_outcome_runtime = aidy_decision_outcome_runtime
-    await aidy_decision_outcome_runtime.start()
-    aidy_reasoning_runtime = AidyReasoningRuntime(research_session_factory)
-    application.state.aidy_reasoning_runtime = aidy_reasoning_runtime
-    await aidy_reasoning_runtime.start()
-    aidy_grounding_acceptance_runtime = AidyGroundingAcceptanceRuntime(research_session_factory)
-    application.state.aidy_grounding_acceptance_runtime = aidy_grounding_acceptance_runtime
-    await aidy_grounding_acceptance_runtime.start()
-    aidy_historical_replay_runtime = AidyHistoricalReplayRuntime(research_session_factory)
-    application.state.aidy_historical_replay_runtime = aidy_historical_replay_runtime
-    await aidy_historical_replay_runtime.start()
-    aidy_historical_stress_runtime = AidyHistoricalStressLabRuntime(research_session_factory)
-    application.state.aidy_historical_stress_runtime = aidy_historical_stress_runtime
-    await aidy_historical_stress_runtime.start()
-    aidy_message_review_runtime = AidyMessageReviewRuntime(research_session_factory)
-    application.state.aidy_message_review_runtime = aidy_message_review_runtime
-    await aidy_message_review_runtime.start()
-    provider_fingerprint_runtime = ProviderFingerprintRuntime(research_session_factory)
-    application.state.provider_fingerprint_runtime = provider_fingerprint_runtime
-    await provider_fingerprint_runtime.start()
+    research_start_task: asyncio.Task[None] | None = None
+    research_runtimes: list[tuple[str, object]] = []
+    research_runtime_specs = (
+        ("aidy_shadow_runtime", AidyShadowRuntime),
+        ("provider_scoring_runtime", ProviderTradeScoringRuntime),
+        ("aidy_decision_runtime", AidyDecisionRuntime),
+        ("aidy_decision_outcome_runtime", AidyDecisionOutcomeRuntime),
+        ("aidy_reasoning_runtime", AidyReasoningRuntime),
+        ("aidy_grounding_acceptance_runtime", AidyGroundingAcceptanceRuntime),
+        ("aidy_historical_replay_runtime", AidyHistoricalReplayRuntime),
+        ("aidy_historical_stress_runtime", AidyHistoricalStressLabRuntime),
+        ("aidy_message_review_runtime", AidyMessageReviewRuntime),
+        ("provider_fingerprint_runtime", ProviderFingerprintRuntime),
+    )
+    for state_name, _runtime_type in research_runtime_specs:
+        setattr(application.state, state_name, None)
+
+    async def _start_research_lane() -> None:
+        """Start research only after the live provider/MT5/Telegram lane is already up.
+
+        AIDY may fail, time out, or be misconfigured without delaying or stopping
+        provider execution or member publication. Every research runtime receives the
+        dedicated single-connection research session factory, never the live factory.
+        """
+        for state_name, runtime_type in research_runtime_specs:
+            try:
+                runtime = runtime_type(research_session_factory)
+                setattr(application.state, state_name, runtime)
+                research_runtimes.append((state_name, runtime))
+                await asyncio.wait_for(runtime.start(), timeout=5)
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.exception(
+                    "Research runtime %s failed to start; live trading and Telegram remain active",
+                    state_name,
+                )
+        logger.info(
+            "AIDY research lane startup complete; provider trading and Telegram are isolated"
+        )
 
     if os.getenv("SUPER_SIGNALS_DAY26_CODE_PROBE", "").strip() == "1":
         await run_day26_code_acceptance_probe()
@@ -385,6 +395,13 @@ async def _lifespan(application: FastAPI) -> AsyncIterator[None]:
         await push_manager.start()
     await publisher.start()
 
+    # The live lane is now operational. Research starts in the background only after
+    # this point, so no AIDY startup path can gate provider execution or Telegram.
+    research_start_task = asyncio.create_task(
+        _start_research_lane(),
+        name="super-signals-research-startup",
+    )
+
     if os.getenv("SUPER_SIGNALS_DAY34_LIVE_ACCEPTANCE", "").strip() == "1":
         day34_live_acceptance_task = asyncio.create_task(
             run_day34_live_acceptance_safely(
@@ -403,16 +420,22 @@ async def _lifespan(application: FastAPI) -> AsyncIterator[None]:
                 await day34_live_acceptance_task
             except asyncio.CancelledError:
                 pass
-        await provider_fingerprint_runtime.stop()
-        await aidy_message_review_runtime.stop()
-        await aidy_historical_stress_runtime.stop()
-        await aidy_historical_replay_runtime.stop()
-        await aidy_grounding_acceptance_runtime.stop()
-        await aidy_reasoning_runtime.stop()
-        await aidy_decision_outcome_runtime.stop()
-        await aidy_decision_runtime.stop()
-        await provider_scoring_runtime.stop()
-        await aidy_shadow_runtime.stop()
+        if research_start_task is not None and not research_start_task.done():
+            research_start_task.cancel()
+            try:
+                await research_start_task
+            except asyncio.CancelledError:
+                pass
+        for state_name, runtime in reversed(research_runtimes):
+            try:
+                await asyncio.wait_for(runtime.stop(), timeout=5)
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.exception(
+                    "Research runtime %s failed to stop cleanly; live shutdown continues",
+                    state_name,
+                )
         await publisher.stop()
         if push_manager is not None:
             await push_manager.stop()
