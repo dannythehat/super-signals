@@ -43,11 +43,14 @@ def _positive_int_env(name: str, default: int) -> int:
 def get_research_engine() -> Engine:
     """Low-priority AIDY/provider-research DB lane.
 
-    Research must never exhaust the live trading pool. It gets one connection, no
-    overflow, and a hard PostgreSQL statement timeout so a pathological analytical
-    query yields to Telegram -> broker execution instead of monopolising production.
+    Research must never exhaust the live trading pool. It gets one connection and no
+    overflow. Research workers queue behind that single lane instead of failing after
+    two seconds when several loops wake together. PostgreSQL still enforces bounded
+    statement/lock/idle-transaction timeouts, so research remains fail-flat and cannot
+    monopolise production.
     """
-    timeout_ms = _positive_int_env("AIDY_RESEARCH_DB_STATEMENT_TIMEOUT_MS", 5000)
+    timeout_ms = _positive_int_env("AIDY_RESEARCH_DB_STATEMENT_TIMEOUT_MS", 15000)
+    pool_timeout_seconds = _positive_int_env("AIDY_RESEARCH_DB_POOL_TIMEOUT_SECONDS", 30)
     return create_engine(
         get_settings().database_url,
         pool_pre_ping=True,
@@ -55,10 +58,14 @@ def get_research_engine() -> Engine:
         pool_use_lifo=True,
         pool_size=1,
         max_overflow=0,
-        pool_timeout=2,
+        pool_timeout=pool_timeout_seconds,
         connect_args={
             "application_name": "super-signals-aidy-research",
-            "options": f"-c statement_timeout={timeout_ms} -c lock_timeout=1000",
+            "options": (
+                f"-c statement_timeout={timeout_ms} "
+                "-c lock_timeout=1000 "
+                "-c idle_in_transaction_session_timeout=15000"
+            ),
         },
         future=True,
     )
