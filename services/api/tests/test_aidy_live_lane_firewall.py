@@ -80,3 +80,29 @@ def test_aidy_startup_failure_is_fail_open_for_live_lane() -> None:
     assert "await asyncio.wait_for(runtime.start(), timeout=5)" in source
     assert "live trading and Telegram remain active" in source
     assert "research_start_task = asyncio.create_task(" in source
+
+
+def test_telegram_admin_surface_cannot_fall_back_to_legacy_publisher() -> None:
+    route = (APP / "routes" / "telegram_publisher.py").read_text(encoding="utf-8")
+    assert "CanonicalTelegramPublisherManager" in route
+    assert "telegram_publisher_policy" not in route
+    assert "Day19TelegramPublisherManager" not in route
+
+
+def test_main_constructs_only_canonical_telegram_publisher() -> None:
+    source = (APP / "main.py").read_text(encoding="utf-8")
+    assert "publisher = CanonicalTelegramPublisherManager(" in source
+    for legacy in (
+        "Day19TelegramPublisherManager(",
+        "Day20TelegramPublisherManager(",
+        "Day34TelegramPublisherManager(",
+        "Day34CutoverTelegramPublisherManager(",
+    ):
+        assert legacy not in source
+
+
+def test_obsolete_aidy_monkeypatch_watchdog_is_gone() -> None:
+    assert not (APP / "aidy_runtime_watchdog_hotfix.py").exists()
+    source = (APP / "aidy_shadow_runtime.py").read_text(encoding="utf-8")
+    assert "super-signals-aidy-runtime-supervisor" in source
+    assert "aidy_context_consecutive_failures" in source
