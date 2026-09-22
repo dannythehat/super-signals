@@ -20,16 +20,14 @@ def test_dashboard_display_reads_fail_fast_while_performance_stays_resilient() -
     assert "gateway=MetaApiReadGateway()" not in performance_route
 
 
-def test_dashboard_accounting_keeps_live_broker_truth_and_demo_reset_isolation() -> None:
+def test_dashboard_account_values_are_metaapi_truth() -> None:
     runtime = (ROOT / "services/api/app/dashboard_runtime.py").read_text(encoding="utf-8")
-    accounting = (ROOT / "services/api/app/trading_accounting.py").read_text(encoding="utf-8")
 
-    assert "_post_epoch_realised_cash" not in runtime
-    assert "free_margin=float(equity)" not in runtime
-    assert "live account balance remains the actual broker balance" in runtime.lower()
-    assert "bd.entry_type='DEAL_ENTRY_OUT'" in accounting
-    assert "capital movements" in accounting.lower()
-    assert "displayed_balance" in accounting
+    assert "MetaAPI/MT5 truth" in runtime
+    assert "displayed_balance" not in runtime
+    assert "display_balance" not in runtime
+    assert "display_equity" not in runtime
+    assert "display_free_margin" not in runtime
 
 
 def test_api_declares_canonical_user_trading_ledger() -> None:
