@@ -33,6 +33,10 @@ _CLOSE_ALL = re.compile(
     r"\b(?:CLOSE(?:D)?\s+ALL|CLOSE\s+EVERYTHING|OUT\s+AT\s+ENTRY\s+ON\s+THE\s+REST(?:\s+OF\s+(?:MY|THE)\s+POSITION)?|OUT\s+ON\s+THE\s+REST)\b",
     re.IGNORECASE,
 )
+_PROVIDER_CLOSED_ALL = re.compile(
+    r"\b(?:I|WE|PERSONALLY\s+I)\b.{0,40}\bCLOSED\s+ALL\b",
+    re.IGNORECASE | re.DOTALL,
+)
 _EXIT_NOW = re.compile(
     r"\b(?:EXIT|CLOSE)\s+(?:IT|NOW|THE\s+(?:TRADE|POSITIONS?|LOT|BUY|SELL))\b"
     r"|\bCLOSE\s+(?:(?:OUR|MY|YOUR|THE|THIS)\s+)?(?:TRADE|SETUP|SET\s*UP)\b"
@@ -104,8 +108,13 @@ _NUMERIC_STOP = re.compile(
     r"(\d+(?:\.\d+)?)\b",
     re.IGNORECASE,
 )
+_BARE_NUMERIC_STOP = re.compile(
+    r"^\s*(?:SL|STOP\s*LOSS)\s*[:=@-]?\s*(\d+(?:\.\d+)?)\s*[.!✅🔥]*\s*$",
+    re.IGNORECASE,
+)
 _SL_PATTERNS = (
     _NUMERIC_STOP,
+    _BARE_NUMERIC_STOP,
     re.compile(
         r"\b(?:SL|STOP\s*LOSS)\s+(?:IS\s+)?SET\s+TO\s+BE\s+AT\s+(\d+(?:\.\d+)?)\b",
         re.IGNORECASE,
@@ -132,7 +141,8 @@ _MOVE_BE = re.compile(
     r"|\b(?:MOVE|SET)\s+(?:TO\s+)?(?:FULLY\s+)?(?:BE|BREAKEVEN|BREAK\s+EVEN)\b"
     r"|^\s*(?:BE|BREAKEVEN|BREAK\s+EVEN)\s+NOW\s*[.!✅🔥]*\s*$"
     r"|\bBREAKEVEN\s+SET\b"
-    r"|\bMAKE\s+(?:(?:YOUR|MY|THE)\s+)?(?:TRADE|SETUP|SET\s*UP|POSITION)\s+(?:OVERALL\s+)?RISK\s*[- ]?FREE\b"
+    r"|\bMAKE\s+(?:(?:YOUR|MY|THE)\s+)?"
+    r"(?:TRADE|SETUP|SET\s*UP|POSITION)\s+(?:OVERALL\s+)?RISK\s*[- ]?FREE\b"
     r"|\bI\s+WILL\s+MAKE\s+(?:MY|THE)\s+TRADE\s+RISK\s*[- ]?FREE\s+NOW\b"
     r"|\b(?:LOCK|LOCKING)\s+IN\s+(?:SOME\s+|THE\s+)?PROFITS?\b"
     r"|\b(?:SECURE|PROTECT)\s+(?:SOME\s+|THE\s+|YOUR\s+)?PROFITS?\b"
@@ -140,10 +150,22 @@ _MOVE_BE = re.compile(
     re.IGNORECASE,
 )
 _TP_HIT = re.compile(
-    r"\bTP\s*(\d+)\b"
-    r"(?:\s*(?:&|AND|,)\s*(?:TP\s*)?(\d+)\b)?"
-    r"(?:\s*(?:&|AND|,)\s*(?:TP\s*)?(\d+)\b)?"
-    r"\s*(?:(?:IS|ARE)\s+)?(?:BOTH\s+|ALL\s+)?HIT\b",
+    r"\bTP\s*(\d+)\b.{0,28}\b(?:HIT|TAPPED|REACHED)\b",
+    re.IGNORECASE | re.DOTALL,
+)
+_HIT_TP = re.compile(
+    r"\b(?:HIT|TAPPED|REACHED)\s+(?:THE\s+)?TP\s*(\d+)\b",
+    re.IGNORECASE,
+)
+_TP_ALL_HIT = re.compile(
+    r"\b(?:TP\s*ALL|ALL\s+TPS?|ALL\s+TARGETS?)\b.{0,32}\b(?:HIT|REACHED|DONE)\b"
+    r"|\b(?:HIT|REACHED)\s+ALL\s+(?:TPS?|TARGETS?)\b",
+    re.IGNORECASE | re.DOTALL,
+)
+_SL_HIT = re.compile(
+    r"\b(?:SL|STOP\s*LOSS)\s+(?:(?:IS|WAS)\s+)?(?:HIT|TOUCHED|TRIGGERED)\b"
+    r"|\b(?:HIT|TOUCHED|TRIGGERED)\s+(?:THE\s+)?(?:SL|STOP\s*LOSS)\b"
+    r"|\bSTOPPED\s+OUT\b",
     re.IGNORECASE,
 )
 _TAKE_PARTIALS = re.compile(
@@ -198,7 +220,11 @@ def _dedupe(actions: list[dict[str, str | None]]) -> tuple[dict[str, str | None]
 
 
 def _decisive_close(text: str) -> bool:
-    if _OUT_THIS_SETUP.search(text) or _CLOSE_LOSS.search(text):
+    if (
+        _PROVIDER_CLOSED_ALL.search(text)
+        or _OUT_THIS_SETUP.search(text)
+        or _CLOSE_LOSS.search(text)
+    ):
         return True
     if _TARGETED_OR_PARTIAL_CLOSE.search(text):
         return False
@@ -225,6 +251,21 @@ def _extract_actions(text: str) -> list[dict[str, str | None]]:
         if _CLOSE_FIRST_ENTRY.search(text):
             actions.append({"type": "close", "target": "entry_1", "value": None})
 
+    # Provider milestone/result posts are authoritative lifecycle evidence for the
+    # provider's own active trade. The broker path is idempotent, so an already-filled
+    # TP/SL becomes a safe no-op while a still-open mapped leg is reconciled immediately.
+    if _TP_ALL_HIT.search(text) or _SL_HIT.search(text):
+        actions.append({"type": "close", "target": "all", "value": None})
+    else:
+        for match in _TP_HIT.finditer(text):
+            actions.append(
+                {"type": "close", "target": f"TP{int(match.group(1))}", "value": None}
+            )
+        for match in _HIT_TP.finditer(text):
+            actions.append(
+                {"type": "close", "target": f"TP{int(match.group(1))}", "value": None}
+            )
+
     numeric_sl_found = False
     for pattern in _SL_PATTERNS:
         for match in pattern.finditer(text):
@@ -236,25 +277,19 @@ def _extract_actions(text: str) -> list[dict[str, str | None]]:
     for match in _TP_CHANGE.finditer(text):
         value = _price(match.group(2))
         if value is not None:
-            actions.append({"type": "edit_take_profit", "target": f"TP{match.group(1)}", "value": value})
+            actions.append(
+                {
+                    "type": "edit_take_profit",
+                    "target": f"TP{match.group(1)}",
+                    "value": value,
+                }
+            )
 
     protective = numeric_sl_found or bool(
         _MOVE_BE.search(text) and not _FUTURE_CONDITIONAL_BE.search(text)
     )
     if not numeric_sl_found and protective:
         actions.append({"type": "move_to_break_even", "target": "all", "value": None})
-
-    # A provider result such as "TP1 HIT" is evidence only by itself. In the same
-    # message as an explicit protective instruction it becomes a compound management
-    # command: resolve the named TP legs first, then protect what remains.
-    if protective:
-        tp_actions: list[dict[str, str | None]] = []
-        for match in _TP_HIT.finditer(text):
-            for raw_index in match.groups():
-                if raw_index:
-                    tp_actions.append({"type": "close", "target": f"TP{int(raw_index)}", "value": None})
-        if tp_actions:
-            actions = tp_actions + actions
 
     if _CANCEL.search(text) or _REMOVE_PENDING.search(text):
         actions.append({"type": "cancel_pending", "target": "all", "value": None})
@@ -302,12 +337,19 @@ def extract_day27_management_actions(raw_text: str) -> Day27ManagementPolicyResu
 
         # Preserve the established handling for an explicit close command followed by
         # an optional hold clause, and for a literal close-or-BE choice.
+        result_close = bool(
+            _TP_ALL_HIT.search(text)
+            or _SL_HIT.search(text)
+            or _TP_HIT.search(text)
+            or _HIT_TP.search(text)
+        )
         explicit = [
             action
             for action in actions
             if action.get("type") != "close"
             or action.get("target") == "profitable_only"
             or _decisive_close(text)
+            or result_close
         ]
         if explicit:
             return Day27ManagementPolicyResult(
@@ -331,7 +373,9 @@ def extract_day27_management_actions(raw_text: str) -> Day27ManagementPolicyResu
     if protective := any(
         action.get("type") in {"edit_stop_loss", "move_to_break_even"} for action in actions
     ):
-        if protective and _TP_HIT.search(text):
+        if protective and (
+            _TP_HIT.search(text) or _HIT_TP.search(text) or _TP_ALL_HIT.search(text)
+        ):
             return Day27ManagementPolicyResult(actions, "compound_tp_hit_and_protect")
     return Day27ManagementPolicyResult(actions, "day27_explicit_management")
 

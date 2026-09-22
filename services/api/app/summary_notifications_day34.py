@@ -30,6 +30,7 @@ from app.scheduled_performance_reports_day34 import (
     SummarySeedResult,
 )
 from app.telegram_publisher import TelegramPublishError, _bot_api_call
+from app.telegram_trade_ledger import TelegramTradeLedger
 
 logger = logging.getLogger(__name__)
 
@@ -108,6 +109,14 @@ class Day34SummaryNotificationService(Day34ScheduledPerformanceReportService):
                     str(start_snapshot["equity"])
                 )
         metrics["period_net_pnl"] = period_net
+
+        reference = TelegramTradeLedger(
+            self._session_factory,
+            self._reference_user_id,
+        ).account(now=report_time)
+        metrics["vantage_account_value"] = reference.account_value
+        metrics["today_pnl"] = reference.today_pnl
+        metrics["month_to_date_pnl"] = reference.month_to_date_pnl
         return metrics
 
     @staticmethod
@@ -185,9 +194,25 @@ class Day34SummaryNotificationService(Day34ScheduledPerformanceReportService):
             metrics["realised_cash_pnl"], currency
         )
 
+        today_text = Day34ScheduledPerformanceReportService._money(
+            metrics.get("today_pnl", 0), currency
+        )
+        month_text = Day34ScheduledPerformanceReportService._money(
+            metrics.get("month_to_date_pnl", 0), currency
+        )
+        account_value = metrics.get("vantage_account_value")
+        account_value_text = (
+            Day34ScheduledPerformanceReportService._money(account_value, currency).lstrip("+")
+            if account_value is not None
+            else "unavailable"
+        )
+
         lines = [
             period_line,
             net_line,
+            f"📅 Today: {today_text}",
+            f"📆 Month to date: {month_text}",
+            f"💰 Vantage account value: {account_value_text}",
             f"Realised during period: {realised_text}",
             f"Floating at cutoff: {floating_text}",
             (
@@ -196,9 +221,8 @@ class Day34SummaryNotificationService(Day34ScheduledPerformanceReportService):
                 f"BE: {metrics['breakeven']}"
             ),
             f"Open at cutoff: {metrics['open_positions']}",
-            "$500 model @ 1%: "
-            + Day34ScheduledPerformanceReportService._money(metrics["model_500_pnl"], "USD"),
-            "Broker-derived paper results · open P/L is not counted as realised",
+            "Reference ledger: $1,000 starting 6 Aug 2026",
+            "Broker-derived results · open P/L is not counted as realised",
         ]
         return f"📊 {label} SUPER SIGNALS P/L", "\n".join(lines)
 

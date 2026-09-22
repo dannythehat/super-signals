@@ -77,3 +77,13 @@ def test_member_report_leads_with_net_and_hides_timezone_label() -> None:
     assert "Realised during period: -$27.23" in body
     assert "Floating at cutoff: +$28.60" in body
     assert "Sofia" not in body
+
+
+def test_weekend_daily_reports_are_suppressed() -> None:
+    saturday_before = _utc("2026-08-15T20:59:59+03:00")
+    saturday_after = _utc("2026-08-15T21:00:31+03:00")
+    sunday_before = _utc("2026-08-16T20:59:59+03:00")
+    sunday_after = _utc("2026-08-16T21:00:31+03:00")
+
+    assert due_report_periods(saturday_before, saturday_after) == ()
+    assert due_report_periods(sunday_before, sunday_after) == ()
