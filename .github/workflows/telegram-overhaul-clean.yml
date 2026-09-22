@@ -15,6 +15,8 @@ on:
       - "services/api/tests/test_scheduled_performance_reports_day34.py"
       - "services/api/tests/test_telegram_trade_ledger.py"
       - "services/api/tests/test_canonical_readiness_regressions.py"
+      - "services/api/tests/test_fxt_management_regression.py"
+      - "services/api/tests/test_matthew_historical_replay_20260824.py"
       - ".github/workflows/telegram-overhaul-clean.yml"
 
 permissions:
@@ -59,3 +61,5 @@ jobs:
           services/api/tests/test_scheduled_performance_reports_day34.py
           services/api/tests/test_telegram_trade_ledger.py
           services/api/tests/test_canonical_readiness_regressions.py
+          services/api/tests/test_fxt_management_regression.py
+          services/api/tests/test_matthew_historical_replay_20260824.py

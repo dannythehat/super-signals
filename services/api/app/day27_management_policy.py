@@ -150,8 +150,11 @@ _MOVE_BE = re.compile(
     re.IGNORECASE,
 )
 _TP_HIT = re.compile(
-    r"\bTP\s*(\d+)\b.{0,28}\b(?:HIT|TAPPED|REACHED)\b",
-    re.IGNORECASE | re.DOTALL,
+    r"\bTP\s*(\d+)\b"
+    r"(?:\s*(?:&|AND|,)\s*(?:TP\s*)?(\d+)\b)?"
+    r"(?:\s*(?:&|AND|,)\s*(?:TP\s*)?(\d+)\b)?"
+    r"\s*(?:(?:IS|ARE)\s+)?(?:BOTH\s+|ALL\s+)?(?:HIT|TAPPED|REACHED)\b",
+    re.IGNORECASE,
 )
 _HIT_TP = re.compile(
     r"\b(?:HIT|TAPPED|REACHED)\s+(?:THE\s+)?TP\s*(\d+)\b",
@@ -258,9 +261,15 @@ def _extract_actions(text: str) -> list[dict[str, str | None]]:
         actions.append({"type": "close", "target": "all", "value": None})
     else:
         for match in _TP_HIT.finditer(text):
-            actions.append(
-                {"type": "close", "target": f"TP{int(match.group(1))}", "value": None}
-            )
+            for raw_index in match.groups():
+                if raw_index:
+                    actions.append(
+                        {
+                            "type": "close",
+                            "target": f"TP{int(raw_index)}",
+                            "value": None,
+                        }
+                    )
         for match in _HIT_TP.finditer(text):
             actions.append(
                 {"type": "close", "target": f"TP{int(match.group(1))}", "value": None}

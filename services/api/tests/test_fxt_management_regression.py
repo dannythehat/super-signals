@@ -99,10 +99,13 @@ def test_v1_fxt_result_plus_management_overrides_ai_ignore() -> None:
     ]
 
 
-def test_standalone_tp_hit_remains_result_only() -> None:
+def test_standalone_tp_hit_manages_the_matching_live_tp() -> None:
     raw = "TP2 HIT ✅"
     allowed = apply_v1_message_policy(_decision(), raw_text=raw)
-    assert allowed.action != "apply_update"
+    assert allowed.action == "apply_update"
+    assert allowed.extracted["management_actions"] == [
+        {"type": "close", "target": "TP2", "value": None},
+    ]
 
 
 def test_gtmo_set_breakeven_nowww_remains_actionable() -> None:
