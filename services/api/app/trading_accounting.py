@@ -14,9 +14,9 @@ reviewed cash amount stored in performance_reporting_overrides. Post-cutoff exit
 to count normally. Revoked providers are excluded from user-facing P/L while their broker
 evidence remains immutable.
 
-The Owner demo uses the active paper epoch as its synthetic capital origin. For the
-current clean run that is USD 1,500 from 27 August 2026 11:30 Europe/Sofia, with no
-historical carry-in. That exact synthetic balance is also used for percentage risk sizing.
+The Owner demo uses the active paper epoch as its synthetic capital origin. The canonical
+reference ledger starts at USD 1,000 on 6 August 2026 and rolls forward only with realised
+Super Signals P/L. That same rolling balance is used for percentage risk sizing.
 LIVE accounts use their actual broker balance; deposits/withdrawals affect capital but
 never performance.
 """
