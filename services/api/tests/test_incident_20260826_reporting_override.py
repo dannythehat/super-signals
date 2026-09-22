@@ -117,3 +117,13 @@ def test_current_day_override_returns_amount_and_reason() -> None:
         "incident",
         datetime(2026, 8, 26, 14, 46, tzinfo=UTC),
     )
+
+
+def test_public_performance_exposes_latest_vantage_account_value() -> None:
+    helper = inspect.getsource(gold_quote._latest_owner_account_value)
+    route = inspect.getsource(gold_quote.public_performance)
+    assert "pas.equity" in helper
+    assert "pas.balance" in helper
+    assert "account_value_updated_at" in route
+    assert "current_account_value" in route
+    assert "current_mt5_balance" in route
