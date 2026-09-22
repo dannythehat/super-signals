@@ -159,7 +159,8 @@ _TP_ALL_HIT = re.compile(
 )
 _SL_HIT = re.compile(
     r"\b(?:SL|STOP\s*LOSS)\s+(?:(?:IS|WAS)\s+)?(?:HIT|TOUCHED|TRIGGERED)\b"
-    r"|\b(?:HIT|TOUCHED|TRIGGERED)\s+(?:THE\s+)?(?:SL|STOP\s*LOSS)\b",
+    r"|\b(?:HIT|TOUCHED|TRIGGERED)\s+(?:THE\s+)?(?:SL|STOP\s*LOSS)\b"
+    r"|\bSTOPPED\s+OUT\b",
     re.IGNORECASE,
 )
 _TAKE_PARTIALS = re.compile(
