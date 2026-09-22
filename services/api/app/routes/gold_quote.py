@@ -88,6 +88,9 @@ class PublicPerformanceResponse(BaseModel):
     current_recorded_balance: float
     total_recorded_pnl: float
     return_percent: float
+    current_account_value: float | None = None
+    current_mt5_balance: float | None = None
+    account_value_updated_at: datetime | None = None
     daily: tuple[PublicDailyPnlResponse, ...]
     trades: tuple[PublicTradeResponse, ...]
     updated_at: datetime
@@ -261,6 +264,38 @@ def _canonical_displayed_balance(service: Day33PerformanceLedgerServiceV2, user_
         user_id,
         broker_balance=broker_balance,
     )
+
+
+def _latest_owner_account_value(
+    service: Day33PerformanceLedgerServiceV2,
+    user_id: UUID,
+) -> tuple[float | None, float | None, datetime | None]:
+    """Return the latest MetaAPI-backed owner account snapshot.
+
+    Vantage's account card corresponds to the current account value, which tracks
+    broker equity while trades are open. The raw MT5 cash balance is returned
+    separately for audit/debugging and is not used as the public headline.
+    """
+    with service._session_factory() as session:
+        row = session.execute(
+            text(
+                """
+                SELECT pas.balance,pas.equity,pas.captured_at
+                FROM performance_account_snapshots pas
+                JOIN mt5_accounts a ON a.id=pas.mt5_account_id
+                WHERE a.owner_user_id=:user_id
+                  AND a.status<>'revoked'
+                ORDER BY pas.captured_at DESC
+                LIMIT 1
+                """
+            ),
+            {"user_id": user_id},
+        ).mappings().first()
+    if row is None:
+        return None, None, None
+    equity = float(row["equity"]) if row["equity"] is not None else None
+    balance = float(row["balance"]) if row["balance"] is not None else None
+    return equity, balance, row["captured_at"]
 
 
 def _public_daily(service: Day33PerformanceLedgerServiceV2, user_id: UUID) -> tuple[PublicDailyPnlResponse, ...]:
@@ -447,6 +482,10 @@ async def public_performance(
     daily = _public_daily(service, user_id)
     trades = _public_trades(service, user_id)
     current = round(float(_canonical_displayed_balance(service, user_id)), 2)
+    account_value, mt5_balance, account_value_updated_at = _latest_owner_account_value(
+        service,
+        user_id,
+    )
     total = round(current - _HISTORICAL_STARTING_BALANCE, 2)
     return_percent = round(total / _HISTORICAL_STARTING_BALANCE * 100, 2)
     response.headers["Cache-Control"] = "public, max-age=5, stale-while-revalidate=30"
@@ -454,6 +493,13 @@ async def public_performance(
         current_recorded_balance=current,
         total_recorded_pnl=total,
         return_percent=return_percent,
+        current_account_value=(
+            round(account_value, 2) if account_value is not None else None
+        ),
+        current_mt5_balance=(
+            round(mt5_balance, 2) if mt5_balance is not None else None
+        ),
+        account_value_updated_at=account_value_updated_at,
         daily=daily,
         trades=trades,
         updated_at=datetime.now(UTC),
