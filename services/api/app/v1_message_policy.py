@@ -452,6 +452,14 @@ def apply_v1_message_policy(
         )
 
     if decision.decision == "trade_update":
+        # Historical replay is evidence for scoring/audit only. It must never turn a
+        # historical provider result such as "TP1 HIT" into a broker mutation.
+        if (
+            str(decision.source or "").strip().lower() == "historical_replay"
+            and _RESULT_ONLY.search(text)
+        ):
+            return _ignore_update(decision, "provider_result_only_historical_replay")
+
         policy = extract_day27_management_actions(text)
         actions = augment_management_actions(text, policy.actions)
         if actions:
