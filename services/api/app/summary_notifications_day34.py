@@ -221,7 +221,6 @@ class Day34SummaryNotificationService(Day34ScheduledPerformanceReportService):
                 f"BE: {metrics['breakeven']}"
             ),
             f"Open at cutoff: {metrics['open_positions']}",
-            "Reference ledger: $1,000 starting 6 Aug 2026",
             "Broker-derived results · open P/L is not counted as realised",
         ]
         return f"📊 {label} SUPER SIGNALS P/L", "\n".join(lines)
