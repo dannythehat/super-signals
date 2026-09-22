@@ -236,3 +236,31 @@ def test_remove_pending_order_wording_cancels_broker_orders() -> None:
         assert result.actions == (
             {"type": "cancel_pending", "target": "all", "value": None},
         ), text
+
+
+def test_provider_tp_results_close_matching_broker_legs() -> None:
+    cases = {
+        "TP1 HIT ✅": ({"type": "close", "target": "TP1", "value": None},),
+        "Hit TP2 ✅": ({"type": "close", "target": "TP2", "value": None},),
+        "TP All HIT 200+ PIPS": ({"type": "close", "target": "all", "value": None},),
+        "OUR TRADE HIT ALL TARGETS": ({"type": "close", "target": "all", "value": None},),
+        "SL HIT": ({"type": "close", "target": "all", "value": None},),
+        "Stopped out": ({"type": "close", "target": "all", "value": None},),
+    }
+    for raw, expected in cases.items():
+        result = extract_day27_management_actions(raw)
+        assert result.actions == expected, raw
+
+
+def test_bare_numeric_sl_update_is_actionable() -> None:
+    result = extract_day27_management_actions("SL : 4351")
+    assert result.actions == (
+        {"type": "edit_stop_loss", "target": "all", "value": "4351"},
+    )
+
+
+def test_explicit_closed_all_survives_optional_language_elsewhere() -> None:
+    result = extract_day27_management_actions(
+        "Secure some, set BE if you want to hold. Personally, I closed all my positions."
+    )
+    assert {"type": "close", "target": "all", "value": None} in result.actions
