@@ -1,0 +1,32 @@
+name: AIDY Research Lane Gate
+
+on:
+  pull_request:
+    branches: [feature/day-10-shared-telegram-sources]
+    paths:
+      - "services/api/app/db.py"
+      - "services/api/tests/test_aidy_research_db_lane.py"
+      - ".github/workflows/aidy-research-lane.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  aidy-research-lane:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: Install API test dependencies
+        run: |
+          python -m pip install -r services/api/requirements.txt
+          python -m pip install pytest pytest-asyncio
+      - name: Compile research DB lane
+        run: |
+          PYTHONPATH=services/api python -m compileall -q services/api/app/db.py services/api/tests/test_aidy_research_db_lane.py
+      - name: Run research isolation regression
+        run: |
+          PYTHONPATH=services/api python -m pytest -q services/api/tests/test_aidy_research_db_lane.py
