@@ -467,6 +467,7 @@ class Day34TelegramPublisherManager(Day20TelegramPublisherManager):
                 {
                     "chat_id": self._destination_chat_id,
                     "text": rendered,
+                    "parse_mode": "HTML",
                     "disable_web_page_preview": "true",
                 },
             )
@@ -481,6 +482,7 @@ class Day34TelegramPublisherManager(Day20TelegramPublisherManager):
                     "chat_id": self._destination_chat_id,
                     "message_id": message_id,
                     "text": rendered,
+                    "parse_mode": "HTML",
                     "disable_web_page_preview": "true",
                 },
             )
