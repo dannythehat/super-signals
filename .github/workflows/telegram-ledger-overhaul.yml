@@ -6,6 +6,7 @@ on:
     paths:
       - "services/api/app/day27_management_policy.py"
       - "services/api/app/provider_risk_policy.py"
+      - "services/api/app/risk_sizing_day24.py"
       - "services/api/app/paper_run_epoch.py"
       - "services/api/app/trading_accounting.py"
       - "services/api/app/routes/gold_quote.py"
@@ -16,6 +17,7 @@ on:
       - "services/api/tests/test_day27_management_policy.py"
       - "services/api/tests/test_v1_message_policy.py"
       - "services/api/tests/test_fxtradingvision_risk_policy.py"
+      - "services/api/tests/test_day24_risk_sizing.py"
       - "services/api/tests/test_tig_asia_one_percent_policy.py"
       - "services/api/tests/test_canonical_paper_run_epoch.py"
       - "services/api/tests/test_canonical_performance_truth.py"
