@@ -108,13 +108,13 @@ def _render_root(row: Any) -> str:
     lines = [
         f"<b>{_html(symbol)} {_html(side)}</b>",
         "",
-        f"Entry: <b>{_html(entry_text)}</b>",
-        f"SL: <b>{_html(_decimal_text(stop_loss))}</b>",
+        f"<b>Entry: {_html(entry_text)}</b>",
+        f"<b>Stop Loss: {_html(_decimal_text(stop_loss))}</b>",
     ]
     for index, target in enumerate(take_profits, start=1):
-        lines.append(f"TP{index}: <b>{_html(_decimal_text(target))}</b>")
+        lines.append(f"<b>TP{index}: {_html(_decimal_text(target))}</b>")
     if bool(row["has_open_runner"]):
-        lines.append(f"TP{len(take_profits) + 1}: <b>OPEN</b>")
+        lines.append(f"<b>TP{len(take_profits) + 1}: OPEN</b>")
     return "\n".join(lines)
 
 
