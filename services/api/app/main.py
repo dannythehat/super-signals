@@ -4,15 +4,14 @@ import asyncio
 import logging
 import os
 import sys
+from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from pathlib import Path
-from collections.abc import AsyncIterator
 from uuid import UUID
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
-
 
 from app.aidy_shadow_runtime import AidyShadowRuntime
 from app.broker_settlement_canonical import CanonicalBrokerSettlementManager
@@ -40,7 +39,6 @@ from app.performance_runtime import (
 )
 from app.production_listener import build_production_listener_manager
 from app.publisher_config import get_publisher_settings
-from app.shadow_trading import ShadowTradeManager
 from app.push_notifications_day34 import Day34PushNotificationManager
 from app.routes.access import router as access_router
 from app.routes.admin_accounts import router as admin_accounts_router
@@ -68,6 +66,7 @@ from app.routes.telegram_sources import (
     router as telegram_sources_router,
 )
 from app.routes.user_mt5_accounts import router as user_mt5_accounts_router
+from app.shadow_trading import ShadowTradeManager
 from app.telegram_crypto import TelegramSessionCipher
 from app.telegram_listener import TelegramListenerManager
 from app.telegram_publisher_canonical import CanonicalTelegramPublisherManager
