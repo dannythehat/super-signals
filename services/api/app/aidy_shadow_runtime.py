@@ -171,10 +171,19 @@ class AidyShadowRuntime:
             logger.warning(message)
             return False
 
+        gold_state = context.gold_state if isinstance(context.gold_state, dict) else {}
+        toolbox = (
+            gold_state.get("toolbox_manifest")
+            if isinstance(gold_state.get("toolbox_manifest"), dict)
+            else {}
+        )
         message = (
             "AIDY Provider Context live probe READY "
             f"context_lag_seconds={context.context_lag_seconds} "
-            f"snapshot_id={context.snapshot_id}"
+            f"snapshot_id={context.snapshot_id} "
+            f"gold_state={gold_state.get('contract_version') or 'missing'} "
+            f"gold_engine={gold_state.get('gold_state_engine_version') or 'missing'} "
+            f"toolbox_capabilities={int(toolbox.get('known_capability_count') or 0)}"
         )
         print(message, flush=True)
         logger.info(message)
