@@ -114,7 +114,7 @@ class Day34SummaryNotificationService(Day34ScheduledPerformanceReportService):
             self._session_factory,
             self._reference_user_id,
         ).account(now=report_time)
-        metrics["canonical_balance"] = reference.balance
+        metrics["vantage_account_value"] = reference.account_value
         metrics["today_pnl"] = reference.today_pnl
         metrics["month_to_date_pnl"] = reference.month_to_date_pnl
         return metrics
@@ -200,16 +200,19 @@ class Day34SummaryNotificationService(Day34ScheduledPerformanceReportService):
         month_text = Day34ScheduledPerformanceReportService._money(
             metrics.get("month_to_date_pnl", 0), currency
         )
-        balance_text = Day34ScheduledPerformanceReportService._money(
-            metrics.get("canonical_balance", 0), currency
-        ).lstrip("+")
+        account_value = metrics.get("vantage_account_value")
+        account_value_text = (
+            Day34ScheduledPerformanceReportService._money(account_value, currency).lstrip("+")
+            if account_value is not None
+            else "unavailable"
+        )
 
         lines = [
             period_line,
             net_line,
             f"📅 Today: {today_text}",
             f"📆 Month to date: {month_text}",
-            f"💰 Super Signals balance: {balance_text}",
+            f"💰 Vantage account value: {account_value_text}",
             f"Realised during period: {realised_text}",
             f"Floating at cutoff: {floating_text}",
             (
