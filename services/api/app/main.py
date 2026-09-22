@@ -27,7 +27,7 @@ from app.day26_code_acceptance import run_day26_code_acceptance_probe
 from app.day27_code_acceptance import run_day27_code_acceptance_probe
 from app.day34_code_acceptance import run_day34_code_acceptance_probe
 from app.day34_live_acceptance import run_day34_live_acceptance_safely
-from app.db import get_session_factory
+from app.db import get_research_session_factory, get_session_factory
 from app.metaapi_gateway import MetaApiProvisioningGateway
 from app.metaapi_read_gateway import MetaApiReadGateway
 from app.metaapi_trade_gateway import MetaApiTradeGateway
@@ -148,34 +148,35 @@ async def _lifespan(application: FastAPI) -> AsyncIterator[None]:
     settings = get_settings()
     publisher_settings = get_publisher_settings()
     session_factory = get_session_factory()
-    aidy_shadow_runtime = AidyShadowRuntime(session_factory)
+    research_session_factory = get_research_session_factory()
+    aidy_shadow_runtime = AidyShadowRuntime(research_session_factory)
     application.state.aidy_shadow_runtime = aidy_shadow_runtime
     await aidy_shadow_runtime.start()
-    provider_scoring_runtime = ProviderTradeScoringRuntime(session_factory)
+    provider_scoring_runtime = ProviderTradeScoringRuntime(research_session_factory)
     application.state.provider_scoring_runtime = provider_scoring_runtime
     await provider_scoring_runtime.start()
-    aidy_decision_runtime = AidyDecisionRuntime(session_factory)
+    aidy_decision_runtime = AidyDecisionRuntime(research_session_factory)
     application.state.aidy_decision_runtime = aidy_decision_runtime
     await aidy_decision_runtime.start()
-    aidy_decision_outcome_runtime = AidyDecisionOutcomeRuntime(session_factory)
+    aidy_decision_outcome_runtime = AidyDecisionOutcomeRuntime(research_session_factory)
     application.state.aidy_decision_outcome_runtime = aidy_decision_outcome_runtime
     await aidy_decision_outcome_runtime.start()
-    aidy_reasoning_runtime = AidyReasoningRuntime(session_factory)
+    aidy_reasoning_runtime = AidyReasoningRuntime(research_session_factory)
     application.state.aidy_reasoning_runtime = aidy_reasoning_runtime
     await aidy_reasoning_runtime.start()
-    aidy_grounding_acceptance_runtime = AidyGroundingAcceptanceRuntime(session_factory)
+    aidy_grounding_acceptance_runtime = AidyGroundingAcceptanceRuntime(research_session_factory)
     application.state.aidy_grounding_acceptance_runtime = aidy_grounding_acceptance_runtime
     await aidy_grounding_acceptance_runtime.start()
-    aidy_historical_replay_runtime = AidyHistoricalReplayRuntime(session_factory)
+    aidy_historical_replay_runtime = AidyHistoricalReplayRuntime(research_session_factory)
     application.state.aidy_historical_replay_runtime = aidy_historical_replay_runtime
     await aidy_historical_replay_runtime.start()
-    aidy_historical_stress_runtime = AidyHistoricalStressLabRuntime(session_factory)
+    aidy_historical_stress_runtime = AidyHistoricalStressLabRuntime(research_session_factory)
     application.state.aidy_historical_stress_runtime = aidy_historical_stress_runtime
     await aidy_historical_stress_runtime.start()
-    aidy_message_review_runtime = AidyMessageReviewRuntime(session_factory)
+    aidy_message_review_runtime = AidyMessageReviewRuntime(research_session_factory)
     application.state.aidy_message_review_runtime = aidy_message_review_runtime
     await aidy_message_review_runtime.start()
-    provider_fingerprint_runtime = ProviderFingerprintRuntime(session_factory)
+    provider_fingerprint_runtime = ProviderFingerprintRuntime(research_session_factory)
     application.state.provider_fingerprint_runtime = provider_fingerprint_runtime
     await provider_fingerprint_runtime.start()
 
