@@ -16,6 +16,7 @@ from __future__ import annotations
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal, InvalidOperation
 from typing import Any
+from uuid import UUID
 
 from sqlalchemy import text
 
@@ -23,7 +24,8 @@ from app.telegram_publisher import PublicationAttempt
 from app.telegram_publisher_day20 import LifecyclePublicationAttempt
 from app.telegram_publisher_day34 import SummaryPublicationAttempt
 from app.telegram_publisher_day34_cutover import Day34CutoverTelegramPublisherManager
-from app.trade_identity import prefix_public_trade_identity, public_trade_identity
+from app.telegram_trade_ledger import TelegramTradeLedger, money, provider_badge
+from app.trade_identity import public_trade_identity
 
 _PLACEMENT_EVENT = "mt5.day38_route_new_trade"
 _MEMBER_EVENT_FRESHNESS = timedelta(minutes=5)
@@ -79,6 +81,27 @@ def _render_root(row: Any) -> str:
 
 class CanonicalTelegramPublisherManager(Day34CutoverTelegramPublisherManager):
     """Fresh-only member publication path plus broker-backed live board."""
+
+    def __init__(self, *, reference_user_id: UUID | None = None, **kwargs: Any) -> None:
+        super().__init__(reference_user_id=reference_user_id, **kwargs)
+        self._reference_user_id = reference_user_id
+        self._trade_ledger = (
+            TelegramTradeLedger(self._session_factory, reference_user_id)
+            if reference_user_id is not None
+            else None
+        )
+
+    def _account_lines(self, *, include_origin: bool = False) -> list[str]:
+        if self._trade_ledger is None:
+            return []
+        return self._trade_ledger.account_lines(
+            self._trade_ledger.account(),
+            include_origin=include_origin,
+        )
+
+    @staticmethod
+    def _provider_line(source_id: UUID | str | None, provider_name: str) -> str:
+        return f"{provider_badge(source_id)} {provider_name}"
 
     @staticmethod
     def _placement_exists_sql(alias: str) -> str:
@@ -321,17 +344,20 @@ class CanonicalTelegramPublisherManager(Day34CutoverTelegramPublisherManager):
                     'signal-open:' || sig.id::text,
                     sig.id,NULL,NULL,'shared','trade_open',
                     'NEW TRADE PLACED — TRADE ' || sig.member_trade_number::text,
-                    COALESCE(sig.symbol,'') || ' ' || COALESCE(sig.side,'') ||
+                    COALESCE(NULLIF(src.chat_title,''),src.source_alias,'Unknown provider') ||
+                        ' · ' || COALESCE(sig.symbol,'') || ' ' || COALESCE(sig.side,'') ||
                         ' placed and confirmed at the broker.',
                     jsonb_build_object(
                         'broker_confirmed',true,
                         'canonical_route',true,
                         'public_trade_reference','TRADE ' || sig.member_trade_number::text,
                         'canonical_signal_reference','SS-' || upper(left(replace(sig.id::text,'-',''),10)),
-                        'provider_identity_exposed',false,
+                        'provider_identity_exposed',true,
+                        'provider_name',COALESCE(NULLIF(src.chat_title,''),src.source_alias,'Unknown provider'),
                         'trade_action_created',false
                     )
                 FROM signals AS sig
+                JOIN sources AS src ON src.id=sig.source_id
                 WHERE EXISTS (
                     SELECT 1 FROM audit_events AS placed
                     WHERE placed.entity_type='signal'
@@ -376,6 +402,7 @@ class CanonicalTelegramPublisherManager(Day34CutoverTelegramPublisherManager):
                     )
                 FROM signal_lifecycle_events AS ev
                 JOIN signals AS sig ON sig.id=ev.signal_id
+                JOIN sources AS src ON src.id=sig.source_id
                 WHERE ev.created_at>=:fresh_after
                   AND EXISTS (
                       SELECT 1 FROM telegram_publications AS root
@@ -424,6 +451,9 @@ class CanonicalTelegramPublisherManager(Day34CutoverTelegramPublisherManager):
                     f"""
                     SELECT
                         pub.id AS publication_id,pub.signal_id,sig.member_trade_number,
+                        sig.source_id,
+                        COALESCE(NULLIF(src.chat_title,''),src.source_alias,'Unknown provider')
+                            AS provider_name,
                         sig.symbol,sig.side,sig.entry_low,sig.entry_high,sig.stop_loss,
                         sig.take_profits,sig.has_open_runner,sig.risk_multiplier,
                         (SELECT MIN(p.entry_price) FROM positions p
@@ -435,6 +465,7 @@ class CanonicalTelegramPublisherManager(Day34CutoverTelegramPublisherManager):
                          WHERE p.signal_id=sig.id AND p.take_profit IS NOT NULL) AS broker_take_profits
                     FROM telegram_publications AS pub
                     JOIN signals AS sig ON sig.id=pub.signal_id
+                    JOIN sources AS src ON src.id=sig.source_id
                     WHERE pub.status='pending'
                       AND pub.publication_kind='signal_created'
                       AND pub.lifecycle_event_id IS NULL
@@ -450,7 +481,19 @@ class CanonicalTelegramPublisherManager(Day34CutoverTelegramPublisherManager):
                 session.rollback()
                 return None
             identity = public_trade_identity(row["signal_id"], row["member_trade_number"])
-            rendered = f"🚨 NEW TRADE PLACED — {identity.label}\n\n{_render_root(row)}"
+            provider_line = self._provider_line(
+                row["source_id"], str(row["provider_name"] or "Unknown provider")
+            )
+            parts = [
+                provider_line,
+                f"🚨 NEW TRADE — {identity.label}",
+                "",
+                _render_root(row),
+            ]
+            account_lines = self._account_lines(include_origin=True)
+            if account_lines:
+                parts.extend(["", *account_lines])
+            rendered = "\n".join(parts)
             session.execute(
                 text(
                     """
@@ -484,11 +527,15 @@ class CanonicalTelegramPublisherManager(Day34CutoverTelegramPublisherManager):
                     """
                     SELECT
                         pub.id AS publication_id,pub.signal_id,sig.member_trade_number,
-                        ev.rendered_text,
+                        sig.source_id,
+                        COALESCE(NULLIF(src.chat_title,''),src.source_alias,'Unknown provider')
+                            AS provider_name,
+                        ev.event_type,ev.rendered_text,
                         root.telegram_message_id AS reply_to_message_id
                     FROM telegram_publications AS pub
                     JOIN signal_lifecycle_events AS ev ON ev.id=pub.lifecycle_event_id
                     JOIN signals AS sig ON sig.id=pub.signal_id
+                    JOIN sources AS src ON src.id=sig.source_id
                     JOIN telegram_publications AS root
                       ON root.signal_id=pub.signal_id
                      AND root.publication_kind='signal_created'
@@ -508,11 +555,48 @@ class CanonicalTelegramPublisherManager(Day34CutoverTelegramPublisherManager):
             if row is None:
                 session.rollback()
                 return None
-            rendered = prefix_public_trade_identity(
-                row["signal_id"],
-                str(row["rendered_text"] or "Trade update."),
-                row["member_trade_number"],
+            identity = public_trade_identity(row["signal_id"], row["member_trade_number"])
+            provider_line = self._provider_line(
+                row["source_id"], str(row["provider_name"] or "Unknown provider")
             )
+            trade = self._trade_ledger.trade(row["signal_id"]) if self._trade_ledger else None
+            broker_result = str(row["event_type"] or "").startswith("broker_result_")
+            if trade is not None and trade.complete:
+                heading = f"✅ TRADE COMPLETE — {identity.label}"
+            elif broker_result:
+                heading = f"🎯 TP / POSITION CLOSED — {identity.label}"
+            else:
+                heading = f"🔄 TRADE UPDATE — {identity.label}"
+            parts = [
+                provider_line,
+                heading,
+                "",
+                str(row["rendered_text"] or "Trade update."),
+            ]
+            if trade is not None and trade.total_legs:
+                if trade.complete:
+                    parts.extend(
+                        [
+                            "",
+                            f"💵 FINAL TRADE P/L: {money(trade.realised_pnl)}",
+                            f"Closed legs: {trade.closed_legs}/{trade.total_legs}",
+                        ]
+                    )
+                else:
+                    parts.extend(
+                        [
+                            "",
+                            f"💵 Trade P/L so far: {money(trade.realised_pnl)}",
+                            (
+                                f"Legs: {trade.closed_legs} closed · "
+                                f"{trade.open_legs} open · {trade.pending_legs} pending"
+                            ),
+                        ]
+                    )
+            account_lines = self._account_lines()
+            if account_lines:
+                parts.extend(["", *account_lines])
+            rendered = "\n".join(parts)
             reply_id = int(row["reply_to_message_id"])
             session.execute(
                 text(
@@ -596,6 +680,10 @@ class CanonicalTelegramPublisherManager(Day34CutoverTelegramPublisherManager):
                         WITH leg_state AS (
                             SELECT
                                 s.id AS signal_id,
+                                s.member_trade_number,
+                                s.source_id,
+                                COALESCE(NULLIF(src.chat_title,''),src.source_alias,'Unknown provider')
+                                    AS provider_name,
                                 COALESCE(s.symbol,'') AS symbol,
                                 COALESCE(s.side,'') AS side,
                                 p.tp_index,
@@ -607,6 +695,7 @@ class CanonicalTelegramPublisherManager(Day34CutoverTelegramPublisherManager):
                                 END AS effective_status
                             FROM positions AS p
                             JOIN signals AS s ON s.id=p.signal_id
+                            JOIN sources AS src ON src.id=s.source_id
                             LEFT JOIN performance_trade_outcomes AS o ON o.position_id=p.id
                             WHERE EXISTS (
                                 SELECT 1 FROM audit_events AS placed
@@ -617,7 +706,11 @@ class CanonicalTelegramPublisherManager(Day34CutoverTelegramPublisherManager):
                             )
                         )
                         SELECT
-                            signal_id,MAX(symbol) AS symbol,MAX(side) AS side,
+                            signal_id,
+                            MAX(member_trade_number) AS member_trade_number,
+                            MAX(source_id) AS source_id,
+                            MAX(provider_name) AS provider_name,
+                            MAX(symbol) AS symbol,MAX(side) AS side,
                             ARRAY_AGG(DISTINCT tp_index ORDER BY tp_index)
                                 FILTER (WHERE effective_status='open') AS open_tp_indices,
                             ARRAY_AGG(DISTINCT tp_index ORDER BY tp_index)
@@ -631,20 +724,24 @@ class CanonicalTelegramPublisherManager(Day34CutoverTelegramPublisherManager):
                 ).mappings().all()
             )
 
-    @staticmethod
-    def _render_live_board(rows: list[Any]) -> str:
+    def _render_live_board(self, rows: list[Any]) -> str:
         open_count = sum(1 for row in rows if row["open_tp_indices"])
         pending_count = sum(1 for row in rows if row["pending_tp_indices"])
         lines = [
             "📌 SUPER SIGNALS · LIVE TRADES",
             f"OPEN {open_count} · PENDING {pending_count}",
         ]
+        account_lines = self._account_lines(include_origin=True)
+        if account_lines:
+            lines.extend(account_lines)
         if not rows:
             lines.extend(["", "No active trades."])
             return "\n".join(lines)
         lines.append("")
         for row in rows:
-            identity = public_trade_identity(row["signal_id"])
+            identity = public_trade_identity(
+                row["signal_id"], row["member_trade_number"]
+            )
             symbol = str(row["symbol"] or "").upper()
             side = str(row["side"] or "").upper()
             open_indices = [int(value) for value in (row["open_tp_indices"] or [])]
@@ -654,7 +751,12 @@ class CanonicalTelegramPublisherManager(Day34CutoverTelegramPublisherManager):
                 states.append("/".join(f"TP{index}" for index in open_indices) + " open")
             if pending_indices:
                 states.append("/".join(f"TP{index}" for index in pending_indices) + " pending")
-            lines.append(f"{identity.label} · {symbol} {side} · {' · '.join(states)}")
+            provider_line = self._provider_line(
+                row["source_id"], str(row["provider_name"] or "Unknown provider")
+            )
+            lines.append(
+                f"{provider_line} · {identity.label} · {symbol} {side} · {' · '.join(states)}"
+            )
         return "\n".join(lines)
 
 
