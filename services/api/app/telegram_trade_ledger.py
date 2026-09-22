@@ -1,7 +1,8 @@
-"""Member-facing Super Signals ledger helpers for Telegram presentation.
+"""Telegram-only presentation ledger for the main Super Signals reference account.
 
-The feed uses the same canonical accounting service as the dashboard and risk sizer.
-Provider presentation is public by owner choice, but account/user identifiers remain private.
+This module does not alter broker execution, subscriber balances or user risk settings.
+It exists only to present the owner's Super Signals track record consistently in the
+member Telegram feed.
 """
 
 from __future__ import annotations
@@ -16,9 +17,8 @@ from zoneinfo import ZoneInfo
 from sqlalchemy import text
 from sqlalchemy.orm import Session, sessionmaker
 
-from app.trading_accounting import CanonicalTradingAccountingService
-
 SOFIA = ZoneInfo("Europe/Sofia")
+REFERENCE_START_AT = datetime(2026, 8, 5, 21, 0, tzinfo=UTC)
 REFERENCE_START_LABEL = "6 Aug 2026"
 REFERENCE_START_BALANCE = Decimal("1000.00")
 _PROVIDER_COLOURS = ("🔵", "🟢", "🟣", "🟠", "🟡", "🔴", "🟤", "⚫", "⚪")
@@ -68,6 +68,8 @@ class TradeLedgerSnapshot:
 
 
 class TelegramTradeLedger:
+    """Read-only main-account ledger for member-facing Telegram posts."""
+
     def __init__(
         self,
         session_factory: sessionmaker[Session],
@@ -75,40 +77,128 @@ class TelegramTradeLedger:
     ) -> None:
         self._session_factory = session_factory
         self._reference_user_id = reference_user_id
-        self._accounting = CanonicalTradingAccountingService(session_factory)
 
     def account(self, *, now: datetime | None = None) -> AccountLedgerSnapshot:
         point = (now or datetime.now(UTC)).astimezone(UTC)
+        local_point = point.astimezone(SOFIA)
+        local_day = local_point.date()
+        month_start = local_day.replace(day=1)
+
         with self._session_factory() as session:
-            broker_balance = session.execute(
+            rows = session.execute(
                 text(
                     """
-                    SELECT last_confirmed_balance
-                    FROM mt5_accounts
-                    WHERE owner_user_id=:user_id
-                      AND status<>'revoked'
-                    ORDER BY created_at DESC
-                    LIMIT 1
+                    WITH broker AS (
+                        SELECT
+                            timezone('Europe/Sofia',bd.occurred_at)::date AS day,
+                            SUM(
+                                COALESCE(bd.profit,0)
+                                + COALESCE(bd.commission,0)
+                                + COALESCE(bd.swap,0)
+                            ) AS pnl
+                        FROM broker_deals bd
+                        JOIN sources src ON src.id=bd.source_id
+                        WHERE bd.user_id=:user_id
+                          AND src.status<>'revoked'
+                          AND bd.entry_type='DEAL_ENTRY_OUT'
+                          AND (bd.signal_id IS NOT NULL OR bd.broker_client_id LIKE 'SS_%')
+                          AND bd.occurred_at>=:start_at
+                          AND bd.occurred_at<:end_at
+                          AND NOT EXISTS (
+                              SELECT 1
+                              FROM performance_reporting_overrides ro
+                              WHERE ro.user_id=bd.user_id
+                                AND (
+                                  (
+                                    ro.incident_key NOT LIKE 'restart-%'
+                                    AND bd.occurred_at<ro.cutoff_at
+                                    AND (
+                                      bd.occurred_at AT TIME ZONE ro.timezone
+                                    )::date=ro.reporting_date
+                                  )
+                                  OR
+                                  (
+                                    ro.incident_key LIKE 'restart-%'
+                                    AND bd.occurred_at>=(
+                                      ro.reporting_date::timestamp
+                                      AT TIME ZONE ro.timezone
+                                    )
+                                    AND EXISTS (
+                                      SELECT 1
+                                      FROM positions rp
+                                      WHERE rp.user_id=bd.user_id
+                                        AND rp.id=bd.position_id
+                                        AND COALESCE(rp.opened_at,rp.created_at)<ro.cutoff_at
+                                    )
+                                  )
+                                )
+                          )
+                        GROUP BY 1
+                    ),
+                    reviewed AS (
+                        SELECT
+                            timezone('Europe/Sofia',pto.closed_at)::date AS day,
+                            SUM(pto.cash_pnl) AS pnl
+                        FROM performance_trade_outcomes pto
+                        WHERE pto.user_id=:user_id
+                          AND pto.closed_at>=:start_at
+                          AND pto.closed_at<:end_at
+                          AND pto.broker_deal_count=0
+                          AND pto.close_reason LIKE 'reviewed_provider_%'
+                        GROUP BY 1
+                    ),
+                    overrides AS (
+                        SELECT ro.reporting_date AS day,SUM(ro.realised_cash_pnl) AS pnl
+                        FROM performance_reporting_overrides ro
+                        WHERE ro.user_id=:user_id
+                          AND (
+                            ro.reporting_date::timestamp AT TIME ZONE ro.timezone
+                          )>=:start_at
+                          AND (
+                            ro.reporting_date::timestamp AT TIME ZONE ro.timezone
+                          )<:end_at
+                        GROUP BY 1
+                    ),
+                    daily AS (
+                        SELECT day,SUM(pnl) AS pnl
+                        FROM (
+                            SELECT * FROM broker
+                            UNION ALL
+                            SELECT * FROM reviewed
+                            UNION ALL
+                            SELECT * FROM overrides
+                        ) values_by_source
+                        GROUP BY day
+                    )
+                    SELECT
+                        COALESCE(SUM(pnl),0) AS total_pnl,
+                        COALESCE(SUM(pnl) FILTER (WHERE day=:local_day),0) AS today_pnl,
+                        COALESCE(
+                            SUM(pnl) FILTER (WHERE day>=:month_start AND day<=:local_day),
+                            0
+                        ) AS month_to_date_pnl
+                    FROM daily
                     """
                 ),
-                {"user_id": self._reference_user_id},
-            ).scalar_one_or_none()
-        balance = self._accounting.displayed_balance(
-            self._reference_user_id,
-            broker_balance=Decimal(str(broker_balance or 0)),
-            now=point,
-        )
-        windows = self._accounting.windows(
-            self._reference_user_id,
-            timezone_name="Europe/Sofia",
-            now=point,
-        )
+                {
+                    "user_id": self._reference_user_id,
+                    "start_at": REFERENCE_START_AT,
+                    "end_at": point,
+                    "local_day": local_day,
+                    "month_start": month_start,
+                },
+            ).mappings().one()
+
+        total_pnl = Decimal(str(rows["total_pnl"] or 0))
+        balance = (REFERENCE_START_BALANCE + total_pnl).quantize(Decimal("0.01"))
         return AccountLedgerSnapshot(
             balance=balance,
-            today_pnl=windows.today,
-            month_to_date_pnl=windows.month,
+            today_pnl=Decimal(str(rows["today_pnl"] or 0)).quantize(Decimal("0.01")),
+            month_to_date_pnl=Decimal(
+                str(rows["month_to_date_pnl"] or 0)
+            ).quantize(Decimal("0.01")),
             one_percent=(balance * Decimal("0.01")).quantize(Decimal("0.01")),
-            local_weekday=point.astimezone(SOFIA).weekday(),
+            local_weekday=local_point.weekday(),
         )
 
     def trade(self, signal_id: UUID) -> TradeLedgerSnapshot:
@@ -174,7 +264,7 @@ class TelegramTradeLedger:
         lines.append(
             "💰 Super Signals balance: $"
             + f"{snapshot.balance:,.2f}"
-            + " · 1% = $"
+            + " · 1% reference = $"
             + f"{snapshot.one_percent:,.2f}"
         )
         if include_origin:
@@ -188,6 +278,7 @@ class TelegramTradeLedger:
 
 __all__ = [
     "AccountLedgerSnapshot",
+    "REFERENCE_START_AT",
     "REFERENCE_START_BALANCE",
     "REFERENCE_START_LABEL",
     "TelegramTradeLedger",
