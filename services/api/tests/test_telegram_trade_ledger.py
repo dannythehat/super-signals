@@ -58,36 +58,37 @@ def test_weekend_footer_omits_daily_line() -> None:
     assert "Month to date: +$142.10" in rendered
 
 
-def test_one_percent_is_quoted_from_balance_not_equity() -> None:
-    """Execution sizes every trade off BALANCE (mt5_execution_day26 risk_balance =
-    live_state.account.balance -> risk_sizing_day24 balance * risk_percent / 100).
+def test_one_percent_is_quoted_from_the_company_paper_balance() -> None:
+    """The company paper balance is the Vantage demo account value, not the
+    broker's closed-trade balance field.
 
-    The published '1% = $X' must therefore be 1% of balance. Quoting 1% of equity
-    advertises a figure that differs from the risk actually taken whenever a
-    position is open with floating P&L.
+    Sizing is always 1% of the paper balance, so the published '1% = $X' must
+    track the account value shown on the same line. Quoting 1% of the broker
+    balance field would understate it by the whole floating P&L.
     """
     snapshot = AccountLedgerSnapshot(
-        account_value=Decimal("1080.00"),   # equity: balance + $80 floating
-        mt5_balance=Decimal("1000.00"),     # balance: what execution risks from
+        account_value=Decimal("2050.64"),   # company paper balance
+        mt5_balance=Decimal("1364.87"),     # broker closed-trade balance field
         today_pnl=Decimal("0.00"),
         month_to_date_pnl=Decimal("0.00"),
-        one_percent=Decimal("10.00"),
+        one_percent=Decimal("20.51"),
         local_weekday=2,
         updated_at=datetime(2026, 9, 22, 12, 0, tzinfo=UTC),
         stale=False,
     )
     lines = TelegramTradeLedger.account_lines(snapshot)
     account_line = next(line for line in lines if "account value" in line)
-    assert "1% = $10.00" in account_line      # 1% of balance
-    assert "1% = $10.80" not in account_line  # never 1% of equity
+    assert "$2,050.64" in account_line
+    assert "1% = $20.51" in account_line      # 1% of the paper balance
+    assert "1% = $13.64" not in account_line  # never 1% of the broker balance field
 
 
 def test_stale_account_snapshot_is_never_published_as_current() -> None:
     """A stalled MetaAPI/Vantage capture must not publish a stale balance as if
     live, and must not quote a risk figure derived from it."""
     snapshot = AccountLedgerSnapshot(
-        account_value=Decimal("1080.00"),
-        mt5_balance=Decimal("1000.00"),
+        account_value=Decimal("2050.64"),
+        mt5_balance=Decimal("1364.87"),
         today_pnl=Decimal("0.00"),
         month_to_date_pnl=Decimal("0.00"),
         one_percent=None,                   # suppressed by account() when stale
@@ -133,14 +134,15 @@ class _StubSession:
         return _StubResult(rows=[])
 
 
-def test_account_derives_one_percent_from_balance_not_equity(monkeypatch) -> None:  # noqa: ANN001
+def test_account_derives_one_percent_from_the_company_paper_balance(monkeypatch) -> None:  # noqa: ANN001
     """End-to-end derivation check, not just rendering: account() must compute the
-    published 1% from BALANCE, the same basis execution sizes from."""
+    published 1% from the company paper balance (the Vantage demo account value),
+    never from the broker's closed-trade balance field."""
     import app.telegram_trade_ledger as ledger_module
 
     snapshot_row = {
-        "balance": Decimal("1000.00"),
-        "equity": Decimal("1080.00"),   # $80 floating on an open position
+        "balance": Decimal("1364.87"),  # broker closed-trade balance field
+        "equity": Decimal("2050.64"),   # company paper balance, floating included
         "captured_at": datetime(2026, 9, 22, 12, 0, tzinfo=UTC),
     }
     monkeypatch.setattr(
@@ -152,8 +154,8 @@ def test_account_derives_one_percent_from_balance_not_equity(monkeypatch) -> Non
     )
     snap = ledger.account(now=datetime(2026, 9, 22, 12, 1, tzinfo=UTC))
 
-    assert snap.mt5_balance == Decimal("1000.00")
-    assert snap.account_value == Decimal("1080.00")
-    assert snap.one_percent == Decimal("10.00")   # 1% of BALANCE
-    assert snap.one_percent != Decimal("10.80")   # never 1% of equity
+    assert snap.mt5_balance == Decimal("1364.87")
+    assert snap.account_value == Decimal("2050.64")
+    assert snap.one_percent == Decimal("20.51")   # 1% of the company paper balance
+    assert snap.one_percent != Decimal("13.65")   # never 1% of the broker balance
     assert snap.stale is False

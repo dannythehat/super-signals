@@ -209,15 +209,16 @@ class TelegramTradeLedger:
             age = (point - captured.astimezone(UTC)).total_seconds()
             stale = age > ACCOUNT_SNAPSHOT_MAX_AGE_SECONDS
 
-        # Risk basis parity: execution sizes every trade off the broker BALANCE
-        # (mt5_execution_day26.py risk_balance = live_state.account.balance, then
-        # risk_sizing_day24.py risk_budget = balance * risk_percent / 100).
-        # Publishing 1% of EQUITY would advertise a figure that differs from the
-        # risk actually taken whenever a position is open. A stale snapshot must
-        # not be quoted as a current risk figure at all.
+        # The published figure is the COMPANY PAPER BALANCE: the account value the
+        # Vantage demo account reports (balance plus floating P&L), which is the
+        # single number this business runs on. It began at REFERENCE_START_VALUE on
+        # REFERENCE_START_LABEL and has compounded since. Sizing is always quoted as
+        # 1% of that paper balance; the broker's closed-trade BALANCE field is never
+        # the published basis. A stale snapshot must not be quoted as a current risk
+        # figure at all.
         one_percent = (
-            (mt5_balance * Decimal("0.01")).quantize(Decimal("0.01"))
-            if mt5_balance is not None and not stale
+            (account_value * Decimal("0.01")).quantize(Decimal("0.01"))
+            if account_value is not None and not stale
             else None
         )
 
@@ -294,8 +295,8 @@ class TelegramTradeLedger:
         lines.append(f"📆 Month to date: {money(snapshot.month_to_date_pnl)}")
         if snapshot.account_value is not None:
             value = "$" + f"{snapshot.account_value:,.2f}"
-            # 1% is quoted from BALANCE because that is what execution sizes from,
-            # and only when the capture is fresh (see account()).
+            # 1% is quoted from the company paper balance (the account value shown
+            # above), and only when the capture is fresh (see account()).
             one_percent = (
                 " · 1% = $" + f"{snapshot.one_percent:,.2f}"
                 if snapshot.one_percent is not None
