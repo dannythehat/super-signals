@@ -1,10 +1,8 @@
 """Canonical mobile-dashboard view for paper and LIVE trading.
 
-Open positions and executable broker state remain MetaAPI truth. The Owner demo balance
-uses Super Signals accounting truth because manual broker resets would otherwise corrupt
-both display and 1%-per-leg sizing. LIVE account balance remains the actual broker balance.
-Performance accounting itself is shared across both modes and excludes capital movements
-from profit/loss.
+Open positions and account values are MetaAPI/MT5 truth. The dashboard never substitutes
+a reconstructed Super Signals balance for the broker-reported Balance, Equity, Margin or
+Free Margin. Performance accounting remains a separate reporting concern.
 
 A transient MetaAPI read failure must never make an already broker-mapped Super Signals
 position disappear from the app. During a live-read outage we expose the durable local
@@ -28,7 +26,6 @@ from app.dashboard_day32 import (
 )
 from app.dashboard_today_summary import TodayTradingSummaryService
 from app.paper_run_epoch import active_paper_epoch
-from app.trading_accounting import CanonicalTradingAccountingService
 
 
 def _utc(value: datetime) -> datetime:
@@ -41,36 +38,8 @@ class CanonicalDashboardRuntimeService(Day32DashboardService):
     """Day32 broker view with shared canonical trading accounting."""
 
     async def read(self, user_id: UUID) -> Day32DashboardView:
-        view = await super().read(user_id)
-        if view.account is None:
-            return view
-        accounting = CanonicalTradingAccountingService(self._session_factory)
-        display_balance = float(
-            accounting.displayed_balance(
-                user_id,
-                broker_balance=view.account.balance,
-            )
-        )
-        visible_floating_pnl = sum(
-            float(position.profit)
-            for position in view.open_positions
-            if position.profit is not None
-        )
-        display_equity = display_balance + visible_floating_pnl
-        display_free_margin = display_equity - float(view.account.margin)
-        return replace(
-            view,
-            account=replace(
-                view.account,
-                balance=display_balance,
-                # Equity is canonical realised Balance plus precisely the
-                # floating P/L of the active positions visible in this view.
-                # Raw broker equity may contain credit or settling remnants and
-                # must not contradict the position list shown to the user.
-                equity=display_equity,
-                free_margin=display_free_margin,
-            ),
-        )
+        """Return the dashboard with MetaAPI account values unchanged."""
+        return await super().read(user_id)
 
     def _eligible_signal_ids(self, user_id: UUID) -> set[UUID] | None:
         """Visible signals include post-origin signals and genuine carry-over positions."""

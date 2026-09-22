@@ -313,6 +313,8 @@ export function MobileDashboard({ apiBaseUrl, displayName, roleLabel, active, on
   const currentMonthPnl = data.performance.find((period) => period.key === 'month')?.amount ?? null;
   const allTimePnl = data.performance.find((period) => period.key === 'all')?.amount ?? null;
   const usingLastConfirmedAccount = data.account !== null && data.connection.status === 'connection_error';
+  const mt5FloatingPnl = data.account === null ? null : data.account.equity - data.account.balance;
+  const mt5ReadLabel = data.connection.read_at ? shortTime(data.connection.read_at) : '—';
 
   return <section className="day32-dashboard" aria-labelledby="day32-home-title">
     <div className="day32-dashboard-head">
@@ -330,10 +332,24 @@ export function MobileDashboard({ apiBaseUrl, displayName, roleLabel, active, on
       <span className="day32-account-kind">{accountEnvironment}</span>
     </div>
 
-    <section className="day32-balance-card" aria-label="Trading account balance">
-      <div className="day32-balance-copy"><span>Balance</span><strong>{money(data.account?.balance, currency)}</strong><small>{data.connection.login_masked ? `${data.connection.login_masked} · ${data.connection.server ?? 'Vantage MT5'}${usingLastConfirmedAccount ? ' · last confirmed' : ''}` : 'Connect your Vantage MT5 account in Settings'}</small></div>
-      <div className="day32-equity-copy"><span>Equity</span><strong>{money(data.account?.equity, currency)}</strong><small>Free margin {money(data.account?.free_margin, currency)}</small></div>
-      <button className="day32-refresh" type="button" onClick={() => void refresh()} disabled={refreshing}>{refreshing ? 'Refreshing…' : 'Refresh'}</button>
+    <section className="day32-balance-card" aria-label="Live MT5 account values">
+      <div className="day32-balance-copy">
+        <span>MT5 Balance</span>
+        <strong>{money(data.account?.balance, currency)}</strong>
+        <small>
+          {data.connection.login_masked
+            ? `${data.connection.login_masked} · ${data.connection.server ?? 'Vantage MT5'}`
+            : 'Connect your Vantage MT5 account in Settings'}
+        </small>
+        <small>{usingLastConfirmedAccount ? 'Last confirmed MT5 value' : `Live MetaAPI · refreshed ${mt5ReadLabel}`}</small>
+      </div>
+      <div className="day32-equity-copy">
+        <span>MT5 Equity</span>
+        <strong>{money(data.account?.equity, currency)}</strong>
+        <small className={pnlClass(mt5FloatingPnl)}>Floating P/L {money(mt5FloatingPnl, currency)}</small>
+        <small>Free margin {money(data.account?.free_margin, currency)}</small>
+      </div>
+      <button className="day32-refresh" type="button" onClick={() => void refresh()} disabled={refreshing}>{refreshing ? 'Refreshing…' : 'Refresh MT5'}</button>
     </section>
 
     {active && <TodayTradingSummary apiBaseUrl={apiBaseUrl} currency={currency} timezoneName={timezoneName} />}

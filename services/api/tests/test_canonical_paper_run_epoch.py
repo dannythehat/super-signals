@@ -28,7 +28,6 @@ from app.paper_run_epoch import (
 )
 from app.performance_ledger_day33 import Day33PerformanceWindow
 from app.performance_runtime import CanonicalPerformanceRuntimeService
-from app.trading_accounting import CanonicalTradingAccountingService
 
 OWNER = uuid4()
 OTHER = uuid4()
@@ -187,7 +186,7 @@ def _base_dashboard_view(open_profit: float) -> Day32DashboardView:
 
 
 @pytest.mark.asyncio
-async def test_dashboard_owner_demo_uses_canonical_trading_balance(
+async def test_dashboard_owner_demo_shows_metaapi_account_values_unchanged(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setenv("SUPER_SIGNALS_DAY28_OWNER_ID", str(OWNER))
@@ -197,39 +196,25 @@ async def test_dashboard_owner_demo_uses_canonical_trading_balance(
         assert user_id == OWNER
         return base
 
-    def fake_displayed_balance(_self, user_id, *, broker_balance, now=None):
-        assert user_id == OWNER
-        assert broker_balance == 812.0
-        assert now is None
-        return Decimal("1531.78")
-
     monkeypatch.setattr(Day32DashboardService, "read", fake_base_read)
-    monkeypatch.setattr(
-        CanonicalTradingAccountingService,
-        "displayed_balance",
-        fake_displayed_balance,
-    )
     service = object.__new__(CanonicalDashboardRuntimeService)
-    service._session_factory = object()
 
     result = await service.read(OWNER)
 
     assert result.account is not None
-    assert result.account.balance == 1531.78
-    assert result.account.equity == pytest.approx(1529.28)
-    assert result.account.free_margin == pytest.approx(1429.28)
+    assert result.account.balance == 812.0
+    assert result.account.equity == 810.0
+    assert result.account.free_margin == 710.0
     assert result.account.margin == 100.0
     assert result.open_profit == -2.5
 
 
-def test_dashboard_runtime_separates_demo_accounting_from_live_broker_balance() -> None:
+def test_dashboard_runtime_preserves_metaapi_broker_truth() -> None:
     runtime = (ROOT / "services/api/app/dashboard_runtime.py").read_text(encoding="utf-8")
-    assert "_post_epoch_realised_cash" not in runtime
-    assert "epoch.baseline_balance + realised" not in runtime
-    assert "margin=0.0" not in runtime
-    assert "balance=float(balance)" not in runtime
-    assert "live account balance remains the actual broker balance" in runtime.lower()
-    assert "displayed_balance" in runtime
+    assert "MetaAPI/MT5 truth" in runtime
+    assert "displayed_balance" not in runtime
+    assert "display_equity" not in runtime
+    assert "display_free_margin" not in runtime
 
 
 def test_today_session_starts_at_permanent_epoch_on_origin_day(
