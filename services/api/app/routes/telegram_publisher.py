@@ -1,4 +1,4 @@
-"""Administrator visibility for the Day 19 publish-only Telegram mirror."""
+"""Administrator visibility for the canonical Super Signals Telegram publisher."""
 
 from __future__ import annotations
 
@@ -15,7 +15,7 @@ from sqlalchemy.orm import Session
 
 from app.access_control import require_permission
 from app.db import get_db_session
-from app.telegram_publisher_policy import Day19TelegramPublisherManager
+from app.telegram_publisher_canonical import CanonicalTelegramPublisherManager
 
 router = APIRouter(prefix="/admin/telegram-publisher", tags=["telegram-publisher"])
 DbSession = Annotated[Session, Depends(get_db_session)]
@@ -55,7 +55,7 @@ class PublicationResponse(BaseModel):
     side: str
 
 
-def _manager(request: Request) -> Day19TelegramPublisherManager:
+def _manager(request: Request) -> CanonicalTelegramPublisherManager:
     return request.app.state.telegram_publisher
 
 
