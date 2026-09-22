@@ -281,22 +281,45 @@ def test_cancel_is_supported_management_event() -> None:
     assert result.extracted["update_type"] == "cancel_pending"
 
 
-@pytest.mark.parametrize(
-    "raw",
-    [
-        "+40 pips",
-        "TP2 incoming",
-        "TP1 HIT",
-        "SL HIT",
-        "Stopped out",
-    ],
-)
-def test_results_and_hype_do_not_create_management_action(raw: str) -> None:
+@pytest.mark.parametrize("raw", ["+40 pips", "TP2 incoming"])
+def test_non_terminal_results_and_hype_do_not_create_management_action(raw: str) -> None:
     result = apply_v1_message_policy(
         _decision(decision="trade_update", action="apply_update", update_type="other"),
         raw_text=raw,
     )
     assert result.action == "ignore"
+
+
+@pytest.mark.parametrize(
+    ("raw", "target"),
+    [
+        ("TP1 HIT", "TP1"),
+        ("Hit TP2", "TP2"),
+        ("TP All HIT", "all"),
+        ("SL HIT", "all"),
+        ("Stopped out", "all"),
+    ],
+)
+def test_provider_terminal_results_are_management(raw: str, target: str) -> None:
+    result = apply_v1_message_policy(
+        _decision(decision="trade_update", action="ignore", update_type="other"),
+        raw_text=raw,
+    )
+    assert result.action == "apply_update"
+    assert {"type": "close", "target": target, "value": None} in result.extracted[
+        "management_actions"
+    ]
+
+
+def test_bare_sl_price_is_management() -> None:
+    result = apply_v1_message_policy(
+        _decision(decision="trade_update", action="ignore", update_type="other"),
+        raw_text="SL : 4351",
+    )
+    assert result.action == "apply_update"
+    assert result.extracted["management_actions"] == [
+        {"type": "edit_stop_loss", "target": "all", "value": "4351"}
+    ]
 
 
 def test_partial_taking_preserves_partial_intent() -> None:
