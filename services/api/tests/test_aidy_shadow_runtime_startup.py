@@ -76,16 +76,17 @@ async def test_aidy_runtime_live_context_probe_reports_ready(caplog) -> None:
     assert "snapshot_id=provider-context-snapshot-test" in caplog.text
 
 
-def test_main_lifespan_starts_aidy_before_broker_gate() -> None:
+def test_main_lifespan_starts_research_only_after_live_lane() -> None:
     source = (ROOT / "app" / "main.py").read_text(encoding="utf-8")
-    construct = "aidy_shadow_runtime = AidyShadowRuntime(research_session_factory)"
-    start = "await aidy_shadow_runtime.start()"
-    broker_gate = "if broker_keys:"
-    stop = "await aidy_shadow_runtime.stop()"
-    assert construct in source
-    assert start in source
-    assert stop in source
-    assert source.index(construct) < source.index(broker_gate)
+    live_ready = "await publisher.start()"
+    research_task = 'name="super-signals-research-startup"'
+    research_factory = "runtime = runtime_type(research_session_factory)"
+    assert live_ready in source
+    assert research_task in source
+    assert research_factory in source
+    assert source.index(live_ready) < source.index(research_task)
+    assert "runtime_type(session_factory)" not in source
+    assert "live trading and Telegram remain active" in source
 
 
 def test_broker_shadow_manager_cannot_start_second_aidy_resolver() -> None:
