@@ -6,7 +6,7 @@ import os
 import sys
 from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import AsyncIterator
+from collections.abc import AsyncIterator
 from uuid import UUID
 
 from fastapi import FastAPI
@@ -14,6 +14,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
 
+from app.aidy_shadow_runtime import AidyShadowRuntime
 from app.broker_settlement_canonical import CanonicalBrokerSettlementManager
 from app.config import get_settings
 from app.day26_code_acceptance import run_day26_code_acceptance_probe
@@ -21,7 +22,6 @@ from app.day27_code_acceptance import run_day27_code_acceptance_probe
 from app.day34_code_acceptance import run_day34_code_acceptance_probe
 from app.day34_live_acceptance import run_day34_live_acceptance_safely
 from app.db import get_aidy_session_factory, get_session_factory
-from app.aidy_shadow_runtime import AidyShadowRuntime
 from app.metaapi_gateway import MetaApiProvisioningGateway
 from app.metaapi_read_gateway import MetaApiReadGateway
 from app.metaapi_trade_gateway import MetaApiTradeGateway
@@ -35,7 +35,9 @@ from app.mt5_recovery import (
     reencrypt_existing_metaapi_token,
     verify_existing_metaapi_token,
 )
-from app.performance_runtime import CanonicalPerformanceRuntimeService as CanonicalPerformanceLedgerService
+from app.performance_runtime import (
+    CanonicalPerformanceRuntimeService as CanonicalPerformanceLedgerService,
+)
 from app.production_listener import build_production_listener_manager
 from app.publisher_config import get_publisher_settings
 from app.shadow_trading import ShadowTradeManager
@@ -256,7 +258,8 @@ async def _lifespan(application: FastAPI) -> AsyncIterator[None]:
                         )
                         allow_mt5_manager = False
                     logger.info(
-                        "Day 22 MetaAPI token recovery completed existing_account=%s local_verification=%s diagnostic_probe=%s",
+                        "Day 22 MetaAPI token recovery completed existing_account=%s "
+                        "local_verification=%s diagnostic_probe=%s",
                         recovered,
                         verified,
                         diagnostic_probe,
