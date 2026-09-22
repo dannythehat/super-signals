@@ -78,7 +78,7 @@ async def test_aidy_runtime_live_context_probe_reports_ready(caplog) -> None:
 
 def test_main_lifespan_starts_aidy_before_broker_gate() -> None:
     source = (ROOT / "app" / "main.py").read_text(encoding="utf-8")
-    construct = "aidy_shadow_runtime = AidyShadowRuntime(session_factory)"
+    construct = "aidy_shadow_runtime = AidyShadowRuntime(research_session_factory)"
     start = "await aidy_shadow_runtime.start()"
     broker_gate = "if broker_keys:"
     stop = "await aidy_shadow_runtime.stop()"
