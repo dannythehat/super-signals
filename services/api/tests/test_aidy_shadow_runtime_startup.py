@@ -22,6 +22,12 @@ class _FakeResolver:
         return 0, 0
 
 
+class _SlowResolver:
+    async def resolve_once(self) -> tuple[int, int]:
+        await asyncio.sleep(0.2)
+        return 1, 0
+
+
 class _FakeContextClient:
     async def fetch_context(self, *, as_of):
         return SimpleNamespace(
@@ -76,16 +82,34 @@ async def test_aidy_runtime_live_context_probe_reports_ready(caplog) -> None:
     assert "snapshot_id=provider-context-snapshot-test" in caplog.text
 
 
-def test_main_lifespan_starts_aidy_before_broker_gate() -> None:
+def test_main_lifespan_uses_separate_aidy_database_factory() -> None:
     source = (ROOT / "app" / "main.py").read_text(encoding="utf-8")
-    construct = "aidy_shadow_runtime = AidyShadowRuntime(session_factory)"
-    start = "await aidy_shadow_runtime.start()"
+    live_factory = "session_factory = get_session_factory()"
+    research_factory = "aidy_session_factory = get_aidy_session_factory()"
+    construct = "aidy_shadow_runtime = AidyShadowRuntime(aidy_session_factory)"
     broker_gate = "if broker_keys:"
-    stop = "await aidy_shadow_runtime.stop()"
+    assert live_factory in source
+    assert research_factory in source
     assert construct in source
-    assert start in source
-    assert stop in source
-    assert source.index(construct) < source.index(broker_gate)
+    assert "AidyShadowRuntime(session_factory)" not in source
+    assert source.index(research_factory) < source.index(broker_gate)
+
+
+@pytest.mark.asyncio
+async def test_aidy_runtime_timeout_fails_research_flat_without_live_dependency(caplog) -> None:
+    runtime = AidyShadowRuntime(
+        object(),
+        poll_seconds=60,
+        startup_pass_limit=1,
+        pass_timeout_seconds=0.01,
+    )
+    stop = asyncio.create_task(
+        runtime._run(_SlowResolver(), None, None)
+    )
+    await asyncio.sleep(0.05)
+    runtime._stopping.set()
+    await stop
+    assert "research pass skipped, live trading unchanged" in caplog.text
 
 
 def test_broker_shadow_manager_cannot_start_second_aidy_resolver() -> None:

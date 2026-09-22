@@ -1,118 +1,15 @@
-<p align="center">
-  <img src="apps/web/public/super-signals-logo.png" alt="Super Signals" width="300" />
-</p>
+# Internal Software Project
 
-# Super Signals
+Proprietary internal software.
 
-Private Telegram signal aggregation and automated Vantage MT5 trading platform.
+Public documentation, product architecture, business logic, operating rules and implementation rationale are intentionally not published in this repository.
 
-> **Status:** Foundation build. Demo and test environments only. No external user may trade live until the technical, security and Europe-focused legal launch gates have passed.
+No open-source licence is granted. No permission is given to copy, redistribute, republish, commercialise or create derivative works from this software.
 
-## Day 8 phone deployment
+## Development
 
-The Day 8 branch includes a temporary one-click full-stack deployment for the live Telegram connection acceptance test.
+Use the repository's existing automated checks and deployment configuration.
 
-[![Deploy to Render](https://render.com/images/deploy-to-render-button.svg)](https://render.com/deploy?repo=https%3A%2F%2Fgithub.com%2Fdannythehat%2Fsuper-signals%2Ftree%2Ffeature%2Fday-08-secure-telegram-connection)
+## Security
 
-The deployment creates its database, runs migrations, generates encryption secrets, builds the website and API together, and prepares the Owner login. The operator enters only an email, a password, Telegram API ID and Telegram API hash.
-
-See [Day 8 phone setup](docs/PHONE_SETUP.md).
-
-## Product purpose
-
-Super Signals combines approved Telegram signal sources into one controlled system. Recognised trade messages are filtered from ordinary conversation, recorded as a single internal signal event, published to the private Super Signals channel, shown in the mobile-first app and sent to eligible users' connected Vantage MT5 accounts.
-
-## Version-one scope
-
-- Private, invitation-only web app/PWA
-- Owner Admin, Trading Admin and invited User roles
-- Multiple authorised Telegram reader accounts per administrator
-- Explicit selection of approved source groups and channels
-- Testing, Live and Paused source states
-- Strict trade/update/chatter classification
-- Exact parser configuration per approved provider
-- Clean branded Super Signals channel posts without source identity
-- XAUUSD BUY and SELL automation
-- One separate MT5 position for every take-profit level
-- 0.5% or 1% risk per position, including explicit double-size instructions
-- One-time entry-price check and all-or-nothing funds validation
-- Follow-up trade management instructions
-- Mobile dashboard, signal timeline, performance and notifications
-- Append-only audit history and broker reconciliation
-
-The complete functional rules are maintained in the private Notion working blueprint and [docs/SCOPE_V1.md](docs/SCOPE_V1.md).
-
-## Repository structure
-
-```text
-apps/
-  web/                 React/TypeScript mobile-first PWA
-services/
-  api/                 FastAPI service
-  telegram/            Added during the Telegram phase
-  trading/             Added during the trading phase
-packages/
-  shared/              Shared schemas, types and constants
-docs/                   Scope, decisions, security and operating procedures
-.github/                Pull request and automated workflow controls
-```
-
-## Foundation commands
-
-Install the locked JavaScript and Python development dependencies:
-
-```bash
-npm ci
-python -m pip install -r requirements-dev.txt
-```
-
-Start the API:
-
-```bash
-npm run dev:api
-```
-
-Start the web app in a second terminal:
-
-```bash
-npm run dev:web
-```
-
-Run all type, lint, format, test and build checks:
-
-```bash
-npm run check
-```
-
-Detailed instructions are in [docs/LOCAL_DEVELOPMENT.md](docs/LOCAL_DEVELOPMENT.md).
-
-## Foundation references
-
-- [Architecture and trust boundaries](docs/ARCHITECTURE.md)
-- [Environment map](docs/ENVIRONMENTS.md)
-- [Database and migrations](docs/DATABASE.md)
-- [Backup and recovery](docs/BACKUP_AND_RECOVERY.md)
-- [Threat checklist](docs/THREAT_MODEL.md)
-- [Day 7 foundation gate](docs/FOUNDATION_GATE.md)
-
-## Build workflow
-
-1. `main` is the source-of-truth branch.
-2. Work is completed on a named branch.
-3. Changes are reviewed through a pull request.
-4. Tests, audits and backup restoration must pass before merge.
-5. Pull requests deploy to the shared preview Worker.
-6. Production frontend deployment runs only from `main`.
-7. Every build day records its commit, checks and evidence in the Notion build calendar.
-
-See [docs/WORKFLOW.md](docs/WORKFLOW.md).
-
-## Security rule
-
-**Never commit credentials, tokens, session files or private keys.**
-
-This includes Telegram sessions and API credentials, Vantage/MT5 credentials, MetaAPI tokens, database URLs, Cloudflare tokens, encryption keys and application secrets. See [SECURITY.md](SECURITY.md).
-
-## Licensing
-
-This is private proprietary software. No open-source licence is granted.
+Do not commit credentials, tokens, private keys, session material, account identifiers or production secrets.
