@@ -89,7 +89,10 @@ class AidyShadowRuntime:
             self._run(market_resolver, context_resolver, context_client),
             name="super-signals-provider-aidy-research",
         )
-        if not os.getenv("PYTEST_CURRENT_TEST", "").strip():
+        if (
+            not os.getenv("PYTEST_CURRENT_TEST", "").strip()
+            and (self._supervisor_task is None or self._supervisor_task.done())
+        ):
             self._supervisor_task = asyncio.create_task(
                 self._supervise(),
                 name="super-signals-aidy-runtime-supervisor",
