@@ -273,3 +273,18 @@ def test_tig_tp2_hit_book_partial_keeps_tp2_context() -> None:
     )
     assert {"type": "close", "target": "TP2", "value": None} in result.actions
     assert {"type": "close", "target": "TP1", "value": None} not in result.actions
+
+
+def test_scalping_best_entries_risk_free_is_break_even_management() -> None:
+    result = extract_day27_management_actions(
+        "Make your best entries risk free\n\n+35 pips from the best entries"
+    )
+    assert {"type": "move_to_break_even", "target": "all", "value": None} in result.actions
+
+
+def test_scalping_closed_partials_holding_risk_free_is_compound_management() -> None:
+    result = extract_day27_management_actions(
+        "I have closed partials and I am now holding risk free"
+    )
+    assert {"type": "close", "target": "TP1", "value": None} in result.actions
+    assert {"type": "move_to_break_even", "target": "all", "value": None} in result.actions
