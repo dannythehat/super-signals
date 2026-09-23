@@ -7,7 +7,7 @@ execution lane as the other active providers.
 This migration changes only source authority for future messages. It does not replay
 historical signals or create/cancel/modify any broker order.
 
-Revision ID: 0114_enable_owner_shadow_providers
+Revision ID: 0114_enable_shadow_providers
 Revises: 0113_aidy_reasoning_indexes
 Create Date: 2026-09-23
 """
@@ -20,7 +20,7 @@ from collections.abc import Sequence
 import sqlalchemy as sa
 from alembic import op
 
-revision: str = "0114_enable_owner_shadow_providers"
+revision: str = "0114_enable_shadow_providers"
 down_revision: str | None = "0113_aidy_reasoning_indexes"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
