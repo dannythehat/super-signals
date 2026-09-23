@@ -252,6 +252,47 @@ class CanonicalExecutionDispatcher:
             outcome="ignored", decision=stored.decision, action=stored.action, reason=stored.reason
         )
 
+    def _unresolved_management_after_signal(
+        self,
+        *,
+        signal_id: UUID,
+        source_id: UUID,
+    ) -> dict[str, object] | None:
+        """Find provider management that arrived after a signal but before broker entry.
+
+        This closes a real race: a missed/recovered full signal can finish AI processing
+        after a later TP/SL/close update has already been understood. If that update could
+        not link because the signal did not exist yet, opening the original untouched trade
+        is stale and unsafe. Fail closed instead of entering after the provider has already
+        changed the trade.
+        """
+        with self._session_factory() as session:
+            row = session.execute(
+                text(
+                    """
+                    SELECT m.id,m.telegram_message_id,m.posted_at,d.reason
+                    FROM signals s
+                    JOIN messages m ON m.source_id=s.source_id
+                    JOIN ai_message_decisions d
+                      ON d.message_id=m.id AND d.revision_index=0
+                    WHERE s.id=:signal_id
+                      AND s.source_id=:source_id
+                      AND m.posted_at>s.source_posted_at
+                      AND d.decision='trade_update'
+                      AND d.action='apply_update'
+                      AND NOT EXISTS (
+                          SELECT 1
+                          FROM signal_lifecycle_events e
+                          WHERE e.source_message_id=m.id
+                      )
+                    ORDER BY m.posted_at,m.telegram_message_id
+                    LIMIT 1
+                    """
+                ),
+                {"signal_id": signal_id, "source_id": source_id},
+            ).mappings().first()
+        return dict(row) if row is not None else None
+
     async def _dispatch_new_trade(
         self,
         stored: StoredDecision,
@@ -278,6 +319,42 @@ class CanonicalExecutionDispatcher:
 
         lock = self._locks.setdefault(f"signal:{signal_id}", asyncio.Lock())
         async with lock:
+            unresolved = self._unresolved_management_after_signal(
+                signal_id=signal_id,
+                source_id=source_id,
+            )
+            if unresolved is not None:
+                error_code = "provider_updated_before_delayed_execution"
+                self._audit_failure(
+                    entity_id=signal_id,
+                    entity_type="signal",
+                    error_code=error_code,
+                    decision=stored.decision,
+                    action=stored.action,
+                    extra={
+                        "source_revision_index": revision_index,
+                        "provider_management_message_id": str(unresolved.get("id") or ""),
+                        "provider_telegram_message_id": unresolved.get("telegram_message_id"),
+                        "provider_management_posted_at": str(unresolved.get("posted_at") or ""),
+                        "provider_management_reason": unresolved.get("reason"),
+                        "broker_mutation_created": False,
+                    },
+                )
+                self._audit_new_trade_route(
+                    signal_id=signal_id,
+                    outcome="blocked",
+                    position_count=0,
+                    error_code=error_code,
+                )
+                return CanonicalRouteResult(
+                    outcome="blocked",
+                    decision=stored.decision,
+                    action=stored.action,
+                    signal_id=signal_id,
+                    error_code=error_code,
+                    reason=error_code,
+                )
+
             prior = self._prior_new_trade_route(signal_id)
             if prior is not None:
                 if prior.get("outcome") == "executed":
