@@ -200,6 +200,19 @@ class CanonicalTelegramPublisherManager(Day34CutoverTelegramPublisherManager):
         """
 
     @staticmethod
+    def _management_broker_action_sql(alias: str) -> str:
+        return f"""
+            EXISTS (
+                SELECT 1
+                FROM audit_events AS routed
+                WHERE routed.event_type='mt5.day28_route_success'
+                  AND routed.payload->>'route'='trade_update'
+                  AND routed.payload->>'lifecycle_event_id'={alias}.id::text
+                  AND COALESCE((routed.payload->>'broker_actions_sent')::int,0) > 0
+            )
+        """
+
+    @staticmethod
     def _queued_from_confirmed_placement_sql(alias: str) -> str:
         """A root seeded promptly from a broker-confirmed route stays sendable.
 
@@ -228,6 +241,7 @@ class CanonicalTelegramPublisherManager(Day34CutoverTelegramPublisherManager):
             placement_for_pub = self._placement_exists_sql("pub.signal_id")
             placement_for_sig = self._placement_exists_sql("sig.id")
             placement_for_ev = self._placement_exists_sql("ev.signal_id")
+            management_action_for_ev = self._management_broker_action_sql("ev")
             queued_from_confirmed_route = self._queued_from_confirmed_placement_sql("pub")
 
             # Old unsent roots are not replayed after restart. A new root is publishable
@@ -408,6 +422,10 @@ class CanonicalTelegramPublisherManager(Day34CutoverTelegramPublisherManager):
                     SELECT ev.signal_id,ev.id,'lifecycle_event','pending'
                     FROM signal_lifecycle_events AS ev
                     WHERE ev.created_at>=:fresh_after
+                      AND (
+                          ev.origin<>'provider_update'
+                          OR {management_action_for_ev}
+                      )
                       AND NOT (
                           ev.event_type LIKE 'broker_result_%'
                           AND EXISTS (
