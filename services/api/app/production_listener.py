@@ -98,7 +98,7 @@ class ProviderResearchProductionListener(CanonicalProductionTelegramListenerMana
                     )
                     SELECT source_id,telegram_message_id,revision_index,occurred_at
                     FROM latest
-                    WHERE source_status IN ('testing','live')
+                    WHERE source_status IN ('testing','shadow','live')
                       AND (
                             (decision='new_trade' AND action='execute')
                             OR
