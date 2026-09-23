@@ -7,14 +7,14 @@ from app.risk_sizing_day24 import BrokerVolumeRules, Day24RiskSizer
 ROOT = Path(__file__).resolve().parents[1]
 
 
-def test_four_targets_share_one_percent_planned_total() -> None:
+def test_four_targets_are_four_percent_planned_total() -> None:
     profile = provider_risk_profile(
         source_name="Any Enabled Provider",
         side="BUY",
         position_count=4,
     )
     assert profile is not None
-    assert profile == (Decimal("0.25"),) * 4
+    assert profile == (Decimal("1"),) * 4
 
     result = Day24RiskSizer.size_profile(
         balance=Decimal("2000"),
@@ -27,8 +27,8 @@ def test_four_targets_share_one_percent_planned_total() -> None:
             minimum="0.01", maximum="100", step="0.01"
         ),
     )
-    assert result.total_risk_budget == Decimal("20.00")
-    assert result.total_risk_budget / result.balance * Decimal("100") == Decimal("1.00")
+    assert result.total_risk_budget == Decimal("80")
+    assert result.total_risk_budget / result.balance * Decimal("100") == Decimal("4")
 
 
 def test_reporting_normalizer_uses_stored_planned_risk_not_signal_multiplier() -> None:
@@ -41,10 +41,10 @@ def test_reporting_normalizer_uses_stored_planned_risk_not_signal_multiplier() -
     assert "UPDATE performance_trade_outcomes SET derived_at = derived_at" in source
 
 
-def test_four_full_stops_on_500_model_equal_five_dollars_total() -> None:
+def test_four_full_stops_on_500_model_equal_twenty_dollars_not_forty() -> None:
     balance = Decimal("500")
-    per_target_risk = balance * Decimal("0.01") / Decimal("4")
+    per_target_risk = balance * Decimal("0.01")
     four_target_stop = per_target_risk * Decimal("4")
-    assert per_target_risk == Decimal("1.25")
-    assert four_target_stop == Decimal("5.00")
-    assert four_target_stop / balance * Decimal("100") == Decimal("1.00")
+    assert per_target_risk == Decimal("5.00")
+    assert four_target_stop == Decimal("20.00")
+    assert four_target_stop / balance * Decimal("100") == Decimal("4.00")
