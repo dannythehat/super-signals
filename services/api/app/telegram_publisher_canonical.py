@@ -488,12 +488,101 @@ class CanonicalTelegramPublisherManager(Day34CutoverTelegramPublisherManager):
             self._suppress_stale_in_app_replays(session)
             session.commit()
 
+        self._repair_sent_root_identities_safely()
         self._repair_sent_trade_messages_safely()
 
         if self._summary_service is not None:
             self._summary_service.seed_due()
         self._seed_summary_deliveries()
         self._sync_live_board_safely()
+
+    def _repair_sent_root_identities_safely(self) -> None:
+        """Replace any leaked internal SS-* root with its assigned member TRADE N.
+
+        Roots are now blocked until member_trade_number exists, but this also repairs
+        the handful of rows that escaped during the old assignment/send race.
+        """
+        if not self._bot_token or self._destination_chat_id is None:
+            return
+        try:
+            with self._session_factory() as session:
+                rows = session.execute(
+                    text(
+                        """
+                        SELECT
+                            pub.id AS publication_id,
+                            pub.telegram_message_id,
+                            COALESCE(pub.destination_chat_id,:destination_chat_id)
+                                AS destination_chat_id,
+                            pub.rendered_text,
+                            sig.member_trade_number
+                        FROM telegram_publications AS pub
+                        JOIN signals AS sig ON sig.id=pub.signal_id
+                        WHERE pub.publication_kind='signal_created'
+                          AND pub.lifecycle_event_id IS NULL
+                          AND pub.status='sent'
+                          AND pub.telegram_message_id IS NOT NULL
+                          AND sig.member_trade_number IS NOT NULL
+                          AND COALESCE(pub.rendered_text,'') ~ 'SS-[0-9A-F]{10}'
+                        ORDER BY pub.updated_at DESC
+                        LIMIT 20
+                        """
+                    ),
+                    {"destination_chat_id": self._destination_chat_id},
+                ).mappings().all()
+
+            for row in rows:
+                rendered = str(row["rendered_text"] or "")
+                repaired = re.sub(
+                    r"SS-[0-9A-F]{10}",
+                    f"TRADE {int(row['member_trade_number'])}",
+                    rendered,
+                    count=1,
+                )
+                if repaired == rendered:
+                    continue
+                try:
+                    _bot_api_call(
+                        self._bot_token,
+                        "editMessageText",
+                        {
+                            "chat_id": int(row["destination_chat_id"]),
+                            "message_id": int(row["telegram_message_id"]),
+                            "text": repaired,
+                            "parse_mode": "HTML",
+                            "disable_web_page_preview": "true",
+                        },
+                    )
+                except TelegramPublishError as exc:
+                    logger.warning(
+                        "Telegram root identity repair failed safely message_id=%s code=%s",
+                        row["telegram_message_id"],
+                        exc.code,
+                    )
+                    continue
+
+                with self._session_factory() as session:
+                    session.execute(
+                        text(
+                            """
+                            UPDATE telegram_publications
+                            SET rendered_text=:rendered_text,updated_at=now()
+                            WHERE id=:publication_id AND status='sent'
+                            """
+                        ),
+                        {
+                            "publication_id": row["publication_id"],
+                            "rendered_text": repaired,
+                        },
+                    )
+                    session.commit()
+                logger.info(
+                    "Telegram root identity corrected in place message_id=%s trade_number=%s",
+                    row["telegram_message_id"],
+                    row["member_trade_number"],
+                )
+        except Exception:
+            logger.exception("Telegram root identity repair failed safely; trading unchanged")
 
     def _repair_sent_trade_messages_safely(self) -> None:
         """Edit stale member updates in place; never create another Telegram post.
@@ -1095,6 +1184,7 @@ class CanonicalTelegramPublisherManager(Day34CutoverTelegramPublisherManager):
                     WHERE pub.status='pending'
                       AND pub.publication_kind='signal_created'
                       AND pub.lifecycle_event_id IS NULL
+                      AND sig.member_trade_number IS NOT NULL
                       AND {self._placement_exists_sql('pub.signal_id')}
                     ORDER BY pub.created_at,pub.id
                     FOR UPDATE OF pub SKIP LOCKED
