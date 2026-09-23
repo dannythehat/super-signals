@@ -59,8 +59,8 @@ def test_weekend_footer_omits_daily_line() -> None:
     assert "Month to date: +$142.10" in rendered
 
 
-def test_one_percent_is_quoted_from_the_real_mt5_balance() -> None:
-    """Balance excludes floating P&L. The published 1% must use that same balance."""
+def test_one_percent_is_quoted_from_the_full_vantage_account_value() -> None:
+    """Telegram balance includes floating P/L and 1% uses that same account value."""
     snapshot = AccountLedgerSnapshot(
         account_value=Decimal("1364.87"),
         mt5_balance=Decimal("1364.87"),
@@ -126,8 +126,8 @@ class _StubSession:
         return _StubResult(rows=[])
 
 
-def test_account_derives_one_percent_from_the_real_balance(monkeypatch) -> None:  # noqa: ANN001
-    """account() must compute 1% from broker balance, never floating equity."""
+def test_account_derives_one_percent_from_full_vantage_equity(monkeypatch) -> None:  # noqa: ANN001
+    """account() publishes Vantage equity and computes its displayed 1% from it."""
     import app.telegram_trade_ledger as ledger_module
 
     snapshot_row = {
@@ -148,6 +148,6 @@ def test_account_derives_one_percent_from_the_real_balance(monkeypatch) -> None:
     snap = ledger.account(now=datetime(2026, 9, 22, 12, 1, tzinfo=UTC))
 
     assert snap.mt5_balance == Decimal("1364.87")
-    assert snap.account_value == Decimal("1364.87")
-    assert snap.one_percent == Decimal("13.65")
+    assert snap.account_value == Decimal("2050.64")
+    assert snap.one_percent == Decimal("20.51")
     assert snap.stale is False
