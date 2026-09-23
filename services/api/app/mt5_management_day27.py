@@ -216,17 +216,21 @@ class Day27Mt5ManagementService:
                     broker_orders = await self._broker_orders(
                         token=token, account_id=account.account_id, region=region
                     )
-                    mapped_order_ids = {
-                        item.broker_order_id
+                    mapped_orders = {
+                        item.broker_order_id: item
                         for item in local_positions
-                        if item.broker_order_id is not None
+                        if item.status == "pending" and item.broker_order_id is not None
                     }
-                    for order_id in sorted(mapped_order_ids.intersection(broker_orders)):
+                    for order_id in sorted(set(mapped_orders).intersection(broker_orders)):
                         await self._trade.cancel_order(
                             token=token,
                             account_id=account.account_id,
                             region=region,
                             order_id=order_id,
+                        )
+                        self._mark_pending_cancelled(
+                            mapped_orders[order_id].id,
+                            reason="provider_cancel_pending",
                         )
                         counters["broker_actions_sent"] += 1
                         counters["orders_cancelled"] += 1
@@ -368,7 +372,46 @@ class Day27Mt5ManagementService:
             )
             closed += 1
             self._mark_failsafe_closed(item.id)
+
+        broker_orders = await self._broker_orders(
+            token=token, account_id=account.account_id, region=region
+        )
+        pending_positions = tuple(
+            item
+            for item in self._load_positions(signal_id, owner_user_id)
+            if item.status == "pending"
+            and item.broker_order_id is not None
+            and item.broker_order_id in broker_orders
+        )
+        for item in pending_positions:
+            assert item.broker_order_id is not None
+            await self._trade.cancel_order(
+                token=token,
+                account_id=account.account_id,
+                region=region,
+                order_id=item.broker_order_id,
+            )
+            self._mark_pending_cancelled(
+                item.id,
+                reason="management_failsafe_cancel_pending",
+            )
         return closed
+
+    def _mark_pending_cancelled(self, position_id: UUID, *, reason: str) -> None:
+        with self._session_factory() as session:
+            session.execute(
+                text(
+                    """
+                    UPDATE positions
+                    SET status='cancelled',
+                        close_reason=COALESCE(close_reason,:reason),
+                        updated_at=now()
+                    WHERE id=:position_id AND status='pending'
+                    """
+                ),
+                {"position_id": position_id, "reason": reason},
+            )
+            session.commit()
 
     def _mark_failsafe_closed(self, position_id: UUID) -> None:
         now = datetime.now(UTC)
