@@ -9,6 +9,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import UTC, datetime
 import os
+import re
 from decimal import ROUND_HALF_UP, Decimal
 from hashlib import sha256
 from uuid import UUID
@@ -97,6 +98,8 @@ class TradeLegSnapshot:
     tp_index: int
     status: str
     cash_pnl: Decimal
+    target_hit: bool = False
+    provider_reported_hit: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -328,9 +331,13 @@ class TelegramTradeLedger:
                     SELECT
                         p.tp_index,
                         p.status AS position_status,
+                        p.take_profit,
+                        p.exit_price,
+                        s.side,
                         COALESCE(o.status,'') AS outcome_status,
                         COALESCE(o.cash_pnl,0) AS cash_pnl
                     FROM positions p
+                    JOIN signals s ON s.id=p.signal_id
                     LEFT JOIN performance_trade_outcomes o ON o.position_id=p.id
                     WHERE p.signal_id=:signal_id
                       AND p.user_id=:user_id
@@ -339,25 +346,69 @@ class TelegramTradeLedger:
                 ),
                 {"signal_id": signal_id, "user_id": self._reference_user_id},
             ).mappings().all()
+            milestone_rows = session.execute(
+                text(
+                    """
+                    SELECT m.raw_text
+                    FROM signal_lifecycle_events e
+                    JOIN messages m ON m.id=e.source_message_id
+                    WHERE e.signal_id=:signal_id
+                      AND e.origin='provider_update'
+                    ORDER BY e.created_at
+                    """
+                ),
+                {"signal_id": signal_id},
+            ).mappings().all()
+
+        provider_hits: set[int] = set()
+        milestone_pattern = re.compile(
+            r"\bTP\s*(\d+)\b.{0,48}\b(?:HIT|HITS|REACHED|TAPPED)\b"
+            r"|\b(?:HIT|HITS|REACHED|TAPPED)\b.{0,24}\bTP\s*(\d+)\b",
+            re.IGNORECASE | re.DOTALL,
+        )
+        for milestone in milestone_rows:
+            for match in milestone_pattern.finditer(str(milestone["raw_text"] or "")):
+                raw_index = match.group(1) or match.group(2)
+                if raw_index:
+                    provider_hits.add(int(raw_index))
 
         legs: list[TradeLegSnapshot] = []
         for leg in leg_rows:
+            tp_index = int(leg["tp_index"] or 1)
             outcome = str(leg["outcome_status"] or "").lower()
             position_status = str(leg["position_status"] or "").lower()
-            if outcome in {"won", "lost", "breakeven", "closed_unknown"}:
+            side = str(leg["side"] or "").upper()
+            target = Decimal(str(leg["take_profit"])) if leg["take_profit"] is not None else None
+            exit_price = Decimal(str(leg["exit_price"])) if leg["exit_price"] is not None else None
+            target_hit = bool(
+                target is not None
+                and exit_price is not None
+                and (
+                    (side == "BUY" and exit_price >= target - Decimal("0.75"))
+                    or (side == "SELL" and exit_price <= target + Decimal("0.75"))
+                )
+            )
+            provider_reported_hit = tp_index in provider_hits
+
+            if provider_reported_hit or (outcome == "won" and target_hit):
+                state = "won"
+            elif outcome == "won":
+                state = "closed_profit"
+            elif outcome in {"lost", "breakeven", "closed_unknown"}:
                 state = outcome
             elif position_status in {"cancelled", "canceled"}:
                 state = "cancelled"
             elif position_status == "closed":
                 state = "closed_unknown"
             else:
-                # Members do not need the internal open/pending distinction.
                 state = "pending"
             legs.append(
                 TradeLegSnapshot(
-                    tp_index=int(leg["tp_index"] or 1),
+                    tp_index=tp_index,
                     status=state,
                     cash_pnl=Decimal(str(leg["cash_pnl"] or 0)),
+                    target_hit=target_hit,
+                    provider_reported_hit=provider_reported_hit,
                 )
             )
 
