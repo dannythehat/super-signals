@@ -11,6 +11,7 @@ def test_member_telegram_format_is_spacious_and_status_driven() -> None:
     assert "PENDING ⏳" in source
     assert "Trade complete" in source
     assert "identity.marker" not in source
+    assert 'f"<b>{_balance_money(account.account_value)}</b>"' in source
 
 
 def test_member_provider_identity_uses_named_emojis_not_colour_pairs() -> None:
@@ -20,11 +21,13 @@ def test_member_provider_identity_uses_named_emojis_not_colour_pairs() -> None:
     assert "_PROVIDER_COLOURS" not in source
 
 
-def test_today_pnl_and_balance_follow_mt5_closed_balance_truth() -> None:
+def test_today_pnl_and_balance_follow_full_vantage_equity_from_9pm() -> None:
     source = Path("services/api/app/telegram_trade_ledger.py").read_text()
-    assert 'snapshot["balance"]' in source
+    assert 'snapshot["equity"]' in source
     assert "account_value - today_opening_value" in source
-    assert "never substitute equity/floating P&L" in source
+    assert "hour=21" in source
+    assert "trading_day_start" in source
+    assert "21:00 Sofia" in source
     public = Path("services/api/app/routes/gold_quote.py").read_text()
     assert "account_value_days" in public
     assert "opening_balance" in public
