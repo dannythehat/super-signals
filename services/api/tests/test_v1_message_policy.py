@@ -469,3 +469,20 @@ def test_incomplete_update_is_not_promoted() -> None:
     )
     assert result.decision == "trade_update"
     assert result.action == "ignore"
+
+
+def test_live_tig_tp2_hit_book_partial_stays_on_tp2_through_v1_policy() -> None:
+    result = apply_v1_message_policy(
+        _decision(decision="trade_update", action="apply_update"),
+        raw_text="Tp2 hits with +110pips✅\n\nBook partial 🤑💰🤑",
+    )
+    assert result.action == "apply_update"
+    assert {"type": "close", "target": "TP2", "value": None} in result.extracted[
+        "management_actions"
+    ]
+    assert {"type": "close", "target": "partial_tp1", "value": None} not in result.extracted[
+        "management_actions"
+    ]
+    assert {"type": "close", "target": "TP1", "value": None} not in result.extracted[
+        "management_actions"
+    ]
