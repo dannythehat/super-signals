@@ -44,7 +44,7 @@ from app.mt5_management_day27 import Day27ManagementError
 
 logger = logging.getLogger(__name__)
 
-_DEFAULT_INTERVAL_SECONDS = 180
+_DEFAULT_INTERVAL_SECONDS = 30
 _LOOKBACK_INTERVAL = "2 hours"
 _MAX_ATTEMPTS = 4
 _FAILSAFE_EVENT_TYPE = "mt5.management_failsafe_close"
@@ -95,6 +95,48 @@ LEFT JOIN escalated AS e ON e.lifecycle_event_id = g.lifecycle_event_id
 WHERE e.lifecycle_event_id IS NULL
   AND (s.last_success_at IS NULL OR s.last_success_at < g.last_failure_at)
 ORDER BY g.last_failure_at
+"""
+
+_UNATTEMPTED_SQL = """
+SELECT
+    e.signal_id,
+    e.id AS lifecycle_event_id,
+    COALESCE((e.aggregate_result->>'source_revision_index')::int, 0) AS revision_index,
+    0::int AS failure_count
+FROM signal_lifecycle_events AS e
+JOIN messages AS m ON m.id=e.source_message_id
+JOIN sources AS src ON src.id=m.source_id
+WHERE e.origin='provider_update'
+  AND e.created_at >= now() - CAST(:lookback AS interval)
+  AND src.status IN ('testing','live')
+  AND jsonb_typeof(
+        COALESCE(e.aggregate_result->'revised_instruction'->'management_actions','[]'::jsonb)
+      )='array'
+  AND jsonb_array_length(
+        COALESCE(e.aggregate_result->'revised_instruction'->'management_actions','[]'::jsonb)
+      ) > 0
+  AND EXISTS (
+      SELECT 1
+      FROM positions AS p
+      WHERE p.signal_id=e.signal_id
+        AND (
+          (p.status='open' AND p.broker_position_id IS NOT NULL)
+          OR (p.status='pending' AND p.broker_order_id IS NOT NULL)
+        )
+  )
+  AND NOT EXISTS (
+      SELECT 1
+      FROM audit_events AS ae
+      WHERE ae.event_type IN ('mt5.day28_route_success','mt5.day28_route_failure')
+        AND ae.payload->>'lifecycle_event_id'=e.id::text
+  )
+  AND NOT EXISTS (
+      SELECT 1
+      FROM audit_events AS ae
+      WHERE ae.event_type=:escalated_event_type
+        AND ae.payload->>'lifecycle_event_id'=e.id::text
+  )
+ORDER BY e.created_at
 """
 
 _SOURCE_MESSAGE_SQL = """
@@ -176,15 +218,31 @@ class ManagementReliabilityRuntime:
             await self._handle(candidate)
 
     def _find_candidates(self) -> list[dict[str, Any]]:
+        params = {
+            "lookback": _LOOKBACK_INTERVAL,
+            "escalated_event_type": _FAILSAFE_EVENT_TYPE,
+        }
         with self._session_factory() as session:
-            rows = session.execute(
-                text(_CANDIDATES_SQL),
-                {
-                    "lookback": _LOOKBACK_INTERVAL,
-                    "escalated_event_type": _FAILSAFE_EVENT_TYPE,
-                },
+            unattempted = session.execute(
+                text(_UNATTEMPTED_SQL),
+                params,
             ).mappings().all()
-        return [dict(row) for row in rows]
+            failed = session.execute(
+                text(_CANDIDATES_SQL),
+                params,
+            ).mappings().all()
+        # Unattempted first: these are the dangerous restart/deploy handoff gap where
+        # interpretation succeeded but broker dispatch never ran.
+        seen: set[str] = set()
+        rows: list[dict[str, Any]] = []
+        for row in [*unattempted, *failed]:
+            item = dict(row)
+            key = str(item["lifecycle_event_id"])
+            if key in seen:
+                continue
+            seen.add(key)
+            rows.append(item)
+        return rows
 
     async def _handle(self, candidate: dict[str, Any]) -> None:
         signal_id: UUID = candidate["signal_id"]
