@@ -145,6 +145,9 @@ _MOVE_BE = re.compile(
     r"(?:TRADE|SETUP|SET\s*UP|POSITION|BEST\s+ENTR(?:Y|IES)|ENTR(?:Y|IES))\s+"
     r"(?:OVERALL\s+)?RISK\s*[- ]?FREE\b"
     r"|\b(?:I\s+(?:AM|['’]M)\s+)?(?:NOW\s+)?HOLD(?:ING)?\s+RISK\s*[- ]?FREE\b"
+    r"|\b(?:SET|PUT)\s+(?:(?:THE|YOUR|MY|OUR)\s+)?(?:SL\s+)?(?:TO\s+)?(?:BE|BREAKEVEN|BREAK\s+EVEN)\b"
+    r"|\b(?:ZERO\s+RISK|0\s*%\s*RISK)\b"
+    r"|\b(?:MOVE|MOVED)\s+(?:(?:THE|YOUR|MY|OUR)\s+)?(?:SL|STOP\s*LOSS)\s+ABOVE\s+(?:ALL\s+)?ENTR(?:Y|IES)\b"
     r"|\bI\s+WILL\s+MAKE\s+(?:MY|THE)\s+TRADE\s+RISK\s*[- ]?FREE\s+NOW\b"
     r"|\b(?:LOCK|LOCKING)\s+IN\s+(?:SOME\s+|THE\s+)?PROFITS?\b"
     r"|\b(?:SECURE|PROTECT)\s+(?:SOME\s+|THE\s+|YOUR\s+)?PROFITS?\b"
@@ -178,7 +181,13 @@ _TAKE_PARTIALS = re.compile(
     r"|\bBOOK\s+PARTIAL\b|\bTAKE\s+PARTIAL\s+PROFITS?\b|\bCLOSE(?:D)?\s+PARTIALS?\b"
     r"|\b(?:CLOSE|BANK|SECURE|TAKE)\s+(?:OFF\s+)?HALF\b"
     r"|\bCLOSE\s+(?:SOME|A\s+PORTION)\s+(?:OF\s+)?(?:IT|THE\s+(?:TRADE|POSITIONS?))?\b"
-    r"|\bBANK\s+(?:SOME|PART)\s+(?:OF\s+)?(?:IT|THE\s+PROFITS?)\b",
+    r"|\bBANK\s+(?:SOME|PART)\s+(?:OF\s+)?(?:IT|THE\s+PROFITS?)\b"
+    r"|\bCOLLECT\s+(?:(?:YOUR|THE)\s+)?(?:HALF|PARTIALS?|FIRST\s+LAYER)\b",
+    re.IGNORECASE,
+)
+_CLOSED_MOST_ENTRIES = re.compile(
+    r"\b(?:I|WE)\s+(?:HAVE\s+)?CLOSED\s+(?:MOST|THE\s+MAJORITY)\s+"
+    r"(?:OF\s+)?(?:(?:MY|OUR|THE)\s+)?ENTR(?:Y|IES)\b",
     re.IGNORECASE,
 )
 _FUTURE_INTENT = re.compile(
@@ -249,6 +258,8 @@ def _extract_actions(text: str) -> list[dict[str, str | None]]:
     else:
         for match in _CLOSE_NUMBERED.finditer(text):
             actions.append({"type": "close", "target": f"TP{match.group(1)}", "value": None})
+        if _CLOSED_MOST_ENTRIES.search(text):
+            actions.append({"type": "close", "target": "all_but_best", "value": None})
         explicit_tp_milestone = bool(
             _TP_HIT.search(text) or _HIT_TP.search(text) or _TP_ALL_HIT.search(text)
         )
