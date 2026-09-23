@@ -64,8 +64,8 @@ def test_sparse_signal_publication_never_crashes_decimal_rendering() -> None:
             "risk_multiplier": 1,
         }
     )
-    assert "Entry: Market" in rendered
-    assert "Stop Loss: N/A" in rendered
+    assert "<b>ENTRY</b>   Market" in rendered
+    assert "<b>STOP</b>    N/A" in rendered
 
 
 def test_provider_numeric_risk_free_stop_is_not_semantically_vetoed() -> None:
