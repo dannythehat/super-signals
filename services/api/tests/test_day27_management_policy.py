@@ -264,3 +264,12 @@ def test_explicit_closed_all_survives_optional_language_elsewhere() -> None:
         "Secure some, set BE if you want to hold. Personally, I closed all my positions."
     )
     assert {"type": "close", "target": "all", "value": None} in result.actions
+
+
+def test_tig_tp2_hit_book_partial_keeps_tp2_context() -> None:
+    """Exact live TIG message 2826: TP2 is the milestone; BOOK must not regress to TP1."""
+    result = extract_day27_management_actions(
+        "Tp2 hits with +110pips✅\n\nBook partial 🤑💰🤑"
+    )
+    assert {"type": "close", "target": "TP2", "value": None} in result.actions
+    assert {"type": "close", "target": "TP1", "value": None} not in result.actions
