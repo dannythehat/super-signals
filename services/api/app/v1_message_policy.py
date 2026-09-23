@@ -28,6 +28,7 @@ from app.ai_message_supervisor import AiMessageDecision
 from app.bare_gold_now_policy import PROFILE as BARE_NOW_PROFILE, bare_now_side
 from app.critical_entry_policy import augment_management_actions, envelope, parse_critical_entries
 from app.day27_management_policy import extract_day27_management_actions
+from app.provider_management_language_audit import is_management_language_candidate
 
 _NUMBER_TOKEN = re.compile(r"(?<![A-Za-z0-9_.])\d+(?:\.\d+)?(?![A-Za-z0-9_.])")
 # Providers commonly print the same instrument as XAUUSD, XAU/USD or XAU USD.
@@ -141,6 +142,22 @@ def _ignore_update(
         decision="trade_update",
         action="ignore",
         reason=reason,
+        extracted=extracted,
+    )
+
+
+def _unmapped_management_update(decision: AiMessageDecision) -> AiMessageDecision:
+    """Never silently drop a strong management-looking provider message."""
+    extracted = dict(decision.extracted)
+    extracted["update_type"] = None
+    extracted["update_target"] = None
+    extracted["update_value"] = None
+    extracted["management_actions"] = []
+    return replace(
+        decision,
+        decision="trade_update",
+        action="skip",
+        reason="unmapped_management_language",
         extracted=extracted,
     )
 
@@ -295,6 +312,11 @@ def apply_v1_message_policy(
                     ),
                     extracted=extracted,
                 )
+            if policy.reason not in {
+                "optional_management_instruction",
+                "provider_result_only",
+            } and is_management_language_candidate(text):
+                return _unmapped_management_update(decision)
 
     if decision.decision == "new_trade":
         exact_bare_side = bare_now_side(text)
@@ -524,6 +546,8 @@ def apply_v1_message_policy(
             return _ignore_update(decision, policy.reason)
         if _RESULT_ONLY.search(text):
             return _ignore_update(decision, "provider_result_only")
+        if is_management_language_candidate(text):
+            return _unmapped_management_update(decision)
         return _ignore_update(decision)
 
     if decision.decision in {"chatter", "preparation"}:
