@@ -155,6 +155,7 @@ class CanonicalBrokerSettlementManager(Day34BrokerSettlementManager):
                         account_id=account_id,
                         region=region,
                         broker_orders=broker_orders,
+                        broker_positions=broker_positions,
                     )
                     await self._protect_open_for_signal(
                         signal_id=signal_id,
@@ -294,12 +295,16 @@ class CanonicalBrokerSettlementManager(Day34BrokerSettlementManager):
         account_id: str,
         region: str,
         broker_orders: dict[str, dict[str, object]],
+        broker_positions: dict[str, dict[str, object]],
     ) -> None:
         with self._session_factory() as session:
             rows = session.execute(
                 text(
                     """
-                    SELECT id,broker_order_id
+                    SELECT
+                        id,
+                        broker_order_id,
+                        created_at <= now() - INTERVAL '60 seconds' AS reconcile_if_absent
                     FROM positions
                     WHERE signal_id=:signal_id AND user_id=:user_id
                       AND status='pending' AND broker_order_id IS NOT NULL
@@ -310,6 +315,14 @@ class CanonicalBrokerSettlementManager(Day34BrokerSettlementManager):
         for row in rows:
             order_id = str(row["broker_order_id"])
             if order_id not in broker_orders:
+                # A missing active order can briefly mean "just filled". Never call it
+                # cancelled while a same-id broker position exists, and give settlement
+                # one minute to attach a newly-created position. After that grace period,
+                # a TP2 milestone plus absence from both broker collections is sufficient
+                # broker evidence that this old entry order is no longer pending.
+                if order_id in broker_positions or not bool(row["reconcile_if_absent"]):
+                    continue
+                self._confirm_pending_cancel(UUID(str(row["id"])), signal_id)
                 continue
             await self._trade.cancel_order(
                 token=token,
