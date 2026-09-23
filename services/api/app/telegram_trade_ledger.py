@@ -383,12 +383,15 @@ class TelegramTradeLedger:
                 state = "closed_profit"
             elif outcome in {"lost", "breakeven", "closed_unknown"}:
                 state = outcome
-            elif provider_reported_hit:
-                state = "pending"
             elif position_status in {"cancelled", "canceled", "skipped"}:
+                # Terminal broker/local truth beats any older provider milestone.
+                # A cancelled/superseded order can never become pending again merely
+                # because the provider previously said that TP was reached.
                 state = "cancelled"
             elif position_status == "closed":
                 state = "closed_unknown"
+            elif provider_reported_hit:
+                state = "pending"
             else:
                 state = "pending"
             legs.append(
