@@ -137,3 +137,10 @@ def test_origin_day_every_window_accumulates_from_same_permanent_start() -> None
     assert all(item.cash_pnl == Decimal("31") for item in windows)
     assert all(item.closed_trades == 1 for item in windows)
     assert all(item.wins == 1 and item.losses == 0 and item.breakeven == 0 for item in windows)
+
+
+def test_provider_reported_tp2_can_trigger_stale_pending_cleanup() -> None:
+    source = getsource(CanonicalBrokerSettlementManager._protection_plans)
+    assert "provider_hits" in source
+    assert "ph.tp2_hit" in source
+    assert "signal_lifecycle_events" in source
