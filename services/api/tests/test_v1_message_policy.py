@@ -523,3 +523,55 @@ def test_historical_chatter_override_never_executes_management() -> None:
         raw_text="Make your best entries risk free",
     )
     assert result.action == "ignore"
+
+
+def test_unknown_strong_management_language_is_never_silent_chatter() -> None:
+    result = apply_v1_message_policy(
+        _decision(decision="chatter", action="ignore"),
+        raw_text="Book maximum and trail entry to maximum profit levels",
+    )
+    assert result.decision == "trade_update"
+    assert result.action == "skip"
+    assert result.reason == "unmapped_management_language"
+
+
+def test_unknown_strong_management_language_is_never_silent_trade_update() -> None:
+    result = apply_v1_message_policy(
+        _decision(decision="trade_update", action="ignore"),
+        raw_text="Trail entry to maximum profit levels",
+    )
+    assert result.action == "skip"
+    assert result.reason == "unmapped_management_language"
+
+
+def test_gold_trader_mo_state_report_becomes_live_management() -> None:
+    result = apply_v1_message_policy(
+        _decision(decision="chatter", action="ignore"),
+        raw_text="I have closed most entries and moved my SL above all entries for zero risk ok!🙏🏽",
+    )
+    assert result.action == "apply_update"
+    actions = result.extracted["management_actions"]
+    assert {"type": "close", "target": "all_but_best", "value": None} in actions
+    assert {"type": "move_to_break_even", "target": "all", "value": None} in actions
+
+
+def test_xauusd_gold_pips_collect_partial_and_be_becomes_live_management() -> None:
+    result = apply_v1_message_policy(
+        _decision(decision="chatter", action="ignore"),
+        raw_text="GOLD BUY 110PIPS\n\nCollect partial & set breakeven",
+    )
+    assert result.action == "apply_update"
+    actions = result.extracted["management_actions"]
+    assert {"type": "close", "target": "TP1", "value": None} in actions
+    assert {"type": "move_to_break_even", "target": "all", "value": None} in actions
+
+
+def test_sureshot_compound_management_cannot_be_downgraded_to_chatter() -> None:
+    result = apply_v1_message_policy(
+        _decision(decision="chatter", action="ignore"),
+        raw_text="XAUUSD CLOSE HALF 67+ PIPS PROFIT ✅✅ MOVE SL TO ENTRY",
+    )
+    assert result.action == "apply_update"
+    actions = result.extracted["management_actions"]
+    assert any(action["type"] == "close" for action in actions)
+    assert {"type": "move_to_break_even", "target": "all", "value": None} in actions
