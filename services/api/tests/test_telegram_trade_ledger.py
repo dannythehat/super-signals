@@ -15,6 +15,8 @@ def test_provider_badge_is_stable_and_distinguishes_sources() -> None:
     two = UUID("22222222-2222-4222-8222-222222222222")
     assert provider_badge(one) == provider_badge(one)
     assert provider_badge(one) != provider_badge(two)
+    assert provider_badge(one, "TIG’s Asia Trades") == "🇯🇵"
+    assert provider_badge(two, "FTX") == "🏎️"
 
 
 def test_money_is_plain_signed_usd() -> None:

@@ -18,6 +18,7 @@ from sqlalchemy import text
 from sqlalchemy.orm import Session, sessionmaker
 
 from app.reporting_overrides import BROKER_DEAL_NOT_OVERRIDDEN_SQL, override_cash_by_day
+from app.running_daily_balance import opening_account_value
 
 SOFIA = ZoneInfo("Europe/Sofia")
 REFERENCE_START_AT = datetime(2026, 8, 5, 21, 0, tzinfo=UTC)
@@ -29,23 +30,49 @@ REFERENCE_START_VALUE = Decimal("1000.00")
 ACCOUNT_SNAPSHOT_MAX_AGE_SECONDS = max(
     60, int(os.getenv("TELEGRAM_ACCOUNT_SNAPSHOT_MAX_AGE_SECONDS", "900") or 900)
 )
-_PROVIDER_COLOURS = ("🔵", "🟢", "🟣", "🟠", "🟡", "🔴", "🟤", "⚫", "⚪")
+_PROVIDER_EMOJIS = (
+    "⚡", "🎯", "🏆", "👑", "💎", "🦁", "🚀", "📈", "🧭", "🔥",
+    "🛡️", "🌍", "🥇", "🧠", "⭐", "🛰️", "🏹", "🔔", "🪙", "🐂",
+)
+
+
+def _normalise_provider_name(value: str) -> str:
+    return " ".join(str(value or "").casefold().replace("’", "'").split())
+
+
+def provider_badge(source_id: UUID | str | None, provider_name: str = "") -> str:
+    """One recognisable provider emoji; never the old coloured-dot pair."""
+    name = _normalise_provider_name(provider_name)
+    if "tig's asia trades" in name or ("asia" in name and "tig" in name):
+        return "🇯🇵"
+    if "ftx" in name:
+        return "🏎️"
+    keyword_icons = (
+        ("diamond", "💎"),
+        ("king", "👑"),
+        ("queen", "👑"),
+        ("hunter", "🦁"),
+        ("lion", "🦁"),
+        ("sniper", "🎯"),
+        ("sure", "🎯"),
+        ("top 1%", "🥇"),
+        ("global", "🌍"),
+        ("rocket", "🚀"),
+        ("scalp", "📈"),
+        ("trade", "📈"),
+        ("gold", "🪙"),
+    )
+    for keyword, icon in keyword_icons:
+        if keyword in name:
+            return icon
+    raw = str(source_id or name or "unknown").encode("utf-8")
+    return _PROVIDER_EMOJIS[sha256(raw).digest()[0] % len(_PROVIDER_EMOJIS)]
 
 
 def money(value: Decimal | int | float | str | None) -> str:
     amount = Decimal(str(value or 0)).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
     sign = "+" if amount > 0 else "-" if amount < 0 else ""
     return f"{sign}$" + f"{abs(amount):,.2f}"
-
-
-def provider_badge(source_id: UUID | str | None) -> str:
-    raw = str(source_id or "unknown").encode("utf-8")
-    digest = sha256(raw).digest()
-    first = digest[0] % len(_PROVIDER_COLOURS)
-    second = digest[1] % (len(_PROVIDER_COLOURS) - 1)
-    if second >= first:
-        second += 1
-    return _PROVIDER_COLOURS[first] + _PROVIDER_COLOURS[second]
 
 
 @dataclass(frozen=True, slots=True)
@@ -57,11 +84,19 @@ class AccountLedgerSnapshot:
     one_percent: Decimal | None
     local_weekday: int
     updated_at: datetime | None
+    today_opening_value: Decimal | None = None
     stale: bool = False
 
     @property
     def weekday_trading_day(self) -> bool:
         return self.local_weekday < 5
+
+
+@dataclass(frozen=True, slots=True)
+class TradeLegSnapshot:
+    tp_index: int
+    status: str
+    cash_pnl: Decimal
 
 
 @dataclass(frozen=True, slots=True)
@@ -71,6 +106,7 @@ class TradeLedgerSnapshot:
     closed_legs: int
     open_legs: int
     pending_legs: int
+    legs: tuple[TradeLegSnapshot, ...] = ()
 
     @property
     def complete(self) -> bool:
@@ -167,6 +203,11 @@ class TelegramTradeLedger:
                 start=REFERENCE_START_AT,
                 end=point,
             )
+            today_opening_value = opening_account_value(
+                session,
+                self._reference_user_id,
+                local_day,
+            )
 
         by_day: dict[object, Decimal] = {}
         for row in rows:
@@ -178,7 +219,7 @@ class TelegramTradeLedger:
         for day, amount in overrides.items():
             by_day[day] = by_day.get(day, Decimal("0")) + Decimal(str(amount or 0))
 
-        today = by_day.get(local_day, Decimal("0")).quantize(Decimal("0.01"))
+        realised_today = by_day.get(local_day, Decimal("0")).quantize(Decimal("0.01"))
         month = sum(
             (
                 amount
@@ -209,6 +250,11 @@ class TelegramTradeLedger:
             age = (point - captured.astimezone(UTC)).total_seconds()
             stale = age > ACCOUNT_SNAPSHOT_MAX_AGE_SECONDS
 
+        today = realised_today
+        if account_value is not None and today_opening_value is not None:
+            today = (account_value - today_opening_value).quantize(Decimal("0.01"))
+            month = (month - realised_today + today).quantize(Decimal("0.01"))
+
         # The published figure is the COMPANY PAPER BALANCE: the account value the
         # Vantage demo account reports (balance plus floating P&L), which is the
         # single number this business runs on. It began at REFERENCE_START_VALUE on
@@ -230,6 +276,7 @@ class TelegramTradeLedger:
             one_percent=one_percent,
             local_weekday=local_point.weekday(),
             updated_at=captured_at,
+            today_opening_value=today_opening_value,
             stale=stale,
         )
 
@@ -275,12 +322,52 @@ class TelegramTradeLedger:
                 ),
                 {"signal_id": signal_id, "user_id": self._reference_user_id},
             ).mappings().one()
+            leg_rows = session.execute(
+                text(
+                    """
+                    SELECT
+                        p.tp_index,
+                        p.status AS position_status,
+                        COALESCE(o.status,'') AS outcome_status,
+                        COALESCE(o.cash_pnl,0) AS cash_pnl
+                    FROM positions p
+                    LEFT JOIN performance_trade_outcomes o ON o.position_id=p.id
+                    WHERE p.signal_id=:signal_id
+                      AND p.user_id=:user_id
+                    ORDER BY p.tp_index,p.created_at,p.id
+                    """
+                ),
+                {"signal_id": signal_id, "user_id": self._reference_user_id},
+            ).mappings().all()
+
+        legs: list[TradeLegSnapshot] = []
+        for leg in leg_rows:
+            outcome = str(leg["outcome_status"] or "").lower()
+            position_status = str(leg["position_status"] or "").lower()
+            if outcome in {"won", "lost", "breakeven", "closed_unknown"}:
+                state = outcome
+            elif position_status in {"cancelled", "canceled"}:
+                state = "cancelled"
+            elif position_status == "closed":
+                state = "closed_unknown"
+            else:
+                # Members do not need the internal open/pending distinction.
+                state = "pending"
+            legs.append(
+                TradeLegSnapshot(
+                    tp_index=int(leg["tp_index"] or 1),
+                    status=state,
+                    cash_pnl=Decimal(str(leg["cash_pnl"] or 0)),
+                )
+            )
+
         return TradeLedgerSnapshot(
             realised_pnl=Decimal(str(row["realised_pnl"] or 0)),
             total_legs=int(row["total_legs"] or 0),
             closed_legs=int(row["closed_legs"] or 0),
             open_legs=int(row["open_legs"] or 0),
             pending_legs=int(row["pending_legs"] or 0),
+            legs=tuple(legs),
         )
 
     @staticmethod
@@ -326,6 +413,7 @@ __all__ = [
     "REFERENCE_START_LABEL",
     "REFERENCE_START_VALUE",
     "TelegramTradeLedger",
+    "TradeLegSnapshot",
     "TradeLedgerSnapshot",
     "money",
     "provider_badge",

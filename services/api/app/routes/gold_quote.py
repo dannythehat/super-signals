@@ -28,6 +28,7 @@ from app.reporting_overrides import (
     BROKER_DEAL_NOT_OVERRIDDEN_SQL,
     override_cash_by_day,
 )
+from app.running_daily_balance import account_value_days
 from app.trading_accounting import CanonicalTradingAccountingService
 
 router = APIRouter(prefix="/dashboard", tags=["dashboard-public-data"])
@@ -60,6 +61,9 @@ class GoldQuoteResponse(BaseModel):
 class PublicDailyPnlResponse(BaseModel):
     day: date
     pnl: float
+    opening_balance: float | None = None
+    closing_balance: float | None = None
+    running: bool = False
 
 
 class PublicTradeResponse(BaseModel):
@@ -368,6 +372,11 @@ def _public_daily(service: Day33PerformanceLedgerServiceV2, user_id: UUID) -> tu
             start=public_start,
             end=now,
         )
+        account_days = account_value_days(
+            session,
+            user_id,
+            now=now,
+        )
 
     values = {
         row["local_day"]: Decimal(str(row["pnl"] or 0))
@@ -379,10 +388,30 @@ def _public_daily(service: Day33PerformanceLedgerServiceV2, user_id: UUID) -> tu
     for reporting_day, reviewed_cash in reviewed_by_day.items():
         values[reporting_day] = values.get(reporting_day, Decimal("0")) + reviewed_cash
 
-    return tuple(
-        PublicDailyPnlResponse(day=day, pnl=round(float(pnl), 2))
-        for day, pnl in sorted(values.items())
-    )
+    account_by_day = {item.day: item for item in account_days}
+    all_days = sorted(set(values) | set(account_by_day))
+    current_day = now.astimezone(public_zone).date()
+    result: list[PublicDailyPnlResponse] = []
+    for day in all_days:
+        account_day = account_by_day.get(day)
+        if account_day is not None:
+            result.append(
+                PublicDailyPnlResponse(
+                    day=day,
+                    pnl=round(float(account_day.pnl), 2),
+                    opening_balance=round(float(account_day.opening_value), 2),
+                    closing_balance=round(float(account_day.closing_value), 2),
+                    running=day == current_day,
+                )
+            )
+        else:
+            result.append(
+                PublicDailyPnlResponse(
+                    day=day,
+                    pnl=round(float(values.get(day, Decimal("0"))), 2),
+                )
+            )
+    return tuple(result)
 
 
 def _public_trades(service: Day33PerformanceLedgerServiceV2, user_id: UUID) -> tuple[PublicTradeResponse, ...]:
