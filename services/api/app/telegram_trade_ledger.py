@@ -166,7 +166,7 @@ class TelegramTradeLedger:
                       AND bd.entry_type='DEAL_ENTRY_OUT'
                       AND (bd.signal_id IS NOT NULL OR bd.broker_client_id LIKE 'SS_%')
                       AND bd.occurred_at>=:start_at
-                      AND bd.occurred_at<:end_at
+                      AND bd.occurred_at<=:end_at
                       AND {BROKER_DEAL_NOT_OVERRIDDEN_SQL}
                     GROUP BY 1
                     """
@@ -187,7 +187,7 @@ class TelegramTradeLedger:
                     FROM performance_trade_outcomes pto
                     WHERE pto.user_id=:user_id
                       AND pto.closed_at>=:start_at
-                      AND pto.closed_at<:end_at
+                      AND pto.closed_at<=:end_at
                       AND pto.broker_deal_count=0
                       AND pto.close_reason LIKE 'reviewed_provider_%'
                     GROUP BY 1
@@ -234,34 +234,24 @@ class TelegramTradeLedger:
             Decimal("0"),
         ).quantize(Decimal("0.01"))
 
-        # "Balance" is the broker's closed cash balance. Equity is separate and may
-        # move while positions are open; it must never be published as BALANCE.
+        # Telegram uses realised broker accounting only. Floating/open P&L must never
+        # make Today or Balance jump around between updates. For the running day the
+        # accepted opening balance is fixed, then each broker-confirmed close changes it.
+        today = realised_today
         account_value = (
-            Decimal(str(snapshot["balance"])).quantize(Decimal("0.01"))
-            if snapshot is not None and snapshot["balance"] is not None
+            (today_opening_value + realised_today).quantize(Decimal("0.01"))
+            if today_opening_value is not None
             else None
         )
         mt5_balance = account_value
-        captured_at = snapshot["captured_at"] if snapshot is not None else None
-        stale = True
-        if captured_at is not None:
-            captured = captured_at
-            if captured.tzinfo is None:
-                captured = captured.replace(tzinfo=UTC)
-            age = (point - captured.astimezone(UTC)).total_seconds()
-            stale = age > ACCOUNT_SNAPSHOT_MAX_AGE_SECONDS
+        captured_at = point
+        stale = False
 
-        today = realised_today
-        if account_value is not None and today_opening_value is not None:
-            today = (account_value - today_opening_value).quantize(Decimal("0.01"))
-            month = (month - realised_today + today).quantize(Decimal("0.01"))
-
-        # The published figure is the real broker BALANCE. Floating/open P&L belongs
-        # to equity and never changes balance or the 1% trade-risk basis. A stale
-        # snapshot must not be quoted as a current risk figure at all.
+        # Month-to-date is realised only. It changes only when a broker leg actually
+        # closes (or an explicit reviewed override is applied).
         one_percent = (
             (account_value * Decimal("0.01")).quantize(Decimal("0.01"))
-            if account_value is not None and not stale
+            if account_value is not None
             else None
         )
 
