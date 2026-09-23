@@ -17,8 +17,9 @@ SIGNAL = UUID("198d5d81-f8c5-45d5-a368-cdf5841e744d")
 
 
 class _Read:
-    def __init__(self, positions: dict) -> None:
+    def __init__(self, positions: dict, orders: dict | None = None) -> None:
         self.positions = positions
+        self.orders = orders or {}
 
     async def resolve_account_region(self, **_: object) -> str:
         return "london"
@@ -26,15 +27,23 @@ class _Read:
     async def read_positions(self, **_: object):
         return list(self.positions.values())
 
+    async def read_orders(self, **_: object):
+        return list(self.orders.values())
+
 
 class _Trade:
     def __init__(self, read: _Read) -> None:
         self.read = read
         self.closed: list[str] = []
+        self.cancelled: list[str] = []
 
     async def close_position(self, *, position_id: str, **_: object) -> None:
         self.closed.append(position_id)
         self.read.positions.pop(position_id, None)
+
+    async def cancel_order(self, *, order_id: str, **_: object) -> None:
+        self.cancelled.append(order_id)
+        self.read.orders.pop(order_id, None)
 
 
 class _Cipher:
@@ -44,8 +53,8 @@ class _Cipher:
 
 
 class _Harness(Day27Mt5ManagementService):
-    def __init__(self, *, broker_positions: dict, local_positions: list[_LocalPosition], account=None) -> None:
-        self.read = _Read(broker_positions)
+    def __init__(self, *, broker_positions: dict, local_positions: list[_LocalPosition], account=None, broker_orders: dict | None = None) -> None:
+        self.read = _Read(broker_positions, broker_orders)
         self.trade = _Trade(self.read)
         super().__init__(
             session_factory=None,  # type: ignore[arg-type]
@@ -57,6 +66,7 @@ class _Harness(Day27Mt5ManagementService):
         self.account = account
         self.reconciled = 0
         self.marked_closed: list[UUID] = []
+        self.marked_cancelled: list[UUID] = []
 
     def _load_account(self, owner_user_id):
         assert owner_user_id == OWNER
@@ -83,6 +93,14 @@ class _Harness(Day27Mt5ManagementService):
         self.marked_closed.append(position_id)
         self.positions = [
             replace(item, status="closed") if item.id == position_id else item
+            for item in self.positions
+        ]
+
+    def _mark_pending_cancelled(self, position_id: UUID, *, reason: str) -> None:
+        assert reason == "management_failsafe_cancel_pending"
+        self.marked_cancelled.append(position_id)
+        self.positions = [
+            replace(item, status="cancelled") if item.id == position_id else item
             for item in self.positions
         ]
 
@@ -166,3 +184,20 @@ def test_missing_account_fails_closed_rather_than_guessing() -> None:
         raise AssertionError("expected Day27ManagementError")
     except Day27ManagementError as exc:
         assert exc.code == "mt5_account_not_configured"
+
+
+def test_failsafe_also_cancels_mapped_pending_orders() -> None:
+    pending = _position(2, "never-opens", status="pending")
+    service = _Harness(
+        broker_positions={"p1": {"id": "p1"}},
+        broker_orders={"order-2": {"id": "order-2"}},
+        local_positions=[_position(1, "p1"), pending],
+        account=_Account(UUID(int=99), "account", b"cipher"),
+    )
+
+    closed = _run(service)
+
+    assert closed == 1
+    assert service.trade.closed == ["p1"]
+    assert service.trade.cancelled == ["order-2"]
+    assert service.marked_cancelled == [UUID(int=2)]
