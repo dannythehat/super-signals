@@ -219,7 +219,7 @@ class Day27Mt5ManagementService:
                     mapped_orders = {
                         item.broker_order_id: item
                         for item in local_positions
-                        if item.status == "pending" and item.broker_order_id is not None
+                        if item.broker_order_id is not None
                     }
                     for order_id in sorted(set(mapped_orders).intersection(broker_orders)):
                         await self._trade.cancel_order(
@@ -228,10 +228,11 @@ class Day27Mt5ManagementService:
                             region=region,
                             order_id=order_id,
                         )
-                        self._mark_pending_cancelled(
-                            mapped_orders[order_id].id,
-                            reason="provider_cancel_pending",
-                        )
+                        if mapped_orders[order_id].status == "pending":
+                            self._mark_pending_cancelled(
+                                mapped_orders[order_id].id,
+                                reason="provider_cancel_pending",
+                            )
                         counters["broker_actions_sent"] += 1
                         counters["orders_cancelled"] += 1
                     continue
