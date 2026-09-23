@@ -6,6 +6,11 @@ from decimal import Decimal
 from uuid import uuid4
 
 from app.provider_adaptive_profile import AdaptiveProviderProfileService, mask_language_example
+from app.provider_management_language_audit import (
+    ProviderManagementLanguageAuditService,
+    is_management_language_candidate,
+    management_phrase_families,
+)
 from app.shadow_signal_ledger import ShadowAwareCanonicalSignalLedger
 from app.shadow_trading_service_v4 import ShadowTradeService
 
@@ -118,3 +123,40 @@ def test_testing_live_benchmark_mirror_is_outside_broker_router() -> None:
     source = inspect.getsource(ShadowAwareCanonicalSignalLedger._mirror_testing_live_signal)
     assert 'not in {"testing", "live"}' in source
     assert "record_signal" in source
+
+
+def test_management_language_candidate_detects_live_provider_dialects() -> None:
+    assert is_management_language_candidate("Make your best entries risk free")
+    assert is_management_language_candidate("XAUUSD CLOSE HALF 67+ PIPS MOVE SL TO ENTRY")
+    assert is_management_language_candidate("Book maximum and trail entry to maximum profit levels")
+    assert not is_management_language_candidate("Good morning team, charts look clean")
+
+
+def test_management_phrase_families_are_provider_language_not_execution_authority() -> None:
+    families = management_phrase_families(
+        "Collect partial and set breakeven, then let the rest run risk-free"
+    )
+    assert "partial" in families
+    assert "breakeven" in families
+
+
+def test_provider_management_audit_counts_covered_and_unmapped_examples() -> None:
+    source_id = uuid4()
+    rows = [
+        {"raw_text": "Make your best entries risk free"},
+        {"raw_text": "XAUUSD CLOSE HALF 67+ PIPS PROFIT MOVE SL TO ENTRY"},
+        {"raw_text": "Book maximum and trail entry to maximum profit levels"},
+        {"raw_text": "Hello team"},
+    ]
+    payload = ProviderManagementLanguageAuditService._audit_payload(
+        source_id,
+        {"provider": "Fixture Provider", "status": "shadow"},
+        rows,
+    )
+    assert payload["messages_scanned"] == 4
+    assert payload["management_candidates"] == 3
+    assert payload["covered_candidates"] == 2
+    assert payload["unmapped_candidates"] == 1
+    assert payload["execution_authority"] is False
+    assert payload["unmapped_examples_masked"]
+    assert all("67" not in value for value in payload["covered_examples_masked"])
