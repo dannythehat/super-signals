@@ -266,6 +266,8 @@ class CanonicalExecutionDispatcher:
         is stale and unsafe. Fail closed instead of entering after the provider has already
         changed the trade.
         """
+        if self._session_factory is None:
+            return None
         with self._session_factory() as session:
             row = session.execute(
                 text(
