@@ -118,7 +118,7 @@ def test_double_lot_wording_cannot_multiply_split_trade_budget() -> None:
     )
 
     assert actual.effective_risk_percent == Decimal("0.25")
-    assert actual.risk_budget_per_position == Decimal("15.0")
+    assert actual.risk_budget_per_position == Decimal("3.750")
     assert not actual.double_lot_applied
 
 
