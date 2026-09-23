@@ -25,13 +25,13 @@ def test_money_is_plain_signed_usd() -> None:
     assert money(0) == "$0.00"
 
 
-def test_weekday_footer_uses_vantage_value_not_synthetic_balance() -> None:
+def test_weekday_footer_uses_real_vantage_balance() -> None:
     snapshot = AccountLedgerSnapshot(
-        account_value=Decimal("2050.64"),
+        account_value=Decimal("1436.12"),
         mt5_balance=Decimal("1436.12"),
         today_pnl=Decimal("35.20"),
         month_to_date_pnl=Decimal("142.10"),
-        one_percent=Decimal("13.65"),
+        one_percent=Decimal("14.36"),
         local_weekday=1,
         updated_at=None,
     )
@@ -40,18 +40,17 @@ def test_weekday_footer_uses_vantage_value_not_synthetic_balance() -> None:
     )
     assert "Today: +$35.20" in rendered
     assert "Month to date: +$142.10" in rendered
-    assert "Vantage account value: $2,050.64 · 1% = $20.51" in rendered
+    assert "Vantage balance: $1,436.12 · 1% = $14.36" in rendered
     assert "Started $1,000.00 · 6 Aug 2026" in rendered
-    assert "$1,436.12" not in rendered
 
 
 def test_weekend_footer_omits_daily_line() -> None:
     snapshot = AccountLedgerSnapshot(
-        account_value=Decimal("2050.64"),
+        account_value=Decimal("1436.12"),
         mt5_balance=Decimal("1436.12"),
         today_pnl=Decimal("0"),
         month_to_date_pnl=Decimal("142.10"),
-        one_percent=Decimal("20.51"),
+        one_percent=Decimal("14.36"),
         local_weekday=6,
         updated_at=None,
     )
@@ -64,10 +63,10 @@ def test_one_percent_is_quoted_from_the_real_mt5_balance() -> None:
     """Balance excludes floating P&L. The published 1% must use that same balance."""
     snapshot = AccountLedgerSnapshot(
         account_value=Decimal("1364.87"),
-        mt5_balance=Decimal("1364.87")
+        mt5_balance=Decimal("1364.87"),
         today_pnl=Decimal("0.00"),
         month_to_date_pnl=Decimal("0.00"),
-        one_percent=Decimal("20.51"),
+        one_percent=Decimal("13.65"),
         local_weekday=2,
         updated_at=datetime(2026, 9, 22, 12, 0, tzinfo=UTC),
         stale=False,
@@ -79,20 +78,18 @@ def test_one_percent_is_quoted_from_the_real_mt5_balance() -> None:
 
 
 def test_stale_account_snapshot_is_never_published_as_current() -> None:
-    """A stalled MetaAPI/Vantage capture must not publish a stale balance as if
-    live, and must not quote a risk figure derived from it."""
     snapshot = AccountLedgerSnapshot(
-        account_value=Decimal("2050.64"),
+        account_value=Decimal("1364.87"),
         mt5_balance=Decimal("1364.87"),
         today_pnl=Decimal("0.00"),
         month_to_date_pnl=Decimal("0.00"),
-        one_percent=None,                   # suppressed by account() when stale
+        one_percent=None,
         local_weekday=2,
         updated_at=datetime(2026, 9, 22, 9, 30, tzinfo=UTC),
         stale=True,
     )
     lines = TelegramTradeLedger.account_lines(snapshot)
-    account_line = next(line for line in lines if "account value" in line)
+    account_line = next(line for line in lines if "Vantage balance" in line)
     assert "last updated" in account_line
     assert "1% = " not in account_line
 
@@ -130,16 +127,19 @@ class _StubSession:
 
 
 def test_account_derives_one_percent_from_the_real_balance(monkeypatch) -> None:  # noqa: ANN001
-    """End-to-end derivation: account() must compute 1% from broker balance, not equity."""
+    """account() must compute 1% from broker balance, never floating equity."""
     import app.telegram_trade_ledger as ledger_module
 
     snapshot_row = {
-        "balance": Decimal("1364.87"),  # broker closed-trade balance field
-        "equity": Decimal("2050.64"),   # company paper balance, floating included
+        "balance": Decimal("1364.87"),
+        "equity": Decimal("2050.64"),
         "captured_at": datetime(2026, 9, 22, 12, 0, tzinfo=UTC),
     }
     monkeypatch.setattr(
         ledger_module, "override_cash_by_day", lambda *a, **k: {}, raising=False
+    )
+    monkeypatch.setattr(
+        ledger_module, "opening_account_value", lambda *a, **k: Decimal("1364.87"), raising=False
     )
     ledger = TelegramTradeLedger(
         lambda: _StubSession(snapshot_row),  # type: ignore[arg-type]
