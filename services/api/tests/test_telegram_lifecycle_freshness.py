@@ -18,6 +18,6 @@ def test_confirmed_trade_root_does_not_age_out_after_five_minutes() -> None:
     source = Path("services/api/app/telegram_publisher_canonical.py").read_text()
 
     assert "_queued_from_confirmed_placement_sql" in source
-    assert "pub.created_at<=placed.created_at+INTERVAL '5 minutes'" in source
+    assert "{alias}.created_at<=placed.created_at+INTERVAL '5 minutes'" in source
     assert "pub.created_at>now()-INTERVAL '60 minutes'" in source
     assert "queued_from_confirmed_route" in source
