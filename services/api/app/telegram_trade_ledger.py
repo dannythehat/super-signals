@@ -234,16 +234,14 @@ class TelegramTradeLedger:
             Decimal("0"),
         ).quantize(Decimal("0.01"))
 
+        # "Balance" is the broker's closed cash balance. Equity is separate and may
+        # move while positions are open; it must never be published as BALANCE.
         account_value = (
-            Decimal(str(snapshot["equity"])).quantize(Decimal("0.01"))
-            if snapshot is not None and snapshot["equity"] is not None
-            else None
-        )
-        mt5_balance = (
             Decimal(str(snapshot["balance"])).quantize(Decimal("0.01"))
             if snapshot is not None and snapshot["balance"] is not None
             else None
         )
+        mt5_balance = account_value
         captured_at = snapshot["captured_at"] if snapshot is not None else None
         stale = True
         if captured_at is not None:
@@ -258,13 +256,9 @@ class TelegramTradeLedger:
             today = (account_value - today_opening_value).quantize(Decimal("0.01"))
             month = (month - realised_today + today).quantize(Decimal("0.01"))
 
-        # The published figure is the COMPANY PAPER BALANCE: the account value the
-        # Vantage demo account reports (balance plus floating P&L), which is the
-        # single number this business runs on. It began at REFERENCE_START_VALUE on
-        # REFERENCE_START_LABEL and has compounded since. Sizing is always quoted as
-        # 1% of that paper balance; the broker's closed-trade BALANCE field is never
-        # the published basis. A stale snapshot must not be quoted as a current risk
-        # figure at all.
+        # The published figure is the real broker BALANCE. Floating/open P&L belongs
+        # to equity and never changes balance or the 1% trade-risk basis. A stale
+        # snapshot must not be quoted as a current risk figure at all.
         one_percent = (
             (account_value * Decimal("0.01")).quantize(Decimal("0.01"))
             if account_value is not None and not stale
@@ -447,10 +441,10 @@ class TelegramTradeLedger:
                     else "unknown"
                 )
                 lines.append(
-                    f"💰 Vantage account value: {value} (last updated {stamp})"
+                    f"💰 Vantage balance: {value} (last updated {stamp})"
                 )
             else:
-                lines.append(f"💰 Vantage account value: {value}{one_percent}")
+                lines.append(f"💰 Vantage balance: {value}{one_percent}")
         if include_origin:
             lines.append(
                 "🏁 Started $" + f"{REFERENCE_START_VALUE:,.2f}" + f" · {REFERENCE_START_LABEL}"
