@@ -328,3 +328,33 @@ async def test_missing_or_ineligible_durable_decision_never_reaches_broker() -> 
     assert router.load_calls == 1
     assert execution.calls == []
     assert management.calls == []
+
+
+@pytest.mark.asyncio
+async def test_delayed_trade_is_blocked_when_provider_update_arrived_first() -> None:
+    """Regression for 23 Sep: never enter after an unresolved provider TP/SL/close update."""
+    execution = FakeExecutionService()
+    management = FakeManagementService()
+    router = RouterHarness(
+        owner_user_id=uuid4(),
+        execution=execution,
+        management=management,
+    )
+    router.stored = decision(kind="new_trade", action="execute")
+    router._unresolved_management_after_signal = lambda **_kwargs: {
+        "id": uuid4(),
+        "telegram_message_id": 8463,
+        "posted_at": "2026-09-23T11:52:36Z",
+        "reason": "explicit_trade_management",
+    }
+
+    result = await router.dispatch_stored_decision(
+        source_id=uuid4(),
+        telegram_message_id=8462,
+    )
+
+    assert result.outcome == "blocked"
+    assert result.error_code == "provider_updated_before_delayed_execution"
+    assert execution.calls == []
+    assert router.route_record is not None
+    assert router.route_record["outcome"] == "blocked"
