@@ -268,7 +268,10 @@ class CanonicalExecutionDispatcher:
         """
         if self._session_factory is None:
             return None
-        with self._session_factory() as session:
+        session_context = self._session_factory()
+        if session_context is None:
+            return None
+        with session_context as session:
             row = session.execute(
                 text(
                     """
