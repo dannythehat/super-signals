@@ -85,8 +85,6 @@ def _clean_update_text(value: Any) -> str:
 
 def _render_root(row: Any) -> str:
     """Render only the details members actually need for a newly placed trade."""
-    symbol = str(row["symbol"] or "").upper()
-    side = str(row["side"] or "").upper()
     entry_low = row["entry_low"]
     entry_high = row["entry_high"]
     broker_entry = row["broker_entry"]
@@ -106,15 +104,14 @@ def _render_root(row: Any) -> str:
         take_profits = list(row["broker_take_profits"] or [])
 
     lines = [
-        f"<b>{_html(symbol)} {_html(side)}</b>",
+        f"📍 <b>ENTRY</b>   {_html(entry_text)}",
+        f"🛑 <b>STOP</b>    {_html(_decimal_text(stop_loss))}",
         "",
-        f"<b>Entry: {_html(entry_text)}</b>",
-        f"<b>Stop Loss: {_html(_decimal_text(stop_loss))}</b>",
     ]
     for index, target in enumerate(take_profits, start=1):
-        lines.append(f"<b>TP{index}: {_html(_decimal_text(target))}</b>")
+        lines.append(f"🎯 <b>TP{index}</b>     {_html(_decimal_text(target))}")
     if bool(row["has_open_runner"]):
-        lines.append(f"<b>TP{len(take_profits) + 1}: OPEN</b>")
+        lines.append(f"🏃 <b>TP{len(take_profits) + 1}</b>     OPEN")
     return "\n".join(lines)
 
 
@@ -252,32 +249,59 @@ class CanonicalTelegramPublisherManager(Day34CutoverTelegramPublisherManager):
                 {"fresh_after": fresh_after},
             )
 
-            # Aggregate broker_result_* rows duplicate the position-settlement message
-            # when both are generated for the same broker close. Keep only the concise
-            # position event in Telegram so members do not receive the same result twice.
+            # A final broker_result_* is the clean member-facing close event. When the
+            # settlement sweep creates several leg-level rows for the same close burst,
+            # suppress those components and publish one final result instead.
             session.execute(
                 text(
                     """
                     UPDATE telegram_publications AS pub
                     SET status='suppressed',
-                        failure_code='duplicate_broker_result_summary',
-                        failure_reason='Position settlement already carries the broker result.',
+                        failure_code='component_settlement_collapsed_into_final_result',
+                        failure_reason='Final broker result carries the complete trade outcome.',
                         updated_at=now()
                     FROM signal_lifecycle_events AS ev
                     WHERE pub.lifecycle_event_id=ev.id
                       AND pub.status='pending'
-                      AND ev.event_type LIKE 'broker_result_%'
+                      AND ev.event_type='broker_position_settled'
                       AND EXISTS (
                           SELECT 1
                           FROM signal_lifecycle_events AS sibling
                           WHERE sibling.signal_id=ev.signal_id
-                            AND sibling.event_type='broker_position_settled'
+                            AND sibling.event_type LIKE 'broker_result_%'
                             AND sibling.created_at>=:fresh_after
                             AND ABS(EXTRACT(EPOCH FROM (sibling.occurred_at-ev.occurred_at)))<=30
                       )
                     """
                 ),
                 {"fresh_after": fresh_after},
+            )
+
+            # Once the broker has declared the trade complete, later provider wording
+            # must never resurrect it as another member update. Keep the evidence in
+            # PostgreSQL but suppress the Telegram publication.
+            session.execute(
+                text(
+                    """
+                    UPDATE telegram_publications AS pub
+                    SET status='suppressed',
+                        failure_code='post_completion_lifecycle_noise',
+                        failure_reason='Trade was already broker-complete before this update.',
+                        updated_at=now()
+                    FROM signal_lifecycle_events AS ev
+                    WHERE pub.lifecycle_event_id=ev.id
+                      AND pub.status='pending'
+                      AND ev.event_type<>'broker_position_settled'
+                      AND ev.event_type NOT LIKE 'broker_result_%'
+                      AND EXISTS (
+                          SELECT 1
+                          FROM signal_lifecycle_events AS completed
+                          WHERE completed.signal_id=ev.signal_id
+                            AND completed.event_type LIKE 'broker_result_%'
+                            AND completed.created_at<=ev.created_at
+                      )
+                    """
+                )
             )
 
             session.execute(
@@ -290,14 +314,25 @@ class CanonicalTelegramPublisherManager(Day34CutoverTelegramPublisherManager):
                     FROM signal_lifecycle_events AS ev
                     WHERE ev.created_at>=:fresh_after
                       AND NOT (
-                          ev.event_type LIKE 'broker_result_%'
+                          ev.event_type='broker_position_settled'
                           AND EXISTS (
                               SELECT 1
                               FROM signal_lifecycle_events AS sibling
                               WHERE sibling.signal_id=ev.signal_id
-                                AND sibling.event_type='broker_position_settled'
+                                AND sibling.event_type LIKE 'broker_result_%'
                                 AND sibling.created_at>=:fresh_after
                                 AND ABS(EXTRACT(EPOCH FROM (sibling.occurred_at-ev.occurred_at)))<=30
+                          )
+                      )
+                      AND NOT (
+                          ev.event_type<>'broker_position_settled'
+                          AND ev.event_type NOT LIKE 'broker_result_%'
+                          AND EXISTS (
+                              SELECT 1
+                              FROM signal_lifecycle_events AS completed
+                              WHERE completed.signal_id=ev.signal_id
+                                AND completed.event_type LIKE 'broker_result_%'
+                                AND completed.created_at<=ev.created_at
                           )
                       )
                       AND (
@@ -573,9 +608,14 @@ class CanonicalTelegramPublisherManager(Day34CutoverTelegramPublisherManager):
             provider_line = self._provider_line(
                 row["source_id"], str(row["provider_name"] or "Unknown provider")
             )
+            side = str(row["side"] or "").upper()
+            symbol = str(row["symbol"] or "").upper()
+            side_icon = "🟢" if side == "BUY" else "🔴" if side == "SELL" else "⚪"
             parts = [
                 provider_line,
-                f"🚨 <b>NEW TRADE · {_html(identity.label)}</b>",
+                "",
+                f"{_html(identity.marker)} <b>{_html(identity.reference)} · NEW TRADE</b>",
+                f"{side_icon} <b>{_html(symbol)} {_html(side)}</b>",
                 "",
                 _render_root(row),
             ]
@@ -639,6 +679,28 @@ class CanonicalTelegramPublisherManager(Day34CutoverTelegramPublisherManager):
                       AND root.status='sent'
                       AND root.telegram_message_id IS NOT NULL
                       AND ev.created_at>=:fresh_after
+                      AND NOT (
+                          ev.event_type='broker_position_settled'
+                          AND EXISTS (
+                              SELECT 1
+                              FROM signal_lifecycle_events AS sibling
+                              WHERE sibling.signal_id=ev.signal_id
+                                AND sibling.event_type LIKE 'broker_result_%'
+                                AND sibling.created_at>=:fresh_after
+                                AND ABS(EXTRACT(EPOCH FROM (sibling.occurred_at-ev.occurred_at)))<=30
+                          )
+                      )
+                      AND NOT (
+                          ev.event_type<>'broker_position_settled'
+                          AND ev.event_type NOT LIKE 'broker_result_%'
+                          AND EXISTS (
+                              SELECT 1
+                              FROM signal_lifecycle_events AS completed
+                              WHERE completed.signal_id=ev.signal_id
+                                AND completed.event_type LIKE 'broker_result_%'
+                                AND completed.created_at<=ev.created_at
+                          )
+                      )
                     ORDER BY ev.occurred_at,ev.created_at,pub.id
                     FOR UPDATE OF pub SKIP LOCKED
                     LIMIT 1
@@ -698,47 +760,67 @@ class CanonicalTelegramPublisherManager(Day34CutoverTelegramPublisherManager):
 
             if event_type == "broker_position_settled":
                 if event_outcome == "won":
-                    heading = f"🎯 <b>{_html(identity.label)} · {tp_label} HIT</b>"
+                    result_icon, result_label = "🎉🥳", "WIN"
                 elif event_outcome == "lost":
-                    heading = f"❌ <b>{_html(identity.label)} · {tp_label} LOSS</b>"
+                    result_icon, result_label = "🥺😔", "LOSS"
                 elif event_outcome == "breakeven":
-                    heading = f"➖ <b>{_html(identity.label)} · {tp_label} BREAK EVEN</b>"
+                    result_icon, result_label = "🤝", "BREAK EVEN"
                 else:
-                    heading = f"⏹ <b>{_html(identity.label)} · {tp_label} CLOSED</b>"
+                    result_icon, result_label = "✅", "CLOSED"
 
-                parts = [provider_line, heading]
+                parts = [
+                    provider_line,
+                    "",
+                    f"{_html(identity.marker)} <b>{_html(identity.reference)} · {tp_label}</b>",
+                    f"{result_icon} <b>{result_label}</b>",
+                ]
                 if event_pnl is not None:
-                    parts.extend(["", f"{tp_label}: <b>{money(event_pnl)}</b>"])
+                    parts.extend(["", f"💵 <b>{money(event_pnl)}</b>"])
                 if final_settlement and trade is not None:
+                    total = trade.realised_pnl
+                    total_icon = "🎉🥳" if total > 0 else "🥺😔" if total < 0 else "🤝"
+                    total_label = "WIN" if total > 0 else "LOSS" if total < 0 else "BREAK EVEN"
                     parts.extend(
                         [
                             "",
-                            "🏁 <b>TRADE COMPLETE</b>",
-                            f"Total trade P/L: <b>{money(trade.realised_pnl)}</b>",
+                            f"🏁 <b>TRADE COMPLETE · {total_label}</b>",
+                            f"{total_icon} <b>TOTAL {money(total)}</b>",
                         ]
                     )
                 if account is not None and account.account_value is not None:
                     parts.extend(
-                        ["", f"💰 <b>BALANCE {_balance_money(account.account_value)}</b>"]
+                        ["", f"💰 <b>BALANCE: {_balance_money(account.account_value)}</b>"]
                     )
             elif event_type.startswith("broker_result_"):
+                total = trade.realised_pnl if trade is not None else Decimal("0")
+                if event_type == "broker_result_win" or total > 0:
+                    result_icon, result_label = "🎉🥳", "WIN"
+                elif event_type == "broker_result_loss" or total < 0:
+                    result_icon, result_label = "🥺😔", "LOSS"
+                elif event_type == "broker_result_breakeven" or total == 0:
+                    result_icon, result_label = "🤝", "BREAK EVEN"
+                else:
+                    result_icon, result_label = "✅", "CLOSED"
                 parts = [
                     provider_line,
-                    f"🏁 <b>{_html(identity.label)} COMPLETE</b>",
+                    "",
+                    f"{_html(identity.marker)} <b>{_html(identity.reference)} · TRADE COMPLETE</b>",
+                    f"{result_icon} <b>{result_label}</b>",
                 ]
                 if trade is not None:
-                    parts.extend(["", f"Total trade P/L: <b>{money(trade.realised_pnl)}</b>"])
+                    parts.extend(["", f"💵 <b>TOTAL {money(trade.realised_pnl)}</b>"])
                 if account is not None and account.account_value is not None:
                     parts.extend(
-                        ["", f"💰 <b>BALANCE {_balance_money(account.account_value)}</b>"]
+                        ["", f"💰 <b>BALANCE: {_balance_money(account.account_value)}</b>"]
                     )
             else:
                 update_text = _clean_update_text(row["rendered_text"])
                 parts = [
                     provider_line,
-                    f"🔄 <b>{_html(identity.label)} UPDATE</b>",
                     "",
-                    _html(update_text),
+                    f"{_html(identity.marker)} <b>{_html(identity.reference)} · UPDATE</b>",
+                    "",
+                    f"🛠 <b>{_html(update_text)}</b>",
                 ]
             rendered = "\n".join(parts)
             reply_id = int(row["reply_to_message_id"])
