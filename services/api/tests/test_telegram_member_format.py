@@ -20,9 +20,11 @@ def test_member_provider_identity_uses_named_emojis_not_colour_pairs() -> None:
     assert "_PROVIDER_COLOURS" not in source
 
 
-def test_today_pnl_is_account_value_change_not_realised_only() -> None:
+def test_today_pnl_is_stable_realised_broker_cash_only() -> None:
     source = Path("services/api/app/telegram_trade_ledger.py").read_text()
-    assert "account_value - today_opening_value" in source
+    assert "today = realised_today" in source
+    assert "today_opening_value + realised_today" in source
+    assert "Floating/open P&L must never" in source
     public = Path("services/api/app/routes/gold_quote.py").read_text()
     assert "account_value_days" in public
     assert "opening_balance" in public
@@ -62,10 +64,10 @@ def test_trade_status_snapshot_repair_replaces_stale_pending_lines() -> None:
 
     trade = SimpleNamespace(
         legs=[
-            SimpleNamespace(tp_index=1, status="won"),
-            SimpleNamespace(tp_index=2, status="won"),
-            SimpleNamespace(tp_index=3, status="closed_profit"),
-            SimpleNamespace(tp_index=4, status="cancelled"),
+            SimpleNamespace(tp_index=1, status="won", cash_pnl=1),
+            SimpleNamespace(tp_index=2, status="won", cash_pnl=2),
+            SimpleNamespace(tp_index=3, status="closed_profit", cash_pnl=3),
+            SimpleNamespace(tp_index=4, status="cancelled", cash_pnl=0),
         ]
     )
     old = (
@@ -78,8 +80,8 @@ def test_trade_status_snapshot_repair_replaces_stale_pending_lines() -> None:
         "TP4 — <b>PENDING ⏳</b>"
     )
     repaired = CanonicalTelegramPublisherManager._replace_trade_status_snapshot(old, trade)
-    assert "TP2 — <b>WON 🥳</b>" in repaired
-    assert "TP3 — <b>CLOSED IN PROFIT 🥳</b>" in repaired
+    assert "TP2 — <b>WON 🥳</b> · <b>+$2.00</b>" in repaired
+    assert "TP3 — <b>CLOSED IN PROFIT 🥳</b> · <b>+$3.00</b>" in repaired
     assert "TP4 — <b>CANCELLED</b>" in repaired
     assert "PENDING ⏳" not in repaired
 
