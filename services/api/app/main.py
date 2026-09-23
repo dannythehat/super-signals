@@ -46,6 +46,7 @@ from app.performance_runtime import (
 )
 from app.production_listener import build_production_listener_manager
 from app.provider_fingerprint_runtime import ProviderFingerprintRuntime
+from app.provider_management_language_audit_runtime import ProviderManagementLanguageAuditRuntime
 from app.provider_trade_scoring_runtime import ProviderTradeScoringRuntime
 from app.publisher_config import get_publisher_settings
 from app.push_notifications_day34 import Day34PushNotificationManager
@@ -162,6 +163,7 @@ async def _lifespan(application: FastAPI) -> AsyncIterator[None]:
         ("aidy_historical_stress_runtime", AidyHistoricalStressLabRuntime),
         ("aidy_message_review_runtime", AidyMessageReviewRuntime),
         ("provider_fingerprint_runtime", ProviderFingerprintRuntime),
+        ("provider_management_language_audit_runtime", ProviderManagementLanguageAuditRuntime),
     )
     for state_name, _runtime_type in research_runtime_specs:
         setattr(application.state, state_name, None)
