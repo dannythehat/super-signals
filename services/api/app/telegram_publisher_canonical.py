@@ -199,6 +199,27 @@ class CanonicalTelegramPublisherManager(Day34CutoverTelegramPublisherManager):
             )
         """
 
+    @staticmethod
+    def _queued_from_confirmed_placement_sql(alias: str) -> str:
+        """A root seeded promptly from a broker-confirmed route stays sendable.
+
+        Freshness decides whether a root may be created. Once a publication row was
+        legitimately created within the freshness window of the executed broker route,
+        publisher delay/rate-limit/restart must not age that member post out.
+        """
+        return f"""
+            EXISTS (
+                SELECT 1
+                FROM audit_events AS placed
+                WHERE placed.entity_type='signal'
+                  AND placed.entity_id={alias}.signal_id
+                  AND placed.event_type='{_PLACEMENT_EVENT}'
+                  AND placed.payload->>'outcome'='executed'
+                  AND {alias}.created_at>=placed.created_at
+                  AND {alias}.created_at<=placed.created_at+INTERVAL '5 minutes'
+            )
+        """
+
     def _seed_missing_publications(self) -> None:
         """Seed only current member events; stale history remains audit-only."""
         fresh_after = datetime.now(UTC) - _MEMBER_EVENT_FRESHNESS
@@ -207,6 +228,7 @@ class CanonicalTelegramPublisherManager(Day34CutoverTelegramPublisherManager):
             placement_for_pub = self._placement_exists_sql("pub.signal_id")
             placement_for_sig = self._placement_exists_sql("sig.id")
             placement_for_ev = self._placement_exists_sql("ev.signal_id")
+            queued_from_confirmed_route = self._queued_from_confirmed_placement_sql("pub")
 
             # Old unsent roots are not replayed after restart. A new root is publishable
             # only when its successful broker route itself is recent.
@@ -221,6 +243,7 @@ class CanonicalTelegramPublisherManager(Day34CutoverTelegramPublisherManager):
                     WHERE pub.publication_kind='signal_created'
                       AND pub.lifecycle_event_id IS NULL
                       AND pub.status='pending'
+                      AND NOT {queued_from_confirmed_route}
                       AND NOT {placement_for_pub}
                     """
                 ),
@@ -241,7 +264,10 @@ class CanonicalTelegramPublisherManager(Day34CutoverTelegramPublisherManager):
                           'stale_or_unconfirmed_member_root'
                       )
                       AND pub.telegram_message_id IS NULL
-                      AND {placement_for_pub}
+                      AND (
+                          {placement_for_pub}
+                          OR {queued_from_confirmed_route}
+                      )
                     """
                 ),
                 {"fresh_after": fresh_after},
