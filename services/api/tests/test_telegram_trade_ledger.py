@@ -31,7 +31,7 @@ def test_weekday_footer_uses_vantage_value_not_synthetic_balance() -> None:
         mt5_balance=Decimal("1436.12"),
         today_pnl=Decimal("35.20"),
         month_to_date_pnl=Decimal("142.10"),
-        one_percent=Decimal("20.51"),
+        one_percent=Decimal("13.65"),
         local_weekday=1,
         updated_at=None,
     )
@@ -60,17 +60,11 @@ def test_weekend_footer_omits_daily_line() -> None:
     assert "Month to date: +$142.10" in rendered
 
 
-def test_one_percent_is_quoted_from_the_company_paper_balance() -> None:
-    """The company paper balance is the Vantage demo account value, not the
-    broker's closed-trade balance field.
-
-    Sizing is always 1% of the paper balance, so the published '1% = $X' must
-    track the account value shown on the same line. Quoting 1% of the broker
-    balance field would understate it by the whole floating P&L.
-    """
+def test_one_percent_is_quoted_from_the_real_mt5_balance() -> None:
+    """Balance excludes floating P&L. The published 1% must use that same balance."""
     snapshot = AccountLedgerSnapshot(
-        account_value=Decimal("2050.64"),   # company paper balance
-        mt5_balance=Decimal("1364.87"),     # broker closed-trade balance field
+        account_value=Decimal("1364.87"),
+        mt5_balance=Decimal("1364.87")
         today_pnl=Decimal("0.00"),
         month_to_date_pnl=Decimal("0.00"),
         one_percent=Decimal("20.51"),
@@ -79,10 +73,9 @@ def test_one_percent_is_quoted_from_the_company_paper_balance() -> None:
         stale=False,
     )
     lines = TelegramTradeLedger.account_lines(snapshot)
-    account_line = next(line for line in lines if "account value" in line)
-    assert "$2,050.64" in account_line
-    assert "1% = $20.51" in account_line      # 1% of the paper balance
-    assert "1% = $13.64" not in account_line  # never 1% of the broker balance field
+    account_line = next(line for line in lines if "Vantage balance" in line)
+    assert "$1,364.87" in account_line
+    assert "1% = $13.65" in account_line
 
 
 def test_stale_account_snapshot_is_never_published_as_current() -> None:
@@ -136,10 +129,8 @@ class _StubSession:
         return _StubResult(rows=[])
 
 
-def test_account_derives_one_percent_from_the_company_paper_balance(monkeypatch) -> None:  # noqa: ANN001
-    """End-to-end derivation check, not just rendering: account() must compute the
-    published 1% from the company paper balance (the Vantage demo account value),
-    never from the broker's closed-trade balance field."""
+def test_account_derives_one_percent_from_the_real_balance(monkeypatch) -> None:  # noqa: ANN001
+    """End-to-end derivation: account() must compute 1% from broker balance, not equity."""
     import app.telegram_trade_ledger as ledger_module
 
     snapshot_row = {
@@ -157,7 +148,6 @@ def test_account_derives_one_percent_from_the_company_paper_balance(monkeypatch)
     snap = ledger.account(now=datetime(2026, 9, 22, 12, 1, tzinfo=UTC))
 
     assert snap.mt5_balance == Decimal("1364.87")
-    assert snap.account_value == Decimal("2050.64")
-    assert snap.one_percent == Decimal("20.51")   # 1% of the company paper balance
-    assert snap.one_percent != Decimal("13.65")   # never 1% of the broker balance
+    assert snap.account_value == Decimal("1364.87")
+    assert snap.one_percent == Decimal("13.65")
     assert snap.stale is False
