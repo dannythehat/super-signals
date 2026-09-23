@@ -4,8 +4,8 @@ This service owns only broker structure that ordinary atomic MARKET execution ca
 represent: literal LIMIT/STOP orders and explicit multiple provider entry sections.
 
 Trading-policy invariants:
-* every provider trade has one total 1% stop-risk budget shared across its target legs;
-* entry layers distribute target legs and never create additional risk budgets;
+* one atomic provider leg/section receives the selected risk percentage in full;
+* risk is never divided across entry layers and no aggregate account-risk cap is applied;
 * balance is used only to calculate what the selected risk percentage means;
 * local free margin/capacity is never an execution veto; Vantage/MT5 is authoritative;
 * pending orders stay broker-side at the provider's exact literal price and are never
@@ -387,13 +387,8 @@ class PaperCriticalExecutionService(AtomicDay26Mt5ExecutionService):
                 double_lot_approved=double_lot_approved,
             )
 
-        self._assert_total_trade_risk(
-            balance=state.account.balance,
-            sizings=tuple(sizings.values()),
-        )
-
-        # No local free-margin/capacity approval step exists here. Risk has already been
-        # capped at 1% total; Vantage remains authoritative for broker acceptance.
+        # No local balance/free-margin/capacity approval step exists here. A valid
+        # provider leg is sent to the broker; broker rejection is preserved as truth.
         self._assert_signal_still_current(owner_user_id, signal)
         planned = self._create_layered_plans(
             owner_user_id=owner_user_id,
@@ -481,9 +476,8 @@ class PaperCriticalExecutionService(AtomicDay26Mt5ExecutionService):
                 "entry_sections": len(entries),
                 "pending_sections": sum(1 for item in entries if item.order_type != "market"),
                 "atomic_leg_count": len(mapped),
-                "risk_per_atomic_leg": False,
-                "risk_split_across_layers": True,
-                "total_trade_risk_cap_percent": "1",
+                "risk_per_atomic_leg": True,
+                "risk_split_across_layers": False,
                 "local_margin_veto": False,
                 "broker_margin_authority": True,
                 "automatic_retry": False,
