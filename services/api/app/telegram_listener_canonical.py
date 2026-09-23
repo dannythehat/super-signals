@@ -95,7 +95,6 @@ class CanonicalProductionTelegramListenerManager(Day21TelegramListenerManager):
         self._management_reliability_runtime = management_reliability_runtime
         self._telegram_processing_pool = _ProviderProcessingPool()
         self._telegram_revision_locks = tuple(RLock() for _ in range(_STRIPE_COUNT))
-        self._dispatch_lock = Lock()
 
     async def start(self) -> None:
         """Start only the canonical runtime, never inherited Day-numbered backfills.
@@ -255,25 +254,28 @@ class CanonicalProductionTelegramListenerManager(Day21TelegramListenerManager):
         router = self._canonical_router
         if router is None:
             return
-        with self._dispatch_lock:
-            try:
-                result = asyncio.run(
-                    router.dispatch_stored_decision(
-                        source_id=source_id,
-                        telegram_message_id=telegram_message_id,
-                        revision_index=revision_index,
-                    )
+        # Provider work is already FIFO inside each provider-specific executor and
+        # the canonical router applies per-signal/event idempotency locks. Do not add a
+        # process-wide dispatch lock here: one slow MetaAPI call would otherwise freeze
+        # every unrelated provider behind it.
+        try:
+            result = asyncio.run(
+                router.dispatch_stored_decision(
+                    source_id=source_id,
+                    telegram_message_id=telegram_message_id,
+                    revision_index=revision_index,
                 )
-            except Exception:
-                logger.exception(
-                    "Canonical broker dispatch failed unexpectedly",
-                    extra={
-                        "source_id": str(source_id),
-                        "telegram_message_id": telegram_message_id,
-                        "revision_index": revision_index,
-                    },
-                )
-                return
+            )
+        except Exception:
+            logger.exception(
+                "Canonical broker dispatch failed unexpectedly",
+                extra={
+                    "source_id": str(source_id),
+                    "telegram_message_id": telegram_message_id,
+                    "revision_index": revision_index,
+                },
+            )
+            return
 
         if result.outcome == "blocked":
             logger.warning(
