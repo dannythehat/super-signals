@@ -7,6 +7,7 @@ def test_member_telegram_format_is_spacious_and_status_driven() -> None:
     assert "<b>Today’s P&L</b>" in source
     assert "<b>Trade Status</b>" in source
     assert "WON 🥳" in source
+    assert "CLOSED IN PROFIT 🥳" in source
     assert "PENDING ⏳" in source
     assert "Trade complete" in source
     assert "identity.marker" not in source
@@ -26,3 +27,15 @@ def test_today_pnl_is_account_value_change_not_realised_only() -> None:
     assert "account_value_days" in public
     assert "opening_balance" in public
     assert "closing_balance" in public
+
+
+def test_provider_tp_milestones_drive_member_target_status() -> None:
+    source = Path("services/api/app/telegram_trade_ledger.py").read_text()
+    assert "provider_hits" in source
+    assert "provider_reported_hit" in source
+    assert "milestone_pattern" in source
+
+
+def test_minimum_lot_partial_failure_cannot_force_flatten_trade() -> None:
+    source = Path("services/api/app/management_reliability_runtime.py").read_text()
+    assert "partial_volume_below_broker_minimum" in source
