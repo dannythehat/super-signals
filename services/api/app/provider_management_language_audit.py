@@ -285,8 +285,12 @@ class ProviderManagementLanguageAuditService:
     ) -> dict[str, Any]:
         candidate_count = 0
         covered_count = 0
+        optional_count = 0
+        result_only_count = 0
         families: Counter[str] = Counter()
         covered_examples: list[str] = []
+        optional_examples: list[str] = []
+        result_examples: list[str] = []
         unmapped_examples: list[str] = []
 
         for row in rows:
@@ -304,12 +308,26 @@ class ProviderManagementLanguageAuditService:
                 covered_count += 1
                 if masked and masked not in covered_examples and len(covered_examples) < 16:
                     covered_examples.append(masked)
+            elif policy.reason == "optional_management_instruction":
+                optional_count += 1
+                if masked and masked not in optional_examples and len(optional_examples) < 12:
+                    optional_examples.append(masked)
+            elif policy.reason == "provider_result_only":
+                result_only_count += 1
+                if masked and masked not in result_examples and len(result_examples) < 12:
+                    result_examples.append(masked)
             elif masked and masked not in unmapped_examples and len(unmapped_examples) < 24:
                 unmapped_examples.append(masked)
 
-        unmapped_count = candidate_count - covered_count
+        understood_count = covered_count + optional_count + result_only_count
+        unmapped_count = candidate_count - understood_count
         coverage_pct = (
             round((100.0 * covered_count / candidate_count), 2)
+            if candidate_count
+            else 100.0
+        )
+        understanding_pct = (
+            round((100.0 * understood_count / candidate_count), 2)
             if candidate_count
             else 100.0
         )
@@ -326,10 +344,16 @@ class ProviderManagementLanguageAuditService:
             "messages_scanned": len(rows),
             "management_candidates": candidate_count,
             "covered_candidates": covered_count,
+            "optional_candidates": optional_count,
+            "result_only_candidates": result_only_count,
+            "understood_candidates": understood_count,
             "unmapped_candidates": unmapped_count,
             "coverage_pct": coverage_pct,
+            "understanding_pct": understanding_pct,
             "phrase_families": dict(sorted(families.items())),
             "covered_examples_masked": covered_examples,
+            "optional_examples_masked": optional_examples,
+            "result_examples_masked": result_examples,
             "unmapped_examples_masked": unmapped_examples,
             "execution_authority": False,
             "safety_note": (
@@ -428,7 +452,16 @@ class ProviderManagementLanguageAuditService:
                 audit_payload.get("phrase_families") or {}
             ),
             "management_language_coverage_pct": float(
+                audit_payload.get("understanding_pct") or 0.0
+            ),
+            "management_actionable_coverage_pct": float(
                 audit_payload.get("coverage_pct") or 0.0
+            ),
+            "understood_optional_count": int(
+                audit_payload.get("optional_candidates") or 0
+            ),
+            "understood_result_only_count": int(
+                audit_payload.get("result_only_candidates") or 0
             ),
             "unmapped_management_count": int(
                 audit_payload.get("unmapped_candidates") or 0
