@@ -72,27 +72,20 @@ class ResilientDashboardRuntimeService(CanonicalDashboardRuntimeService):
         return replace(view, open_positions=merged, open_profit=open_profit, reconciled_external_positions=0)
 
     def _refresh_cached_account(self, user_id: UUID, view: Day32DashboardView) -> Day32DashboardView:
-        """Re-apply canonical accounting to cached broker snapshots on every dashboard read.
+        """Keep the broker's MT5 balance authoritative on every cached dashboard read.
 
-        The resilient dashboard intentionally caches broker account reads, but Owner demo
-        balance is a derived Super Signals ledger value. A cached broker snapshot therefore
-        must never freeze the displayed demo balance after a reviewed outcome is added.
+        Balance is closed broker cash. Equity and free margin are separate live broker
+        fields and must never be copied into the balance or reconstructed from it.
         """
         if view.account is None:
             return view
         accounting = CanonicalTradingAccountingService(self._session_factory)
-        account_value = float(
+        broker_balance = float(
             accounting.displayed_balance(
-                user_id, broker_account_value=view.account.equity
+                user_id, broker_account_value=view.account.balance
             )
         )
-        free_margin = account_value - float(view.account.margin)
-        account = replace(
-            view.account,
-            balance=account_value,
-            equity=account_value,
-            free_margin=free_margin,
-        )
+        account = replace(view.account, balance=broker_balance)
         return replace(view, account=account)
 
     @staticmethod
