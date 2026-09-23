@@ -5,9 +5,9 @@ balance field, a hard-coded 1517.23 paper baseline dated 31 Aug, that baseline p
 realised P&L, the dashboard calendar compounding forward from it, reviewed-provider cash
 with no broker deal behind it, and the Vantage account value the owner actually reads.
 
-The owner's ruling is that the Vantage account value is the balance, universally and
-permanently. These tests pin that so no surface can quietly reintroduce a second
-definition.
+Current owner authority: the MT5/Vantage balance is closed cash and excludes floating
+open-position P/L. Equity remains a separate broker field. No computed paper baseline may
+replace the broker-provided value.
 """
 
 from __future__ import annotations
@@ -117,11 +117,11 @@ def test_every_surface_passes_the_account_value_not_the_balance_field() -> None:
         assert "broker_balance=" not in source, f"{name} still passes a balance field"
 
 
-def test_execution_sizes_from_the_account_value() -> None:
-    """1% of the company paper balance, always - which is the Vantage account value."""
+def test_execution_sizes_from_the_real_closed_balance() -> None:
+    """The 1% total trade cap is based on broker balance, not floating equity."""
     source = _code("mt5_execution_day26.py")
-    assert "broker_account_value=live_state.account.equity" in source
-    assert "risk_balance = live_state.account.balance" not in source
+    assert "risk_balance = live_state.account.balance" in source
+    assert "broker_account_value=live_state.account.equity" not in source
 
 
 def test_telegram_publishes_the_same_balance_it_sizes_from() -> None:
