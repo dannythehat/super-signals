@@ -41,7 +41,6 @@ from app.risk_sizing_day24 import (
 )
 from app.provider_risk_policy import provider_risk_profile, provider_tp_limit
 from app.trade_preflight_day25 import Day25TradePreflightService
-from app.trading_accounting import CanonicalTradingAccountingService
 
 logger = logging.getLogger(__name__)
 
