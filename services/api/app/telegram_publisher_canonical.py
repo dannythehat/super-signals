@@ -526,8 +526,10 @@ class CanonicalTelegramPublisherManager(Day34CutoverTelegramPublisherManager):
                             pub.rendered_text,
                             ev.event_type,
                             ev.aggregate_result,
+                            ev.occurred_at AS repair_event_occurred_at,
                             event_position.tp_index AS event_tp_index,
                             COALESCE(event_outcome.status,'') AS event_outcome_status,
+                            COALESCE(event_outcome.cash_pnl,0) AS repair_event_cash_pnl,
                             COALESCE(m.raw_text,'') AS source_raw_text,
                             NOT EXISTS (
                                 SELECT 1
@@ -629,6 +631,33 @@ class CanonicalTelegramPublisherManager(Day34CutoverTelegramPublisherManager):
                 if not original:
                     continue
                 repaired = original
+
+                # Rebuild Balance / Today's P&L from broker-confirmed closes as of this
+                # event's timestamp. Delayed Telegram delivery must not borrow the money
+                # state from a later trade.
+                event_at = row["repair_event_occurred_at"]
+                if event_at is not None:
+                    event_account = self._trade_ledger.account(now=event_at)
+                    if event_account.account_value is not None:
+                        event_delta = Decimal(str(row["repair_event_cash_pnl"] or 0)).quantize(
+                            Decimal("0.01")
+                        )
+                        balance_text = _balance_equation(
+                            event_account.account_value,
+                            event_delta,
+                        )
+                        repaired = re.sub(
+                            r"(<b>Balance</b>\n)<b>[^\n]+</b>",
+                            rf"\1<b>{balance_text}</b>",
+                            repaired,
+                            count=1,
+                        )
+                        repaired = re.sub(
+                            r"(<b>Today’s P&L</b>\n)<b>[^\n]+</b>",
+                            rf"\1<b>{money(event_account.today_pnl)}</b>",
+                            repaired,
+                            count=1,
+                        )
 
                 # Historical TIG-style partial wording: the original source explicitly
                 # names the target milestone. Never leave a sent post claiming TP1 when
