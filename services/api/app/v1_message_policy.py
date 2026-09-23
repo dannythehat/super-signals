@@ -261,6 +261,41 @@ def apply_v1_message_policy(
             reason="complete_trade_structure_override",
         )
 
+    # Explicit deterministic broker management outranks a probabilistic
+    # chatter/preparation/non-actionable label. This is deliberately narrow: only
+    # phrases that the management policy can translate into concrete broker actions
+    # are promoted. Historical replay remains audit-only.
+    if decision.decision in {"chatter", "preparation", "non_actionable"}:
+        if str(decision.source or "").strip().lower() != "historical_replay":
+            policy = extract_day27_management_actions(text)
+            actions = augment_management_actions(text, policy.actions)
+            if actions:
+                extracted = dict(decision.extracted or {})
+                normalized_actions = [dict(action) for action in actions]
+                extracted["management_actions"] = normalized_actions
+                first = normalized_actions[0]
+                extracted["update_type"] = first.get("type")
+                extracted["update_target"] = first.get("target")
+                extracted["update_value"] = first.get("value")
+                critical_targets = ("layer", "entry_", "best_entry", "all_but_best")
+                return replace(
+                    decision,
+                    decision="trade_update",
+                    action="apply_update",
+                    reason=(
+                        "layer_management_instruction"
+                        if any(
+                            any(
+                                token in str(action.get("target") or "")
+                                for token in critical_targets
+                            )
+                            for action in normalized_actions
+                        )
+                        else policy.reason
+                    ),
+                    extracted=extracted,
+                )
+
     if decision.decision == "new_trade":
         exact_bare_side = bare_now_side(text)
         if exact_bare_side is not None:
