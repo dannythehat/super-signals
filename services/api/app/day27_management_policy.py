@@ -153,11 +153,11 @@ _TP_HIT = re.compile(
     r"\bTP\s*(\d+)\b"
     r"(?:\s*(?:&|AND|,)\s*(?:TP\s*)?(\d+)\b)?"
     r"(?:\s*(?:&|AND|,)\s*(?:TP\s*)?(\d+)\b)?"
-    r"\s*(?:(?:IS|ARE)\s+)?(?:BOTH\s+|ALL\s+)?(?:HIT|TAPPED|REACHED)\b",
+    r"\s*(?:(?:IS|ARE)\s+)?(?:BOTH\s+|ALL\s+)?(?:HIT|HITS|TAPPED|REACHED)\b",
     re.IGNORECASE,
 )
 _HIT_TP = re.compile(
-    r"\b(?:HIT|TAPPED|REACHED)\s+(?:THE\s+)?TP\s*(\d+)\b",
+    r"\b(?:HIT|HITS|TAPPED|REACHED)\s+(?:THE\s+)?TP\s*(\d+)\b",
     re.IGNORECASE,
 )
 _TP_ALL_HIT = re.compile(
