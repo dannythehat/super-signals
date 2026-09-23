@@ -64,6 +64,46 @@ class ProviderAwareProductionAiPipeline(ProductionAiMessagePipeline):
         context = footprint.get("interpretation_context")
         return dict(context) if isinstance(context, dict) else {}
 
+    @staticmethod
+    def _playbook_context(profile_snapshot: dict[str, Any]) -> dict[str, Any]:
+        """Expose safe provider habits without historical prices or outcomes."""
+        metadata = profile_snapshot.get("profile_metadata")
+        if not isinstance(metadata, dict):
+            return {}
+        playbook = metadata.get("provider_playbook_v1")
+        if not isinstance(playbook, dict):
+            return {}
+        allowed = {
+            "version",
+            "knowledge_state",
+            "trading_style",
+            "cadence_bucket",
+            "management_bucket",
+            "signals_observed",
+            "preferred_order_type",
+            "order_type_counts",
+            "usual_tp_count",
+            "tp_count_distribution",
+            "explicit_stop_loss_pct",
+            "open_runner_pct",
+            "risk_multiplier_above_one_pct",
+            "entry_zone_pct",
+            "reply_linked_management_pct",
+            "standalone_management_pct",
+            "edited_message_pct",
+            "management_phrase_families",
+            "management_language_coverage_pct",
+            "unmapped_management_count",
+            "covered_management_examples_masked",
+            "unmapped_management_examples_masked",
+            "safety_note",
+        }
+        return {
+            key: value
+            for key, value in playbook.items()
+            if key in allowed
+        }
+
     def _recent_context_as_of(
         self,
         *,
@@ -183,6 +223,7 @@ class ProviderAwareProductionAiPipeline(ProductionAiMessagePipeline):
             "interpretation_readiness": profile.interpretation_readiness,
             "adaptive_language_profile": profile.adaptive_language_profile,
             "provider_footprint": self._footprint_context(profile.profile_snapshot),
+            "provider_playbook": self._playbook_context(profile.profile_snapshot),
             "communication_traits": profile.communication_traits,
             "safety_note": (
                 "This immutable profile and prior-message revisions were already knowable "
