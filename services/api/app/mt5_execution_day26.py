@@ -226,17 +226,9 @@ class Day26Mt5ExecutionService:
             initial_state=live_state,
         )
 
-        # Every trade is sized at its risk percent of the Vantage account value - the
-        # figure the Vantage account card shows and the only balance this business runs
-        # on. Sizing off the broker's closed-trade balance field understated it by the
-        # whole floating P&L, and the previous paper-epoch derivation understated it
-        # further by anchoring to a hard-coded 1517.23.
-        risk_balance = CanonicalTradingAccountingService(
-            self._session_factory
-        ).displayed_balance(
-            owner_user_id,
-            broker_account_value=live_state.account.equity,
-        ) if self._session_factory is not None else live_state.account.equity
+        # Risk is based on the broker's real closed-trade balance. Open/floating P&L
+        # does not change the balance and must not change the 1% trade-risk budget.
+        risk_balance = live_state.account.balance
         targets = list(signal.take_profits) + ([None] if signal.has_open_runner else [])
         risk_profile = provider_risk_profile(
             source_name=self._source_name(signal.signal_id),
@@ -260,6 +252,10 @@ class Day26Mt5ExecutionService:
             for tp_index, _ in enumerate(targets, start=1)
         }
         sizing = target_sizings[1]
+        self._assert_total_trade_risk(
+            balance=risk_balance,
+            sizings=tuple(target_sizings.values()),
+        )
 
         preflight = Day25TradePreflightService(margin_gateway=self._margin_gateway)
         day25_result = await preflight.evaluate(
@@ -388,6 +384,22 @@ class Day26Mt5ExecutionService:
             double_lot_applied=sizing.double_lot_applied,
             positions=mapped,
         )
+
+    @staticmethod
+    def _assert_total_trade_risk(
+        *,
+        balance: Decimal | float,
+        sizings: tuple[Day24RiskSizingResult, ...],
+    ) -> None:
+        """Fail closed before any broker mutation if total stop risk exceeds 1%."""
+        balance_value = Decimal(str(balance))
+        cap = (balance_value * Decimal("0.01")).quantize(Decimal("0.00000001"))
+        total = sum(
+            (Decimal(str(item.actual_risk_per_position)) for item in sizings),
+            Decimal("0"),
+        )
+        if total > cap:
+            raise Day26ExecutionError("trade_total_risk_exceeds_one_percent")
 
     async def _resolve_entry(
         self,
