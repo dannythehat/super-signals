@@ -71,8 +71,8 @@ class ProviderResearchProductionListener(CanonicalProductionTelegramListenerMana
             name="super-signals-production-telegram-startup",
         )
 
-    async def _recover_committed_dispatch_gaps(self) -> int:
-        """Offer fresh committed decisions to the idempotent broker router after restart."""
+    def _committed_dispatch_gap_rows(self) -> list[dict[str, Any]]:
+        """Load recent durable actionable decisions without blocking the asyncio loop."""
         with self._inner._session_factory() as session:
             rows = session.execute(
                 text(
@@ -108,6 +108,11 @@ class ProviderResearchProductionListener(CanonicalProductionTelegramListenerMana
                     """
                 )
             ).mappings().all()
+        return [dict(row) for row in rows]
+
+    async def _recover_committed_dispatch_gaps(self) -> int:
+        """Offer fresh committed decisions without blocking HTTP health checks."""
+        rows = await asyncio.to_thread(self._committed_dispatch_gap_rows)
 
         checked = 0
         for row in rows:
