@@ -137,12 +137,18 @@ async def test_live_recovery_backs_off_when_telegram_asks_for_flood_wait(
 
 
 class _StoredNewTradeRouter:
+    def __init__(self) -> None:
+        self.signal_id = uuid4()
+
     def _load_stored_decision(self, **kwargs):
         return SimpleNamespace(
             message_id=uuid4(),
             decision="new_trade",
             action="execute",
         )
+
+    def _resolve_signal_id(self, message_id, revision_index):
+        return self.signal_id
 
 
 @pytest.mark.asyncio
@@ -197,6 +203,8 @@ async def test_fresh_missing_post_is_routed_but_stale_post_is_evidence_only(
     manager = _bare_listener()
     manager._canonical_router = _StoredNewTradeRouter()
     manager._ai_pipeline = None
+    manager._entry_route_already_attempted = lambda _signal_id: False
+    manager._entry_superseded_by_newer_signal = lambda _signal_id: False
     manager._dispatch_sync = lambda **kwargs: dispatched.append(kwargs["telegram_message_id"])
 
     await manager._recover_live_gaps(FakeClient(), plan)
