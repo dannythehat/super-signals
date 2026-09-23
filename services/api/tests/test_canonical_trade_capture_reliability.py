@@ -72,7 +72,7 @@ def _bare_listener() -> CanonicalProductionTelegramListenerManager:
     return manager
 
 
-def test_live_recovery_never_replays_already_persisted_original(
+def test_live_recovery_rechecks_already_persisted_fresh_original_for_missed_dispatch(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     persisted_calls: list[int] = []
@@ -109,7 +109,7 @@ def test_live_recovery_never_replays_already_persisted_original(
     asyncio.run(manager._recover_live_gaps(_RecoveryClient(message), plan))
 
     assert persisted_calls == [6503]
-    assert dispatched == []
+    assert dispatched == [(6503, 0)]
 
 
 class _UnresolvedRouter:
@@ -222,3 +222,15 @@ def test_timeout_reconciliation_cleans_hidden_unreturned_broker_position() -> No
     assert harness._trade_gateway.closed == ["hidden-position-1"]
     assert harness.audits[-1]["payload"]["hidden_mutations_detected"] == 1
     assert harness.audits[-1]["payload"]["automatic_retry"] is False
+
+
+
+def test_recovered_entry_has_route_and_supersession_guards() -> None:
+    from pathlib import Path
+
+    source = Path("services/api/app/telegram_listener_canonical.py").read_text()
+    assert "_entry_route_already_attempted" in source
+    assert "event_type='mt5.day38_route_new_trade'" in source
+    assert "_entry_superseded_by_newer_signal" in source
+    assert "newer.created_at>current.created_at" in source
+    assert "if is_entry:" in source
