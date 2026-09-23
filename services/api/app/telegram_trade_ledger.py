@@ -384,12 +384,17 @@ class TelegramTradeLedger:
             )
             provider_reported_hit = tp_index in provider_hits
 
-            if provider_reported_hit or (outcome == "won" and target_hit):
+            # Broker settlement is authoritative. A provider's "TP hit" message is
+            # useful context while a leg is still unresolved, but it can never overwrite
+            # a broker-confirmed loss/breakeven/closed result.
+            if outcome == "won" and target_hit:
                 state = "won"
             elif outcome == "won":
                 state = "closed_profit"
             elif outcome in {"lost", "breakeven", "closed_unknown"}:
                 state = outcome
+            elif provider_reported_hit:
+                state = "pending"
             elif position_status in {"cancelled", "canceled"}:
                 state = "cancelled"
             elif position_status == "closed":
