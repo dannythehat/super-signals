@@ -225,6 +225,13 @@ class CanonicalExecutionDispatcher:
         provider = str(row["provider_name"] or "").strip().casefold()
         style = str(row["style"] or "").strip().casefold()
         cadence = str(row["cadence"] or "").strip().casefold()
+
+        # Explicit owner override: FXTradingVision (FTX) is enabled for broker execution
+        # even though its research profile classifies its cadence/style as scalper.
+        # A broad scalper shadow rule must never override a named provider activation.
+        if provider.startswith("fxtradingvision"):
+            return False
+
         return provider == "trade global" or style == "scalper" or cadence == "scalper"
 
     def _check_probation(self, source_id: UUID, side: str | None) -> ProbationCheck:
