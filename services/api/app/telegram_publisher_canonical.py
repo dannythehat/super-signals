@@ -243,7 +243,10 @@ class CanonicalTelegramPublisherManager(Day34CutoverTelegramPublisherManager):
                     WHERE pub.publication_kind='signal_created'
                       AND pub.lifecycle_event_id IS NULL
                       AND pub.status='pending'
-                      AND NOT {queued_from_confirmed_route}
+                      AND NOT (
+                          {queued_from_confirmed_route}
+                          AND pub.created_at>now()-INTERVAL '60 minutes'
+                      )
                       AND NOT {placement_for_pub}
                     """
                 ),
@@ -266,7 +269,10 @@ class CanonicalTelegramPublisherManager(Day34CutoverTelegramPublisherManager):
                       AND pub.telegram_message_id IS NULL
                       AND (
                           {placement_for_pub}
-                          OR {queued_from_confirmed_route}
+                          OR (
+                              {queued_from_confirmed_route}
+                              AND pub.created_at>now()-INTERVAL '60 minutes'
+                          )
                       )
                     """
                 ),
