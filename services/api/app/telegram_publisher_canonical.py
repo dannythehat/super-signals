@@ -17,6 +17,8 @@ from __future__ import annotations
 import asyncio
 import html
 import json
+import logging
+import re
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal, InvalidOperation
 from typing import Any
@@ -33,6 +35,7 @@ from app.trade_identity import public_trade_identity
 
 _PLACEMENT_EVENT = "mt5.day38_route_new_trade"
 _MEMBER_EVENT_FRESHNESS = timedelta(minutes=5)
+logger = logging.getLogger(__name__)
 
 
 def _decimal_text(value: Any) -> str:
@@ -432,10 +435,218 @@ class CanonicalTelegramPublisherManager(Day34CutoverTelegramPublisherManager):
             self._suppress_stale_in_app_replays(session)
             session.commit()
 
+        self._repair_sent_trade_messages_safely()
+
         if self._summary_service is not None:
             self._summary_service.seed_due()
         self._seed_summary_deliveries()
         self._sync_live_board_safely()
+
+    def _repair_sent_trade_messages_safely(self) -> None:
+        """Edit stale member updates in place; never create another Telegram post.
+
+        Two repairs are allowed:
+        * the latest sent lifecycle message for a signal may refresh its Trade Status
+          snapshot after broker/local reconciliation;
+        * an older partial-management message may have its action wording corrected when
+          the original provider message explicitly named a different TP milestone.
+
+        Telegram edits are idempotent and failures never affect trading.
+        """
+        if (
+            self._trade_ledger is None
+            or not self._bot_token
+            or self._destination_chat_id is None
+        ):
+            return
+        try:
+            with self._session_factory() as session:
+                rows = session.execute(
+                    text(
+                        """
+                        SELECT
+                            pub.id AS publication_id,
+                            pub.signal_id,
+                            pub.telegram_message_id,
+                            pub.destination_chat_id,
+                            pub.rendered_text,
+                            ev.event_type,
+                            ev.aggregate_result,
+                            event_position.tp_index AS event_tp_index,
+                            COALESCE(event_outcome.status,'') AS event_outcome_status,
+                            COALESCE(m.raw_text,'') AS source_raw_text,
+                            NOT EXISTS (
+                                SELECT 1
+                                FROM telegram_publications newer
+                                WHERE newer.signal_id=pub.signal_id
+                                  AND newer.publication_kind='lifecycle_event'
+                                  AND newer.status='sent'
+                                  AND newer.telegram_message_id IS NOT NULL
+                                  AND newer.created_at>pub.created_at
+                            ) AS is_latest
+                        FROM telegram_publications pub
+                        JOIN signal_lifecycle_events ev ON ev.id=pub.lifecycle_event_id
+                        LEFT JOIN messages m ON m.id=ev.source_message_id
+                        LEFT JOIN positions event_position
+                          ON event_position.id::text=COALESCE(ev.aggregate_result->>'position_id','')
+                        LEFT JOIN performance_trade_outcomes event_outcome
+                          ON event_outcome.position_id=event_position.id
+                         AND event_outcome.user_id=:reference_user_id
+                        WHERE pub.status='sent'
+                          AND pub.publication_kind='lifecycle_event'
+                          AND pub.telegram_message_id IS NOT NULL
+                          AND pub.created_at>=now()-INTERVAL '24 hours'
+                        ORDER BY pub.created_at DESC
+                        LIMIT 100
+                        """
+                    ),
+                    {"reference_user_id": self._reference_user_id},
+                ).mappings().all()
+
+            for row in rows:
+                original = str(row["rendered_text"] or "")
+                if not original:
+                    continue
+                repaired = original
+
+                # Historical TIG-style partial wording: the original source explicitly
+                # names the target milestone. Never leave a sent post claiming TP1 when
+                # the provider actually said TP2/TP3/etc.
+                source_raw = str(row["source_raw_text"] or "")
+                milestone = re.search(
+                    r"\bTP\s*(\d+)\s*(?:HIT|HITS|REACHED|TAPPED)\b",
+                    source_raw,
+                    re.IGNORECASE,
+                )
+                partial = re.search(
+                    r"\b(?:BOOK|TAKE|CLOSE|BANK|SECURE)\b[^\n]{0,35}"
+                    r"\b(?:PARTIALS?|HALF|SOME\s+PROFIT|PROFIT\s+OFF)\b",
+                    source_raw,
+                    re.IGNORECASE,
+                )
+                if milestone is not None and partial is not None:
+                    target = int(milestone.group(1))
+                    repaired = re.sub(
+                        r"Book partial profit at TP1\.",
+                        f"TP{target} hit. Book partial profit.",
+                        repaired,
+                        count=1,
+                    )
+
+                if bool(row["is_latest"]):
+                    trade = self._trade_ledger.trade(row["signal_id"])
+                    if trade is not None and trade.legs:
+                        repaired = self._replace_trade_status_snapshot(repaired, trade)
+
+                        if str(row["event_type"] or "") == "broker_position_settled":
+                            aggregate = (
+                                row["aggregate_result"]
+                                if isinstance(row["aggregate_result"], dict)
+                                else {}
+                            )
+                            raw_tp = (
+                                row["event_tp_index"]
+                                if row["event_tp_index"] is not None
+                                else aggregate.get("tp_index")
+                            )
+                            try:
+                                event_tp = int(raw_tp) if raw_tp is not None else None
+                            except (TypeError, ValueError):
+                                event_tp = None
+                            outcome = str(
+                                row["event_outcome_status"]
+                                or aggregate.get("outcome")
+                                or ""
+                            ).lower()
+                            if event_tp is not None and outcome == "won":
+                                leg_state = next(
+                                    (
+                                        leg.status
+                                        for leg in trade.legs
+                                        if leg.tp_index == event_tp
+                                    ),
+                                    None,
+                                )
+                                if leg_state == "won":
+                                    heading = f"TRADE UPDATE 📈 · TP{event_tp} HIT"
+                                else:
+                                    heading = (
+                                        f"TRADE UPDATE 📈 · TP{event_tp} CLOSED IN PROFIT"
+                                    )
+                                repaired = re.sub(
+                                    r"TRADE UPDATE 📈 · [^<\n]+",
+                                    heading,
+                                    repaired,
+                                    count=1,
+                                )
+
+                if repaired == original:
+                    continue
+
+                chat_id = (
+                    int(row["destination_chat_id"])
+                    if row["destination_chat_id"] is not None
+                    else int(self._destination_chat_id)
+                )
+                message_id = int(row["telegram_message_id"])
+                try:
+                    _bot_api_call(
+                        self._bot_token,
+                        "editMessageText",
+                        {
+                            "chat_id": chat_id,
+                            "message_id": message_id,
+                            "text": repaired,
+                            "parse_mode": "HTML",
+                            "disable_web_page_preview": "true",
+                        },
+                    )
+                except TelegramPublishError as exc:
+                    if "message is not modified" not in exc.reason.lower():
+                        raise
+
+                with self._session_factory() as session:
+                    session.execute(
+                        text(
+                            """
+                            UPDATE telegram_publications
+                            SET rendered_text=:rendered_text,updated_at=now()
+                            WHERE id=:publication_id AND status='sent'
+                            """
+                        ),
+                        {
+                            "publication_id": row["publication_id"],
+                            "rendered_text": repaired,
+                        },
+                    )
+                    session.commit()
+                logger.info(
+                    "Telegram trade message corrected in place signal=%s message_id=%s",
+                    row["signal_id"],
+                    message_id,
+                )
+        except Exception:
+            logger.exception("Telegram sent-trade truth repair failed safely; trading unchanged")
+
+    @staticmethod
+    def _replace_trade_status_snapshot(
+        rendered: str,
+        trade: TradeLedgerSnapshot,
+    ) -> str:
+        status_lines = _trade_status_lines(trade)
+        if not status_lines:
+            return rendered
+        marker = "<b>Trade Status</b>"
+        if marker not in rendered:
+            return rendered.rstrip() + "\n\n" + "\n".join(status_lines)
+
+        start = rendered.index(marker)
+        tail = rendered[start:]
+        complete_marker = "🏁 <b>Trade complete</b>"
+        suffix = ""
+        if complete_marker in tail:
+            suffix = "\n\n" + complete_marker
+        return rendered[:start].rstrip() + "\n\n" + "\n".join(status_lines) + suffix
 
     @staticmethod
     def _assign_member_trade_numbers(session: Any, *, fresh_after: datetime) -> None:
@@ -851,7 +1062,7 @@ class CanonicalTelegramPublisherManager(Day34CutoverTelegramPublisherManager):
                         (
                             leg.status
                             for leg in (trade.legs if trade is not None else ())
-                            if leg.tp_index == int(row["tp_index"] or 1)
+                            if leg.tp_index == int(tp_index or 1)
                         ),
                         None,
                     )
