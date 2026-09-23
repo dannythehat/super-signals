@@ -82,3 +82,18 @@ def test_trade_status_snapshot_repair_replaces_stale_pending_lines() -> None:
     assert "TP3 — <b>CLOSED IN PROFIT 🥳</b>" in repaired
     assert "TP4 — <b>CANCELLED</b>" in repaired
     assert "PENDING ⏳" not in repaired
+
+
+def test_same_burst_settlements_are_ordered_by_broker_time_not_created_at() -> None:
+    source = Path("services/api/app/telegram_publisher_canonical.py").read_text()
+    assert "sibling.occurred_at>ev.occurred_at" in source
+    assert "sent_same_burst_duplicate_deleted" in source
+    assert '"deleteMessage"' in source
+
+
+def test_complete_multi_leg_trade_uses_total_result_not_one_leg() -> None:
+    source = Path("services/api/app/telegram_publisher_canonical.py").read_text()
+    assert "trade.realised_pnl.quantize" in source
+    assert "TRADE LOSS · {money(total)}" in source
+    assert "TRADE WIN · {money(total)}" in source
+    assert "_balance_money(account.account_value)" in source
