@@ -338,6 +338,48 @@ class CanonicalProductionTelegramListenerManager(Day21TelegramListenerManager):
                 ).scalar_one()
             )
 
+    def _entry_route_already_attempted(self, signal_id: object) -> bool:
+        """A recovered entry is terminal once the canonical new-trade router was tried."""
+        with self._session_factory() as session:
+            return bool(
+                session.execute(
+                    text(
+                        """
+                        SELECT EXISTS(
+                            SELECT 1
+                            FROM audit_events
+                            WHERE event_type='mt5.day38_route_new_trade'
+                              AND entity_type='signal'
+                              AND entity_id=:signal_id
+                        )
+                        """
+                    ),
+                    {"signal_id": str(signal_id)},
+                ).scalar_one()
+            )
+
+    def _entry_superseded_by_newer_signal(self, signal_id: object) -> bool:
+        """Never replay an older provider entry after a newer accepted signal exists."""
+        with self._session_factory() as session:
+            return bool(
+                session.execute(
+                    text(
+                        """
+                        SELECT EXISTS(
+                            SELECT 1
+                            FROM signals AS newer
+                            JOIN signals AS current ON current.id=:signal_id
+                            WHERE newer.source_id=current.source_id
+                              AND newer.parser_status='accepted'
+                              AND newer.id<>current.id
+                              AND newer.created_at>current.created_at
+                        )
+                        """
+                    ),
+                    {"signal_id": str(signal_id)},
+                ).scalar_one()
+            )
+
     async def _dispatch_recovered_if_required(
         self,
         *,
@@ -383,6 +425,34 @@ class CanonicalProductionTelegramListenerManager(Day21TelegramListenerManager):
                 lifecycle_event_id,
             )
             if attempted:
+                return
+
+        if is_entry:
+            resolver = getattr(router, "_resolve_signal_id", None)
+            if resolver is None:
+                return
+            signal_id = await asyncio.to_thread(
+                resolver,
+                stored.message_id,
+                revision_index,
+            )
+            if signal_id is None:
+                return
+            attempted = await asyncio.to_thread(
+                self._entry_route_already_attempted,
+                signal_id,
+            )
+            if attempted:
+                return
+            superseded = await asyncio.to_thread(
+                self._entry_superseded_by_newer_signal,
+                signal_id,
+            )
+            if superseded:
+                logger.info(
+                    "Recovered entry skipped because newer provider signal exists signal=%s",
+                    signal_id,
+                )
                 return
 
         await asyncio.to_thread(
@@ -454,14 +524,16 @@ class CanonicalProductionTelegramListenerManager(Day21TelegramListenerManager):
                 media_type=type(media).__name__ if media is not None else None,
             )
 
-            inserted_original = await asyncio.to_thread(self._persist_recovered_original, captured)
-            if inserted_original:
-                await self._dispatch_recovered_if_required(
-                    source_id=source.source_id,
-                    telegram_message_id=int(message_id),
-                    revision_index=0,
-                    occurred_at=posted_at,
-                )
+            await asyncio.to_thread(self._persist_recovered_original, captured)
+            # Dispatch is guarded by freshness + exact route-attempt evidence, so an
+            # already-persisted message can recover the narrow crash window between
+            # interpretation commit and broker dispatch without duplicating a trade.
+            await self._dispatch_recovered_if_required(
+                source_id=source.source_id,
+                telegram_message_id=int(message_id),
+                revision_index=0,
+                occurred_at=posted_at,
+            )
 
             edit_date = getattr(message, "edit_date", None)
             if edit_date is None:
@@ -479,11 +551,11 @@ class CanonicalProductionTelegramListenerManager(Day21TelegramListenerManager):
                 has_media=media is not None,
                 media_type=type(media).__name__ if media is not None else None,
             )
-            inserted_edit, revision_index = await asyncio.to_thread(
+            _inserted_edit, revision_index = await asyncio.to_thread(
                 self._persist_recovered_edit,
                 captured_edit,
             )
-            if inserted_edit and revision_index > 0:
+            if revision_index > 0:
                 await self._dispatch_recovered_if_required(
                     source_id=source.source_id,
                     telegram_message_id=int(message_id),
