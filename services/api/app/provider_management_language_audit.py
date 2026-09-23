@@ -118,9 +118,16 @@ class ProviderManagementLanguageAuditService:
             source = session.execute(
                 text(
                     """
-                    SELECT COALESCE(NULLIF(chat_title,''),source_alias,'') AS provider,status
-                    FROM sources
-                    WHERE id=:source_id
+                    SELECT
+                      COALESCE(NULLIF(s.chat_title,''),s.source_alias,'') AS provider,
+                      s.status,
+                      pr.style,
+                      pr.profile_metadata->'adaptive_v1'->'language'->>'cadence_bucket' AS cadence,
+                      pr.profile_metadata->'adaptive_v1'->'language'->>'management_bucket'
+                        AS management_bucket
+                    FROM sources s
+                    LEFT JOIN provider_research_profiles pr ON pr.source_id=s.id
+                    WHERE s.id=:source_id
                     """
                 ),
                 {"source_id": source_id},
@@ -203,6 +210,11 @@ class ProviderManagementLanguageAuditService:
             "source_id": str(source_id),
             "provider": str((source or {}).get("provider") or ""),
             "source_status": str((source or {}).get("status") or "unknown"),
+            "trading_style": str((source or {}).get("style") or "unknown"),
+            "cadence_bucket": str((source or {}).get("cadence") or "unknown"),
+            "management_bucket": str(
+                (source or {}).get("management_bucket") or "unknown"
+            ),
             "messages_scanned": len(rows),
             "management_candidates": candidate_count,
             "covered_candidates": covered_count,
