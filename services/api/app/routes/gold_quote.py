@@ -508,7 +508,7 @@ async def account_gold_quote(
 
 
 @router.get("/public-performance-calendar", response_model=PublicPerformanceResponse)
-async def public_performance_calendar(
+def public_performance_calendar(
     request: Request,
     response: Response,
 ) -> PublicPerformanceResponse:
