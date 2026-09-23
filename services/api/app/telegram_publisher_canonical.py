@@ -146,7 +146,10 @@ def _trade_status_lines(trade: TradeLedgerSnapshot | None) -> list[str]:
     lines = ["<b>Trade Status</b>", ""]
     for leg in trade.legs:
         state = labels.get(leg.status, "PENDING ⏳")
-        lines.append(f"TP{leg.tp_index} — <b>{state}</b>")
+        cash = ""
+        if leg.status in {"won", "closed_profit", "lost", "breakeven", "closed_unknown"}:
+            cash = f" · <b>{money(leg.cash_pnl)}</b>"
+        lines.append(f"TP{leg.tp_index} — <b>{state}</b>{cash}")
     return lines
 
 
@@ -1128,7 +1131,7 @@ class CanonicalTelegramPublisherManager(Day34CutoverTelegramPublisherManager):
                         sig.source_id,
                         COALESCE(NULLIF(src.chat_title,''),src.source_alias,'Unknown provider')
                             AS provider_name,
-                        ev.event_type,ev.rendered_text,ev.aggregate_result,
+                        ev.event_type,ev.rendered_text,ev.aggregate_result,ev.occurred_at AS event_occurred_at,
                         event_position.tp_index AS event_tp_index,
                         event_outcome.cash_pnl AS event_cash_pnl,
                         event_outcome.status AS event_outcome_status,
@@ -1200,7 +1203,11 @@ class CanonicalTelegramPublisherManager(Day34CutoverTelegramPublisherManager):
                 row["source_id"], str(row["provider_name"] or "Unknown provider")
             )
             trade = self._trade_ledger.trade(row["signal_id"]) if self._trade_ledger else None
-            account = self._trade_ledger.account() if self._trade_ledger else None
+            account = (
+                self._trade_ledger.account(now=row["event_occurred_at"])
+                if self._trade_ledger
+                else None
+            )
             event_type = str(row["event_type"] or "")
             aggregate = row["aggregate_result"] if isinstance(row["aggregate_result"], dict) else {}
             event_outcome = str(
