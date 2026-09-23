@@ -148,7 +148,7 @@ def _trade_status_lines(trade: TradeLedgerSnapshot | None) -> list[str]:
         state = labels.get(leg.status, "PENDING ⏳")
         cash = ""
         if leg.status in {"won", "closed_profit", "lost", "breakeven", "closed_unknown"}:
-            cash = f" · <b>{money(getattr(leg, \"cash_pnl\", Decimal(\"0\")))}</b>"
+            cash = f" · <b>{money(getattr(leg, 'cash_pnl', Decimal('0')))}</b>"
         lines.append(f"TP{leg.tp_index} — <b>{state}</b>{cash}")
     return lines
 
