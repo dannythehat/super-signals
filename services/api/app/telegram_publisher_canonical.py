@@ -133,6 +133,7 @@ def _trade_status_lines(trade: TradeLedgerSnapshot | None) -> list[str]:
         return []
     labels = {
         "won": "WON 🥳",
+        "closed_profit": "CLOSED IN PROFIT 🥳",
         "lost": "LOST 🥺",
         "breakeven": "BREAK EVEN 🤝",
         "cancelled": "CANCELLED",
@@ -846,7 +847,18 @@ class CanonicalTelegramPublisherManager(Day34CutoverTelegramPublisherManager):
             if event_type == "broker_position_settled":
                 pnl = Decimal(str(event_pnl or 0)).quantize(Decimal("0.01"))
                 if event_outcome == "won":
-                    heading = f"<b>TRADE UPDATE 📈 · {tp_label} HIT</b>"
+                    leg_state = next(
+                        (
+                            leg.status
+                            for leg in (trade.legs if trade is not None else ())
+                            if leg.tp_index == int(row["tp_index"] or 1)
+                        ),
+                        None,
+                    )
+                    if leg_state == "won":
+                        heading = f"<b>TRADE UPDATE 📈 · {tp_label} HIT</b>"
+                    else:
+                        heading = f"<b>TRADE UPDATE 📈 · {tp_label} CLOSED IN PROFIT</b>"
                     result = f"🎉🥳 <b>{money(pnl)} PROFIT</b>"
                 elif event_outcome == "lost":
                     heading = "<b>TRADE UPDATE 📉 · STOP LOSS HIT</b>"
