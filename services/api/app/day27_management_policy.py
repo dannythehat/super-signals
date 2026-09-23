@@ -141,8 +141,10 @@ _MOVE_BE = re.compile(
     r"|\b(?:MOVE|SET)\s+(?:TO\s+)?(?:FULLY\s+)?(?:BE|BREAKEVEN|BREAK\s+EVEN)\b"
     r"|^\s*(?:BE|BREAKEVEN|BREAK\s+EVEN)\s+NOW\s*[.!✅🔥]*\s*$"
     r"|\bBREAKEVEN\s+SET\b"
-    r"|\bMAKE\s+(?:(?:YOUR|MY|THE)\s+)?"
-    r"(?:TRADE|SETUP|SET\s*UP|POSITION)\s+(?:OVERALL\s+)?RISK\s*[- ]?FREE\b"
+    r"|\bMAKE\s+(?:(?:YOUR|MY|OUR|THE)\s+)?"
+    r"(?:TRADE|SETUP|SET\s*UP|POSITION|BEST\s+ENTR(?:Y|IES)|ENTR(?:Y|IES))\s+"
+    r"(?:OVERALL\s+)?RISK\s*[- ]?FREE\b"
+    r"|\b(?:I\s+(?:AM|['’]M)\s+)?(?:NOW\s+)?HOLD(?:ING)?\s+RISK\s*[- ]?FREE\b"
     r"|\bI\s+WILL\s+MAKE\s+(?:MY|THE)\s+TRADE\s+RISK\s*[- ]?FREE\s+NOW\b"
     r"|\b(?:LOCK|LOCKING)\s+IN\s+(?:SOME\s+|THE\s+)?PROFITS?\b"
     r"|\b(?:SECURE|PROTECT)\s+(?:SOME\s+|THE\s+|YOUR\s+)?PROFITS?\b"
@@ -173,7 +175,7 @@ _SL_HIT = re.compile(
 )
 _TAKE_PARTIALS = re.compile(
     r"\b(?:TAKE|BOOK)\s+(?:SOME\s+|YOUR\s+|THE\s+|MAXIMUM\s+)?(?:PARTIALS?|PARTIALLY\s+PROFITS?|MORES?|PROFITS?)\b"
-    r"|\bBOOK\s+PARTIAL\b|\bTAKE\s+PARTIAL\s+PROFITS?\b|\bCLOSE\s+PARTIALS?\b"
+    r"|\bBOOK\s+PARTIAL\b|\bTAKE\s+PARTIAL\s+PROFITS?\b|\bCLOSE(?:D)?\s+PARTIALS?\b"
     r"|\b(?:CLOSE|BANK|SECURE|TAKE)\s+(?:OFF\s+)?HALF\b"
     r"|\bCLOSE\s+(?:SOME|A\s+PORTION)\s+(?:OF\s+)?(?:IT|THE\s+(?:TRADE|POSITIONS?))?\b"
     r"|\bBANK\s+(?:SOME|PART)\s+(?:OF\s+)?(?:IT|THE\s+PROFITS?)\b",
