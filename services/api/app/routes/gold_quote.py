@@ -9,7 +9,7 @@ immutable broker evidence, and revoked providers remain outside user-facing perf
 
 from __future__ import annotations
 
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 from math import isfinite
 from time import monotonic
@@ -248,28 +248,28 @@ def _owner_reference_user_id(service: Day33PerformanceLedgerServiceV2) -> UUID:
 
 
 def _canonical_displayed_balance(service: Day33PerformanceLedgerServiceV2, user_id: UUID) -> Decimal:
-    """Newest MT5/Vantage closed balance, never equity and never a reconstruction."""
+    """Newest full Vantage account value (equity), never a reconstruction."""
     accounting = CanonicalTradingAccountingService(service._session_factory)
     with service._session_factory() as session:
         row = session.execute(
             text(
                 """
-                SELECT pas.balance
+                SELECT pas.equity
                 FROM performance_account_snapshots pas
                 JOIN mt5_accounts a ON a.id=pas.mt5_account_id
                 WHERE a.owner_user_id=:user_id
                   AND a.status<>'revoked'
-                  AND pas.balance IS NOT NULL
+                  AND pas.equity IS NOT NULL
                 ORDER BY pas.captured_at DESC
                 LIMIT 1
                 """
             ),
             {"user_id": user_id},
         ).mappings().first()
-    broker_balance = row["balance"] if row is not None else Decimal("0")
+    account_value = row["equity"] if row is not None else Decimal("0")
     return accounting.displayed_balance(
         user_id,
-        broker_account_value=broker_balance,
+        broker_account_value=account_value,
     )
 
 
@@ -279,9 +279,8 @@ def _latest_owner_account_value(
 ) -> tuple[float | None, float | None, datetime | None]:
     """Return the latest MetaAPI-backed owner account snapshot.
 
-    The public headline uses the broker's MT5/Vantage balance. Equity is returned
-    separately as account value for audit/debugging only and may move while trades are
-    open.
+    The public headline uses full MT5/Vantage equity (closed balance plus floating P/L).
+    The raw closed balance is returned separately for audit/debugging.
     """
     with service._session_factory() as session:
         row = session.execute(
@@ -393,7 +392,12 @@ def _public_daily(service: Day33PerformanceLedgerServiceV2, user_id: UUID) -> tu
 
     account_by_day = {item.day: item for item in account_days}
     all_days = sorted(set(values) | set(account_by_day))
-    current_day = now.astimezone(public_zone).date()
+    local_now = now.astimezone(public_zone)
+    current_day = (
+        local_now.date() + timedelta(days=1)
+        if local_now.hour >= 21
+        else local_now.date()
+    )
     result: list[PublicDailyPnlResponse] = []
     for day in all_days:
         account_day = account_by_day.get(day)
@@ -432,7 +436,12 @@ def _public_trades(service: Day33PerformanceLedgerServiceV2, user_id: UUID) -> t
         if event_time is None:
             continue
         aware = event_time if event_time.tzinfo is not None else event_time.replace(tzinfo=UTC)
-        local_day = aware.astimezone(zone).date()
+        local_event = aware.astimezone(zone)
+        local_day = (
+            local_event.date() + timedelta(days=1)
+            if local_event.hour >= 21
+            else local_event.date()
+        )
         if local_day < _PUBLIC_TRADE_DETAIL_START:
             continue
         trades.append(
