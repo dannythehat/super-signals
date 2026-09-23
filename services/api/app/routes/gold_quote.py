@@ -253,7 +253,7 @@ def _canonical_displayed_balance(service: Day33PerformanceLedgerServiceV2, user_
         row = session.execute(
             text(
                 """
-                SELECT last_confirmed_equity
+                SELECT last_confirmed_balance
                 FROM mt5_accounts
                 WHERE owner_user_id=:user_id
                   AND status<>'revoked'
@@ -263,7 +263,7 @@ def _canonical_displayed_balance(service: Day33PerformanceLedgerServiceV2, user_
             ),
             {"user_id": user_id},
         ).mappings().first()
-    account_value = row["last_confirmed_equity"] if row is not None else Decimal("0")
+    account_value = row["last_confirmed_balance"] if row is not None else Decimal("0")
     return accounting.displayed_balance(
         user_id,
         broker_account_value=account_value,
@@ -276,9 +276,9 @@ def _latest_owner_account_value(
 ) -> tuple[float | None, float | None, datetime | None]:
     """Return the latest MetaAPI-backed owner account snapshot.
 
-    Vantage's account card corresponds to the current account value, which tracks
-    broker equity while trades are open. The raw MT5 cash balance is returned
-    separately for audit/debugging and is not used as the public headline.
+    The public headline uses the broker's MT5/Vantage balance. Equity is returned
+    separately as account value for audit/debugging only and may move while trades are
+    open.
     """
     with service._session_factory() as session:
         row = session.execute(
