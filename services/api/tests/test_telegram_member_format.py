@@ -106,3 +106,9 @@ def test_uneditable_stale_result_is_replaced_without_duplicate_spam() -> None:
     assert '"sendMessage"' in source
     assert "replacement_message_id" in source
     assert "reply_to_telegram_message_id" in source
+
+
+def test_notification_titles_survive_unassigned_trade_number() -> None:
+    source = Path("services/api/app/telegram_publisher_canonical.py").read_text()
+    assert "COALESCE('TRADE ' || sig.member_trade_number::text,'TRADE')" in source
+    assert "'NEW TRADE PLACED — ' || COALESCE" in source
