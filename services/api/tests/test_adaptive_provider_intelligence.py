@@ -160,3 +160,83 @@ def test_provider_management_audit_counts_covered_and_unmapped_examples() -> Non
     assert payload["execution_authority"] is False
     assert payload["unmapped_examples_masked"]
     assert all("67" not in value for value in payload["covered_examples_masked"])
+
+
+
+def test_provider_playbook_learns_trade_and_update_style_without_prices() -> None:
+    source_id = uuid4()
+    messages = [
+        {
+            "raw_text": "TP1 hit move SL to BE",
+            "raw_payload": {"reply_to_message_id": 100},
+            "edited_at": None,
+        },
+        {
+            "raw_text": "Book partial and hold risk free",
+            "raw_payload": {},
+            "edited_at": datetime.now(timezone.utc),
+        },
+        {
+            "raw_text": "Good morning team",
+            "raw_payload": {},
+            "edited_at": None,
+        },
+    ]
+    audit = ProviderManagementLanguageAuditService._audit_payload(
+        source_id,
+        {
+            "provider": "Fixture Provider",
+            "status": "testing",
+            "style": "scalper",
+            "cadence": "scalper",
+            "management_bucket": "active_management",
+        },
+        messages,
+    )
+    signals = [
+        {
+            "order_type": "limit",
+            "side": "BUY",
+            "stop_loss": Decimal("4300"),
+            "take_profits": [Decimal("4310"), Decimal("4320"), Decimal("4330")],
+            "risk_multiplier": Decimal("2"),
+            "has_open_runner": False,
+            "entry_low": Decimal("4305"),
+            "entry_high": Decimal("4307"),
+        },
+        {
+            "order_type": "limit",
+            "side": "BUY",
+            "stop_loss": Decimal("4298"),
+            "take_profits": [Decimal("4310"), Decimal("4320"), Decimal("4330")],
+            "risk_multiplier": Decimal("1"),
+            "has_open_runner": True,
+            "entry_low": Decimal("4304"),
+            "entry_high": Decimal("4306"),
+        },
+    ]
+
+    playbook = ProviderManagementLanguageAuditService._playbook_payload(
+        source_id,
+        {
+            "provider": "Fixture Provider",
+            "status": "testing",
+            "style": "scalper",
+            "cadence": "scalper",
+            "management_bucket": "active_management",
+        },
+        messages,
+        signals,
+        audit,
+    )
+
+    assert playbook["preferred_order_type"] == "limit"
+    assert playbook["usual_tp_count"] == 3
+    assert playbook["explicit_stop_loss_pct"] == 100.0
+    assert playbook["risk_multiplier_above_one_pct"] == 50.0
+    assert playbook["entry_zone_pct"] == 100.0
+    assert playbook["reply_linked_management_pct"] == 50.0
+    assert playbook["edited_message_pct"] == round(100 / 3, 2)
+    rendered = str(playbook)
+    for historical_price in ("4300", "4305", "4330"):
+        assert historical_price not in rendered
