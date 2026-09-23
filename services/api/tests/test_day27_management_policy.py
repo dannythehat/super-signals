@@ -288,3 +288,43 @@ def test_scalping_closed_partials_holding_risk_free_is_compound_management() -> 
     )
     assert {"type": "close", "target": "TP1", "value": None} in result.actions
     assert {"type": "move_to_break_even", "target": "all", "value": None} in result.actions
+
+
+def test_gold_trader_mo_breakeven_zero_risk_dialect() -> None:
+    result = extract_day27_management_actions(
+        "Let's set breakeven for zero risk now everyoneee👏🏽👏🏽🤑🤑"
+    )
+    assert {"type": "move_to_break_even", "target": "all", "value": None} in result.actions
+
+
+def test_gold_trader_mo_closed_most_and_sl_above_entries_dialect() -> None:
+    result = extract_day27_management_actions(
+        "I have closed most entries and moved my SL above all entries for zero risk ok!🙏🏽"
+    )
+    assert {"type": "close", "target": "all_but_best", "value": None} in result.actions
+    assert {"type": "move_to_break_even", "target": "all", "value": None} in result.actions
+
+
+def test_xauusd_gold_pips_collect_partial_and_set_be_dialect() -> None:
+    result = extract_day27_management_actions(
+        "GOLD BUY 110PIPS\n\nCollect partial & set breakeven"
+    )
+    assert {"type": "close", "target": "TP1", "value": None} in result.actions
+    assert {"type": "move_to_break_even", "target": "all", "value": None} in result.actions
+
+
+def test_xauusd_gold_pips_first_layer_and_be_dialect() -> None:
+    result = extract_day27_management_actions(
+        "GOLD RUNNING NOW 61+PIPS !\n\n"
+        "Scalper collect your first layer and set breakeven for other half layers !"
+    )
+    assert {"type": "close", "target": "TP1", "value": None} in result.actions
+    assert {"type": "move_to_break_even", "target": "all", "value": None} in result.actions
+
+
+def test_sureshot_close_half_and_move_sl_entry_remains_compound() -> None:
+    result = extract_day27_management_actions(
+        "XAUUSD CLOSE HALF 67+ PIPS PROFIT ✅✅ MOVE SL TO ENTRY"
+    )
+    assert {"type": "close", "target": "TP1", "value": None} in result.actions
+    assert {"type": "move_to_break_even", "target": "all", "value": None} in result.actions
