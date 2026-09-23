@@ -385,7 +385,7 @@ class TelegramTradeLedger:
                 state = outcome
             elif provider_reported_hit:
                 state = "pending"
-            elif position_status in {"cancelled", "canceled"}:
+            elif position_status in {"cancelled", "canceled", "skipped"}:
                 state = "cancelled"
             elif position_status == "closed":
                 state = "closed_unknown"
