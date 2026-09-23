@@ -555,9 +555,10 @@ class CanonicalTelegramPublisherManager(Day34CutoverTelegramPublisherManager):
                     )
                 except TelegramPublishError as exc:
                     logger.warning(
-                        "Telegram root identity repair failed safely message_id=%s code=%s",
+                        "Telegram root identity repair failed safely message_id=%s code=%s reason=%s",
                         row["telegram_message_id"],
                         exc.code,
+                        exc.reason,
                     )
                     continue
 
