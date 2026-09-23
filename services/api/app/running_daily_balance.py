@@ -20,12 +20,9 @@ from sqlalchemy.orm import Session
 SOFIA = ZoneInfo("Europe/Sofia")
 RUNNING_ACCOUNT_VALUE_START_DAY = date(2026, 9, 23)
 
-# 22 September closed at this Vantage/website account value.  It is the accepted
-# opening baseline for 23 September; subsequent days roll automatically from the last
-# broker account-value snapshot before the next Sofia calendar day begins.
-_VERIFIED_OPENING_VALUES: dict[date, Decimal] = {
-    date(2026, 9, 23): Decimal("2075.81"),
-}
+# No day may carry a hand-entered balance. MT5/Vantage snapshots are the single source
+# of truth for each Sofia trading day's opening and closing balance.
+_VERIFIED_OPENING_VALUES: dict[date, Decimal] = {}
 
 
 def _money(value: Decimal | str | float | int) -> Decimal:
