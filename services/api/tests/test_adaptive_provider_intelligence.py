@@ -240,3 +240,24 @@ def test_provider_playbook_learns_trade_and_update_style_without_prices() -> Non
     rendered = str(playbook)
     for historical_price in ("4300", "4305", "4330"):
         assert historical_price not in rendered
+
+
+
+def test_provider_language_audit_counts_optional_and_results_as_understood() -> None:
+    source_id = uuid4()
+    rows = [
+        {"raw_text": "Make trade risk free if you want"},
+        {"raw_text": "Breakeven hit"},
+        {"raw_text": "Book maximum and trail entry to maximum profit levels"},
+    ]
+    payload = ProviderManagementLanguageAuditService._audit_payload(
+        source_id,
+        {"provider": "Fixture Provider", "status": "testing"},
+        rows,
+    )
+    assert payload["management_candidates"] == 3
+    assert payload["optional_candidates"] == 1
+    assert payload["result_only_candidates"] == 1
+    assert payload["understood_candidates"] == 2
+    assert payload["unmapped_candidates"] == 1
+    assert payload["understanding_pct"] == round(200 / 3, 2)
