@@ -266,9 +266,10 @@ class CanonicalExecutionDispatcher:
         is stale and unsafe. Fail closed instead of entering after the provider has already
         changed the trade.
         """
-        if self._session_factory is None:
+        session_factory = getattr(self, "_session_factory", None)
+        if session_factory is None:
             return None
-        session_context = self._session_factory()
+        session_context = session_factory()
         if session_context is None:
             return None
         with session_context as session:
