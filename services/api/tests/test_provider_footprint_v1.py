@@ -135,3 +135,35 @@ def test_drift_is_observational_and_never_auto_applies() -> None:
     assert drift["status"] == "candidate_drift"
     assert drift["candidate_reasons"]
     assert drift["auto_apply"] is False
+
+
+
+def test_pit_ai_context_exposes_only_sanitised_provider_playbook() -> None:
+    snapshot = {
+        "profile_metadata": {
+            "provider_playbook_v1": {
+                "version": "provider-playbook-v1",
+                "knowledge_state": "rich",
+                "trading_style": "scalper",
+                "preferred_order_type": "limit",
+                "usual_tp_count": 3,
+                "management_phrase_families": {"breakeven": 12, "partial": 8},
+                "covered_management_examples_masked": [
+                    "TP<N> hit move SL to BE",
+                    "Book partial and hold risk free",
+                ],
+                "unmapped_management_examples_masked": [
+                    "Trail entry to maximum profit levels"
+                ],
+                "historical_price_that_must_not_escape": 4305,
+                "safety_note": "Behavioural context only",
+            }
+        }
+    }
+
+    context = ProviderAwareProductionAiPipeline._playbook_context(snapshot)
+    assert context["trading_style"] == "scalper"
+    assert context["preferred_order_type"] == "limit"
+    assert context["usual_tp_count"] == 3
+    assert "historical_price_that_must_not_escape" not in context
+    assert "4305" not in json.dumps(context)
