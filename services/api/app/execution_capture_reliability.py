@@ -144,7 +144,7 @@ class _CaptureRetryMixin:
             balance = float(
                 accounting.displayed_balance(
                     user_id,
-                    broker_balance=balance,
+                    broker_account_value=balance,
                 )
             )
         return super()._size_signal(

@@ -33,7 +33,6 @@ from app.mt5_read_service_day23 import (
     Day23Mt5ReadService,
     Day23ReadError,
 )
-from app.paper_run_epoch import active_paper_epoch
 from app.risk_sizing_day24 import (
     BrokerVolumeRules,
     Day24RiskSizer,
@@ -227,14 +226,17 @@ class Day26Mt5ExecutionService:
             initial_state=live_state,
         )
 
-        risk_balance = live_state.account.balance
-        if self._session_factory is not None and active_paper_epoch(owner_user_id) is not None:
-            risk_balance = CanonicalTradingAccountingService(
-                self._session_factory
-            ).displayed_balance(
-                owner_user_id,
-                broker_balance=live_state.account.balance,
-            )
+        # Every trade is sized at its risk percent of the Vantage account value - the
+        # figure the Vantage account card shows and the only balance this business runs
+        # on. Sizing off the broker's closed-trade balance field understated it by the
+        # whole floating P&L, and the previous paper-epoch derivation understated it
+        # further by anchoring to a hard-coded 1517.23.
+        risk_balance = CanonicalTradingAccountingService(
+            self._session_factory
+        ).displayed_balance(
+            owner_user_id,
+            broker_account_value=live_state.account.equity,
+        ) if self._session_factory is not None else live_state.account.equity
         targets = list(signal.take_profits) + ([None] if signal.has_open_runner else [])
         risk_profile = provider_risk_profile(
             source_name=self._source_name(signal.signal_id),

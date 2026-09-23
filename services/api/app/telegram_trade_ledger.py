@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import UTC, datetime
+import os
 from decimal import ROUND_HALF_UP, Decimal
 from hashlib import sha256
 from uuid import UUID
@@ -22,6 +23,12 @@ SOFIA = ZoneInfo("Europe/Sofia")
 REFERENCE_START_AT = datetime(2026, 8, 5, 21, 0, tzinfo=UTC)
 REFERENCE_START_LABEL = "6 Aug 2026"
 REFERENCE_START_VALUE = Decimal("1000.00")
+
+# A published account figure must never look current when the MetaAPI/Vantage
+# capture loop has stalled. Tunable without a deploy.
+ACCOUNT_SNAPSHOT_MAX_AGE_SECONDS = max(
+    60, int(os.getenv("TELEGRAM_ACCOUNT_SNAPSHOT_MAX_AGE_SECONDS", "900") or 900)
+)
 _PROVIDER_COLOURS = ("🔵", "🟢", "🟣", "🟠", "🟡", "🔴", "🟤", "⚫", "⚪")
 
 
@@ -50,6 +57,7 @@ class AccountLedgerSnapshot:
     one_percent: Decimal | None
     local_weekday: int
     updated_at: datetime | None
+    stale: bool = False
 
     @property
     def weekday_trading_day(self) -> bool:
@@ -192,18 +200,37 @@ class TelegramTradeLedger:
             if snapshot is not None and snapshot["balance"] is not None
             else None
         )
+        captured_at = snapshot["captured_at"] if snapshot is not None else None
+        stale = True
+        if captured_at is not None:
+            captured = captured_at
+            if captured.tzinfo is None:
+                captured = captured.replace(tzinfo=UTC)
+            age = (point - captured.astimezone(UTC)).total_seconds()
+            stale = age > ACCOUNT_SNAPSHOT_MAX_AGE_SECONDS
+
+        # The published figure is the COMPANY PAPER BALANCE: the account value the
+        # Vantage demo account reports (balance plus floating P&L), which is the
+        # single number this business runs on. It began at REFERENCE_START_VALUE on
+        # REFERENCE_START_LABEL and has compounded since. Sizing is always quoted as
+        # 1% of that paper balance; the broker's closed-trade BALANCE field is never
+        # the published basis. A stale snapshot must not be quoted as a current risk
+        # figure at all.
+        one_percent = (
+            (account_value * Decimal("0.01")).quantize(Decimal("0.01"))
+            if account_value is not None and not stale
+            else None
+        )
+
         return AccountLedgerSnapshot(
             account_value=account_value,
             mt5_balance=mt5_balance,
             today_pnl=today,
             month_to_date_pnl=month,
-            one_percent=(
-                (account_value * Decimal("0.01")).quantize(Decimal("0.01"))
-                if account_value is not None
-                else None
-            ),
+            one_percent=one_percent,
             local_weekday=local_point.weekday(),
-            updated_at=(snapshot["captured_at"] if snapshot is not None else None),
+            updated_at=captured_at,
+            stale=stale,
         )
 
     def trade(self, signal_id: UUID) -> TradeLedgerSnapshot:
@@ -268,12 +295,24 @@ class TelegramTradeLedger:
         lines.append(f"📆 Month to date: {money(snapshot.month_to_date_pnl)}")
         if snapshot.account_value is not None:
             value = "$" + f"{snapshot.account_value:,.2f}"
+            # 1% is quoted from the company paper balance (the account value shown
+            # above), and only when the capture is fresh (see account()).
             one_percent = (
                 " · 1% = $" + f"{snapshot.one_percent:,.2f}"
                 if snapshot.one_percent is not None
                 else ""
             )
-            lines.append(f"💰 Vantage account value: {value}{one_percent}")
+            if snapshot.stale:
+                stamp = (
+                    snapshot.updated_at.astimezone(SOFIA).strftime("%H:%M")
+                    if snapshot.updated_at is not None
+                    else "unknown"
+                )
+                lines.append(
+                    f"💰 Vantage account value: {value} (last updated {stamp})"
+                )
+            else:
+                lines.append(f"💰 Vantage account value: {value}{one_percent}")
         if include_origin:
             lines.append(
                 "🏁 Started $" + f"{REFERENCE_START_VALUE:,.2f}" + f" · {REFERENCE_START_LABEL}"

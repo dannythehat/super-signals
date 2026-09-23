@@ -11,11 +11,13 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+from time import monotonic
 from uuid import UUID
 
 from sqlalchemy import text
 from sqlalchemy.orm import Session, sessionmaker
 
+from app.broker_fill_settlement import BrokerFillSettlementService, SettlementResult
 from app.metaapi_read_gateway import MetaApiReadGateway
 from app.metaapi_trade_gateway import MetaApiTradeGateway
 from app.mt5_crypto import MetaApiTokenCipher
@@ -100,6 +102,7 @@ class UnifiedPendingReconciler:
         owner_user_id: UUID,
         poll_seconds: int = 3,
         trade_gateway: MetaApiTradeGateway | None = None,
+        settlement_interval_seconds: int = 60,
     ) -> None:
         if poll_seconds < 1:
             raise ValueError("pending_poll_seconds_invalid")
@@ -125,6 +128,9 @@ class UnifiedPendingReconciler:
             if trade_gateway is not None
             else None
         )
+        self._settlement = BrokerFillSettlementService(session_factory)
+        self._settlement_interval_seconds = max(1, settlement_interval_seconds)
+        self._last_settlement_at: float | None = None
         self._task: asyncio.Task[None] | None = None
         self._stop = asyncio.Event()
 
@@ -164,6 +170,11 @@ class UnifiedPendingReconciler:
                 pass
 
     async def reconcile_once(self) -> PendingReconcileResult:
+        # Settlement runs before the frozen-market guard and contacts no broker. A fill
+        # stranded on Friday must not stay invisible all weekend, and an orphan that
+        # survived settlement has to keep being reported until someone resolves it.
+        self.settle_stranded_fills()
+
         if market_week_frozen():
             return PendingReconcileResult(0, 0, 0, 0, 0)
 
@@ -211,6 +222,37 @@ class UnifiedPendingReconciler:
             unresolved=sum(item.unresolved for item in results),
             terminalized=sum(item.terminalized for item in results),
         )
+
+    def settle_stranded_fills(self, *, now: float | None = None) -> SettlementResult:
+        """Settle confirmed fills the executor could not map, then report survivors.
+
+        Throttled because the reconciler polls every few seconds while stranded fills are
+        rare. Returns an empty result when the interval has not elapsed.
+        """
+        point = now if now is not None else monotonic()
+        last = self._last_settlement_at
+        if last is not None and (point - last) < self._settlement_interval_seconds:
+            return SettlementResult()
+        self._last_settlement_at = point
+
+        try:
+            result = self._settlement.settle_once()
+            orphans = self._settlement.orphaned_positions()
+        except Exception:
+            logger.exception("Broker fill settlement failed safely")
+            return SettlementResult()
+
+        if orphans:
+            # Never silent: an orphan that settlement could not resolve is a broker
+            # position nothing in the product can reach, so it is reported every cycle
+            # until it is closed or its deals arrive.
+            logger.error(
+                "Orphaned broker positions: count=%d oldest_age_hours=%.1f ids=%s",
+                len(orphans),
+                max(item.age_seconds() for item in orphans) / 3600,
+                ",".join(item.broker_position_id for item in orphans),
+            )
+        return result
 
     def _live_pending_users(self) -> tuple[UUID, ...]:
         with self._session_factory() as session:
