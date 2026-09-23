@@ -20,11 +20,11 @@ def test_member_provider_identity_uses_named_emojis_not_colour_pairs() -> None:
     assert "_PROVIDER_COLOURS" not in source
 
 
-def test_today_pnl_is_stable_realised_broker_cash_only() -> None:
+def test_today_pnl_and_balance_follow_mt5_closed_balance_truth() -> None:
     source = Path("services/api/app/telegram_trade_ledger.py").read_text()
-    assert "today = realised_today" in source
-    assert "today_opening_value + realised_today" in source
-    assert "Floating/open P&L must never" in source
+    assert 'snapshot["balance"]' in source
+    assert "account_value - today_opening_value" in source
+    assert "never substitute equity/floating P&L" in source
     public = Path("services/api/app/routes/gold_quote.py").read_text()
     assert "account_value_days" in public
     assert "opening_balance" in public
