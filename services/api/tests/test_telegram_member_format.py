@@ -97,3 +97,12 @@ def test_complete_multi_leg_trade_uses_total_result_not_one_leg() -> None:
     assert "TRADE LOSS · {money(total)}" in source
     assert "TRADE WIN · {money(total)}" in source
     assert "_balance_money(account.account_value)" in source
+
+
+def test_uneditable_stale_result_is_replaced_without_duplicate_spam() -> None:
+    source = Path("services/api/app/telegram_publisher_canonical.py").read_text()
+    assert "message to edit not found" in source
+    assert '"deleteMessage"' in source
+    assert '"sendMessage"' in source
+    assert "replacement_message_id" in source
+    assert "reply_to_telegram_message_id" in source
