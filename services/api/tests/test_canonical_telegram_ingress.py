@@ -58,6 +58,15 @@ def test_raw_save_returns_without_waiting_for_slow_downstream(monkeypatch) -> No
     manager._telegram_processing_pool.shutdown()
 
 
+def test_canonical_dispatch_has_no_cross_provider_global_lock() -> None:
+    source = (
+        __import__("pathlib").Path("services/api/app/telegram_listener_canonical.py")
+        .read_text()
+    )
+    assert "self._dispatch_lock" not in source
+    assert "one slow MetaAPI call would otherwise freeze" in source
+
+
 def test_same_provider_fifo_and_different_providers_concurrent() -> None:
     pool = _ProviderProcessingPool()
     source = uuid4()
