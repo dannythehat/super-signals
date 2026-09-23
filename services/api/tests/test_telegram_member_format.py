@@ -124,3 +124,17 @@ def test_provider_management_telegram_requires_real_broker_action() -> None:
     assert "broker_actions_sent" in source
     assert "ev.origin<>'provider_update'" in source
     assert "management_action_for_ev" in source
+
+
+
+def test_member_roots_wait_for_public_trade_number_and_repair_internal_ids() -> None:
+    source = Path("services/api/app/telegram_publisher_canonical.py").read_text()
+    assert "sig.member_trade_number IS NOT NULL" in source
+    assert "_repair_sent_root_identities_safely" in source
+    assert "SS-[0-9A-F]{10}" in source
+    assert "TRADE {int(row['member_trade_number'])}" in source
+
+
+def test_skipped_unfilled_legs_render_cancelled_not_pending() -> None:
+    source = Path("services/api/app/telegram_trade_ledger.py").read_text()
+    assert 'position_status in {"cancelled", "canceled", "skipped"}' in source
