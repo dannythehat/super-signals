@@ -729,13 +729,7 @@ class CanonicalTelegramPublisherManager(Day34CutoverTelegramPublisherManager):
                 if event_at is not None:
                     event_account = self._trade_ledger.account(now=event_at)
                     if event_account.account_value is not None:
-                        event_delta = Decimal(str(row["repair_event_cash_pnl"] or 0)).quantize(
-                            Decimal("0.01")
-                        )
-                        balance_text = _balance_equation(
-                            event_account.account_value,
-                            event_delta,
-                        )
+                        balance_text = _balance_money(event_account.account_value)
                         repaired = re.sub(
                             r"(<b>Balance</b>\n)<b>[^\n]+</b>",
                             rf"\1<b>{balance_text}</b>",
@@ -1214,6 +1208,23 @@ class CanonicalTelegramPublisherManager(Day34CutoverTelegramPublisherManager):
                 "",
                 _render_root(row),
             ]
+            if self._trade_ledger is not None:
+                account = self._trade_ledger.account()
+                if account.account_value is not None and not account.stale:
+                    parts.extend(
+                        [
+                            "",
+                            "<b>Balance</b>",
+                            f"<b>{_balance_money(account.account_value)}</b>",
+                            "",
+                            "<b>Today’s P&L</b>",
+                            f"<b>{money(account.today_pnl)}</b>",
+                        ]
+                    )
+                trade = self._trade_ledger.trade(row["signal_id"])
+                status_lines = _trade_status_lines(trade)
+                if status_lines:
+                    parts.extend(["", *status_lines])
             rendered = "\n".join(parts)
             session.execute(
                 text(
@@ -1408,11 +1419,7 @@ class CanonicalTelegramPublisherManager(Day34CutoverTelegramPublisherManager):
 
                 parts = [provider_line, "", heading, "", result]
                 if account is not None and account.account_value is not None and not account.stale:
-                    balance_text = (
-                        _balance_money(account.account_value)
-                        if final_settlement
-                        else _balance_equation(account.account_value, pnl)
-                    )
+                    balance_text = _balance_money(account.account_value)
                     parts.extend(
                         [
                             "",
@@ -1450,7 +1457,7 @@ class CanonicalTelegramPublisherManager(Day34CutoverTelegramPublisherManager):
                         [
                             "",
                             "<b>Balance</b>",
-                            f"<b>{_balance_equation(account.account_value, total)}</b>",
+                            f"<b>{_balance_money(account.account_value)}</b>",
                             "",
                             "<b>Today’s P&L</b>",
                             f"<b>{money(account.today_pnl)}</b>",
@@ -1469,6 +1476,17 @@ class CanonicalTelegramPublisherManager(Day34CutoverTelegramPublisherManager):
                     "",
                     f"🛠 <b>{_html(update_text)}</b>",
                 ]
+                if account is not None and account.account_value is not None and not account.stale:
+                    parts.extend(
+                        [
+                            "",
+                            "<b>Balance</b>",
+                            f"<b>{_balance_money(account.account_value)}</b>",
+                            "",
+                            "<b>Today’s P&L</b>",
+                            f"<b>{money(account.today_pnl)}</b>",
+                        ]
+                    )
                 status_lines = _trade_status_lines(trade)
                 if status_lines:
                     parts.extend(["", *status_lines])
