@@ -507,6 +507,71 @@ async def account_gold_quote(
     return _store(cache, quote)
 
 
+@router.get("/public-performance-calendar", response_model=PublicPerformanceResponse)
+async def public_performance_calendar(
+    request: Request,
+    response: Response,
+) -> PublicPerformanceResponse:
+    """Fast 21:00-Sofia equity feed for the public calendar.
+
+    This endpoint intentionally avoids the heavy timeline/trade-history query so a slow
+    trade-detail read can never freeze the live calendar. Historical rows remain in the
+    website's published JSON; this feed supplies the live Vantage account-value days.
+    """
+    service = _performance_service(request)
+    user_id = _owner_reference_user_id(service)
+    now = datetime.now(UTC)
+    with service._session_factory() as session:
+        account_days = account_value_days(session, user_id, now=now)
+
+    local_now = now.astimezone(ZoneInfo(_PUBLIC_TIMEZONE))
+    current_day = (
+        local_now.date() + timedelta(days=1)
+        if local_now.hour >= 21
+        else local_now.date()
+    )
+    daily = tuple(
+        PublicDailyPnlResponse(
+            day=item.day,
+            pnl=round(float(item.pnl), 2),
+            opening_balance=round(float(item.opening_value), 2),
+            closing_balance=round(float(item.closing_value), 2),
+            running=item.day == current_day,
+        )
+        for item in account_days
+    )
+
+    account_value, mt5_balance, account_value_updated_at = _latest_owner_account_value(
+        service,
+        user_id,
+    )
+    if account_value is not None:
+        current = round(account_value, 2)
+    elif daily:
+        current = round(float(daily[-1].closing_balance or _HISTORICAL_STARTING_BALANCE), 2)
+    else:
+        current = _HISTORICAL_STARTING_BALANCE
+
+    total = round(current - _HISTORICAL_STARTING_BALANCE, 2)
+    return_percent = round(total / _HISTORICAL_STARTING_BALANCE * 100, 2)
+    response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+    return PublicPerformanceResponse(
+        current_recorded_balance=current,
+        total_recorded_pnl=total,
+        return_percent=return_percent,
+        current_account_value=(
+            round(account_value, 2) if account_value is not None else None
+        ),
+        current_mt5_balance=(
+            round(mt5_balance, 2) if mt5_balance is not None else None
+        ),
+        account_value_updated_at=account_value_updated_at,
+        daily=daily,
+        trades=(),
+        updated_at=now,
+    )
+
+
 @router.get("/public-performance", response_model=PublicPerformanceResponse)
 async def public_performance(
     request: Request,

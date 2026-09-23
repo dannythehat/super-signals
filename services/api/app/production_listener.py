@@ -33,6 +33,7 @@ from app.telegram_source_gateway import TelethonTelegramSourceGateway
 PRODUCTION_LISTENER_GENERATION = "canonical-v1"
 PRODUCTION_AI_GENERATION = "provider-aware-v3-adaptive"
 _ADAPTIVE_PROFILE_REFRESH_SECONDS = 900
+_DISPATCH_GAP_SWEEP_SECONDS = 10
 
 logger = logging.getLogger(__name__)
 
@@ -54,6 +55,7 @@ class ProviderResearchProductionListener(CanonicalProductionTelegramListenerMana
         self._research = research
         self._startup_task: asyncio.Task[None] | None = None
         self._adaptive_refresh_task: asyncio.Task[None] | None = None
+        self._dispatch_gap_task: asyncio.Task[None] | None = None
         self._stopping = asyncio.Event()
 
     def __getattr__(self, name: str) -> Any:
@@ -96,7 +98,7 @@ class ProviderResearchProductionListener(CanonicalProductionTelegramListenerMana
                     )
                     SELECT source_id,telegram_message_id,revision_index,occurred_at
                     FROM latest
-                    WHERE source_status IN ('testing','shadow','live')
+                    WHERE source_status IN ('testing','live')
                       AND (
                             (decision='new_trade' AND action='execute')
                             OR
@@ -228,6 +230,23 @@ class ProviderResearchProductionListener(CanonicalProductionTelegramListenerMana
             )
         return True
 
+    async def _dispatch_gap_loop(self) -> None:
+        """Continuously close fresh commit->dispatch gaps without replaying stale entries."""
+        while not self._stopping.is_set():
+            try:
+                await self._recover_committed_dispatch_gaps()
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.exception("Fresh broker dispatch gap sweep failed safely")
+            try:
+                await asyncio.wait_for(
+                    self._stopping.wait(),
+                    timeout=_DISPATCH_GAP_SWEEP_SECONDS,
+                )
+            except TimeoutError:
+                pass
+
     async def _refresh_adaptive_profiles(self) -> None:
         pipeline = getattr(self._inner, "_ai_pipeline", None)
         refresh = getattr(pipeline, "refresh_all_provider_profiles", None)
@@ -263,6 +282,11 @@ class ProviderResearchProductionListener(CanonicalProductionTelegramListenerMana
                 # Recover durable broker work before waiting on Telegram network startup.
                 # This closes the commit->dispatch restart gap without replaying AI.
                 await self._recover_committed_dispatch_gaps()
+                if self._dispatch_gap_task is None or self._dispatch_gap_task.done():
+                    self._dispatch_gap_task = asyncio.create_task(
+                        self._dispatch_gap_loop(),
+                        name="super-signals-fresh-dispatch-gap-sweep",
+                    )
                 await self._inner.start()
                 inner_started = True
                 await self._research.start()
@@ -294,6 +318,15 @@ class ProviderResearchProductionListener(CanonicalProductionTelegramListenerMana
 
     async def stop(self) -> None:
         self._stopping.set()
+        dispatch_gap_task = self._dispatch_gap_task
+        if dispatch_gap_task is not None and not dispatch_gap_task.done():
+            dispatch_gap_task.cancel()
+            try:
+                await dispatch_gap_task
+            except asyncio.CancelledError:
+                pass
+        self._dispatch_gap_task = None
+
         refresh_task = self._adaptive_refresh_task
         if refresh_task is not None and not refresh_task.done():
             refresh_task.cancel()

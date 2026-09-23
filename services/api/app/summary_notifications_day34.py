@@ -308,7 +308,18 @@ class Day34SummaryNotificationService(Day34ScheduledPerformanceReportService):
                         },
                     )
                 except TelegramPublishError as exc:
-                    if "message is not modified" not in exc.reason.lower():
+                    reason = exc.reason.lower()
+                    if "message is not modified" in reason:
+                        pass
+                    elif "message to edit not found" in reason:
+                        self.record_missing_sent_report(repair)
+                        logger.warning(
+                            "Telegram summary repair retired missing message notification_id=%s message_id=%s",
+                            repair.notification_id,
+                            repair.telegram_message_id,
+                        )
+                        continue
+                    else:
                         raise
                 self.record_sent_report_repair(repair)
                 logger.info(
@@ -318,6 +329,35 @@ class Day34SummaryNotificationService(Day34ScheduledPerformanceReportService):
                 )
         except Exception:
             logger.exception("Telegram summary truth repair failed safely; trading unchanged")
+
+    def record_missing_sent_report(self, repair: SentSummaryRepair) -> None:
+        """Retire a repair target Telegram confirms no longer exists.
+
+        The delivery remains immutable evidence of what was originally sent. We only mark
+        the notification payload so the repair loop cannot retry the same missing message
+        forever.
+        """
+        with self._session_factory() as session:
+            session.execute(
+                text(
+                    """
+                    UPDATE notification_events
+                    SET payload=payload || CAST(:payload_patch AS jsonb)
+                    WHERE id=:notification_id
+                    """
+                ),
+                {
+                    "notification_id": repair.notification_id,
+                    "payload_patch": json.dumps(
+                        {
+                            "truthful_net_format": True,
+                            "telegram_message_missing": True,
+                            "truth_repair_skipped": True,
+                        }
+                    ),
+                },
+            )
+            session.commit()
 
     def record_sent_report_repair(self, repair: SentSummaryRepair) -> None:
         with self._session_factory() as session:
