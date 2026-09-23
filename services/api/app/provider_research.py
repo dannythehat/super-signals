@@ -346,7 +346,8 @@ class ProviderResearchService:
                             interpretation_readiness=EXCLUDED.interpretation_readiness,
                             duplicate_of_source_id=EXCLUDED.duplicate_of_source_id,
                             duplicate_score=EXCLUDED.duplicate_score,
-                            profile_metadata=EXCLUDED.profile_metadata,
+                            profile_metadata=COALESCE(provider_research_profiles.profile_metadata,'{}'::jsonb)
+                                             || EXCLUDED.profile_metadata,
                             last_scan_at=now(),updated_at=now()
                         """
                     ),
