@@ -60,6 +60,7 @@ WITH failures AS (
     WHERE ae.event_type = 'mt5.day28_route_failure'
       AND ae.payload->>'decision' = 'trade_update'
       AND ae.payload ? 'lifecycle_event_id'
+      AND COALESCE(ae.payload->>'error_code','') <> 'partial_volume_below_broker_minimum'
       AND ae.created_at >= now() - CAST(:lookback AS interval)
 ),
 grouped AS (
