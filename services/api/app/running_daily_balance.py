@@ -1,8 +1,9 @@
-"""Shared running daily account-value P/L for public website and Telegram.
+"""Shared running daily closed-balance P/L for public website and Telegram.
 
-The owner wants "today" to mean the change in the Vantage account value from the
-previous published close, including floating P/L.  Historical realised-trade P/L remains
-available elsewhere for audit.  This module is read-only and never touches execution.
+"Balance" means the broker's MT5/Vantage balance field: closed cash only. Open/pending
+positions and floating P/L affect equity, not balance, and must not change today's
+published balance P/L. Historical realised-trade P/L remains available elsewhere for
+audit. This module is read-only and never touches execution.
 """
 
 from __future__ import annotations
@@ -47,7 +48,7 @@ def opening_account_value(
     row = session.execute(
         text(
             """
-            SELECT pas.equity AS opening_value
+            SELECT pas.balance AS opening_value
             FROM performance_account_snapshots pas
             JOIN mt5_accounts a ON a.id=pas.mt5_account_id
             WHERE a.owner_user_id=:user_id
@@ -65,7 +66,7 @@ def opening_account_value(
     if value is None:
         # Lightweight unit-test stubs return the snapshot shape rather than the SQL
         # alias; accepting equity here changes nothing in production.
-        value = row.get("equity")
+        value = row.get("balance")
     if value is None:
         return None
     return _money(value)
@@ -96,11 +97,11 @@ def account_value_days(
         text(
             """
             SELECT DISTINCT ON (local_day)
-                local_day,equity,captured_at
+                local_day,balance,captured_at
             FROM (
                 SELECT
                     timezone('Europe/Sofia',pas.captured_at)::date AS local_day,
-                    pas.equity,
+                    pas.balance,
                     pas.captured_at
                 FROM performance_account_snapshots pas
                 JOIN mt5_accounts a ON a.id=pas.mt5_account_id
@@ -108,7 +109,7 @@ def account_value_days(
                   AND a.status<>'revoked'
                   AND pas.captured_at>=:start_at
                   AND pas.captured_at<=:end_at
-                  AND pas.equity IS NOT NULL
+                  AND pas.balance IS NOT NULL
             ) snapshots
             ORDER BY local_day,captured_at DESC
             """
@@ -120,7 +121,7 @@ def account_value_days(
     previous_close: Decimal | None = None
     for row in rows:
         day = row["local_day"]
-        closing = _money(row["equity"])
+        closing = _money(row["balance"])
         opening = _VERIFIED_OPENING_VALUES.get(day)
         if opening is None:
             opening = previous_close
