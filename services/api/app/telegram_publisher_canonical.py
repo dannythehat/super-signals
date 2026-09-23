@@ -886,7 +886,7 @@ class CanonicalTelegramPublisherManager(Day34CutoverTelegramPublisherManager):
                 SELECT
                     'signal-open:' || sig.id::text,
                     sig.id,NULL,NULL,'shared','trade_open',
-                    'NEW TRADE PLACED — TRADE ' || sig.member_trade_number::text,
+                    'NEW TRADE PLACED — ' || COALESCE('TRADE ' || sig.member_trade_number::text,'TRADE'),
                     COALESCE(NULLIF(src.chat_title,''),src.source_alias,'Unknown provider') ||
                         ' · ' || COALESCE(sig.symbol,'') || ' ' || COALESCE(sig.side,'') ||
                         ' placed and confirmed at the broker.',
@@ -926,7 +926,7 @@ class CanonicalTelegramPublisherManager(Day34CutoverTelegramPublisherManager):
                     ev.signal_id,ev.id,NULL,'shared',
                     CASE WHEN ev.event_type LIKE 'broker_result_%'
                          THEN 'trade_result' ELSE 'trade_update' END,
-                    'TRADE ' || sig.member_trade_number::text || ' · ' ||
+                    COALESCE('TRADE ' || sig.member_trade_number::text,'TRADE') || ' · ' ||
                     CASE
                         WHEN ev.event_type='broker_result_win' THEN 'CLOSED — WIN'
                         WHEN ev.event_type='broker_result_loss' THEN 'CLOSED — LOSS'
@@ -934,7 +934,7 @@ class CanonicalTelegramPublisherManager(Day34CutoverTelegramPublisherManager):
                         WHEN ev.event_type='broker_result_closed' THEN 'CLOSED'
                         ELSE 'UPDATE'
                     END,
-                    'TRADE ' || sig.member_trade_number::text || ' · ' || ev.rendered_text,
+                    COALESCE('TRADE ' || sig.member_trade_number::text,'TRADE') || ' · ' || ev.rendered_text,
                     jsonb_build_object(
                         'origin',ev.origin,
                         'broker_result',ev.event_type LIKE 'broker_result_%',
