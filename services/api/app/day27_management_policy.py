@@ -247,9 +247,17 @@ def _extract_actions(text: str) -> list[dict[str, str | None]]:
     else:
         for match in _CLOSE_NUMBERED.finditer(text):
             actions.append({"type": "close", "target": f"TP{match.group(1)}", "value": None})
+        explicit_tp_milestone = bool(
+            _TP_HIT.search(text) or _HIT_TP.search(text) or _TP_ALL_HIT.search(text)
+        )
         if _CLOSE_FIRST_POSITION.search(text) or (
-            _TAKE_PARTIALS.search(text) and not _FUTURE_INTENT.search(text)
+            _TAKE_PARTIALS.search(text)
+            and not _FUTURE_INTENT.search(text)
+            and not explicit_tp_milestone
         ):
+            # Generic "book partial" means take the nearest leg only when the
+            # provider did not explicitly name a TP milestone in the same post.
+            # "TP2 hits ... book partial" is TP2 evidence, never a TP1 command.
             actions.append({"type": "close", "target": "TP1", "value": None})
         if _CLOSE_FIRST_ENTRY.search(text):
             actions.append({"type": "close", "target": "entry_1", "value": None})
