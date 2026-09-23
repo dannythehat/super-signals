@@ -7,7 +7,7 @@ provider risk, or AIDY authority.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 import os
 import re
 from decimal import ROUND_HALF_UP, Decimal
@@ -19,7 +19,6 @@ from sqlalchemy import text
 from sqlalchemy.orm import Session, sessionmaker
 
 from app.reporting_overrides import BROKER_DEAL_NOT_OVERRIDDEN_SQL, override_cash_by_day
-from app.running_daily_balance import opening_account_value
 
 SOFIA = ZoneInfo("Europe/Sofia")
 REFERENCE_START_AT = datetime(2026, 8, 5, 21, 0, tzinfo=UTC)
@@ -133,6 +132,16 @@ class TelegramTradeLedger:
         local_day = local_point.date()
         month_start = local_day.replace(day=1)
 
+        # The owner-defined Telegram trading day is 21:00 Sofia -> 21:00 Sofia.
+        # This is wall-clock local time so DST changes are handled by ZoneInfo rather
+        # than a hard-coded UTC offset.
+        trading_day_start_local = local_point.replace(
+            hour=21, minute=0, second=0, microsecond=0
+        )
+        if local_point < trading_day_start_local:
+            trading_day_start_local -= timedelta(days=1)
+        trading_day_start = trading_day_start_local.astimezone(UTC)
+
         with self._session_factory() as session:
             snapshot = session.execute(
                 text(
@@ -142,11 +151,31 @@ class TelegramTradeLedger:
                     JOIN mt5_accounts a ON a.id=pas.mt5_account_id
                     WHERE a.owner_user_id=:user_id
                       AND a.status<>'revoked'
+                      AND pas.captured_at<=:point
                     ORDER BY pas.captured_at DESC
                     LIMIT 1
                     """
                 ),
-                {"user_id": self._reference_user_id},
+                {"user_id": self._reference_user_id, "point": point},
+            ).mappings().first()
+
+            trading_day_open = session.execute(
+                text(
+                    """
+                    SELECT pas.balance,pas.equity,pas.captured_at
+                    FROM performance_account_snapshots pas
+                    JOIN mt5_accounts a ON a.id=pas.mt5_account_id
+                    WHERE a.owner_user_id=:user_id
+                      AND a.status<>'revoked'
+                      AND pas.captured_at<=:trading_day_start
+                    ORDER BY pas.captured_at DESC
+                    LIMIT 1
+                    """
+                ),
+                {
+                    "user_id": self._reference_user_id,
+                    "trading_day_start": trading_day_start,
+                },
             ).mappings().first()
 
             rows = session.execute(
@@ -206,10 +235,10 @@ class TelegramTradeLedger:
                 start=REFERENCE_START_AT,
                 end=point,
             )
-            today_opening_value = opening_account_value(
-                session,
-                self._reference_user_id,
-                local_day,
+            today_opening_value = (
+                Decimal(str(trading_day_open["equity"])).quantize(Decimal("0.01"))
+                if trading_day_open is not None and trading_day_open["equity"] is not None
+                else None
             )
 
         by_day: dict[object, Decimal] = {}
@@ -234,14 +263,19 @@ class TelegramTradeLedger:
             Decimal("0"),
         ).quantize(Decimal("0.01"))
 
-        # MT5/Vantage balance is the single published balance. Never reconstruct it from
-        # realised trades and never substitute equity/floating P&L.
+        # Telegram's owner-facing "Balance" means the full Vantage account value:
+        # broker equity (closed balance + current floating P/L). Keep raw MT5 balance
+        # separately for diagnostics, but never publish it as the owner's account total.
         account_value = (
+            Decimal(str(snapshot["equity"])).quantize(Decimal("0.01"))
+            if snapshot is not None and snapshot["equity"] is not None
+            else None
+        )
+        mt5_balance = (
             Decimal(str(snapshot["balance"])).quantize(Decimal("0.01"))
             if snapshot is not None and snapshot["balance"] is not None
             else None
         )
-        mt5_balance = account_value
         captured_at = snapshot["captured_at"] if snapshot is not None else None
         stale = True
         if captured_at is not None:
@@ -250,9 +284,9 @@ class TelegramTradeLedger:
                 captured = captured.replace(tzinfo=UTC)
             stale = (point - captured.astimezone(UTC)).total_seconds() > ACCOUNT_SNAPSHOT_MAX_AGE_SECONDS
 
-        # Today follows the same broker-balance truth: current closed balance minus the
-        # last MT5 balance snapshot before Sofia midnight. This includes authorised
-        # broker balance corrections exactly once and cannot drift from Vantage.
+        # Today's P&L is the movement in full Vantage account value from the most recent
+        # 21:00 Sofia boundary. It therefore includes realised and floating P/L and resets
+        # at 21:00 local time every day, exactly as the owner requested.
         today = (
             (account_value - today_opening_value).quantize(Decimal("0.01"))
             if account_value is not None and today_opening_value is not None
@@ -437,8 +471,8 @@ class TelegramTradeLedger:
         lines.append(f"📆 Month to date: {money(snapshot.month_to_date_pnl)}")
         if snapshot.account_value is not None:
             value = "$" + f"{snapshot.account_value:,.2f}"
-            # 1% is quoted from the company paper balance (the account value shown
-            # above), and only when the capture is fresh (see account()).
+            # 1% is quoted from the same full Vantage account value shown above,
+            # and only when the capture is fresh (see account()).
             one_percent = (
                 " · 1% = $" + f"{snapshot.one_percent:,.2f}"
                 if snapshot.one_percent is not None
