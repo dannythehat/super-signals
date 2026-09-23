@@ -486,3 +486,36 @@ def test_live_tig_tp2_hit_book_partial_stays_on_tp2_through_v1_policy() -> None:
     assert {"type": "close", "target": "TP1", "value": None} not in result.extracted[
         "management_actions"
     ]
+
+
+def test_live_scalping_risk_free_message_cannot_be_downgraded_to_chatter() -> None:
+    result = apply_v1_message_policy(
+        _decision(decision="chatter", action="ignore"),
+        raw_text="Make your best entries risk free\n\n+35 pips from the best entries",
+    )
+    assert result.decision == "trade_update"
+    assert result.action == "apply_update"
+    assert {"type": "move_to_break_even", "target": "all", "value": None} in result.extracted[
+        "management_actions"
+    ]
+
+
+def test_live_scalping_closed_partials_and_risk_free_executes_both_actions() -> None:
+    result = apply_v1_message_policy(
+        _decision(decision="trade_update", action="ignore"),
+        raw_text="I have closed partials and I am now holding risk free",
+    )
+    assert result.action == "apply_update"
+    actions = result.extracted["management_actions"]
+    assert {"type": "close", "target": "TP1", "value": None} in actions
+    assert {"type": "move_to_break_even", "target": "all", "value": None} in actions
+
+
+def test_historical_chatter_override_never_executes_management() -> None:
+    decision = _decision(decision="chatter", action="ignore")
+    decision = replace(decision, source="historical_replay")
+    result = apply_v1_message_policy(
+        decision,
+        raw_text="Make your best entries risk free",
+    )
+    assert result.action == "ignore"
