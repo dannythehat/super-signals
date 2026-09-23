@@ -24,7 +24,7 @@ from app.day27_management_policy import extract_day27_management_actions
 from app.provider_adaptive_profile import mask_language_example
 
 AUDIT_VERSION = "provider-management-language-v1"
-DEFAULT_HISTORY_LIMIT = 1500
+DEFAULT_HISTORY_LIMIT = 5000
 
 _MANAGEMENT_CANDIDATE = re.compile(
     r"\b(?:"
@@ -102,7 +102,7 @@ class ProviderManagementLanguageAuditService:
                     """
                     SELECT id
                     FROM sources
-                    WHERE status IN ('testing','shadow','live')
+                    WHERE status <> 'revoked'
                     ORDER BY created_at,id
                     """
                 )
