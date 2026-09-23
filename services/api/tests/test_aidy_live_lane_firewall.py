@@ -45,6 +45,8 @@ def _research_sources() -> list[Path]:
         [
             APP / "provider_trade_scoring_runtime.py",
             APP / "provider_fingerprint_runtime.py",
+            APP / "provider_management_language_audit.py",
+            APP / "provider_management_language_audit_runtime.py",
         ]
     )
     return sources
