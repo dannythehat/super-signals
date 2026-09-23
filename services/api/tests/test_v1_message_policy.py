@@ -18,6 +18,7 @@ def _decision(
     stop_loss: str | None = None,
     take_profits: list[str] | None = None,
     update_type: str | None = None,
+    source: str = "openai",
 ) -> AiMessageDecision:
     raw = "fixture"
     return AiMessageDecision(
@@ -42,7 +43,7 @@ def _decision(
         model="fixture",
         response_id=None,
         latency_ms=1,
-        source="openai",
+        source=source,
         raw_text_sha256=sha256(raw.encode()).hexdigest(),
     )
 
@@ -512,8 +513,11 @@ def test_live_scalping_closed_partials_and_risk_free_executes_both_actions() -> 
 
 
 def test_historical_chatter_override_never_executes_management() -> None:
-    decision = _decision(decision="chatter", action="ignore")
-    decision = replace(decision, source="historical_replay")
+    decision = _decision(
+        decision="chatter",
+        action="ignore",
+        source="historical_replay",
+    )
     result = apply_v1_message_policy(
         decision,
         raw_text="Make your best entries risk free",
