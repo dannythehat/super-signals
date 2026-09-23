@@ -248,25 +248,28 @@ def _owner_reference_user_id(service: Day33PerformanceLedgerServiceV2) -> UUID:
 
 
 def _canonical_displayed_balance(service: Day33PerformanceLedgerServiceV2, user_id: UUID) -> Decimal:
+    """Newest MT5/Vantage closed balance, never equity and never a reconstruction."""
     accounting = CanonicalTradingAccountingService(service._session_factory)
     with service._session_factory() as session:
         row = session.execute(
             text(
                 """
-                SELECT last_confirmed_balance
-                FROM mt5_accounts
-                WHERE owner_user_id=:user_id
-                  AND status<>'revoked'
-                ORDER BY created_at DESC
+                SELECT pas.balance
+                FROM performance_account_snapshots pas
+                JOIN mt5_accounts a ON a.id=pas.mt5_account_id
+                WHERE a.owner_user_id=:user_id
+                  AND a.status<>'revoked'
+                  AND pas.balance IS NOT NULL
+                ORDER BY pas.captured_at DESC
                 LIMIT 1
                 """
             ),
             {"user_id": user_id},
         ).mappings().first()
-    account_value = row["last_confirmed_balance"] if row is not None else Decimal("0")
+    broker_balance = row["balance"] if row is not None else Decimal("0")
     return accounting.displayed_balance(
         user_id,
-        broker_account_value=account_value,
+        broker_account_value=broker_balance,
     )
 
 
