@@ -144,3 +144,10 @@ def test_provider_reported_tp2_can_trigger_stale_pending_cleanup() -> None:
     assert "provider_hits" in source
     assert "ph.tp2_hit" in source
     assert "signal_lifecycle_events" in source
+
+
+def test_stale_pending_order_absent_from_broker_is_reconciled_after_grace() -> None:
+    source = getsource(CanonicalBrokerSettlementManager._cancel_pending_for_signal)
+    assert "reconcile_if_absent" in source
+    assert "order_id in broker_positions" in source
+    assert "INTERVAL '60 seconds'" in source
