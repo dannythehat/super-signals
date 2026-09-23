@@ -59,7 +59,7 @@ def test_demo_and_live_share_one_unmodified_risk_sizer() -> None:
     assert PaperCriticalExecutionService._size_signal is Day26Mt5ExecutionService._size_signal
 
 
-def test_one_target_uses_one_percent_of_real_balance() -> None:
+def test_one_target_leg_gets_one_quarter_of_four_leg_trade_budget() -> None:
     service = object.__new__(CanonicalTradingExecutionService)
     profile = provider_risk_profile(
         source_name="TIG’s Asia Trades",
@@ -84,13 +84,13 @@ def test_one_target_uses_one_percent_of_real_balance() -> None:
     )
 
     assert actual.balance == Decimal("2000.0")
-    assert actual.effective_risk_percent == Decimal("1")
-    assert actual.risk_budget_per_position == Decimal("20.0")
-    assert actual.volume == Decimal("0.03")
-    assert actual.actual_risk_per_position == Decimal("18.00")
+    assert actual.effective_risk_percent == Decimal("0.25")
+    assert actual.risk_budget_per_position == Decimal("5.000")
+    assert actual.volume == Decimal("0.01")
+    assert actual.actual_risk_per_position == Decimal("6.00")
 
 
-def test_double_lot_wording_cannot_turn_one_percent_target_into_two_percent() -> None:
+def test_double_lot_wording_cannot_multiply_split_trade_budget() -> None:
     service = object.__new__(CanonicalTradingExecutionService)
     signal = _signal()
     object.__setattr__(signal, "signal_requests_double_lot", True)
@@ -117,6 +117,42 @@ def test_double_lot_wording_cannot_turn_one_percent_target_into_two_percent() ->
         double_lot_approved=True,
     )
 
-    assert actual.effective_risk_percent == Decimal("1")
+    assert actual.effective_risk_percent == Decimal("0.25")
     assert actual.risk_budget_per_position == Decimal("15.0")
     assert not actual.double_lot_applied
+
+
+def test_hard_cap_rejects_broker_minimum_when_four_legs_exceed_one_percent() -> None:
+    service = object.__new__(CanonicalTradingExecutionService)
+    profile = provider_risk_profile(
+        source_name="Another Provider", side="BUY", position_count=4
+    )
+    assert profile is not None
+    sizings = tuple(
+        CanonicalTradingExecutionService._size_signal(
+            service,
+            signal=_signal(),
+            execution_entry=Decimal("4398"),
+            balance=2000.0,
+            price_loss_tick_value=1.0,
+            specification={
+                "minVolume": 0.01,
+                "maxVolume": 100.0,
+                "volumeStep": 0.01,
+                "tickSize": 0.01,
+            },
+            risk_percent=risk,
+            double_lot_approved=False,
+        )
+        for risk in profile
+    )
+    # Four broker-minimum 0.01 lots would risk $24 at the stop, above the strict
+    # $20 (1%) trade cap, so execution must fail before any broker order is sent.
+    import pytest
+    from app.mt5_execution_day26 import Day26ExecutionError
+
+    with pytest.raises(Day26ExecutionError, match="trade_total_risk_exceeds_one_percent"):
+        CanonicalTradingExecutionService._assert_total_trade_risk(
+            balance=Decimal("2000"),
+            sizings=sizings,
+        )
