@@ -102,8 +102,9 @@ def test_entry_price_is_volume_weighted_from_broker_deals() -> None:
 
 
 class _StubResult:
-    def __init__(self, rows: list[dict] | None = None) -> None:
+    def __init__(self, rows: list[dict] | None = None, rowcount: int = 1) -> None:
         self._rows = rows or []
+        self.rowcount = rowcount
 
     def mappings(self):  # noqa: ANN201
         return self
@@ -131,7 +132,7 @@ class _StubSession:
         sql = str(statement)
         if "UPDATE positions" in sql:
             self._store.setdefault("updates", []).append((sql, params))
-            return _StubResult()
+            return _StubResult(rowcount=self._store.get("update_rowcount", 1))
         if "FROM positions AS p" in sql:
             return _StubResult(self._store["stranded"])
         if "FROM broker_deals" in sql:
@@ -275,3 +276,44 @@ def test_settlement_is_throttled_between_reconciler_polls() -> None:
     assert reconciler.settle_stranded_fills(now=1059.9).adopted_open == 0
     assert reconciler.settle_stranded_fills(now=1060.0).adopted_open == 1
     assert reconciler._settlement.calls == 2
+
+
+def test_an_update_that_matches_nothing_is_not_audited() -> None:
+    """The UPDATE is guarded on status='error', so a row a concurrent pass already
+    settled matches nothing. Auditing anyway would record a settlement that never
+    happened - the audit trail is the evidence this system is judged on."""
+    store = {
+        "stranded": [_stranded("1845153776")],
+        "evidence": {"1845153776": _deal_row("0.01", "0", "46.50")},
+        "update_rowcount": 0,
+    }
+    service = BrokerFillSettlementService(lambda: _StubSession(store))  # type: ignore[arg-type]
+    result = service.settle_once()
+
+    assert result.adopted_open == 1          # the pass still attempted it
+    assert len(store["updates"]) == 1        # the guarded UPDATE ran
+    assert "audits" not in store             # but nothing was recorded
+
+
+def test_a_settled_close_that_matches_nothing_is_not_audited() -> None:
+    store = {
+        "stranded": [_stranded("1792311887")],
+        "evidence": {"1792311887": _deal_row("0.14", "0.14", "607.32")},
+        "update_rowcount": 0,
+    }
+    service = BrokerFillSettlementService(lambda: _StubSession(store))  # type: ignore[arg-type]
+    service.settle_once()
+    assert "audits" not in store
+
+
+def test_an_unknown_rowcount_is_still_audited() -> None:
+    """A driver reporting -1 means 'unknown', not 'nothing happened'. Dropping the
+    audit there would lose a real settlement."""
+    store = {
+        "stranded": [_stranded("1845153776")],
+        "evidence": {"1845153776": _deal_row("0.01", "0", "46.50")},
+        "update_rowcount": -1,
+    }
+    service = BrokerFillSettlementService(lambda: _StubSession(store))  # type: ignore[arg-type]
+    service.settle_once()
+    assert len(store["audits"]) == 1
