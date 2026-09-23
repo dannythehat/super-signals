@@ -243,7 +243,7 @@ class BrokerFillSettlementService:
     ) -> None:
         now = datetime.now(UTC)
         with self._session_factory() as session:
-            session.execute(
+            result = session.execute(
                 text(
                     """
                     UPDATE positions
@@ -262,6 +262,11 @@ class BrokerFillSettlementService:
                     "now": now,
                 },
             )
+            # The UPDATE is guarded on status='error', so a row already settled by a
+            # concurrent pass matches nothing. Auditing regardless would record a
+            # settlement that never happened.
+            if not _row_changed(result):
+                return
             session.add(
                 AuditEvent(
                     actor_user_id=row["user_id"],
@@ -290,7 +295,7 @@ class BrokerFillSettlementService:
     ) -> None:
         now = datetime.now(UTC)
         with self._session_factory() as session:
-            session.execute(
+            result = session.execute(
                 text(
                     """
                     UPDATE positions
@@ -316,6 +321,8 @@ class BrokerFillSettlementService:
                     "now": now,
                 },
             )
+            if not _row_changed(result):
+                return
             session.add(
                 AuditEvent(
                     actor_user_id=row["user_id"],
@@ -392,6 +399,18 @@ class BrokerFillSettlementService:
             for row in rows
             if row["first_entry_at"] is not None
         )
+
+
+def _row_changed(result: object) -> bool:
+    """Did the guarded UPDATE actually modify a row?
+
+    A driver that does not report rowcount returns -1; treat that as changed so an
+    unknown outcome is still audited rather than silently dropped.
+    """
+    rowcount = getattr(result, "rowcount", -1)
+    if not isinstance(rowcount, int):
+        return True
+    return rowcount != 0
 
 
 def _decimal(value: object | None) -> Decimal:
