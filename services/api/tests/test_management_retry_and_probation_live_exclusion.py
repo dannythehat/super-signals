@@ -195,3 +195,16 @@ async def test_not_on_probation_live_still_dispatches_when_switch_is_on(monkeypa
 
     assert service.live.calls == [live_user]
     assert result.executed_count == 1
+
+
+
+def test_management_reliability_covers_never_attempted_provider_updates() -> None:
+    from pathlib import Path
+
+    source = Path("services/api/app/management_reliability_runtime.py").read_text()
+    assert "_UNATTEMPTED_SQL" in source
+    assert "mt5.day28_route_success','mt5.day28_route_failure" in source
+    assert "jsonb_array_length" in source
+    assert "broker_position_id IS NOT NULL" in source
+    assert "broker_order_id IS NOT NULL" in source
+    assert "_DEFAULT_INTERVAL_SECONDS = 30" in source
