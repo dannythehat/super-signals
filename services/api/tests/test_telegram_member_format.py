@@ -112,3 +112,13 @@ def test_notification_titles_survive_unassigned_trade_number() -> None:
     source = Path("services/api/app/telegram_publisher_canonical.py").read_text()
     assert "COALESCE('TRADE ' || sig.member_trade_number::text,'TRADE')" in source
     assert "'NEW TRADE PLACED — ' || COALESCE" in source
+
+
+
+def test_provider_management_telegram_requires_real_broker_action() -> None:
+    source = Path("services/api/app/telegram_publisher_canonical.py").read_text()
+    assert "_management_broker_action_sql" in source
+    assert "routed.event_type='mt5.day28_route_success'" in source
+    assert "broker_actions_sent" in source
+    assert "ev.origin<>'provider_update'" in source
+    assert "management_action_for_ev" in source
