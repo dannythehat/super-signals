@@ -469,6 +469,7 @@ class CanonicalTelegramPublisherManager(Day34CutoverTelegramPublisherManager):
                             pub.signal_id,
                             pub.telegram_message_id,
                             pub.destination_chat_id,
+                            pub.reply_to_telegram_message_id,
                             pub.rendered_text,
                             ev.event_type,
                             ev.aggregate_result,
@@ -684,6 +685,7 @@ class CanonicalTelegramPublisherManager(Day34CutoverTelegramPublisherManager):
                 if repaired == original:
                     continue
 
+                replacement_message_id = message_id
                 try:
                     _bot_api_call(
                         self._bot_token,
@@ -697,7 +699,44 @@ class CanonicalTelegramPublisherManager(Day34CutoverTelegramPublisherManager):
                         },
                     )
                 except TelegramPublishError as exc:
-                    if "message is not modified" not in exc.reason.lower():
+                    reason = exc.reason.lower()
+                    if "message is not modified" in reason:
+                        pass
+                    elif "message to edit not found" in reason:
+                        # Old publisher instances/messages can become uneditable even
+                        # though our durable row remains. Keep exactly one visible
+                        # correction: remove the stale message if it still exists, then
+                        # replace it with the corrected text as a reply to the trade root.
+                        try:
+                            _bot_api_call(
+                                self._bot_token,
+                                "deleteMessage",
+                                {"chat_id": chat_id, "message_id": message_id},
+                            )
+                        except TelegramPublishError as delete_exc:
+                            if "message to delete not found" not in delete_exc.reason.lower():
+                                raise
+                        payload: dict[str, Any] = {
+                            "chat_id": chat_id,
+                            "text": repaired,
+                            "parse_mode": "HTML",
+                            "disable_web_page_preview": "true",
+                        }
+                        reply_to = row["reply_to_telegram_message_id"]
+                        if reply_to is not None:
+                            payload["reply_parameters"] = json.dumps(
+                                {
+                                    "message_id": int(reply_to),
+                                    "allow_sending_without_reply": False,
+                                }
+                            )
+                        result = _bot_api_call(
+                            self._bot_token,
+                            "sendMessage",
+                            payload,
+                        )
+                        replacement_message_id = int(result["message_id"])
+                    else:
                         raise
 
                 with self._session_factory() as session:
@@ -705,13 +744,16 @@ class CanonicalTelegramPublisherManager(Day34CutoverTelegramPublisherManager):
                         text(
                             """
                             UPDATE telegram_publications
-                            SET rendered_text=:rendered_text,updated_at=now()
+                            SET rendered_text=:rendered_text,
+                                telegram_message_id=:telegram_message_id,
+                                updated_at=now()
                             WHERE id=:publication_id AND status='sent'
                             """
                         ),
                         {
                             "publication_id": row["publication_id"],
                             "rendered_text": repaired,
+                            "telegram_message_id": replacement_message_id,
                         },
                     )
                     session.commit()
