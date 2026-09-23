@@ -138,3 +138,13 @@ def test_member_roots_wait_for_public_trade_number_and_repair_internal_ids() -> 
 def test_skipped_unfilled_legs_render_cancelled_not_pending() -> None:
     source = Path("services/api/app/telegram_trade_ledger.py").read_text()
     assert 'position_status in {"cancelled", "canceled", "skipped"}' in source
+
+
+
+def test_terminal_cancelled_state_beats_old_provider_tp_hit_claim() -> None:
+    source = Path("services/api/app/telegram_trade_ledger.py").read_text()
+    cancelled = source.index(
+        'elif position_status in {"cancelled", "canceled", "skipped"}:'
+    )
+    provider_hit = source.index("elif provider_reported_hit:")
+    assert cancelled < provider_hit
