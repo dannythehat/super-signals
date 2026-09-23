@@ -203,42 +203,78 @@ class CanonicalBrokerSettlementManager(Day34BrokerSettlementManager):
             rows = session.execute(
                 text(
                     """
+                    WITH provider_hits AS (
+                        SELECT
+                            e.signal_id,
+                            BOOL_OR(
+                                m.raw_text ~* '\\mTP[[:space:]]*1\\M.{0,48}\\m(HIT|HITS|REACHED|TAPPED)\\M'
+                                OR m.raw_text ~* '\\m(HIT|HITS|REACHED|TAPPED)\\M.{0,24}\\mTP[[:space:]]*1\\M'
+                            ) AS tp1_hit,
+                            BOOL_OR(
+                                m.raw_text ~* '\\mTP[[:space:]]*2\\M.{0,48}\\m(HIT|HITS|REACHED|TAPPED)\\M'
+                                OR m.raw_text ~* '\\m(HIT|HITS|REACHED|TAPPED)\\M.{0,24}\\mTP[[:space:]]*2\\M'
+                            ) AS tp2_hit,
+                            BOOL_OR(
+                                m.raw_text ~* '\\mTP[[:space:]]*3\\M.{0,48}\\m(HIT|HITS|REACHED|TAPPED)\\M'
+                                OR m.raw_text ~* '\\m(HIT|HITS|REACHED|TAPPED)\\M.{0,24}\\mTP[[:space:]]*3\\M'
+                            ) AS tp3_hit
+                        FROM signal_lifecycle_events e
+                        JOIN messages m ON m.id=e.source_message_id
+                        WHERE e.origin='provider_update'
+                        GROUP BY e.signal_id
+                    )
                     SELECT
                         s.id AS signal_id,
                         MAX(p.take_profit) FILTER (WHERE p.tp_index=2) AS tp2_price,
-                        BOOL_OR(
-                            p.tp_index=1
-                            AND p.status='closed'
-                            AND p.pnl_amount>0
-                            AND p.take_profit IS NOT NULL
-                            AND p.exit_price IS NOT NULL
-                            AND ABS(p.exit_price-p.take_profit)<=:tolerance
+                        (
+                            BOOL_OR(
+                                p.tp_index=1
+                                AND p.status='closed'
+                                AND p.pnl_amount>0
+                                AND p.take_profit IS NOT NULL
+                                AND p.exit_price IS NOT NULL
+                                AND ABS(p.exit_price-p.take_profit)<=:tolerance
+                            )
+                            OR COALESCE(ph.tp1_hit,false)
                         ) AS tp1_hit,
-                        BOOL_OR(
-                            p.tp_index=2
-                            AND p.status='closed'
-                            AND p.pnl_amount>0
-                            AND p.take_profit IS NOT NULL
-                            AND p.exit_price IS NOT NULL
-                            AND ABS(p.exit_price-p.take_profit)<=:tolerance
+                        (
+                            BOOL_OR(
+                                p.tp_index=2
+                                AND p.status='closed'
+                                AND p.pnl_amount>0
+                                AND p.take_profit IS NOT NULL
+                                AND p.exit_price IS NOT NULL
+                                AND ABS(p.exit_price-p.take_profit)<=:tolerance
+                            )
+                            OR COALESCE(ph.tp2_hit,false)
                         ) AS tp2_hit,
-                        BOOL_OR(
-                            p.tp_index=3
-                            AND p.status='closed'
-                            AND p.pnl_amount>0
-                            AND p.take_profit IS NOT NULL
-                            AND p.exit_price IS NOT NULL
-                            AND ABS(p.exit_price-p.take_profit)<=:tolerance
+                        (
+                            BOOL_OR(
+                                p.tp_index=3
+                                AND p.status='closed'
+                                AND p.pnl_amount>0
+                                AND p.take_profit IS NOT NULL
+                                AND p.exit_price IS NOT NULL
+                                AND ABS(p.exit_price-p.take_profit)<=:tolerance
+                            )
+                            OR COALESCE(ph.tp3_hit,false)
                         ) AS tp3_hit
                     FROM signals AS s
                     JOIN positions AS p ON p.signal_id=s.id
+                    LEFT JOIN provider_hits ph ON ph.signal_id=s.id
                     WHERE p.user_id=:user_id
-                    GROUP BY s.id
+                    GROUP BY s.id,ph.tp1_hit,ph.tp2_hit,ph.tp3_hit
                     HAVING (
-                        BOOL_OR(p.tp_index=2 AND p.status='closed' AND p.pnl_amount>0)
+                        (
+                            BOOL_OR(p.tp_index=2 AND p.status='closed' AND p.pnl_amount>0)
+                            OR COALESCE(ph.tp2_hit,false)
+                        )
                         AND BOOL_OR(p.status IN ('open','pending') AND p.tp_index>=3)
                     ) OR (
-                        BOOL_OR(p.tp_index=3 AND p.status='closed' AND p.pnl_amount>0)
+                        (
+                            BOOL_OR(p.tp_index=3 AND p.status='closed' AND p.pnl_amount>0)
+                            OR COALESCE(ph.tp3_hit,false)
+                        )
                         AND BOOL_OR(p.status='open' AND p.tp_index>=4)
                     )
                     """
