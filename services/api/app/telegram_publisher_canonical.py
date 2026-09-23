@@ -331,7 +331,7 @@ class CanonicalTelegramPublisherManager(Day34CutoverTelegramPublisherManager):
                           FROM signal_lifecycle_events AS sibling
                           WHERE sibling.signal_id=ev.signal_id
                             AND sibling.event_type='broker_position_settled'
-                            AND sibling.created_at>ev.created_at
+                            AND (sibling.occurred_at>ev.occurred_at OR (sibling.occurred_at=ev.occurred_at AND sibling.id>ev.id))
                             AND sibling.created_at>=:fresh_after
                             AND ABS(EXTRACT(EPOCH FROM (sibling.occurred_at-ev.occurred_at)))<=30
                       )
@@ -394,7 +394,7 @@ class CanonicalTelegramPublisherManager(Day34CutoverTelegramPublisherManager):
                               FROM signal_lifecycle_events AS sibling
                               WHERE sibling.signal_id=ev.signal_id
                                 AND sibling.event_type='broker_position_settled'
-                                AND sibling.created_at>ev.created_at
+                                AND (sibling.occurred_at>ev.occurred_at OR (sibling.occurred_at=ev.occurred_at AND sibling.id>ev.id))
                                 AND sibling.created_at>=:fresh_after
                                 AND ABS(EXTRACT(EPOCH FROM (sibling.occurred_at-ev.occurred_at)))<=30
                           )
@@ -482,8 +482,36 @@ class CanonicalTelegramPublisherManager(Day34CutoverTelegramPublisherManager):
                                   AND newer.publication_kind='lifecycle_event'
                                   AND newer.status='sent'
                                   AND newer.telegram_message_id IS NOT NULL
-                                  AND newer.created_at>pub.created_at
-                            ) AS is_latest
+                                  AND (
+                                      newer.created_at>pub.created_at
+                                      OR (
+                                          newer.created_at=pub.created_at
+                                          AND newer.id>pub.id
+                                      )
+                                  )
+                            ) AS is_latest,
+                            EXISTS (
+                                SELECT 1
+                                FROM telegram_publications newer
+                                JOIN signal_lifecycle_events newer_ev
+                                  ON newer_ev.id=newer.lifecycle_event_id
+                                WHERE newer.signal_id=pub.signal_id
+                                  AND newer.publication_kind='lifecycle_event'
+                                  AND newer.status='sent'
+                                  AND newer.telegram_message_id IS NOT NULL
+                                  AND newer_ev.event_type='broker_position_settled'
+                                  AND ev.event_type='broker_position_settled'
+                                  AND ABS(EXTRACT(EPOCH FROM (
+                                      newer_ev.occurred_at-ev.occurred_at
+                                  )))<=30
+                                  AND (
+                                      newer_ev.occurred_at>ev.occurred_at
+                                      OR (
+                                          newer_ev.occurred_at=ev.occurred_at
+                                          AND newer.id>pub.id
+                                      )
+                                  )
+                            ) AS has_newer_same_burst
                         FROM telegram_publications pub
                         JOIN signal_lifecycle_events ev ON ev.id=pub.lifecycle_event_id
                         LEFT JOIN messages m ON m.id=ev.source_message_id
@@ -504,6 +532,45 @@ class CanonicalTelegramPublisherManager(Day34CutoverTelegramPublisherManager):
                 ).mappings().all()
 
             for row in rows:
+                chat_id = (
+                    int(row["destination_chat_id"])
+                    if row["destination_chat_id"] is not None
+                    else int(self._destination_chat_id)
+                )
+                message_id = int(row["telegram_message_id"])
+
+                if bool(row["has_newer_same_burst"]):
+                    try:
+                        _bot_api_call(
+                            self._bot_token,
+                            "deleteMessage",
+                            {"chat_id": chat_id, "message_id": message_id},
+                        )
+                    except TelegramPublishError as exc:
+                        if "message to delete not found" not in exc.reason.lower():
+                            raise
+                    with self._session_factory() as session:
+                        session.execute(
+                            text(
+                                """
+                                UPDATE telegram_publications
+                                SET status='suppressed',
+                                    failure_code='sent_same_burst_duplicate_deleted',
+                                    failure_reason='A newer settlement message carries the complete burst result.',
+                                    updated_at=now()
+                                WHERE id=:publication_id
+                                """
+                            ),
+                            {"publication_id": row["publication_id"]},
+                        )
+                        session.commit()
+                    logger.info(
+                        "Deleted duplicate Telegram settlement signal=%s message_id=%s",
+                        row["signal_id"],
+                        message_id,
+                    )
+                    continue
+
                 original = str(row["rendered_text"] or "")
                 if not original:
                     continue
@@ -558,7 +625,41 @@ class CanonicalTelegramPublisherManager(Day34CutoverTelegramPublisherManager):
                                 or aggregate.get("outcome")
                                 or ""
                             ).lower()
-                            if event_tp is not None and outcome == "won":
+
+                            if trade.complete:
+                                total = trade.realised_pnl.quantize(Decimal("0.01"))
+                                if total < 0:
+                                    heading = "TRADE UPDATE 📉 · TRADE COMPLETE"
+                                    result_line = f"🥺😔 <b>TRADE LOSS · {money(total)}</b>"
+                                elif total > 0:
+                                    heading = "TRADE UPDATE 📈 · TRADE COMPLETE"
+                                    result_line = f"🎉🥳 <b>TRADE WIN · {money(total)}</b>"
+                                else:
+                                    heading = "TRADE UPDATE 📈 · TRADE COMPLETE"
+                                    result_line = "🤝 <b>BREAK EVEN</b>"
+
+                                repaired = re.sub(
+                                    r"TRADE UPDATE [📈📉] · [^<\n]+",
+                                    heading,
+                                    repaired,
+                                    count=1,
+                                )
+                                repaired = re.sub(
+                                    r"(?:🎉🥳|🥺😔|🤝) <b>[^<]+</b>",
+                                    result_line,
+                                    repaired,
+                                    count=1,
+                                )
+                                repaired = re.sub(
+                                    r"(<b>Balance</b>\n)<b>[^<\n]+ = (\$[0-9,]+\.\d{2})</b>",
+                                    r"\1<b>\2</b>",
+                                    repaired,
+                                    count=1,
+                                )
+                                if "🏁 <b>Trade complete</b>" not in repaired:
+                                    repaired = repaired.rstrip() + "\n\n🏁 <b>Trade complete</b>"
+
+                            elif event_tp is not None and outcome == "won":
                                 leg_state = next(
                                     (
                                         leg.status
@@ -583,12 +684,6 @@ class CanonicalTelegramPublisherManager(Day34CutoverTelegramPublisherManager):
                 if repaired == original:
                     continue
 
-                chat_id = (
-                    int(row["destination_chat_id"])
-                    if row["destination_chat_id"] is not None
-                    else int(self._destination_chat_id)
-                )
-                message_id = int(row["telegram_message_id"])
                 try:
                     _bot_api_call(
                         self._bot_token,
@@ -982,7 +1077,7 @@ class CanonicalTelegramPublisherManager(Day34CutoverTelegramPublisherManager):
                               FROM signal_lifecycle_events AS sibling
                               WHERE sibling.signal_id=ev.signal_id
                                 AND sibling.event_type='broker_position_settled'
-                                AND sibling.created_at>ev.created_at
+                                AND (sibling.occurred_at>ev.occurred_at OR (sibling.occurred_at=ev.occurred_at AND sibling.id>ev.id))
                                 AND sibling.created_at>=:fresh_after
                                 AND ABS(EXTRACT(EPOCH FROM (sibling.occurred_at-ev.occurred_at)))<=30
                           )
@@ -1057,7 +1152,18 @@ class CanonicalTelegramPublisherManager(Day34CutoverTelegramPublisherManager):
 
             if event_type == "broker_position_settled":
                 pnl = Decimal(str(event_pnl or 0)).quantize(Decimal("0.01"))
-                if event_outcome == "won":
+                if final_settlement and trade is not None:
+                    total = trade.realised_pnl.quantize(Decimal("0.01"))
+                    if total < 0:
+                        heading = "<b>TRADE UPDATE 📉 · TRADE COMPLETE</b>"
+                        result = f"🥺😔 <b>TRADE LOSS · {money(total)}</b>"
+                    elif total > 0:
+                        heading = "<b>TRADE UPDATE 📈 · TRADE COMPLETE</b>"
+                        result = f"🎉🥳 <b>TRADE WIN · {money(total)}</b>"
+                    else:
+                        heading = "<b>TRADE UPDATE 📈 · TRADE COMPLETE</b>"
+                        result = "🤝 <b>BREAK EVEN</b>"
+                elif event_outcome == "won":
                     leg_state = next(
                         (
                             leg.status
@@ -1083,11 +1189,16 @@ class CanonicalTelegramPublisherManager(Day34CutoverTelegramPublisherManager):
 
                 parts = [provider_line, "", heading, "", result]
                 if account is not None and account.account_value is not None and not account.stale:
+                    balance_text = (
+                        _balance_money(account.account_value)
+                        if final_settlement
+                        else _balance_equation(account.account_value, pnl)
+                    )
                     parts.extend(
                         [
                             "",
                             "<b>Balance</b>",
-                            f"<b>{_balance_equation(account.account_value, pnl)}</b>",
+                            f"<b>{balance_text}</b>",
                             "",
                             "<b>Today’s P&L</b>",
                             f"<b>{money(account.today_pnl)}</b>",
