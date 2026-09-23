@@ -247,7 +247,7 @@ def test_provider_language_audit_counts_optional_and_results_as_understood() -> 
     source_id = uuid4()
     rows = [
         {"raw_text": "Make trade risk free if you want"},
-        {"raw_text": "Breakeven hit"},
+        {"raw_text": "We’re breakeven"},
         {"raw_text": "Book maximum and trail entry to maximum profit levels"},
     ]
     payload = ProviderManagementLanguageAuditService._audit_payload(
