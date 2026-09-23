@@ -28,9 +28,12 @@ _ALLOWED_PROFILE_RISK_PERCENTS = _ALLOWED_BASE_RISK_PERCENTS + (
 _DOUBLE_LOT_MULTIPLIER = Decimal("2")
 _ONE_HUNDRED = Decimal("100")
 _ZERO = Decimal("0")
-# Provider legs may need the broker's 0.01-lot minimum. Individual leg sizing may
-# therefore round above its split allocation, but the execution layer enforces a hard
-# aggregate cap of 1% for the entire trade before any broker mutation occurs.
+# Owner-approved provider profiles are allowed one tightly bounded broker-minimum
+# accommodation. Vantage cannot place less than 0.01 lots, so an exact 1% leg can
+# otherwise become permanently untradeable as soon as the stop is wider than the
+# account's 1% cash budget. The floor may round that leg up only while the resulting
+# stop risk stays at or below 2.5% of the account. Tiny accounts remain protected:
+# a 0.01-lot XAUUSD trade risking 10-30%+ is still refused.
 _PROVIDER_BROKER_MINIMUM_MAX_ACTUAL_RISK_PERCENT = Decimal("2.5")
 
 
@@ -334,19 +337,13 @@ class Day24RiskSizer:
     ) -> None:
         if balance <= _ZERO:
             raise Day24RiskSizingError("balance_invalid")
-        if isinstance(base_risk, ApprovedProviderRisk):
-            # Owner-approved provider allocations are fractions of one total trade-risk
-            # budget and may therefore be values such as 0.25 or repeating thirds.
-            if base_risk <= _ZERO or base_risk > Decimal("1"):
-                raise Day24RiskSizingError("risk_percent_invalid")
-        else:
-            allowed = (
-                _ALLOWED_PROFILE_RISK_PERCENTS
-                if allow_profile_risk
-                else _ALLOWED_BASE_RISK_PERCENTS
-            )
-            if base_risk not in allowed:
-                raise Day24RiskSizingError("risk_percent_invalid")
+        allowed = (
+            _ALLOWED_PROFILE_RISK_PERCENTS
+            if allow_profile_risk
+            else _ALLOWED_BASE_RISK_PERCENTS
+        )
+        if base_risk not in allowed:
+            raise Day24RiskSizingError("risk_percent_invalid")
         if entry <= _ZERO or stop <= _ZERO or entry == stop:
             raise Day24RiskSizingError("signal_entry_stop_invalid")
         if tick_size <= _ZERO:
