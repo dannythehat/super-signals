@@ -102,17 +102,31 @@ class Day34BrokerSettlementManager:
                 reason="no_unsettled_mapped_positions",
             )
 
+        sync_ok = True
+        sync_reason = "broker_settlement_sync_complete"
         try:
-            await self._performance.sync_user(self._reference_user_id)
-        except Day33LedgerError as exc:
-            self._audit_poll_failure(exc.code, retryable=exc.retryable)
-            return Day34SettlementPollResult(
-                synced=False,
-                positions_reconciled=0,
-                position_events_created=0,
-                signal_results_created=0,
-                reason=exc.code,
+            # A single slow MetaAPI history request must never stall a nominal
+            # 15-second settlement watcher for minutes. Current/open positions are
+            # prioritized by the Day 33 ledger; cap the whole broker read pass and
+            # still rebuild from any broker deals that were committed before timeout.
+            await asyncio.wait_for(
+                self._performance.sync_user(self._reference_user_id),
+                timeout=12.0,
             )
+        except TimeoutError:
+            sync_ok = False
+            sync_reason = "broker_settlement_sync_timeout"
+            self._audit_poll_failure(sync_reason, retryable=True)
+            self._performance.rebuild_outcomes(self._reference_user_id)
+            self._performance.rebuild_summaries(self._reference_user_id)
+        except Day33LedgerError as exc:
+            sync_ok = False
+            sync_reason = exc.code
+            self._audit_poll_failure(exc.code, retryable=exc.retryable)
+            # Preserve any immutable broker evidence already stored before a later
+            # request failed, then continue local settlement reconciliation.
+            self._performance.rebuild_outcomes(self._reference_user_id)
+            self._performance.rebuild_summaries(self._reference_user_id)
 
         # Historical reconciliation is intentionally allowed so stale local rows can be
         # corrected from broker truth. Member-facing lifecycle/result events below are
@@ -126,11 +140,11 @@ class Day34BrokerSettlementManager:
             signal_results_created=signal_results,
         )
         return Day34SettlementPollResult(
-            synced=True,
+            synced=sync_ok,
             positions_reconciled=reconciled,
             position_events_created=position_events,
             signal_results_created=signal_results,
-            reason="broker_settlement_sync_complete",
+            reason=sync_reason,
         )
 
     def _has_unsettled_mapped_positions(self) -> bool:
