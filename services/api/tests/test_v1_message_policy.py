@@ -242,7 +242,7 @@ def test_out_at_be_is_explicit_close_instruction() -> None:
     )
     assert result.action == "apply_update"
     assert result.extracted["update_type"] == "close"
-    assert result.extracted["actions"] == [
+    assert result.extracted["management_actions"] == [
         {"type": "close", "target": "all", "value": None}
     ]
 
