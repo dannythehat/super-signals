@@ -23,6 +23,7 @@ from datetime import UTC, datetime, timedelta
 from decimal import Decimal, InvalidOperation
 from typing import Any
 from uuid import UUID
+from zoneinfo import ZoneInfo
 
 from sqlalchemy import text
 
@@ -35,6 +36,7 @@ from app.trade_identity import public_trade_identity
 
 _PLACEMENT_EVENT = "mt5.day38_route_new_trade"
 _MEMBER_EVENT_FRESHNESS = timedelta(minutes=5)
+SOFIA = ZoneInfo("Europe/Sofia")
 logger = logging.getLogger(__name__)
 
 
@@ -262,6 +264,302 @@ class CanonicalTelegramPublisherManager(Day34CutoverTelegramPublisherManager):
             self._trade_ledger.account(),
             include_origin=include_origin,
         )
+
+    def _financial_business_date(self) -> Any:
+        return datetime.now(UTC).astimezone(SOFIA).date()
+
+    def _ensure_financial_state(self, session: Any) -> Any:
+        """Return today's locked Telegram money state, creating it when needed.
+
+        This state is deliberately independent from floating MT5 equity. The member
+        feed is a closed-balance ledger: only realised, published broker settlements
+        move Balance and Today's P&L.
+        """
+        if self._reference_user_id is None or self._destination_chat_id is None:
+            return None
+
+        business_date = self._financial_business_date()
+        row = session.execute(
+            text(
+                """
+                SELECT reference_user_id,destination_chat_id,business_date,
+                       balance,daily_pnl,last_publication_id
+                FROM telegram_financial_state
+                WHERE reference_user_id=:user_id
+                  AND destination_chat_id=:chat_id
+                  AND business_date=:business_date
+                FOR UPDATE
+                """
+            ),
+            {
+                "user_id": self._reference_user_id,
+                "chat_id": self._destination_chat_id,
+                "business_date": business_date,
+            },
+        ).mappings().first()
+        if row is not None:
+            return row
+
+        previous = session.execute(
+            text(
+                """
+                SELECT balance
+                FROM telegram_financial_state
+                WHERE reference_user_id=:user_id
+                  AND destination_chat_id=:chat_id
+                  AND business_date<:business_date
+                ORDER BY business_date DESC
+                LIMIT 1
+                """
+            ),
+            {
+                "user_id": self._reference_user_id,
+                "chat_id": self._destination_chat_id,
+                "business_date": business_date,
+            },
+        ).mappings().first()
+
+        if previous is not None:
+            opening_balance = Decimal(str(previous["balance"])).quantize(Decimal("0.01"))
+        else:
+            snapshot = session.execute(
+                text(
+                    """
+                    SELECT pas.balance
+                    FROM performance_account_snapshots pas
+                    JOIN mt5_accounts a ON a.id=pas.mt5_account_id
+                    WHERE a.owner_user_id=:user_id
+                      AND a.status<>'revoked'
+                      AND pas.balance IS NOT NULL
+                    ORDER BY pas.captured_at DESC
+                    LIMIT 1
+                    """
+                ),
+                {"user_id": self._reference_user_id},
+            ).mappings().first()
+            opening_balance = Decimal(str(snapshot["balance"] if snapshot else 0)).quantize(
+                Decimal("0.01")
+            )
+
+        session.execute(
+            text(
+                """
+                INSERT INTO telegram_financial_state(
+                    reference_user_id,destination_chat_id,business_date,
+                    balance,daily_pnl,last_publication_id,created_at,updated_at
+                )
+                VALUES(
+                    :user_id,:chat_id,:business_date,
+                    :balance,0,NULL,now(),now()
+                )
+                ON CONFLICT(reference_user_id,destination_chat_id,business_date)
+                DO NOTHING
+                """
+            ),
+            {
+                "user_id": self._reference_user_id,
+                "chat_id": self._destination_chat_id,
+                "business_date": business_date,
+                "balance": opening_balance,
+            },
+        )
+        return session.execute(
+            text(
+                """
+                SELECT reference_user_id,destination_chat_id,business_date,
+                       balance,daily_pnl,last_publication_id
+                FROM telegram_financial_state
+                WHERE reference_user_id=:user_id
+                  AND destination_chat_id=:chat_id
+                  AND business_date=:business_date
+                FOR UPDATE
+                """
+            ),
+            {
+                "user_id": self._reference_user_id,
+                "chat_id": self._destination_chat_id,
+                "business_date": business_date,
+            },
+        ).mappings().one()
+
+    def _reserve_financial_publication(
+        self,
+        session: Any,
+        publication_id: UUID,
+        event_delta: Decimal | int | float | str | None,
+    ) -> tuple[Decimal, Decimal]:
+        """Reserve deterministic Balance/P&L values for one Telegram publication.
+
+        Retrying the same publication reuses the same arithmetic. The durable rolling
+        state advances only after Telegram confirms delivery.
+        """
+        existing = session.execute(
+            text(
+                """
+                SELECT new_balance,new_daily_pnl
+                FROM telegram_publication_financials
+                WHERE publication_id=:publication_id
+                """
+            ),
+            {"publication_id": publication_id},
+        ).mappings().first()
+        if existing is not None:
+            return (
+                Decimal(str(existing["new_balance"])).quantize(Decimal("0.01")),
+                Decimal(str(existing["new_daily_pnl"])).quantize(Decimal("0.01")),
+            )
+
+        state = self._ensure_financial_state(session)
+        if state is None:
+            return Decimal("0.00"), Decimal("0.00")
+
+        delta = Decimal(str(event_delta or 0)).quantize(Decimal("0.01"))
+        prior_balance = Decimal(str(state["balance"])).quantize(Decimal("0.01"))
+        prior_daily = Decimal(str(state["daily_pnl"])).quantize(Decimal("0.01"))
+        new_balance = (prior_balance + delta).quantize(Decimal("0.01"))
+        new_daily = (prior_daily + delta).quantize(Decimal("0.01"))
+
+        session.execute(
+            text(
+                """
+                INSERT INTO telegram_publication_financials(
+                    publication_id,reference_user_id,destination_chat_id,business_date,
+                    event_delta,prior_balance,prior_daily_pnl,new_balance,new_daily_pnl,
+                    status,created_at,updated_at
+                )
+                VALUES(
+                    :publication_id,:user_id,:chat_id,:business_date,
+                    :delta,:prior_balance,:prior_daily,:new_balance,:new_daily,
+                    'reserved',now(),now()
+                )
+                ON CONFLICT(publication_id) DO NOTHING
+                """
+            ),
+            {
+                "publication_id": publication_id,
+                "user_id": self._reference_user_id,
+                "chat_id": self._destination_chat_id,
+                "business_date": state["business_date"],
+                "delta": delta,
+                "prior_balance": prior_balance,
+                "prior_daily": prior_daily,
+                "new_balance": new_balance,
+                "new_daily": new_daily,
+            },
+        )
+        return new_balance, new_daily
+
+    @staticmethod
+    def _financial_lines(balance: Decimal, daily_pnl: Decimal) -> list[str]:
+        return [
+            "",
+            "<b>Balance</b>",
+            f"<b>{_balance_money(balance)}</b>",
+            "",
+            "<b>Today’s P&L</b>",
+            f"<b>{money(daily_pnl)}</b>",
+        ]
+
+    def _commit_financial_publication(self, publication_id: UUID) -> None:
+        if self._reference_user_id is None or self._destination_chat_id is None:
+            return
+        with self._session_factory() as session:
+            fin = session.execute(
+                text(
+                    """
+                    SELECT f.business_date,f.new_balance,f.new_daily_pnl,p.sent_at
+                    FROM telegram_publication_financials f
+                    JOIN telegram_publications p ON p.id=f.publication_id
+                    WHERE f.publication_id=:publication_id
+                      AND p.status='sent'
+                    FOR UPDATE OF f
+                    """
+                ),
+                {"publication_id": publication_id},
+            ).mappings().first()
+            if fin is None:
+                session.rollback()
+                return
+
+            session.execute(
+                text(
+                    """
+                    UPDATE telegram_financial_state
+                    SET balance=:balance,
+                        daily_pnl=:daily_pnl,
+                        last_publication_id=:publication_id,
+                        updated_at=now()
+                    WHERE reference_user_id=:user_id
+                      AND destination_chat_id=:chat_id
+                      AND business_date=:business_date
+                    """
+                ),
+                {
+                    "balance": fin["new_balance"],
+                    "daily_pnl": fin["new_daily_pnl"],
+                    "publication_id": publication_id,
+                    "user_id": self._reference_user_id,
+                    "chat_id": self._destination_chat_id,
+                    "business_date": fin["business_date"],
+                },
+            )
+            session.execute(
+                text(
+                    """
+                    UPDATE telegram_publication_financials
+                    SET status='sent',sent_at=:sent_at,updated_at=now()
+                    WHERE publication_id=:publication_id
+                    """
+                ),
+                {"publication_id": publication_id, "sent_at": fin["sent_at"]},
+            )
+            session.commit()
+
+    def _fail_financial_publication(self, publication_id: UUID) -> None:
+        with self._session_factory() as session:
+            session.execute(
+                text(
+                    """
+                    UPDATE telegram_publication_financials
+                    SET status='failed',updated_at=now()
+                    WHERE publication_id=:publication_id
+                      AND status='reserved'
+                    """
+                ),
+                {"publication_id": publication_id},
+            )
+            session.commit()
+
+    def _reconcile_financial_state_safely(self) -> None:
+        """Recover the tiny crash window between Telegram send and ledger commit."""
+        if self._reference_user_id is None or self._destination_chat_id is None:
+            return
+        try:
+            with self._session_factory() as session:
+                rows = session.execute(
+                    text(
+                        """
+                        SELECT f.publication_id
+                        FROM telegram_publication_financials f
+                        JOIN telegram_publications p ON p.id=f.publication_id
+                        WHERE f.reference_user_id=:user_id
+                          AND f.destination_chat_id=:chat_id
+                          AND f.status='reserved'
+                          AND p.status='sent'
+                          AND p.sent_at IS NOT NULL
+                        ORDER BY p.sent_at,p.id
+                        LIMIT 100
+                        """
+                    ),
+                    {
+                        "user_id": self._reference_user_id,
+                        "chat_id": self._destination_chat_id,
+                    },
+                ).scalars().all()
+            for publication_id in rows:
+                self._commit_financial_publication(publication_id)
+        except Exception:
+            logger.exception("Telegram rolling financial ledger reconciliation failed safely")
 
     @staticmethod
     def _provider_line(source_id: UUID | str | None, provider_name: str) -> str:
