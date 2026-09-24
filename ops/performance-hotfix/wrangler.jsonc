@@ -1,0 +1,11 @@
+{
+  "$schema": "https://raw.githubusercontent.com/cloudflare/workers-sdk/main/packages/wrangler/config-schema.json",
+  "name": "super-signals-performance-hotfix",
+  "main": "worker.js",
+  "compatibility_date": "2026-08-25",
+  "workers_dev": false,
+  "routes": [
+    { "pattern": "smartsignals.site/performance*", "zone_name": "smartsignals.site" },
+    { "pattern": "www.smartsignals.site/performance*", "zone_name": "smartsignals.site" }
+  ]
+}
