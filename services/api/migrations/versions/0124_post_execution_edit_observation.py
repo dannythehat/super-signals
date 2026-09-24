@@ -1,6 +1,6 @@
 """Allow durable post-execution edit observations.
 
-Revision ID: 0124_post_execution_edit_observation
+Revision ID: 0124_post_exec_edit
 Revises: 0123_rebase_telegram_financials
 Create Date: 2026-09-24
 
@@ -17,7 +17,7 @@ from collections.abc import Sequence
 import sqlalchemy as sa
 from alembic import op
 
-revision: str = "0124_post_execution_edit_observation"
+revision: str = "0124_post_exec_edit"
 down_revision: str | None = "0123_rebase_telegram_financials"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
