@@ -795,7 +795,7 @@ class Day26Mt5ExecutionService:
         XAUUSD legs to be misclassified as missing and compensated unnecessarily.
         """
         normalized = str(position_id or "").strip()
-        if not normalized:
+        if not normalized or self._session_factory is None:
             return
         with self._session_factory() as session:
             session.execute(
@@ -814,6 +814,8 @@ class Day26Mt5ExecutionService:
             session.commit()
 
     def _stored_position_id(self, local_position_id: UUID) -> str:
+        if self._session_factory is None:
+            return ""
         with self._session_factory() as session:
             value = session.execute(
                 text(
