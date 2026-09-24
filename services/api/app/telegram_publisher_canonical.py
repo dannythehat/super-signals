@@ -208,6 +208,7 @@ class CanonicalTelegramPublisherManager(Day34CutoverTelegramPublisherManager):
     def _run_member_maintenance_safely(self) -> None:
         """Low-priority Telegram reconciliation that must never block fresh trades."""
         try:
+            self._reconcile_financial_state_safely()
             self._repair_sent_root_identities_safely()
             self._repair_sent_trade_messages_safely()
             if self._summary_service is not None:
@@ -1694,19 +1695,14 @@ class CanonicalTelegramPublisherManager(Day34CutoverTelegramPublisherManager):
                 "",
                 _render_root(row),
             ]
+            if self._reference_user_id is not None:
+                rolling_balance, rolling_daily = self._reserve_financial_publication(
+                    session,
+                    row["publication_id"],
+                    Decimal("0"),
+                )
+                parts.extend(self._financial_lines(rolling_balance, rolling_daily))
             if self._trade_ledger is not None:
-                account = self._trade_ledger.account()
-                if account.account_value is not None and not account.stale:
-                    parts.extend(
-                        [
-                            "",
-                            "<b>Balance</b>",
-                            f"<b>{_balance_money(account.account_value)}</b>",
-                            "",
-                            "<b>Today’s P&L</b>",
-                            f"<b>{money(account.today_pnl)}</b>",
-                        ]
-                    )
                 trade = self._trade_ledger.trade(row["signal_id"])
                 if trade is not None and trade.legs:
                     parts.extend(["", "<b>Trade Status</b>", ""])
