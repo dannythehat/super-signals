@@ -1817,7 +1817,6 @@ class CanonicalTelegramPublisherManager(Day34CutoverTelegramPublisherManager):
                 row["source_id"], str(row["provider_name"] or "Unknown provider")
             )
             trade = self._trade_ledger.trade(row["signal_id"]) if self._trade_ledger else None
-            account = self._trade_ledger.account() if self._trade_ledger else None
             event_type = str(row["event_type"] or "")
             aggregate = row["aggregate_result"] if isinstance(row["aggregate_result"], dict) else {}
             event_outcome = str(
@@ -1849,6 +1848,24 @@ class CanonicalTelegramPublisherManager(Day34CutoverTelegramPublisherManager):
                     event_outcome = "breakeven"
                 elif matching_leg.status == "closed_unknown":
                     event_outcome = "closed_unknown"
+
+            # Never publish a realised-result post until its broker cash is known.
+            # Otherwise a later repair would have to rewrite the rolling ledger and
+            # every subsequent post. Waiting preserves exact once-only arithmetic.
+            if event_type == "broker_position_settled" and event_pnl is None:
+                session.rollback()
+                return None
+
+            financial_delta = (
+                Decimal(str(event_pnl)).quantize(Decimal("0.01"))
+                if event_type == "broker_position_settled" and event_pnl is not None
+                else Decimal("0.00")
+            )
+            rolling_balance, rolling_daily = self._reserve_financial_publication(
+                session,
+                row["publication_id"],
+                financial_delta,
+            )
 
             has_more_settlements = bool(
                 session.execute(
@@ -1938,18 +1955,7 @@ class CanonicalTelegramPublisherManager(Day34CutoverTelegramPublisherManager):
                     result = f"✅ <b>{money(pnl)}</b>"
 
                 parts = [provider_line, "", heading, "", result]
-                if account is not None and account.account_value is not None and not account.stale:
-                    balance_text = _balance_money(account.account_value)
-                    parts.extend(
-                        [
-                            "",
-                            "<b>Balance</b>",
-                            f"<b>{balance_text}</b>",
-                            "",
-                            "<b>Today’s P&L</b>",
-                            f"<b>{money(account.today_pnl)}</b>",
-                        ]
-                    )
+                parts.extend(self._financial_lines(rolling_balance, rolling_daily))
                 status_lines = _trade_status_lines(trade)
                 if status_lines:
                     parts.extend(["", *status_lines])
@@ -1972,17 +1978,7 @@ class CanonicalTelegramPublisherManager(Day34CutoverTelegramPublisherManager):
                     "",
                     result,
                 ]
-                if account is not None and account.account_value is not None and not account.stale:
-                    parts.extend(
-                        [
-                            "",
-                            "<b>Balance</b>",
-                            f"<b>{_balance_money(account.account_value)}</b>",
-                            "",
-                            "<b>Today’s P&L</b>",
-                            f"<b>{money(account.today_pnl)}</b>",
-                        ]
-                    )
+                parts.extend(self._financial_lines(rolling_balance, rolling_daily))
                 status_lines = _trade_status_lines(trade)
                 if status_lines:
                     parts.extend(["", *status_lines])
@@ -1996,17 +1992,7 @@ class CanonicalTelegramPublisherManager(Day34CutoverTelegramPublisherManager):
                     "",
                     f"🛠 <b>{_html(update_text)}</b>",
                 ]
-                if account is not None and account.account_value is not None and not account.stale:
-                    parts.extend(
-                        [
-                            "",
-                            "<b>Balance</b>",
-                            f"<b>{_balance_money(account.account_value)}</b>",
-                            "",
-                            "<b>Today’s P&L</b>",
-                            f"<b>{money(account.today_pnl)}</b>",
-                        ]
-                    )
+                parts.extend(self._financial_lines(rolling_balance, rolling_daily))
                 status_lines = _trade_status_lines(trade)
                 if status_lines:
                     parts.extend(["", *status_lines])
@@ -2077,9 +2063,17 @@ class CanonicalTelegramPublisherManager(Day34CutoverTelegramPublisherManager):
                 code = "telegram_invalid_success_response"
                 reason = "Telegram did not return a usable destination message ID."
             await asyncio.to_thread(self._record_failure, attempt, code, reason)
+            await asyncio.to_thread(
+                self._fail_financial_publication,
+                attempt.publication_id,
+            )
             return
 
         await asyncio.to_thread(self._record_success, attempt, telegram_message_id)
+        await asyncio.to_thread(
+            self._commit_financial_publication,
+            attempt.publication_id,
+        )
 
     def _claim_summary(self) -> SummaryPublicationAttempt | None:
         assert self._destination_chat_id is not None
