@@ -131,16 +131,30 @@ class PaperCriticalManagementService(Day27Mt5ManagementService):
                 value = self._positive_decimal(action.get("value"))
 
                 if action_type == "close" and "partial" in target.lower():
-                    await self._apply_partial(
-                        token=token,
-                        account_id=account.account_id,
-                        region=region,
-                        symbol=symbol,
-                        target=target,
-                        open_positions=open_positions,
-                        broker_positions=broker_positions,
-                        counters=counters,
-                    )
+                    try:
+                        await self._apply_partial(
+                            token=token,
+                            account_id=account.account_id,
+                            region=region,
+                            symbol=symbol,
+                            target=target,
+                            open_positions=open_positions,
+                            broker_positions=broker_positions,
+                            counters=counters,
+                        )
+                    except Day27ManagementError as exc:
+                        # A minimum-lot position cannot be halved without violating
+                        # broker volume rules. Do not turn that impossible reduction
+                        # into a full close, and do not let it invalidate protection
+                        # already applied by the same compound provider instruction.
+                        if exc.code != "partial_volume_below_broker_minimum":
+                            raise
+                        self._audit_partial_unavailable(
+                            owner_user_id=owner_user_id,
+                            lifecycle_event_id=lifecycle_event_id,
+                            signal_id=signal_id,
+                            target=target,
+                        )
                     continue
 
                 if action_type == "close":
@@ -346,6 +360,40 @@ class PaperCriticalManagementService(Day27Mt5ManagementService):
         )
         self._audit_success(result, actions)
         return result
+
+    def _audit_partial_unavailable(
+        self,
+        *,
+        owner_user_id: UUID,
+        lifecycle_event_id: UUID,
+        signal_id: UUID,
+        target: str,
+    ) -> None:
+        payload = {
+            "lifecycle_event_id": str(lifecycle_event_id),
+            "signal_id": str(signal_id),
+            "target": target,
+            "reason": "partial_volume_below_broker_minimum",
+            "broker_trade_action_created": False,
+            "protective_actions_preserved": True,
+        }
+        with self._session_factory() as session:
+            session.execute(
+                text(
+                    """
+                    INSERT INTO audit_events
+                        (actor_user_id,event_type,entity_type,entity_id,payload)
+                    VALUES
+                        (:actor,'mt5.partial_close_unavailable','signal',:signal,CAST(:payload AS jsonb))
+                    """
+                ),
+                {
+                    "actor": owner_user_id,
+                    "signal": signal_id,
+                    "payload": json.dumps(payload),
+                },
+            )
+            session.commit()
 
     @staticmethod
     def _needs_critical_management(actions: tuple[dict[str, Any], ...]) -> bool:
