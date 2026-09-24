@@ -1,0 +1,57 @@
+name: Deploy Website Recovery
+
+on:
+  push:
+    branches:
+      - hotfix/performance-route-20260924
+    paths:
+      - .github/workflows/deploy-website-recovery.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: a517d133ccec0093de719211a6694951
+    steps:
+      - name: Require Cloudflare token
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "${CLOUDFLARE_API_TOKEN:-}"
+
+      - name: Fetch website source
+        shell: bash
+        run: |
+          set -euo pipefail
+          git clone --depth 1 --branch main https://github.com/dannythehat/super-signals-website.git site
+          grep -F "['/', '/index.html']" site/src/index.js
+          grep -F '"html_handling": "none"' site/wrangler.jsonc
+
+      - name: Deploy website worker
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd site
+          npx --yes wrangler@4 deploy --config wrangler.jsonc
+
+      - name: Verify homepage and performance
+        shell: bash
+        run: |
+          set -euo pipefail
+          for attempt in 1 2 3 4 5 6; do
+            root_code="$(curl -sS -o /tmp/root.html -w '%{http_code}' --max-redirs 2 https://smartsignals.site/ || true)"
+            perf_code="$(curl -sS -o /tmp/perf.html -w '%{http_code}' --max-redirs 2 https://smartsignals.site/performance || true)"
+            if [ "$root_code" = "200" ] && [ "$perf_code" = "200" ] && grep -qi '<html' /tmp/root.html && grep -q '<title>Performance | Smart Signals</title>' /tmp/perf.html; then
+              echo "ROOT=PASS PERFORMANCE=PASS"
+              exit 0
+            fi
+            sleep 5
+          done
+          echo "Website recovery verification failed" >&2
+          exit 1
