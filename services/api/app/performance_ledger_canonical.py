@@ -241,7 +241,23 @@ class CanonicalPerformanceLedgerService(Day33PerformanceLedgerServiceV2):
             session.commit()
         return added
 
-    async def sync_user(self, user_id: UUID) -> Day33SyncResult:
+    async def sync_user(
+        self,
+        user_id: UUID,
+        *,
+        max_history_positions: int | None = None,
+        rebuild_summaries: bool = True,
+    ) -> Day33SyncResult:
+        # The live settlement watcher needs a bounded, current-position path. Use
+        # the Day 33 v2 per-position sync for that mode; retain canonical account-wide
+        # history sync for normal dashboard/backfill calls.
+        if max_history_positions is not None or not rebuild_summaries:
+            return await super().sync_user(
+                user_id,
+                max_history_positions=max_history_positions,
+                rebuild_summaries=rebuild_summaries,
+            )
+
         account = self._account(user_id)
         if account is None:
             raise Day33LedgerError("mt5_account_not_configured")
