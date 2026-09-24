@@ -239,7 +239,7 @@ async def _lifespan(application: FastAPI) -> AsyncIterator[None]:
         day33_performance_service = CanonicalPerformanceLedgerService(
             session_factory=session_factory,
             cipher=broker_cipher,
-            gateway=MetaApiReadGateway(),
+            gateway=MetaApiReadGateway(timeout_seconds=5.0),
         )
         application.state.day33_performance_service = day33_performance_service
 
@@ -260,7 +260,7 @@ async def _lifespan(application: FastAPI) -> AsyncIterator[None]:
                         reference_user_id=day34_reference_user_id,
                         poll_seconds=poll_seconds,
                         cipher=broker_cipher,
-                        read_gateway=MetaApiReadGateway(),
+                        read_gateway=MetaApiReadGateway(timeout_seconds=5.0),
                         trade_gateway=MetaApiTradeGateway(),
                     )
                     application.state.day34_settlement_manager = day34_settlement_manager
