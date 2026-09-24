@@ -2044,17 +2044,33 @@ class CanonicalTelegramPublisherManager(Day34CutoverTelegramPublisherManager):
             f"ACTIVE <b>{active_count}</b>",
         ]
 
-        if self._trade_ledger is not None:
-            account = self._trade_ledger.account()
-            if account.account_value is not None:
+        # The live board must use the exact same durable rolling ledger as every
+        # trade/update post. Never mix floating Vantage equity into member Telegram.
+        if self._reference_user_id is not None and self._destination_chat_id is not None:
+            with self._session_factory() as session:
+                financial = session.execute(
+                    text(
+                        """
+                        SELECT balance,daily_pnl
+                        FROM telegram_financial_state
+                        WHERE reference_user_id=:user_id
+                          AND destination_chat_id=:chat_id
+                          AND business_date=:business_date
+                        LIMIT 1
+                        """
+                    ),
+                    {
+                        "user_id": self._reference_user_id,
+                        "chat_id": self._destination_chat_id,
+                        "business_date": self._financial_business_date(),
+                    },
+                ).mappings().first()
+            if financial is not None:
                 lines.extend(
                     [
                         "",
-                        f"💰 <b>BALANCE {_balance_money(account.account_value)}</b>",
-                        (
-                            f"Today: <b>{money(account.today_pnl)}</b> · "
-                            f"Month: <b>{money(account.month_to_date_pnl)}</b>"
-                        ),
+                        f"💰 <b>BALANCE {_balance_money(financial['balance'])}</b>",
+                        f"Today: <b>{money(financial['daily_pnl'])}</b>",
                     ]
                 )
 
