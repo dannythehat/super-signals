@@ -32,6 +32,7 @@ from app.telegram_publisher_day20 import LifecyclePublicationAttempt
 from app.telegram_publisher_day34 import Day34TelegramPublisherManager, SummaryPublicationAttempt
 from app.telegram_publisher_day34_cutover import Day34CutoverTelegramPublisherManager
 from app.telegram_trade_ledger import TelegramTradeLedger, TradeLedgerSnapshot, money, provider_badge
+from app.running_daily_balance import account_value_days
 from app.trade_identity import public_trade_identity
 
 _PLACEMENT_EVENT = "mt5.day38_route_new_trade"
