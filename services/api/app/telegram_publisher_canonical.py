@@ -784,6 +784,20 @@ class CanonicalTelegramPublisherManager(Day34CutoverTelegramPublisherManager):
         """
 
     @staticmethod
+    def _any_confirmed_placement_sql(alias: str) -> str:
+        """Any successful broker placement, without member freshness semantics."""
+        return f"""
+            EXISTS (
+                SELECT 1
+                FROM audit_events AS placed
+                WHERE placed.entity_type='signal'
+                  AND placed.entity_id={alias}.signal_id
+                  AND placed.event_type='{_PLACEMENT_EVENT}'
+                  AND placed.payload->>'outcome'='executed'
+            )
+        """
+
+    @staticmethod
     def _management_broker_action_sql(alias: str) -> str:
         return f"""
             EXISTS (
@@ -825,6 +839,7 @@ class CanonicalTelegramPublisherManager(Day34CutoverTelegramPublisherManager):
             placement_for_pub = self._placement_exists_sql("pub.signal_id")
             placement_for_sig = self._placement_exists_sql("sig.id")
             placement_for_ev = self._placement_exists_sql("ev.signal_id")
+            any_placement_for_ev = self._any_confirmed_placement_sql("ev")
             management_action_for_ev = self._management_broker_action_sql("ev")
             queued_from_confirmed_route = self._queued_from_confirmed_placement_sql("pub")
 
@@ -1011,7 +1026,14 @@ class CanonicalTelegramPublisherManager(Day34CutoverTelegramPublisherManager):
                                 AND root.status='sent'
                                 AND root.telegram_message_id IS NOT NULL
                           )
-                          OR {placement_for_ev}
+                          OR (
+                              ev.event_type='broker_position_settled'
+                              AND {any_placement_for_ev}
+                          )
+                          OR (
+                              ev.event_type<>'broker_position_settled'
+                              AND {placement_for_ev}
+                          )
                       )
                       AND NOT EXISTS (
                           SELECT 1 FROM telegram_publications AS pub
