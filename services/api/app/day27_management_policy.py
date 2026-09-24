@@ -25,8 +25,11 @@ _OPTIONAL = re.compile(
     re.IGNORECASE | re.DOTALL,
 )
 _RESULT_BE = re.compile(
-    r"^\s*(?:I[’']?M|WE[’']?RE|TRADE\s+IS|POSITION\s+IS)\s+(?:AT\s+)?(?:BE|BREAKEVEN|BREAK\s+EVEN)\s*[.!✅🔥]*\s*$"
-    r"|^\s*OUT\s+AT\s+(?:BE|BREAKEVEN|BREAK\s+EVEN)\s*[.!✅🔥]*\s*$",
+    r"^\s*(?:I[’']?M|WE[’']?RE|TRADE\s+IS|POSITION\s+IS)\s+(?:AT\s+)?(?:BE|BREAKEVEN|BREAK\s+EVEN)\s*[.!✅🔥]*\s*$",
+    re.IGNORECASE,
+)
+_OUT_AT_BE = re.compile(
+    r"\bOUT\s+AT\s+(?:BE|BREAKEVEN|BREAK\s+EVEN)\b",
     re.IGNORECASE,
 )
 _CLOSE_ALL = re.compile(
@@ -253,7 +256,12 @@ def _extract_actions(text: str) -> list[dict[str, str | None]]:
     # mapped positions.
     if _CLOSE_PROFIT.search(text):
         actions.append({"type": "close", "target": "profitable_only", "value": None})
-    elif _CLOSE_ALL.search(text) or _EXIT_NOW.search(text) or _decisive_close(text):
+    elif (
+        _CLOSE_ALL.search(text)
+        or _OUT_AT_BE.search(text)
+        or _EXIT_NOW.search(text)
+        or _decisive_close(text)
+    ):
         actions.append({"type": "close", "target": "all", "value": None})
     else:
         for match in _CLOSE_NUMBERED.finditer(text):
@@ -398,7 +406,7 @@ def extract_day27_management_actions(raw_text: str) -> Day27ManagementPolicyResu
         return Day27ManagementPolicyResult(actions, "explicit_active_trade_add_entry")
     if any(action.get("target") == "profitable_only" for action in actions):
         return Day27ManagementPolicyResult(actions, "profit_qualified_close")
-    if _OUT_THIS_SETUP.search(text) or _decisive_close(text):
+    if _OUT_THIS_SETUP.search(text) or _OUT_AT_BE.search(text) or _decisive_close(text):
         return Day27ManagementPolicyResult(actions, "explicit_literal_close")
     if protective := any(
         action.get("type") in {"edit_stop_loss", "move_to_break_even"} for action in actions
