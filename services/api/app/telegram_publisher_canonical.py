@@ -147,8 +147,14 @@ def _trade_status_lines(trade: TradeLedgerSnapshot | None) -> list[str]:
     for leg in trade.legs:
         state = labels.get(leg.status, "PENDING ⏳")
         cash = ""
-        if leg.status in {"won", "closed_profit", "lost", "breakeven", "closed_unknown"}:
-            cash = f" · <b>{money(getattr(leg, 'cash_pnl', Decimal('0')))}</b>"
+        if leg.status in {"won", "closed_profit", "lost", "breakeven"}:
+            cash = f" · <b>{money(leg.cash_pnl)}</b>"
+        elif leg.status == "closed_unknown":
+            cash = (
+                f" · <b>{money(leg.cash_pnl)}</b>"
+                if leg.cash_pnl is not None
+                else " · <b>P&L confirming…</b>"
+            )
         lines.append(f"TP{leg.tp_index} — <b>{state}</b>{cash}")
     return lines
 
@@ -175,6 +181,79 @@ class CanonicalTelegramPublisherManager(Day34CutoverTelegramPublisherManager):
             if reference_user_id is not None
             else None
         )
+        self._maintenance_task: asyncio.Task[None] | None = None
+        self._maintenance_next_at = 0.0
+
+    def _destination_reader_collision(self) -> bool:
+        if self._destination_chat_id is None:
+            return True
+        with self._session_factory() as session:
+            return bool(
+                session.execute(
+                    text(
+                        """
+                        SELECT 1
+                        FROM sources
+                        WHERE chat_id=:chat_id
+                          AND status<>'revoked'
+                        LIMIT 1
+                        """
+                    ),
+                    {"chat_id": self._destination_chat_id},
+                ).scalar_one_or_none()
+            )
+
+    def _run_member_maintenance_safely(self) -> None:
+        """Low-priority Telegram reconciliation that must never block fresh trades."""
+        try:
+            self._repair_sent_root_identities_safely()
+            self._repair_sent_trade_messages_safely()
+            if self._summary_service is not None:
+                self._summary_service.seed_due()
+            self._seed_summary_deliveries()
+            self._sync_live_board_safely()
+        except Exception:
+            logger.exception("Telegram member maintenance failed safely; fresh publishing continues")
+
+    async def _run(self) -> None:
+        """Publish fresh roots/updates before any slow Telegram reconciliation work."""
+        while not self._stop_event.is_set():
+            try:
+                if self._destination_reader_collision():
+                    logger.error("Telegram publisher blocked: destination is also an active reader source")
+                else:
+                    await asyncio.to_thread(self._seed_missing_publications)
+                    # Drain a small burst immediately. A new trade must not sit behind
+                    # a 3-second sleep for every older update in the queue.
+                    for _ in range(20):
+                        attempt = await asyncio.to_thread(self._claim_next)
+                        if attempt is None:
+                            break
+                        await self._deliver(attempt)
+
+                loop = asyncio.get_running_loop()
+                now = loop.time()
+                if (
+                    now >= self._maintenance_next_at
+                    and (self._maintenance_task is None or self._maintenance_task.done())
+                ):
+                    if self._maintenance_task is not None and self._maintenance_task.done():
+                        try:
+                            self._maintenance_task.result()
+                        except Exception:
+                            logger.exception("Telegram maintenance task failed safely")
+                    self._maintenance_task = asyncio.create_task(
+                        asyncio.to_thread(self._run_member_maintenance_safely),
+                        name="telegram-publisher-maintenance",
+                    )
+                    self._maintenance_next_at = now + 15.0
+            except Exception:
+                logger.exception("Telegram fast publication loop failed safely; trading unchanged")
+
+            try:
+                await asyncio.wait_for(self._stop_event.wait(), timeout=self._poll_seconds)
+            except TimeoutError:
+                continue
 
     def _account_lines(self, *, include_origin: bool = False) -> list[str]:
         if self._trade_ledger is None:
@@ -488,14 +567,6 @@ class CanonicalTelegramPublisherManager(Day34CutoverTelegramPublisherManager):
             self._suppress_stale_in_app_replays(session)
             session.commit()
 
-        self._repair_sent_root_identities_safely()
-        self._repair_sent_trade_messages_safely()
-
-        if self._summary_service is not None:
-            self._summary_service.seed_due()
-        self._seed_summary_deliveries()
-        self._sync_live_board_safely()
-
     def _repair_sent_root_identities_safely(self) -> None:
         """Replace any leaked internal SS-* root with its assigned member TRADE N.
 
@@ -704,7 +775,7 @@ class CanonicalTelegramPublisherManager(Day34CutoverTelegramPublisherManager):
                             ev.occurred_at AS repair_event_occurred_at,
                             event_position.tp_index AS event_tp_index,
                             COALESCE(event_outcome.status,'') AS event_outcome_status,
-                            COALESCE(event_outcome.cash_pnl,0) AS repair_event_cash_pnl,
+                            event_outcome.cash_pnl AS repair_event_cash_pnl,
                             COALESCE(m.raw_text,'') AS source_raw_text,
                             NOT EXISTS (
                                 SELECT 1
@@ -1479,16 +1550,38 @@ class CanonicalTelegramPublisherManager(Day34CutoverTelegramPublisherManager):
                     },
                 ).scalar_one_or_none()
             )
+            trade_pnl_confirmed = bool(
+                trade is not None
+                and all(
+                    leg.cash_pnl is not None
+                    for leg in trade.legs
+                    if leg.status in {
+                        "won",
+                        "closed_profit",
+                        "lost",
+                        "breakeven",
+                        "closed_unknown",
+                    }
+                )
+            )
             final_settlement = (
                 event_type == "broker_position_settled"
                 and trade is not None
                 and trade.complete
+                and trade_pnl_confirmed
                 and not has_more_settlements
             )
 
             if event_type == "broker_position_settled":
-                pnl = Decimal(str(event_pnl or 0)).quantize(Decimal("0.01"))
-                if final_settlement and trade is not None:
+                pnl = (
+                    Decimal(str(event_pnl)).quantize(Decimal("0.01"))
+                    if event_pnl is not None
+                    else None
+                )
+                if event_pnl is None:
+                    heading = f"<b>TRADE UPDATE 📈 · {tp_label} CLOSED</b>"
+                    result = "✅ <b>P&L confirming…</b>"
+                elif final_settlement and trade is not None:
                     total = trade.realised_pnl.quantize(Decimal("0.01"))
                     if total < 0:
                         heading = "<b>TRADE UPDATE 📉 · TRADE COMPLETE</b>"
