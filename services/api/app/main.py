@@ -411,6 +411,11 @@ async def _lifespan(application: FastAPI) -> AsyncIterator[None]:
     if push_manager is not None:
         await push_manager.start()
     await publisher.start()
+    # Sent trade-post reconciliation is independent of the publisher connection gate:
+    # broker truth must repair stale money/status snapshots even when there is no new
+    # outbound publication waiting. Failures are isolated inside the repair method and
+    # can never affect trading or application startup.
+    await asyncio.to_thread(publisher._repair_sent_root_identities_safely)
     if stale_position_watchdog is not None:
         await stale_position_watchdog.start()
 
