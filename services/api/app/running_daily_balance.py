@@ -20,11 +20,17 @@ from sqlalchemy.orm import Session
 SOFIA = ZoneInfo("Europe/Sofia")
 RUNNING_ACCOUNT_VALUE_START_DAY = date(2026, 9, 23)
 
-# 22 September closed at this Vantage/website account value.  It is the accepted
-# opening baseline for 23 September; subsequent days roll automatically from the last
-# broker account-value snapshot before the next Sofia calendar day begins.
+# 22 September closed at this MT5/Vantage balance (last snapshot before Sofia midnight).
+# It is the opening baseline for 23 September; subsequent days roll automatically from
+# the last broker balance snapshot before the next Sofia calendar day begins.
+#
+# This was 2075.81, the 22 September *account value* (equity, open trades included).
+# When the daily figure switched from equity to the closed balance at 13:02 UTC on
+# 23 September, that opening was left behind, so the day was published as the closed
+# balance minus yesterday's equity - a loss of about $737 that never happened. Opening
+# and closing must be the same field.
 _VERIFIED_OPENING_VALUES: dict[date, Decimal] = {
-    date(2026, 9, 23): Decimal("2075.81"),
+    date(2026, 9, 23): Decimal("1396.87"),
 }
 
 
