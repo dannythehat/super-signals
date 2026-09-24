@@ -787,6 +787,7 @@ class CanonicalTelegramPublisherManager(Day34CutoverTelegramPublisherManager):
                     WHERE pub.lifecycle_event_id=ev.id
                       AND pub.publication_kind='lifecycle_event'
                       AND pub.status='pending'
+                      AND ev.event_type<>'broker_position_settled'
                       AND ev.created_at<:fresh_after
                     """
                 ),
@@ -846,7 +847,7 @@ class CanonicalTelegramPublisherManager(Day34CutoverTelegramPublisherManager):
                     )
                     SELECT ev.signal_id,ev.id,'lifecycle_event','pending'
                     FROM signal_lifecycle_events AS ev
-                    WHERE ev.created_at>=:fresh_after
+                    WHERE (ev.event_type='broker_position_settled' OR ev.created_at>=:fresh_after)
                       AND (
                           ev.origin<>'provider_update'
                           OR {management_action_for_ev}
@@ -1469,15 +1470,20 @@ class CanonicalTelegramPublisherManager(Day34CutoverTelegramPublisherManager):
                             pub.id
                         FROM telegram_publications pub
                         JOIN signal_lifecycle_events ev ON ev.id=pub.lifecycle_event_id
-                        JOIN telegram_publications root
+                        LEFT JOIN telegram_publications root
                           ON root.signal_id=pub.signal_id
                          AND root.publication_kind='signal_created'
                          AND root.lifecycle_event_id IS NULL
                         WHERE pub.status='pending'
                           AND pub.publication_kind='lifecycle_event'
-                          AND root.status='sent'
-                          AND root.telegram_message_id IS NOT NULL
-                          AND ev.created_at>=:fresh_after
+                          AND (
+                              ev.event_type='broker_position_settled'
+                              OR (
+                                  root.status='sent'
+                                  AND root.telegram_message_id IS NOT NULL
+                                  AND ev.created_at>=:fresh_after
+                              )
+                          )
                     )
                     SELECT kind
                     FROM candidates
@@ -1632,15 +1638,20 @@ class CanonicalTelegramPublisherManager(Day34CutoverTelegramPublisherManager):
                     LEFT JOIN performance_trade_outcomes AS event_outcome
                       ON event_outcome.position_id=event_position.id
                      AND event_outcome.user_id=:reference_user_id
-                    JOIN telegram_publications AS root
+                    LEFT JOIN telegram_publications AS root
                       ON root.signal_id=pub.signal_id
                      AND root.publication_kind='signal_created'
                      AND root.lifecycle_event_id IS NULL
                     WHERE pub.status='pending'
                       AND pub.publication_kind='lifecycle_event'
-                      AND root.status='sent'
-                      AND root.telegram_message_id IS NOT NULL
-                      AND ev.created_at>=:fresh_after
+                      AND (
+                          ev.event_type='broker_position_settled'
+                          OR (
+                              root.status='sent'
+                              AND root.telegram_message_id IS NOT NULL
+                              AND ev.created_at>=:fresh_after
+                          )
+                      )
                       AND ev.event_type NOT LIKE 'broker_result_%'
                       AND NOT (
                           ev.event_type='broker_position_settled'
@@ -1860,7 +1871,11 @@ class CanonicalTelegramPublisherManager(Day34CutoverTelegramPublisherManager):
                 if status_lines:
                     parts.extend(["", *status_lines])
             rendered = "\n".join(parts)
-            reply_id = int(row["reply_to_message_id"])
+            reply_id = (
+                int(row["reply_to_message_id"])
+                if row["reply_to_message_id"] is not None
+                else None
+            )
             session.execute(
                 text(
                     """
@@ -1904,7 +1919,10 @@ class CanonicalTelegramPublisherManager(Day34CutoverTelegramPublisherManager):
             "parse_mode": "HTML",
             "disable_web_page_preview": "true",
         }
-        if isinstance(attempt, LifecyclePublicationAttempt):
+        if (
+            isinstance(attempt, LifecyclePublicationAttempt)
+            and attempt.reply_to_message_id is not None
+        ):
             payload["reply_parameters"] = json.dumps(
                 {
                     "message_id": attempt.reply_to_message_id,
