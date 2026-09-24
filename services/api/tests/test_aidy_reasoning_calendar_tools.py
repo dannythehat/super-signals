@@ -183,7 +183,7 @@ def _event_at(base_day: datetime, *, hour: int, impact: str, title: str) -> Econ
 
 
 def test_fetch_todays_scheduled_events_includes_only_todays_medium_and_high_impact() -> None:
-    as_of = datetime(2026, 9, 18, 12, 0, tzinfo=UTC)
+    as_of = datetime.now(UTC).replace(hour=12, minute=0, second=0, microsecond=0)
     client = FakeCalendarClient(
         thisweek=[
             _event_at(as_of, hour=2, impact="High", title="CPI"),
@@ -204,7 +204,7 @@ def test_fetch_todays_scheduled_events_includes_only_todays_medium_and_high_impa
 
 
 def test_fetch_todays_scheduled_events_labels_each_with_the_canonical_session_bucket() -> None:
-    as_of = datetime(2026, 9, 18, 12, 0, tzinfo=UTC)
+    as_of = datetime.now(UTC).replace(hour=12, minute=0, second=0, microsecond=0)
     client = FakeCalendarClient(
         thisweek=[_event_at(as_of, hour=2, impact="High", title="Asia-session event")]
     )
