@@ -136,17 +136,6 @@ class CanonicalExecutionDispatcher:
             return self._dispatch_shadow(stored, revision_index)
 
         if stored.decision == "new_trade" and stored.action == "execute":
-            if self._owner_shadow_only_new_trade(source_id):
-                logger.info(
-                    "New trade shadow-only by owner policy source=%s telegram_message_id=%s",
-                    source_id,
-                    telegram_message_id,
-                )
-                return self._dispatch_shadow(
-                    stored,
-                    revision_index,
-                    reason_override="owner_shadow_only_scalper_or_trade_global",
-                )
             probation = self._check_probation(source_id, stored.side)
             if not probation.eligible:
                 logger.info(
@@ -189,50 +178,6 @@ class CanonicalExecutionDispatcher:
             action=stored.action,
             reason=stored.reason,
         )
-
-    def _owner_shadow_only_new_trade(self, source_id: UUID) -> bool:
-        """Owner policy: scalpers and TRADE GLOBAL are research/shadow only.
-
-        This applies only to NEW entries. Existing broker positions still receive their
-        provider's management/close instructions until they are flat.
-        """
-        session_factory = getattr(self, "_session_factory", None)
-        if session_factory is None:
-            return False
-        context = session_factory()
-        if context is None:
-            return False
-        with context as session:
-            row = session.execute(
-                text(
-                    """
-                    SELECT
-                        COALESCE(s.source_alias,s.chat_title,'') AS provider_name,
-                        COALESCE(pr.style,'unknown') AS style,
-                        COALESCE(
-                            pr.profile_metadata->'adaptive_v1'->'language'->>'cadence_bucket',
-                            'unknown'
-                        ) AS cadence
-                    FROM sources s
-                    LEFT JOIN provider_research_profiles pr ON pr.source_id=s.id
-                    WHERE s.id=:source_id
-                    """
-                ),
-                {"source_id": source_id},
-            ).mappings().first()
-        if row is None:
-            return False
-        provider = str(row["provider_name"] or "").strip().casefold()
-        style = str(row["style"] or "").strip().casefold()
-        cadence = str(row["cadence"] or "").strip().casefold()
-
-        # Explicit owner override: FXTradingVision (FTX) is enabled for broker execution
-        # even though its research profile classifies its cadence/style as scalper.
-        # A broad scalper shadow rule must never override a named provider activation.
-        if provider.startswith("fxtradingvision"):
-            return False
-
-        return provider == "trade global" or style == "scalper" or cadence == "scalper"
 
     def _check_probation(self, source_id: UUID, side: str | None) -> ProbationCheck:
         with self._session_factory() as session:
