@@ -63,8 +63,8 @@ DEFAULT_ENTRY_TOLERANCE = Decimal("0.50")
 # check after all requested orders have already been accepted. MetaAPI terminal state
 # can lag a successful trade response by a fraction of a second; one empty/timeout
 # read must not immediately unwind a correctly opened multi-TP trade.
-_POST_ORDER_VERIFY_ATTEMPTS = 3
-_POST_ORDER_VERIFY_DELAY_SECONDS = 0.25
+_POST_ORDER_VERIFY_ATTEMPTS = 8
+_POST_ORDER_VERIFY_DELAY_SECONDS = 0.50
 
 
 def _resolve_entry_tolerance(value: Decimal | str | None) -> Decimal:
@@ -307,6 +307,11 @@ class Day26Mt5ExecutionService:
                 )
                 order_ids[item.client_id] = result.order_id
                 self._record_order_id(item.local_position_id, result.order_id)
+                if result.position_id:
+                    self._record_position_id(
+                        item.local_position_id,
+                        result.position_id,
+                    )
         except MetaApiGatewayError as exc:
             self._record_execution_failure(
                 owner_user_id=owner_user_id,
@@ -782,6 +787,47 @@ class Day26Mt5ExecutionService:
             )
             session.commit()
 
+    def _record_position_id(self, local_position_id: UUID, position_id: str) -> None:
+        """Persist broker identity immediately from the successful trade response.
+
+        MetaAPI may return a position id before the separate terminal positions
+        collection has caught up. Throwing this identity away caused valid fast
+        XAUUSD legs to be misclassified as missing and compensated unnecessarily.
+        """
+        normalized = str(position_id or "").strip()
+        if not normalized:
+            return
+        with self._session_factory() as session:
+            session.execute(
+                text(
+                    """
+                    UPDATE positions
+                    SET broker_position_id=:position_id,
+                        status='open',
+                        opened_at=COALESCE(opened_at,now()),
+                        updated_at=now()
+                    WHERE id=:id
+                    """
+                ),
+                {"id": local_position_id, "position_id": normalized},
+            )
+            session.commit()
+
+    def _stored_position_id(self, local_position_id: UUID) -> str:
+        with self._session_factory() as session:
+            value = session.execute(
+                text(
+                    """
+                    SELECT broker_position_id
+                    FROM positions
+                    WHERE id=:id
+                    LIMIT 1
+                    """
+                ),
+                {"id": local_position_id},
+            ).scalar_one_or_none()
+        return str(value or "").strip()
+
     def _map_broker_positions(
         self,
         *,
@@ -799,27 +845,48 @@ class Day26Mt5ExecutionService:
             for row in broker_positions
             if row.get("clientId")
         }
+        by_position_id = {
+            str(row.get("id") or "").strip(): row
+            for row in broker_positions
+            if str(row.get("id") or "").strip()
+        }
         mapped: list[Day26MappedPosition] = []
         for item in planned:
+            stored_position_id = self._stored_position_id(item.local_position_id)
             broker = by_client_id.get(item.client_id)
-            if broker is None:
-                raise Day26ExecutionError("broker_position_mapping_missing")
-            self._validate_broker_position(
-                broker=broker,
-                signal=signal,
-                take_profit=item.take_profit,
-                volume=(item.sizing or sizing).volume,
-                price_tick_size=price_tick_size,
-            )
-            broker_position_id = str(broker.get("id") or "").strip()
-            if not broker_position_id:
-                raise Day26ExecutionError("broker_position_mapping_missing")
-            broker_open_price = self._required_decimal(
-                broker.get("openPrice"), "broker_position_mapping_invalid"
-            )
+            if broker is None and stored_position_id:
+                broker = by_position_id.get(stored_position_id)
+
             broker_order_id = order_ids.get(item.client_id, "")
             if not broker_order_id:
                 raise Day26ExecutionError("broker_order_mapping_missing")
+
+            if broker is None:
+                # A successful market-order response can contain the immutable broker
+                # position id before MetaAPI's terminal positions collection exposes
+                # the row. Preserve that authoritative identity instead of declaring a
+                # valid fill missing and compensating it. The normal settlement/deal
+                # pipeline will replace the provisional entry price with broker truth.
+                if not stored_position_id:
+                    raise Day26ExecutionError("broker_position_mapping_missing")
+                broker_position_id = stored_position_id
+                broker_open_price = execution_entry
+            else:
+                self._validate_broker_position(
+                    broker=broker,
+                    signal=signal,
+                    take_profit=item.take_profit,
+                    volume=(item.sizing or sizing).volume,
+                    price_tick_size=price_tick_size,
+                )
+                broker_position_id = str(broker.get("id") or "").strip()
+                if not broker_position_id:
+                    raise Day26ExecutionError("broker_position_mapping_missing")
+                if stored_position_id and broker_position_id != stored_position_id:
+                    raise Day26ExecutionError("broker_position_mapping_invalid")
+                broker_open_price = self._required_decimal(
+                    broker.get("openPrice"), "broker_position_mapping_invalid"
+                )
 
             with self._session_factory() as session:
                 session.execute(
