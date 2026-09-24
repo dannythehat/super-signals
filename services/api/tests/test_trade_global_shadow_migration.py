@@ -29,7 +29,7 @@ def test_there_is_exactly_one_alembic_head() -> None:
     config = Config(str(API / "alembic.ini"))
     config.set_main_option("script_location", str(API / "migrations"))
     heads = ScriptDirectory.from_config(config).get_heads()
-    assert heads == ["0119_profit_only_provider_status"], heads
+    assert heads == ["0120_explicit_shadow_overrides"], heads
 
 
 def test_targets_trade_global_by_chat_id_not_by_display_name() -> None:
