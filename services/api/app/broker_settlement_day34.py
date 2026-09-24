@@ -10,6 +10,7 @@ or modifies a broker trade.
 from __future__ import annotations
 
 import asyncio
+from concurrent.futures import ThreadPoolExecutor
 import json
 import logging
 from dataclasses import dataclass
@@ -57,6 +58,13 @@ class Day34BrokerSettlementManager:
         self._poll_seconds = poll_seconds
         self._task: asyncio.Task[None] | None = None
         self._stop_event = asyncio.Event()
+        # Settlement must never compete with Telegram catch-up, publisher repair or
+        # other default-executor work. One dedicated worker preserves strict serial
+        # broker reconciliation while guaranteeing that the poll can actually start.
+        self._poll_executor = ThreadPoolExecutor(
+            max_workers=1,
+            thread_name_prefix="super-signals-settlement",
+        )
 
     async def start(self) -> None:
         if self._task is not None:
@@ -82,7 +90,11 @@ class Day34BrokerSettlementManager:
     async def _run(self) -> None:
         while not self._stop_event.is_set():
             try:
-                await asyncio.to_thread(self._poll_once_isolated)
+                loop = asyncio.get_running_loop()
+                await loop.run_in_executor(
+                    self._poll_executor,
+                    self._poll_once_isolated,
+                )
             except Exception:
                 # Read-side settlement monitoring must never take down Telegram,
                 # execution, the application, or broker-held SL/TP protection.
