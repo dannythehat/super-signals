@@ -37,6 +37,7 @@ from app.trade_identity import public_trade_identity
 _PLACEMENT_EVENT = "mt5.day38_route_new_trade"
 _MEMBER_EVENT_FRESHNESS = timedelta(minutes=5)
 SOFIA = ZoneInfo("Europe/Sofia")
+_CURRENT_SOFIA_DAY_START_SQL = "(date_trunc('day', timezone('Europe/Sofia', now())) AT TIME ZONE 'Europe/Sofia')"
 logger = logging.getLogger(__name__)
 
 
@@ -208,6 +209,7 @@ class CanonicalTelegramPublisherManager(Day34CutoverTelegramPublisherManager):
     def _run_member_maintenance_safely(self) -> None:
         """Low-priority Telegram reconciliation that must never block fresh trades."""
         try:
+            self._cleanup_accidental_historical_settlement_replay_safely()
             self._reconcile_financial_state_safely()
             self._repair_sent_root_identities_safely()
             self._repair_sent_trade_messages_safely()
@@ -531,6 +533,126 @@ class CanonicalTelegramPublisherManager(Day34CutoverTelegramPublisherManager):
             )
             session.commit()
 
+    def _cleanup_accidental_historical_settlement_replay_safely(self) -> None:
+        """Remove only the accidental Sep-24 replay of pre-day settlements."""
+        if not self._bot_token or self._destination_chat_id is None:
+            return
+        try:
+            with self._session_factory() as session:
+                rows = session.execute(
+                    text(
+                        f"""
+                        SELECT pub.id AS publication_id,
+                               pub.telegram_message_id,
+                               COALESCE(pub.destination_chat_id,:chat_id) AS destination_chat_id
+                        FROM telegram_publications pub
+                        JOIN signal_lifecycle_events ev ON ev.id=pub.lifecycle_event_id
+                        WHERE pub.status='sent'
+                          AND pub.publication_kind='lifecycle_event'
+                          AND ev.event_type='broker_position_settled'
+                          AND ev.occurred_at < {_CURRENT_SOFIA_DAY_START_SQL}
+                          AND pub.sent_at >= TIMESTAMPTZ '2026-09-24 14:54:00+00'
+                          AND COALESCE(pub.failure_code,'') <> 'historical_replay_deleted'
+                        ORDER BY pub.sent_at,pub.id
+                        """
+                    ),
+                    {"chat_id": self._destination_chat_id},
+                ).mappings().all()
+
+            for row in rows:
+                try:
+                    _bot_api_call(
+                        self._bot_token,
+                        "deleteMessage",
+                        {
+                            "chat_id": int(row["destination_chat_id"]),
+                            "message_id": int(row["telegram_message_id"]),
+                        },
+                    )
+                except TelegramPublishError as exc:
+                    if "message to delete not found" not in exc.reason.lower():
+                        logger.warning(
+                            "Historical replay delete failed message_id=%s code=%s reason=%s",
+                            row["telegram_message_id"], exc.code, exc.reason,
+                        )
+                        continue
+
+                with self._session_factory() as session:
+                    session.execute(
+                        text(
+                            """
+                            UPDATE telegram_publications
+                            SET status='suppressed',
+                                failure_code='historical_replay_deleted',
+                                failure_reason='Accidental pre-day settlement replay removed from member feed.',
+                                updated_at=now()
+                            WHERE id=:publication_id
+                            """
+                        ),
+                        {"publication_id": row["publication_id"]},
+                    )
+                    session.execute(
+                        text(
+                            """
+                            UPDATE telegram_publication_financials
+                            SET status='failed',updated_at=now()
+                            WHERE publication_id=:publication_id
+                            """
+                        ),
+                        {"publication_id": row["publication_id"]},
+                    )
+                    session.commit()
+
+            if rows and self._reference_user_id is not None:
+                with self._session_factory() as session:
+                    latest = session.execute(
+                        text(
+                            """
+                            SELECT f.new_balance,f.new_daily_pnl,f.publication_id
+                            FROM telegram_publication_financials f
+                            JOIN telegram_publications p ON p.id=f.publication_id
+                            WHERE f.reference_user_id=:user_id
+                              AND f.destination_chat_id=:chat_id
+                              AND f.business_date=:business_date
+                              AND f.status='sent'
+                              AND p.status='sent'
+                            ORDER BY p.sent_at DESC,p.id DESC
+                            LIMIT 1
+                            """
+                        ),
+                        {
+                            "user_id": self._reference_user_id,
+                            "chat_id": self._destination_chat_id,
+                            "business_date": self._financial_business_date(),
+                        },
+                    ).mappings().first()
+                    if latest is not None:
+                        session.execute(
+                            text(
+                                """
+                                UPDATE telegram_financial_state
+                                SET balance=:balance,
+                                    daily_pnl=:daily_pnl,
+                                    last_publication_id=:publication_id,
+                                    updated_at=now()
+                                WHERE reference_user_id=:user_id
+                                  AND destination_chat_id=:chat_id
+                                  AND business_date=:business_date
+                                """
+                            ),
+                            {
+                                "balance": latest["new_balance"],
+                                "daily_pnl": latest["new_daily_pnl"],
+                                "publication_id": latest["publication_id"],
+                                "user_id": self._reference_user_id,
+                                "chat_id": self._destination_chat_id,
+                                "business_date": self._financial_business_date(),
+                            },
+                        )
+                        session.commit()
+        except Exception:
+            logger.exception("Accidental historical Telegram replay cleanup failed safely")
+
     def _reconcile_financial_state_safely(self) -> None:
         """Recover the tiny crash window between Telegram send and ledger commit."""
         if self._reference_user_id is None or self._destination_chat_id is None:
@@ -774,10 +896,12 @@ class CanonicalTelegramPublisherManager(Day34CutoverTelegramPublisherManager):
                 {"fresh_after": fresh_after},
             )
 
-            # Hard-stop any previously queued stale lifecycle rows before claim/send.
+            # Hard-stop stale lifecycle rows before claim/send. Broker settlements may
+            # recover beyond the ordinary five-minute window, but only for the current
+            # Sofia date; older settlements remain audit-only forever.
             session.execute(
                 text(
-                    """
+                    f"""
                     UPDATE telegram_publications AS pub
                     SET status='suppressed',
                         failure_code='stale_lifecycle_audit_only',
@@ -787,8 +911,13 @@ class CanonicalTelegramPublisherManager(Day34CutoverTelegramPublisherManager):
                     WHERE pub.lifecycle_event_id=ev.id
                       AND pub.publication_kind='lifecycle_event'
                       AND pub.status='pending'
-                      AND ev.event_type<>'broker_position_settled'
-                      AND ev.created_at<:fresh_after
+                      AND (
+                          (ev.event_type<>'broker_position_settled' AND ev.created_at<:fresh_after)
+                          OR (
+                              ev.event_type='broker_position_settled'
+                              AND ev.occurred_at < {_CURRENT_SOFIA_DAY_START_SQL}
+                          )
+                      )
                     """
                 ),
                 {"fresh_after": fresh_after},
@@ -847,7 +976,16 @@ class CanonicalTelegramPublisherManager(Day34CutoverTelegramPublisherManager):
                     )
                     SELECT ev.signal_id,ev.id,'lifecycle_event','pending'
                     FROM signal_lifecycle_events AS ev
-                    WHERE (ev.event_type='broker_position_settled' OR ev.created_at>=:fresh_after)
+                    WHERE (
+                          (
+                              ev.event_type='broker_position_settled'
+                              AND ev.occurred_at >= (date_trunc('day', timezone('Europe/Sofia', now())) AT TIME ZONE 'Europe/Sofia')
+                          )
+                          OR (
+                              ev.event_type<>'broker_position_settled'
+                              AND ev.created_at>=:fresh_after
+                          )
+                      )
                       AND (
                           ev.origin<>'provider_update'
                           OR {management_action_for_ev}
@@ -1477,7 +1615,10 @@ class CanonicalTelegramPublisherManager(Day34CutoverTelegramPublisherManager):
                         WHERE pub.status='pending'
                           AND pub.publication_kind='lifecycle_event'
                           AND (
-                              ev.event_type='broker_position_settled'
+                              (
+                                  ev.event_type='broker_position_settled'
+                                  AND ev.occurred_at >= (date_trunc('day', timezone('Europe/Sofia', now())) AT TIME ZONE 'Europe/Sofia')
+                              )
                               OR (
                                   root.status='sent'
                                   AND root.telegram_message_id IS NOT NULL
@@ -1645,7 +1786,10 @@ class CanonicalTelegramPublisherManager(Day34CutoverTelegramPublisherManager):
                     WHERE pub.status='pending'
                       AND pub.publication_kind='lifecycle_event'
                       AND (
-                          ev.event_type='broker_position_settled'
+                          (
+                              ev.event_type='broker_position_settled'
+                              AND ev.occurred_at >= (date_trunc('day', timezone('Europe/Sofia', now())) AT TIME ZONE 'Europe/Sofia')
+                          )
                           OR (
                               root.status='sent'
                               AND root.telegram_message_id IS NOT NULL
