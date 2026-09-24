@@ -265,6 +265,19 @@ def _owner_reference_user_id(service: Day33PerformanceLedgerServiceV2) -> UUID:
     return value
 
 
+def _public_owner_reference_user_id(
+    request: Request,
+    service: Day33PerformanceLedgerServiceV2,
+) -> UUID:
+    """Resolve the owner once per process for public read-only endpoints."""
+    cached = getattr(request.app.state, "public_performance_owner_user_id", None)
+    if isinstance(cached, UUID):
+        return cached
+    value = _owner_reference_user_id(service)
+    request.app.state.public_performance_owner_user_id = value
+    return value
+
+
 def _canonical_displayed_balance(service: Day33PerformanceLedgerServiceV2, user_id: UUID) -> Decimal:
     """Newest full Vantage account value (equity), never a reconstruction."""
     accounting = CanonicalTradingAccountingService(service._session_factory)
@@ -306,9 +319,7 @@ def _latest_owner_account_value(
                 """
                 SELECT pas.balance,pas.equity,pas.captured_at
                 FROM performance_account_snapshots pas
-                JOIN mt5_accounts a ON a.id=pas.mt5_account_id
-                WHERE a.owner_user_id=:user_id
-                  AND a.status<>'revoked'
+                WHERE pas.user_id=:user_id
                 ORDER BY pas.captured_at DESC
                 LIMIT 1
                 """
@@ -701,7 +712,7 @@ def public_performance_calendar(
         return cached[1]
 
     service = _performance_service(request)
-    user_id = _owner_reference_user_id(service)
+    user_id = _public_owner_reference_user_id(request, service)
     now = datetime.now(UTC)
     with service._session_factory() as session:
         account_days = account_value_days(session, user_id, now=now)
@@ -752,7 +763,7 @@ def public_performance_calendar(
         updated_at=now,
     )
     request.app.state.public_performance_calendar_cache = (
-        monotonic() + 3.0,
+        monotonic() + 8.0,
         result,
     )
     response.headers["Cache-Control"] = "public, max-age=2, stale-while-revalidate=30"
@@ -777,15 +788,34 @@ def public_performance_trades(
             updated_at=datetime.now(UTC),
         )
 
+    cache = getattr(request.app.state, "public_performance_trade_day_cache", None)
+    if not isinstance(cache, dict):
+        cache = {}
+        request.app.state.public_performance_trade_day_cache = cache
+
+    cached = cache.get(reporting_day)
+    if (
+        isinstance(cached, tuple)
+        and len(cached) == 2
+        and monotonic() < cached[0]
+        and isinstance(cached[1], PublicTradeDayResponse)
+    ):
+        response.headers["Cache-Control"] = "public, max-age=2, stale-while-revalidate=30"
+        return cached[1]
+
     service = _performance_service(request)
-    user_id = _owner_reference_user_id(service)
-    trades = _public_trades_for_day(service, user_id, reporting_day)
-    response.headers["Cache-Control"] = "public, max-age=5, stale-while-revalidate=30"
-    return PublicTradeDayResponse(
+    user_id = _public_owner_reference_user_id(request, service)
+    result = PublicTradeDayResponse(
         day=reporting_day,
-        trades=trades,
+        trades=_public_trades_for_day(service, user_id, reporting_day),
         updated_at=datetime.now(UTC),
     )
+    cache[reporting_day] = (monotonic() + 8.0, result)
+    if len(cache) > 40:
+        for key in sorted(cache)[:-30]:
+            cache.pop(key, None)
+    response.headers["Cache-Control"] = "public, max-age=2, stale-while-revalidate=30"
+    return result
 
 
 @router.get("/public-performance", response_model=PublicPerformanceResponse)
@@ -800,7 +830,7 @@ async def public_performance(
     exposed.
     """
     service = _performance_service(request)
-    user_id = _owner_reference_user_id(service)
+    user_id = _public_owner_reference_user_id(request, service)
     daily = _public_daily(service, user_id)
     trades = _public_trades(service, user_id)
     current = round(float(_canonical_displayed_balance(service, user_id)), 2)
