@@ -218,6 +218,9 @@ class _ExecutionHarness(MemberTradingExecutionService):
     def _record_order_id(self, local_position_id, order_id):
         return None
 
+    def _record_position_id(self, local_position_id, position_id):
+        return None
+
     def _map_broker_positions(
         self,
         *,
