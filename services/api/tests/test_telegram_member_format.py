@@ -85,6 +85,19 @@ def test_realised_settlements_are_kept_in_broker_time_order() -> None:
     assert "sent_same_burst_duplicate_deleted" not in source
 
 
+def test_broker_settlements_never_expire_from_member_queue() -> None:
+    source = Path("services/api/app/telegram_publisher_canonical.py").read_text()
+    assert "ev.event_type<>'broker_position_settled'" in source
+    assert "(ev.event_type='broker_position_settled' OR ev.created_at>=:fresh_after)" in source
+
+
+def test_broker_settlement_can_publish_without_sent_root() -> None:
+    source = Path("services/api/app/telegram_publisher_canonical.py").read_text()
+    assert "LEFT JOIN telegram_publications AS root" in source
+    assert "ev.event_type='broker_position_settled'" in source
+    assert "attempt.reply_to_message_id is not None" in source
+
+
 def test_aggregate_broker_results_are_audit_only() -> None:
     source = Path("services/api/app/telegram_publisher_canonical.py").read_text()
     assert "aggregate_broker_result_audit_only" in source
