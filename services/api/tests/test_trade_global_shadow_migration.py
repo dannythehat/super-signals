@@ -29,7 +29,7 @@ def test_there_is_exactly_one_alembic_head() -> None:
     config = Config(str(API / "alembic.ini"))
     config.set_main_option("script_location", str(API / "migrations"))
     heads = ScriptDirectory.from_config(config).get_heads()
-    assert heads == ["0122_telegram_financial_ledger"], heads
+    assert heads == ["0123_rebase_telegram_financials"], heads
 
 
 def test_targets_trade_global_by_chat_id_not_by_display_name() -> None:
