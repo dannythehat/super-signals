@@ -82,6 +82,7 @@ from app.routes.telegram_sources import (
 )
 from app.routes.user_mt5_accounts import router as user_mt5_accounts_router
 from app.shadow_trading import ShadowTradeManager
+from app.stale_position_watchdog import StalePositionWatchdog
 from app.telegram_crypto import TelegramSessionCipher
 from app.telegram_listener import TelegramListenerManager
 from app.telegram_publisher_canonical import CanonicalTelegramPublisherManager
@@ -223,6 +224,7 @@ async def _lifespan(application: FastAPI) -> AsyncIterator[None]:
     mt5_bootstrap_task: asyncio.Task[None] | None = None
     day34_settlement_manager: CanonicalBrokerSettlementManager | None = None
     shadow_trade_manager: ShadowTradeManager | None = None
+    stale_position_watchdog: StalePositionWatchdog | None = None
     day34_live_acceptance_task: asyncio.Task[None] | None = None
     if broker_keys:
         broker_cipher = MetaApiTokenCipher(broker_keys)
@@ -272,6 +274,15 @@ async def _lifespan(application: FastAPI) -> AsyncIterator[None]:
                 poll_seconds=int(os.getenv("SUPER_SIGNALS_SHADOW_POLL_SECONDS", "15") or "15"),
             )
             application.state.shadow_trade_manager = shadow_trade_manager
+            stale_position_watchdog = StalePositionWatchdog(
+                session_factory=session_factory,
+                cipher=broker_cipher,
+                owner_user_id=day34_reference_user_id,
+                poll_seconds=60,
+                default_max_age_hours=24.0,
+                tig_max_age_hours=12.0,
+            )
+            application.state.stale_position_watchdog = stale_position_watchdog
 
         allow_mt5_manager = True
         diagnostic_probe = os.getenv("SUPER_SIGNALS_DAY22_DIAGNOSTIC_PROBE", "").strip() == "1"
@@ -400,6 +411,8 @@ async def _lifespan(application: FastAPI) -> AsyncIterator[None]:
     if push_manager is not None:
         await push_manager.start()
     await publisher.start()
+    if stale_position_watchdog is not None:
+        await stale_position_watchdog.start()
 
     # The live lane is now operational. Research is intentionally disabled by default
     # in the production trading process so provider analysis can never compete with
@@ -449,6 +462,8 @@ async def _lifespan(application: FastAPI) -> AsyncIterator[None]:
                     "Research runtime %s failed to stop cleanly; live shutdown continues",
                     state_name,
                 )
+        if stale_position_watchdog is not None:
+            await stale_position_watchdog.stop()
         await publisher.stop()
         if push_manager is not None:
             await push_manager.stop()
