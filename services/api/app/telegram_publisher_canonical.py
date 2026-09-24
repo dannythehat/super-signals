@@ -1180,7 +1180,13 @@ class CanonicalTelegramPublisherManager(Day34CutoverTelegramPublisherManager):
                       AND pub.publication_kind='signal_created'
                       AND pub.lifecycle_event_id IS NULL
                       AND sig.member_trade_number IS NOT NULL
-                      AND {self._placement_exists_sql('pub.signal_id')}
+                      AND (
+                          {self._placement_exists_sql('pub.signal_id')}
+                          OR (
+                              {self._queued_from_confirmed_placement_sql('pub')}
+                              AND pub.created_at>now()-INTERVAL '60 minutes'
+                          )
+                      )
                     ORDER BY pub.created_at,pub.id
                     FOR UPDATE OF pub SKIP LOCKED
                     LIMIT 1
@@ -1334,11 +1340,7 @@ class CanonicalTelegramPublisherManager(Day34CutoverTelegramPublisherManager):
                 row["source_id"], str(row["provider_name"] or "Unknown provider")
             )
             trade = self._trade_ledger.trade(row["signal_id"]) if self._trade_ledger else None
-            account = (
-                self._trade_ledger.account(now=row["event_occurred_at"])
-                if self._trade_ledger
-                else None
-            )
+            account = self._trade_ledger.account() if self._trade_ledger else None
             event_type = str(row["event_type"] or "")
             aggregate = row["aggregate_result"] if isinstance(row["aggregate_result"], dict) else {}
             event_outcome = str(
