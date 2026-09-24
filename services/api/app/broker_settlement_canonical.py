@@ -8,6 +8,7 @@ broker history cannot leave the app stale.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import time
 from decimal import Decimal
@@ -63,7 +64,17 @@ class CanonicalBrokerSettlementManager(Day34BrokerSettlementManager):
 
         if self._has_unsettled_mapped_positions():
             result = await super().poll_once()
-            await self._apply_profit_protection_ladder()
+            if not result.synced:
+                return result
+            try:
+                await asyncio.wait_for(
+                    self._apply_profit_protection_ladder(),
+                    timeout=6.0,
+                )
+            except TimeoutError:
+                logger.warning(
+                    "Automatic profit protection timed out safely; next settlement poll will retry"
+                )
             return result
 
         now = time.monotonic()
