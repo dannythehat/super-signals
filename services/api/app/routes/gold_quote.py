@@ -45,6 +45,18 @@ _PUBLIC_TRADE_DETAIL_START = date(2026, 9, 3)
 _PUBLIC_STARTING_BALANCE = 1517.23
 _HISTORICAL_STARTING_BALANCE = 1517.23
 
+# Owner instruction, 23 Sep 2026: TRADE GLOBAL (switched to live trading that day against
+# the owner's standing decision) and the "Scalping 📈" channel are left out of the public
+# trade log from that day on. The owner reversed their cash impact for the day on the
+# paper account, so the 21:00-equity daily P/L already reflects that; this only keeps the
+# trade log free of their individual rows. Matched by chat id so a rename cannot bring
+# them back.
+_PUBLIC_TRADE_LOG_EXCLUDED_CHAT_IDS: tuple[int, ...] = (
+    -1003925988158,  # TRADE GLOBAL
+    -1004469449988,  # Scalping 📈
+)
+_PUBLIC_TRADE_LOG_EXCLUDED_FROM = date(2026, 9, 23)
+
 
 class GoldQuoteResponse(BaseModel):
     symbol: str = _SYMBOL
@@ -421,8 +433,31 @@ def _public_daily(service: Day33PerformanceLedgerServiceV2, user_id: UUID) -> tu
     return tuple(result)
 
 
+def _excluded_trade_log_signal_ids(
+    service: Day33PerformanceLedgerServiceV2,
+    user_id: UUID,
+) -> frozenset[UUID]:
+    chat_ids = ",".join(str(int(chat_id)) for chat_id in _PUBLIC_TRADE_LOG_EXCLUDED_CHAT_IDS)
+    with service._session_factory() as session:
+        rows = session.execute(
+            text(
+                f"""
+                SELECT DISTINCT p.signal_id
+                FROM positions p
+                JOIN signals s ON s.id=p.signal_id
+                JOIN sources src ON src.id=s.source_id
+                WHERE p.user_id=:user_id
+                  AND src.chat_id IN ({chat_ids})
+                """
+            ),
+            {"user_id": user_id},
+        ).scalars().all()
+    return frozenset(rows)
+
+
 def _public_trades(service: Day33PerformanceLedgerServiceV2, user_id: UUID) -> tuple[PublicTradeResponse, ...]:
     zone = ZoneInfo(_PUBLIC_TIMEZONE)
+    excluded = _excluded_trade_log_signal_ids(service, user_id)
     timeline = service.read_timeline(
         user_id,
         viewer_role="user",
@@ -443,6 +478,8 @@ def _public_trades(service: Day33PerformanceLedgerServiceV2, user_id: UUID) -> t
             else local_event.date()
         )
         if local_day < _PUBLIC_TRADE_DETAIL_START:
+            continue
+        if local_day >= _PUBLIC_TRADE_LOG_EXCLUDED_FROM and item.signal_id in excluded:
             continue
         trades.append(
             PublicTradeResponse(
