@@ -5,7 +5,7 @@
   "compatibility_date": "2026-08-25",
   "workers_dev": false,
   "routes": [
-    { "pattern": "smartsignals.site/performance*", "zone_name": "smartsignals.site" },
-    { "pattern": "www.smartsignals.site/performance*", "zone_name": "smartsignals.site" }
+    { "pattern": "smartsignals.site/*", "zone_name": "smartsignals.site" },
+    { "pattern": "www.smartsignals.site/*", "zone_name": "smartsignals.site" }
   ]
 }
