@@ -96,7 +96,7 @@ class AccountLedgerSnapshot:
 class TradeLegSnapshot:
     tp_index: int
     status: str
-    cash_pnl: Decimal
+    cash_pnl: Decimal | None
     target_hit: bool = False
     provider_reported_hit: bool = False
 
@@ -377,19 +377,16 @@ class TelegramTradeLedger:
                         s.side,
                         COALESCE(o.status,'') AS outcome_status,
                         o.cash_pnl AS outcome_cash_pnl,
-                        COALESCE(
-                            (
-                                SELECT SUM(
-                                    COALESCE(bd.profit,0)
-                                    + COALESCE(bd.commission,0)
-                                    + COALESCE(bd.swap,0)
-                                )
-                                FROM broker_deals bd
-                                WHERE bd.position_id=p.id
-                                  AND bd.user_id=:user_id
-                                  AND bd.entry_type IN ('DEAL_ENTRY_OUT','DEAL_ENTRY_OUT_BY')
-                            ),
-                            0
+                        (
+                            SELECT SUM(
+                                COALESCE(bd.profit,0)
+                                + COALESCE(bd.commission,0)
+                                + COALESCE(bd.swap,0)
+                            )
+                            FROM broker_deals bd
+                            WHERE bd.position_id=p.id
+                              AND bd.user_id=:user_id
+                              AND bd.entry_type IN ('DEAL_ENTRY_OUT','DEAL_ENTRY_OUT_BY')
                         ) AS broker_cash_pnl,
                         (
                             SELECT COUNT(*)
@@ -447,13 +444,15 @@ class TelegramTradeLedger:
                 else None
             )
             outcome_cash = leg["outcome_cash_pnl"]
-            broker_cash = Decimal(str(leg["broker_cash_pnl"] or 0))
-            cash_pnl = (
-                Decimal(str(outcome_cash))
-                if outcome_cash is not None
-                else broker_cash
-            )
             broker_close_count = int(leg["broker_close_count"] or 0)
+            broker_cash_raw = leg["broker_cash_pnl"]
+            cash_pnl: Decimal | None
+            if outcome_cash is not None:
+                cash_pnl = Decimal(str(outcome_cash))
+            elif broker_close_count > 0 and broker_cash_raw is not None:
+                cash_pnl = Decimal(str(broker_cash_raw))
+            else:
+                cash_pnl = None
             target_hit = bool(
                 target is not None
                 and exit_price is not None
@@ -473,7 +472,7 @@ class TelegramTradeLedger:
                 state = "closed_profit"
             elif outcome in {"lost", "breakeven", "closed_unknown"}:
                 state = outcome
-            elif position_status == "closed" and broker_close_count > 0:
+            elif position_status == "closed" and broker_close_count > 0 and cash_pnl is not None:
                 if cash_pnl > 0:
                     state = "won" if target_hit else "closed_profit"
                 elif cash_pnl < 0:
@@ -505,7 +504,8 @@ class TelegramTradeLedger:
             (
                 leg.cash_pnl
                 for leg in legs
-                if leg.status in {"won", "closed_profit", "lost", "breakeven", "closed_unknown"}
+                if leg.cash_pnl is not None
+                and leg.status in {"won", "closed_profit", "lost", "breakeven", "closed_unknown"}
             ),
             Decimal("0"),
         )
