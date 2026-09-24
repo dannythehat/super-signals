@@ -1851,6 +1851,7 @@ class CanonicalTelegramPublisherManager(Day34CutoverTelegramPublisherManager):
                               FROM positions earlier
                               WHERE earlier.signal_id=ev.signal_id
                                 AND earlier.closed_at IS NOT NULL
+                                AND earlier.status NOT IN ('skipped','cancelled','canceled')
                                 AND (
                                     earlier.closed_at<ev.occurred_at
                                     OR (
