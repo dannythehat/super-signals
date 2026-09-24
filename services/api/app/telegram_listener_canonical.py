@@ -170,14 +170,21 @@ class CanonicalProductionTelegramListenerManager(Day21TelegramListenerManager):
     def _process_saved_original(self, captured: Any) -> Any:
         pipeline = getattr(self, "_ai_pipeline", None)
         result = None
-        if pipeline is not None:
-            result = pipeline.process_original(captured.source_id, int(captured.telegram_message_id))
-        self._dispatch_sync(
-            source_id=captured.source_id,
-            telegram_message_id=int(captured.telegram_message_id),
-            revision_index=0,
-        )
-        return result
+        try:
+            if pipeline is not None:
+                result = pipeline.process_original(
+                    captured.source_id,
+                    int(captured.telegram_message_id),
+                )
+            return result
+        finally:
+            # A durable AI decision can already exist even if later enrichment/audit work
+            # raises. Broker dispatch must not be skipped in that case.
+            self._dispatch_sync(
+                source_id=captured.source_id,
+                telegram_message_id=int(captured.telegram_message_id),
+                revision_index=0,
+            )
 
     def _persist_edit(self, captured: Any) -> bool:
         with self._revision_lock(captured.source_id, captured.telegram_message_id):
@@ -232,17 +239,22 @@ class CanonicalProductionTelegramListenerManager(Day21TelegramListenerManager):
         exact_processor = getattr(pipeline, "_process_revision", None) if pipeline is not None else None
         if not callable(exact_processor):
             raise RuntimeError("canonical_ai_revision_processor_missing")
-        result = exact_processor(
-            captured.source_id,
-            int(captured.telegram_message_id),
-            revision_index=revision_index,
-        )
-        self._dispatch_sync(
-            source_id=captured.source_id,
-            telegram_message_id=int(captured.telegram_message_id),
-            revision_index=revision_index,
-        )
-        return result
+        result = None
+        try:
+            result = exact_processor(
+                captured.source_id,
+                int(captured.telegram_message_id),
+                revision_index=revision_index,
+            )
+            return result
+        finally:
+            # Same guarantee for edited provider instructions: once the revision decision
+            # is durable, dispatch is attempted even if non-trading tail work fails.
+            self._dispatch_sync(
+                source_id=captured.source_id,
+                telegram_message_id=int(captured.telegram_message_id),
+                revision_index=revision_index,
+            )
 
     def _dispatch_sync(
         self,
