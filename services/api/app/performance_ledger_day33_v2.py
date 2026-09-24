@@ -64,22 +64,50 @@ class Day33PerformanceLedgerServiceV2(Day33PerformanceLedgerService):
                     {"user_id": user_id},
                 ).all()
             )
+            deal_counts = {
+                row["position_id"]: int(row["deal_count"] or 0)
+                for row in session.execute(
+                    text(
+                        """
+                        SELECT position_id,COUNT(*)::int AS deal_count
+                        FROM broker_deals
+                        WHERE user_id=:user_id
+                        GROUP BY position_id
+                        """
+                    ),
+                    {"user_id": user_id},
+                ).mappings().all()
+            }
+
         unresolved = [
             row
             for row in rows
             if row["broker_position_id"] and row["id"] not in completed_ids
         ]
 
-        # Settlement polling is latency-sensitive. Always check currently open/planned
-        # broker positions before historical unresolved rows, and newest first within
-        # each group. Otherwise an old slow history lookup can delay today's TP/SL
-        # settlement evidence for minutes.
+        # Live settlement priority:
+        #   0 current exposure;
+        #   1 recently closed rows where entry evidence exists but exit evidence is missing;
+        #   2 other recent closed rows;
+        #   3 error/backlog rows.
+        # updated_at matters more than creation time for a just-closed old position.
         active_states = {"open", "planned", "pending"}
-        active = [row for row in unresolved if str(row["status"]) in active_states]
-        backlog = [row for row in unresolved if str(row["status"]) not in active_states]
-        active.sort(key=lambda row: row["created_at"], reverse=True)
-        backlog.sort(key=lambda row: row["created_at"], reverse=True)
-        return active + backlog
+
+        def priority(row: Any) -> tuple[int, float]:
+            status = str(row["status"])
+            deal_count = int(deal_counts.get(row["id"], 0))
+            if status in active_states:
+                bucket = 0
+            elif status == "closed" and deal_count > 0:
+                bucket = 1
+            elif status == "closed":
+                bucket = 2
+            else:
+                bucket = 3
+            point = row["updated_at"] or row["created_at"]
+            return (bucket, -point.timestamp())
+
+        return sorted(unresolved, key=priority)
 
     def _backfill_account_snapshots_from_audit(
         self,
