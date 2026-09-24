@@ -29,25 +29,41 @@ jobs:
           set -euo pipefail
           test -n "${CLOUDFLARE_API_TOKEN:-}"
 
-      - name: Deploy isolated performance route
+      - name: Release broken website catch-all routes
+        shell: bash
+        run: |
+          set -euo pipefail
+          auth=(-H "Authorization: Bearer ${CLOUDFLARE_API_TOKEN}" -H "Content-Type: application/json")
+          zone_json="$(curl -fsS "${auth[@]}" "https://api.cloudflare.com/client/v4/zones?name=smartsignals.site")"
+          zone_id="$(printf '%s' "$zone_json" | jq -r '.result[0].id // empty')"
+          test -n "$zone_id"
+          routes_json="$(curl -fsS "${auth[@]}" "https://api.cloudflare.com/client/v4/zones/$zone_id/workers/routes")"
+          printf '%s' "$routes_json" | jq -r '.result[] | select((.pattern=="smartsignals.site/*" or .pattern=="www.smartsignals.site/*") and .script=="super-signals-website") | .id' | while read -r route_id; do
+            [ -n "$route_id" ] || continue
+            curl -fsS -X DELETE "${auth[@]}" "https://api.cloudflare.com/client/v4/zones/$zone_id/workers/routes/$route_id" >/dev/null
+          done
+
+      - name: Deploy website recovery worker
         shell: bash
         run: |
           set -euo pipefail
           npx --yes wrangler@4 deploy --config ops/performance-hotfix/wrangler.jsonc
 
-      - name: Verify performance route
+      - name: Verify recovered website
         shell: bash
         run: |
           set -euo pipefail
           for attempt in 1 2 3 4 5 6; do
-            code="$(curl -sS -o /tmp/performance.html -w '%{http_code}' --max-redirs 2 https://smartsignals.site/performance || true)"
-            if [ "$code" = "200" ] && grep -q '<title>Performance | Smart Signals</title>' /tmp/performance.html; then
-              curl -fsS --max-redirs 2 'https://smartsignals.site/performance.js?v=20260924-canonical3' -o /tmp/performance.js
-              test -s /tmp/performance.js
-              echo "PERFORMANCE_ROUTE=PASS"
+            root_code="$(curl -sS -o /tmp/root.html -w '%{http_code}' --max-redirs 3 https://smartsignals.site/ || true)"
+            perf_code="$(curl -sS -o /tmp/perf.html -w '%{http_code}' --max-redirs 3 https://smartsignals.site/performance || true)"
+            account_code="$(curl -sS -o /tmp/account.html -w '%{http_code}' --max-redirs 3 https://smartsignals.site/account || true)"
+            css_code="$(curl -sS -o /tmp/tokens.css -w '%{http_code}' --max-redirs 3 https://smartsignals.site/tokens.css || true)"
+            www_code="$(curl -sS -L -o /tmp/www.html -w '%{http_code}' --max-redirs 3 https://www.smartsignals.site/ || true)"
+            if [ "$root_code" = "200" ] && [ "$perf_code" = "200" ] && [ "$account_code" = "200" ] && [ "$css_code" = "200" ] && [ "$www_code" = "200" ] && grep -q '<title>Smart Signals</title>' /tmp/root.html && grep -q '<title>Performance | Smart Signals</title>' /tmp/perf.html; then
+              echo "ROOT=PASS PERFORMANCE=PASS ACCOUNT=PASS ASSETS=PASS WWW=PASS"
               exit 0
             fi
             sleep 5
           done
-          echo "Performance route is still not healthy" >&2
+          echo "Recovery verification failed" >&2
           exit 1
