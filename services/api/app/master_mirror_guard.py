@@ -8,6 +8,7 @@ fails closed and performs no member mutation.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from collections import defaultdict
 from datetime import UTC, datetime
@@ -151,10 +152,15 @@ class MasterMirrorSettlementManager(_BaseSettlement):
         # Base still owns _has_unsettled_mapped_positions, sync_user and
         # flat_account_truth_sync_complete. This wrapper only adds mirror enforcement.
         result = await super().poll_once()
-        if market_week_frozen():
+        if not result.synced or market_week_frozen():
             return result
         try:
-            await self._enforce_master_mirror()
+            await asyncio.wait_for(
+                self._enforce_master_mirror(),
+                timeout=6.0,
+            )
+        except TimeoutError:
+            logger.warning("Master mirror reconciliation timed out safely")
         except Exception:
             logger.exception("Master mirror reconciliation failed safely")
         return result
