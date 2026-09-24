@@ -11,7 +11,8 @@ def test_member_telegram_format_is_spacious_and_status_driven() -> None:
     assert "PENDING ⏳" in source
     assert "Trade complete" in source
     assert "identity.marker" not in source
-    assert 'f"<b>{_balance_money(account.account_value)}</b>"' in source
+    assert "_reserve_financial_publication" in source
+    assert "_financial_lines(rolling_balance, rolling_daily)" in source
 
 
 def test_member_provider_identity_uses_named_emojis_not_colour_pairs() -> None:
@@ -89,11 +90,11 @@ def test_trade_status_snapshot_repair_replaces_stale_pending_lines() -> None:
     assert "PENDING ⏳" not in repaired
 
 
-def test_same_burst_settlements_are_ordered_by_broker_time_not_created_at() -> None:
+def test_realised_settlements_are_kept_in_broker_time_order() -> None:
     source = Path("services/api/app/telegram_publisher_canonical.py").read_text()
-    assert "sibling.occurred_at>ev.occurred_at" in source
-    assert "sent_same_burst_duplicate_deleted" in source
-    assert '"deleteMessage"' in source
+    assert "ORDER BY ev.occurred_at,ev.created_at,pub.id" in source
+    assert "same_burst_settlement_collapsed" not in source
+    assert "sent_same_burst_duplicate_deleted" not in source
 
 
 def test_complete_multi_leg_trade_uses_total_result_not_one_leg() -> None:
@@ -101,7 +102,7 @@ def test_complete_multi_leg_trade_uses_total_result_not_one_leg() -> None:
     assert "trade.realised_pnl.quantize" in source
     assert "TRADE LOSS · {money(total)}" in source
     assert "TRADE WIN · {money(total)}" in source
-    assert "_balance_money(account.account_value)" in source
+    assert "_financial_lines(rolling_balance, rolling_daily)" in source
 
 
 def test_uneditable_stale_result_is_replaced_without_duplicate_spam() -> None:
