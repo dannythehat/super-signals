@@ -397,12 +397,22 @@ async def _lifespan(application: FastAPI) -> AsyncIterator[None]:
         await push_manager.start()
     await publisher.start()
 
-    # The live lane is now operational. Research starts in the background only after
-    # this point, so no AIDY startup path can gate provider execution or Telegram.
-    research_start_task = asyncio.create_task(
-        _start_research_lane(),
-        name="super-signals-research-startup",
+    # The live lane is now operational. Research is intentionally disabled by default
+    # in the production trading process so provider analysis can never compete with
+    # Telegram intake, MT5 execution, publisher delivery, health checks, or live DB locks.
+    # A dedicated research service may opt in explicitly.
+    research_lane_enabled = (
+        os.getenv("SUPER_SIGNALS_RESEARCH_LANE_ENABLED", "0").strip() == "1"
     )
+    if research_lane_enabled:
+        research_start_task = asyncio.create_task(
+            _start_research_lane(),
+            name="super-signals-research-startup",
+        )
+    else:
+        logger.warning(
+            "AIDY research lane disabled in live Super Signals process; trading and Telegram only"
+        )
 
     if os.getenv("SUPER_SIGNALS_DAY34_LIVE_ACCEPTANCE", "").strip() == "1":
         day34_live_acceptance_task = asyncio.create_task(
