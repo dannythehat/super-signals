@@ -362,10 +362,42 @@ class TelegramTradeLedger:
                         p.tp_index,
                         p.status AS position_status,
                         p.take_profit,
-                        p.exit_price,
+                        COALESCE(
+                            p.exit_price,
+                            (
+                                SELECT bd.price
+                                FROM broker_deals bd
+                                WHERE bd.position_id=p.id
+                                  AND bd.user_id=:user_id
+                                  AND bd.entry_type IN ('DEAL_ENTRY_OUT','DEAL_ENTRY_OUT_BY')
+                                ORDER BY bd.occurred_at DESC,bd.id DESC
+                                LIMIT 1
+                            )
+                        ) AS effective_exit_price,
                         s.side,
                         COALESCE(o.status,'') AS outcome_status,
-                        COALESCE(o.cash_pnl,0) AS cash_pnl
+                        o.cash_pnl AS outcome_cash_pnl,
+                        COALESCE(
+                            (
+                                SELECT SUM(
+                                    COALESCE(bd.profit,0)
+                                    + COALESCE(bd.commission,0)
+                                    + COALESCE(bd.swap,0)
+                                )
+                                FROM broker_deals bd
+                                WHERE bd.position_id=p.id
+                                  AND bd.user_id=:user_id
+                                  AND bd.entry_type IN ('DEAL_ENTRY_OUT','DEAL_ENTRY_OUT_BY')
+                            ),
+                            0
+                        ) AS broker_cash_pnl,
+                        (
+                            SELECT COUNT(*)
+                            FROM broker_deals bd
+                            WHERE bd.position_id=p.id
+                              AND bd.user_id=:user_id
+                              AND bd.entry_type IN ('DEAL_ENTRY_OUT','DEAL_ENTRY_OUT_BY')
+                        )::int AS broker_close_count
                     FROM positions p
                     JOIN signals s ON s.id=p.signal_id
                     LEFT JOIN performance_trade_outcomes o ON o.position_id=p.id
@@ -409,7 +441,19 @@ class TelegramTradeLedger:
             position_status = str(leg["position_status"] or "").lower()
             side = str(leg["side"] or "").upper()
             target = Decimal(str(leg["take_profit"])) if leg["take_profit"] is not None else None
-            exit_price = Decimal(str(leg["exit_price"])) if leg["exit_price"] is not None else None
+            exit_price = (
+                Decimal(str(leg["effective_exit_price"]))
+                if leg["effective_exit_price"] is not None
+                else None
+            )
+            outcome_cash = leg["outcome_cash_pnl"]
+            broker_cash = Decimal(str(leg["broker_cash_pnl"] or 0))
+            cash_pnl = (
+                Decimal(str(outcome_cash))
+                if outcome_cash is not None
+                else broker_cash
+            )
+            broker_close_count = int(leg["broker_close_count"] or 0)
             target_hit = bool(
                 target is not None
                 and exit_price is not None
@@ -420,15 +464,22 @@ class TelegramTradeLedger:
             )
             provider_reported_hit = tp_index in provider_hits
 
-            # Broker settlement is authoritative. A provider's "TP hit" message is
-            # useful context while a leg is still unresolved, but it can never overwrite
-            # a broker-confirmed loss/breakeven/closed result.
+            # Broker settlement is authoritative. performance_trade_outcomes is allowed
+            # to arrive later than the deal capture, so a closed broker deal is the
+            # immediate truth source for cash P/L and close classification.
             if outcome == "won" and target_hit:
                 state = "won"
             elif outcome == "won":
                 state = "closed_profit"
             elif outcome in {"lost", "breakeven", "closed_unknown"}:
                 state = outcome
+            elif position_status == "closed" and broker_close_count > 0:
+                if cash_pnl > 0:
+                    state = "won" if target_hit else "closed_profit"
+                elif cash_pnl < 0:
+                    state = "lost"
+                else:
+                    state = "breakeven"
             elif position_status in {"cancelled", "canceled", "skipped"}:
                 # Terminal broker/local truth beats any older provider milestone.
                 # A cancelled/superseded order can never become pending again merely
@@ -444,14 +495,23 @@ class TelegramTradeLedger:
                 TradeLegSnapshot(
                     tp_index=tp_index,
                     status=state,
-                    cash_pnl=Decimal(str(leg["cash_pnl"] or 0)),
+                    cash_pnl=cash_pnl,
                     target_hit=target_hit,
                     provider_reported_hit=provider_reported_hit,
                 )
             )
 
+        realised_pnl = sum(
+            (
+                leg.cash_pnl
+                for leg in legs
+                if leg.status in {"won", "closed_profit", "lost", "breakeven", "closed_unknown"}
+            ),
+            Decimal("0"),
+        )
+
         return TradeLedgerSnapshot(
-            realised_pnl=Decimal(str(row["realised_pnl"] or 0)),
+            realised_pnl=realised_pnl,
             total_legs=int(row["total_legs"] or 0),
             closed_legs=int(row["closed_legs"] or 0),
             open_legs=int(row["open_legs"] or 0),
