@@ -18,7 +18,7 @@ from app.telegram_publisher_policy import Day19TelegramPublisherManager
 
 @dataclass(frozen=True, slots=True)
 class LifecyclePublicationAttempt(PublicationAttempt):
-    reply_to_message_id: int
+    reply_to_message_id: int | None
 
 
 class Day20TelegramPublisherManager(Day19TelegramPublisherManager):
