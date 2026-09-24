@@ -2253,35 +2253,17 @@ class CanonicalTelegramPublisherManager(Day34CutoverTelegramPublisherManager):
             f"ACTIVE <b>{active_count}</b>",
         ]
 
-        # The live board must use the exact same durable rolling ledger as every
-        # trade/update post. Never mix floating Vantage equity into member Telegram.
+        # Use the same live 21:00-Sofia account-value calculation as the website.
         if self._reference_user_id is not None and self._destination_chat_id is not None:
             with self._session_factory() as session:
-                financial = session.execute(
-                    text(
-                        """
-                        SELECT balance,daily_pnl
-                        FROM telegram_financial_state
-                        WHERE reference_user_id=:user_id
-                          AND destination_chat_id=:chat_id
-                          AND business_date=:business_date
-                        LIMIT 1
-                        """
-                    ),
-                    {
-                        "user_id": self._reference_user_id,
-                        "chat_id": self._destination_chat_id,
-                        "business_date": self._financial_business_date(),
-                    },
-                ).mappings().first()
-            if financial is not None:
-                lines.extend(
-                    [
-                        "",
-                        f"💰 <b>BALANCE {_balance_money(financial['balance'])}</b>",
-                        f"Today: <b>{money(financial['daily_pnl'])}</b>",
-                    ]
-                )
+                _, website_balance, website_daily = self._website_financial_snapshot(session)
+            lines.extend(
+                [
+                    "",
+                    f"💰 <b>BALANCE {_balance_money(website_balance)}</b>",
+                    f"Today: <b>{money(website_daily)}</b>",
+                ]
+            )
 
         if not rows:
             lines.extend(["", "No active trades."])
