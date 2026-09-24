@@ -341,3 +341,84 @@ def test_edit_for_paused_source_is_ignored_and_missing_original_is_audited(day13
         assert session.scalar(select(func.count()).select_from(Message)) == 0
         assert session.scalar(select(func.count()).select_from(Signal)) == 0
         assert session.scalar(select(func.count()).select_from(Position)) == 0
+
+
+def test_repeated_edits_of_the_same_orphan_are_logged_once_per_hour(day13_environment) -> None:
+    """A provider that edits one pinned, never-captured message forever must not flood
+    the audit trail. Production saw the same handful of messages re-delivered roughly
+    every 90 seconds, continuously, for hours: 3,400+ identical rows, one DB write each,
+    for a finding that never changed. One row per message per hour is enough."""
+    engine, manager, ids = day13_environment
+    now = datetime.now(UTC)
+
+    def orphan_edit(message_id: int) -> CapturedTelegramEdit:
+        return CapturedTelegramEdit(
+            source_id=ids["source"],
+            chat_id=-10013001,
+            telegram_message_id=message_id,
+            raw_text="PINNED STATUS EDIT",
+            edited_at=now,
+            reply_to_message_id=None,
+            has_media=False,
+            media_type=None,
+        )
+
+    assert manager._persist_edit(orphan_edit(13200)) is False
+    # Re-delivered several times in quick succession, as Telegram actually did in
+    # production. Still an orphan every time, so still no trade action either way.
+    assert manager._persist_edit(orphan_edit(13200)) is False
+    assert manager._persist_edit(orphan_edit(13200)) is False
+
+    with Session(engine) as session:
+        rows = session.scalars(
+            select(AuditEvent).where(
+                AuditEvent.event_type == "telegram.message_edit_missing_original",
+                AuditEvent.payload["telegram_message_id"].astext == "13200",
+            )
+        ).all()
+        assert len(rows) == 1, "three re-deliveries within the hour must log once, not three times"
+
+        # A different orphaned message is unaffected by another message's cooldown.
+        session.execute(text("SELECT 1"))  # keep the session warm for the next assert
+
+    assert manager._persist_edit(orphan_edit(13201)) is False
+    with Session(engine) as session:
+        other = session.scalars(
+            select(AuditEvent).where(
+                AuditEvent.event_type == "telegram.message_edit_missing_original",
+                AuditEvent.payload["telegram_message_id"].astext == "13201",
+            )
+        ).all()
+        assert len(other) == 1
+
+        # Once the cooldown has genuinely passed, the finding is logged again - this
+        # stays evidence of an ongoing condition, not a one-time note that goes stale.
+        # audit_events is append-only (no UPDATE/DELETE), so this proves it by seeding
+        # an hour-old occurrence directly, exactly as a real one would read by the time
+        # the cooldown expires, for a message never seen in this test before.
+        session.execute(
+            text(
+                """
+                INSERT INTO audit_events (event_type, entity_type, entity_id, payload, created_at)
+                VALUES (
+                    'telegram.message_edit_missing_original', 'source', :source_id,
+                    CAST(:payload AS jsonb), now() - INTERVAL '2 hours'
+                )
+                """
+            ),
+            {
+                "source_id": ids["source"],
+                "payload": '{"telegram_message_id": 13300, "chat_id": -10013001}',
+            },
+        )
+        session.commit()
+
+    assert manager._persist_edit(orphan_edit(13300)) is False
+    with Session(engine) as session:
+        rows = session.scalars(
+            select(AuditEvent).where(
+                AuditEvent.event_type == "telegram.message_edit_missing_original",
+                AuditEvent.payload["telegram_message_id"].astext == "13300",
+            )
+        ).all()
+        assert len(rows) == 2, "past the cooldown, the condition is logged again"
