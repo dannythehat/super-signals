@@ -32,7 +32,6 @@ from app.telegram_publisher_day20 import LifecyclePublicationAttempt
 from app.telegram_publisher_day34 import Day34TelegramPublisherManager, SummaryPublicationAttempt
 from app.telegram_publisher_day34_cutover import Day34CutoverTelegramPublisherManager
 from app.telegram_trade_ledger import TelegramTradeLedger, TradeLedgerSnapshot, money, provider_badge
-from app.running_daily_balance import account_value_days
 from app.trade_identity import public_trade_identity
 
 _PLACEMENT_EVENT = "mt5.day38_route_new_trade"
@@ -269,8 +268,14 @@ class CanonicalTelegramPublisherManager(Day34CutoverTelegramPublisherManager):
             include_origin=include_origin,
         )
 
-    def _website_financial_snapshot(self, session: Any) -> tuple[Any, Decimal, Decimal]:
-        """Return the exact live account-value figures used by the public website."""
+    def _broker_financial_snapshot(self, session: Any) -> tuple[Any, Decimal, Decimal]:
+        """Return MT5 closed balance and realised day P&L for member Telegram.
+
+        Telegram account figures must never use equity/floating P&L and must never
+        depend on prior Telegram posts. Every publication reads the owner's latest
+        broker balance directly from performance_account_snapshots. Today's P&L is
+        that balance minus the broker balance at the 21:00-Sofia reporting boundary.
+        """
         now = datetime.now(UTC)
         local_now = now.astimezone(SOFIA)
         reporting_day = (
@@ -281,36 +286,52 @@ class CanonicalTelegramPublisherManager(Day34CutoverTelegramPublisherManager):
         if self._reference_user_id is None:
             return reporting_day, Decimal("0.00"), Decimal("0.00")
 
-        days = account_value_days(session, self._reference_user_id, now=now)
-        current_day = next(
-            (item for item in reversed(days) if item.day == reporting_day),
-            None,
-        )
-        if current_day is not None:
-            return (
-                reporting_day,
-                current_day.closing_value.quantize(Decimal("0.01")),
-                current_day.pnl.quantize(Decimal("0.01")),
-            )
-
-        latest = session.execute(
+        row = session.execute(
             text(
                 """
-                SELECT pas.equity
-                FROM performance_account_snapshots pas
-                WHERE pas.user_id=:user_id
-                  AND pas.equity IS NOT NULL
-                ORDER BY pas.captured_at DESC
-                LIMIT 1
+                WITH boundary AS (
+                    SELECT (
+                        ((CAST(:reporting_day AS date) - 1)::timestamp + TIME '21:00')
+                        AT TIME ZONE 'Europe/Sofia'
+                    ) AS day_start
+                )
+                SELECT
+                    latest.balance AS current_balance,
+                    opening.balance AS opening_balance
+                FROM boundary
+                LEFT JOIN LATERAL (
+                    SELECT pas.balance
+                    FROM performance_account_snapshots pas
+                    WHERE pas.user_id=:user_id
+                      AND pas.balance IS NOT NULL
+                    ORDER BY pas.captured_at DESC
+                    LIMIT 1
+                ) latest ON TRUE
+                LEFT JOIN LATERAL (
+                    SELECT pas.balance
+                    FROM performance_account_snapshots pas
+                    WHERE pas.user_id=:user_id
+                      AND pas.balance IS NOT NULL
+                      AND pas.captured_at<=boundary.day_start
+                    ORDER BY pas.captured_at DESC
+                    LIMIT 1
+                ) opening ON TRUE
                 """
             ),
-            {"user_id": self._reference_user_id},
-        ).scalar_one_or_none()
-        return (
-            reporting_day,
-            Decimal(str(latest or 0)).quantize(Decimal("0.01")),
-            Decimal("0.00"),
+            {
+                "reporting_day": reporting_day,
+                "user_id": self._reference_user_id,
+            },
+        ).mappings().one()
+
+        current = Decimal(str(row["current_balance"] or 0)).quantize(Decimal("0.01"))
+        opening_raw = row["opening_balance"]
+        daily = (
+            (current - Decimal(str(opening_raw))).quantize(Decimal("0.01"))
+            if opening_raw is not None
+            else Decimal("0.00")
         )
+        return reporting_day, current, daily
 
     def _financial_business_date(self) -> Any:
         local_now = datetime.now(UTC).astimezone(SOFIA)
@@ -321,11 +342,11 @@ class CanonicalTelegramPublisherManager(Day34CutoverTelegramPublisherManager):
         )
 
     def _ensure_financial_state(self, session: Any) -> Any:
-        """Keep the durable Telegram audit state aligned to the website money view."""
+        """Keep the durable Telegram audit state aligned to the broker closed-balance view."""
         if self._reference_user_id is None or self._destination_chat_id is None:
             return None
 
-        business_date, website_balance, website_daily = self._website_financial_snapshot(session)
+        business_date, broker_balance, broker_daily = self._broker_financial_snapshot(session)
         row = session.execute(
             text(
                 """
@@ -366,8 +387,8 @@ class CanonicalTelegramPublisherManager(Day34CutoverTelegramPublisherManager):
                 "user_id": self._reference_user_id,
                 "chat_id": self._destination_chat_id,
                 "business_date": business_date,
-                "balance": website_balance,
-                "daily_pnl": website_daily,
+                "balance": broker_balance,
+                "daily_pnl": broker_daily,
             },
         )
         return session.execute(
@@ -395,7 +416,7 @@ class CanonicalTelegramPublisherManager(Day34CutoverTelegramPublisherManager):
         publication_id: UUID,
         event_delta: Decimal | int | float | str | None,
     ) -> tuple[Decimal, Decimal]:
-        """Snapshot the same Balance and Today's P&L shown by the website.
+        """Snapshot the current broker Balance and realised Today's P&L.
 
         event_delta remains audit evidence for the TP/SL result, but it no longer
         drives the displayed account figures.
@@ -403,7 +424,7 @@ class CanonicalTelegramPublisherManager(Day34CutoverTelegramPublisherManager):
         if self._reference_user_id is None or self._destination_chat_id is None:
             return Decimal("0.00"), Decimal("0.00")
 
-        business_date, website_balance, website_daily = self._website_financial_snapshot(session)
+        business_date, broker_balance, broker_daily = self._broker_financial_snapshot(session)
         delta = Decimal(str(event_delta or 0)).quantize(Decimal("0.01"))
 
         existing = session.execute(
@@ -433,18 +454,18 @@ class CanonicalTelegramPublisherManager(Day34CutoverTelegramPublisherManager):
                     "publication_id": publication_id,
                     "business_date": business_date,
                     "delta": delta,
-                    "new_balance": website_balance,
-                    "new_daily": website_daily,
+                    "new_balance": broker_balance,
+                    "new_daily": broker_daily,
                 },
             )
-            return website_balance, website_daily
+            return broker_balance, broker_daily
 
         state = self._ensure_financial_state(session)
         prior_balance = Decimal(
-            str(state["balance"] if state is not None else website_balance)
+            str(state["balance"] if state is not None else broker_balance)
         ).quantize(Decimal("0.01"))
         prior_daily = Decimal(
-            str(state["daily_pnl"] if state is not None else website_daily)
+            str(state["daily_pnl"] if state is not None else broker_daily)
         ).quantize(Decimal("0.01"))
 
         session.execute(
@@ -471,11 +492,11 @@ class CanonicalTelegramPublisherManager(Day34CutoverTelegramPublisherManager):
                 "delta": delta,
                 "prior_balance": prior_balance,
                 "prior_daily": prior_daily,
-                "new_balance": website_balance,
-                "new_daily": website_daily,
+                "new_balance": broker_balance,
+                "new_daily": broker_daily,
             },
         )
-        return website_balance, website_daily
+        return broker_balance, broker_daily
 
     @staticmethod
     def _financial_lines(balance: Decimal, daily_pnl: Decimal) -> list[str]:
@@ -2253,15 +2274,15 @@ class CanonicalTelegramPublisherManager(Day34CutoverTelegramPublisherManager):
             f"ACTIVE <b>{active_count}</b>",
         ]
 
-        # Use the same live 21:00-Sofia account-value calculation as the website.
+        # Use the same live MT5 closed-balance calculation used for Telegram.
         if self._reference_user_id is not None and self._destination_chat_id is not None:
             with self._session_factory() as session:
-                _, website_balance, website_daily = self._website_financial_snapshot(session)
+                _, broker_balance, broker_daily = self._broker_financial_snapshot(session)
             lines.extend(
                 [
                     "",
-                    f"💰 <b>BALANCE {_balance_money(website_balance)}</b>",
-                    f"Today: <b>{money(website_daily)}</b>",
+                    f"💰 <b>BALANCE {_balance_money(broker_balance)}</b>",
+                    f"Today: <b>{money(broker_daily)}</b>",
                 ]
             )
 
