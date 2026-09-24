@@ -328,27 +328,53 @@ class Day13TelegramListenerManager(TelegramListenerManager):
                     )
 
                 if original is None:
-                    session.add(
-                        AuditEvent(
-                            actor_user_id=None,
-                            event_type="telegram.message_edit_missing_original",
-                            entity_type="source",
-                            entity_id=captured.source_id,
-                            payload={
-                                "chat_id": captured.chat_id,
-                                "telegram_message_id": captured.telegram_message_id,
-                                "posted_at": (
-                                    captured.posted_at.isoformat()
-                                    if captured.posted_at is not None
-                                    else None
-                                ),
-                                "edited_at": captured.edited_at.isoformat(),
-                                "trade_action_created": False,
-                                "recovery_blocked_as_stale_or_unknown": not safe_to_recover,
-                            },
+                    # A provider that keeps one pinned message and edits it forever (a
+                    # running "live trades" status) sends an edit for it every time it
+                    # changes. If that pinned message predates this listener, its
+                    # original was never captured and never will be, so this path was
+                    # re-logging the identical finding roughly every 90 seconds,
+                    # continuously, for the same handful of messages: 3,400+ audit rows
+                    # and a DB write on every one, with nothing new to learn from any
+                    # of them. One row per message per hour is enough to prove the
+                    # condition persists without the flood.
+                    already_logged_recently = session.execute(
+                        text(
+                            """
+                            SELECT 1 FROM audit_events
+                            WHERE event_type='telegram.message_edit_missing_original'
+                              AND entity_id=:source_id
+                              AND payload->>'telegram_message_id'=:telegram_message_id
+                              AND created_at > now() - INTERVAL '1 hour'
+                            LIMIT 1
+                            """
+                        ),
+                        {
+                            "source_id": captured.source_id,
+                            "telegram_message_id": str(captured.telegram_message_id),
+                        },
+                    ).first()
+                    if already_logged_recently is None:
+                        session.add(
+                            AuditEvent(
+                                actor_user_id=None,
+                                event_type="telegram.message_edit_missing_original",
+                                entity_type="source",
+                                entity_id=captured.source_id,
+                                payload={
+                                    "chat_id": captured.chat_id,
+                                    "telegram_message_id": captured.telegram_message_id,
+                                    "posted_at": (
+                                        captured.posted_at.isoformat()
+                                        if captured.posted_at is not None
+                                        else None
+                                    ),
+                                    "edited_at": captured.edited_at.isoformat(),
+                                    "trade_action_created": False,
+                                    "recovery_blocked_as_stale_or_unknown": not safe_to_recover,
+                                },
+                            )
                         )
-                    )
-                    session.commit()
+                        session.commit()
                     return False
 
             content_hash = sha256(captured.raw_text.encode("utf-8")).hexdigest()
