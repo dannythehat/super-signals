@@ -149,6 +149,7 @@ _MOVE_BE = re.compile(
     r"(?:OVERALL\s+)?RISK\s*[- ]?FREE\b"
     r"|\b(?:I\s+(?:AM|['’]M)\s+)?(?:NOW\s+)?HOLD(?:ING)?\s+RISK\s*[- ]?FREE\b"
     r"|\b(?:SET|PUT)\s+(?:(?:THE|YOUR|MY|OUR)\s+)?(?:SL\s+)?(?:TO\s+)?(?:BE|BREAKEVEN|BREAK\s+EVEN)\b"
+    r"|\b(?:MOVE|SET|PUT)\s+(?:(?:THE|YOUR|MY|OUR)\s+)?(?:SL|STOP\s*LOSS(?:ES)?|STOP|STOPS)\s+(?:TO\s+|AT\s+)?(?:THE\s+)?ENTRY(?:\s+PRICE)?\b"
     r"|\b(?:ZERO\s+RISK|0\s*%\s*RISK)\b"
     r"|\b(?:MOVE|MOVED)\s+(?:(?:THE|YOUR|MY|OUR)\s+)?(?:SL|STOP\s*LOSS)\s+ABOVE\s+(?:ALL\s+)?ENTR(?:Y|IES)\b"
     r"|\bI\s+WILL\s+MAKE\s+(?:MY|THE)\s+TRADE\s+RISK\s*[- ]?FREE\s+NOW\b"
