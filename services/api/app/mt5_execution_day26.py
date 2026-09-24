@@ -333,6 +333,10 @@ class Day26Mt5ExecutionService:
                     planned=planned,
                     order_ids=order_ids,
                     broker_positions=broker_positions,
+                    price_tick_size=self._required_decimal(
+                        specification.get("tickSize"),
+                        "broker_tick_size_invalid",
+                    ),
                 )
                 last_verify_error = None
                 break
@@ -788,6 +792,7 @@ class Day26Mt5ExecutionService:
         planned: tuple[_PlannedPosition, ...],
         order_ids: dict[str, str],
         broker_positions: list[dict[str, object]],
+        price_tick_size: Decimal,
     ) -> tuple[Day26MappedPosition, ...]:
         by_client_id = {
             str(row.get("clientId")): row
@@ -804,6 +809,7 @@ class Day26Mt5ExecutionService:
                 signal=signal,
                 take_profit=item.take_profit,
                 volume=(item.sizing or sizing).volume,
+                price_tick_size=price_tick_size,
             )
             broker_position_id = str(broker.get("id") or "").strip()
             if not broker_position_id:
@@ -860,6 +866,7 @@ class Day26Mt5ExecutionService:
         signal: _SignalInput,
         take_profit: Decimal | None,
         volume: Decimal,
+        price_tick_size: Decimal,
     ) -> None:
         raw_type = str(broker.get("type") or "")
         broker_side = (
@@ -877,16 +884,22 @@ class Day26Mt5ExecutionService:
             broker.get("volume"), "broker_position_mapping_invalid"
         ) != volume:
             raise Day26ExecutionError("broker_position_mapping_invalid")
-        if self._required_decimal(
+        broker_sl = self._required_decimal(
             broker.get("stopLoss"), "broker_position_mapping_invalid"
-        ) != signal.stop_loss:
+        )
+        # MetaAPI/Vantage normalises protection prices to the broker symbol tick.
+        # Provider channels can publish more decimal places than XAUUSD accepts
+        # (for example 4248.804 becoming 4248.80). That is broker rounding, not
+        # a different trade. Accept at most one broker tick; symbol, side and
+        # volume remain exact and directionality was already validated.
+        if abs(broker_sl - signal.stop_loss) > price_tick_size:
             raise Day26ExecutionError("broker_position_mapping_invalid")
 
         broker_tp = self._optional_decimal(broker.get("takeProfit"))
         if take_profit is None:
             if broker_tp is not None and broker_tp != Decimal("0"):
                 raise Day26ExecutionError("broker_position_mapping_invalid")
-        elif broker_tp != take_profit:
+        elif broker_tp is None or abs(broker_tp - take_profit) > price_tick_size:
             raise Day26ExecutionError("broker_position_mapping_invalid")
 
     def _audit_blocked(
