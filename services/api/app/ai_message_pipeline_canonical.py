@@ -298,12 +298,18 @@ class CanonicalAiMessagePipeline(SourceAwareAiMessagePipeline):
         )
 
         if revision_index > 0 and existing_signal_id is not None and execution_started:
+            observation_fingerprint = sha256(
+                (
+                    f"post-execution-edit:{existing_signal_id}:{row['message_id']}:"
+                    f"{revision_index}:{raw_text}"
+                ).encode("utf-8")
+            ).hexdigest()
             self._signals.record_observation(
                 signal_id=existing_signal_id,
                 message_id=row["message_id"],
                 revision_index=revision_index,
                 disposition="post_execution_edit",
-                fingerprint=None,
+                fingerprint=observation_fingerprint,
             )
             self._store_decision(row["message_id"], revision_index, decision)
             return AiPipelineResult(
