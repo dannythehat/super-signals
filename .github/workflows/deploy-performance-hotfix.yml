@@ -1,0 +1,53 @@
+name: Deploy Performance Hotfix
+
+on:
+  push:
+    branches:
+      - hotfix/performance-route-20260924
+    paths:
+      - ops/performance-hotfix/**
+      - .github/workflows/deploy-performance-hotfix.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: a517d133ccec0093de719211a6694951
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Require Cloudflare token
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "${CLOUDFLARE_API_TOKEN:-}"
+
+      - name: Deploy isolated performance route
+        shell: bash
+        run: |
+          set -euo pipefail
+          npx --yes wrangler@4 deploy --config ops/performance-hotfix/wrangler.jsonc
+
+      - name: Verify performance route
+        shell: bash
+        run: |
+          set -euo pipefail
+          for attempt in 1 2 3 4 5 6; do
+            code="$(curl -sS -o /tmp/performance.html -w '%{http_code}' --max-redirs 2 https://smartsignals.site/performance || true)"
+            if [ "$code" = "200" ] && grep -q '<title>Performance | Smart Signals</title>' /tmp/performance.html; then
+              curl -fsS --max-redirs 2 'https://smartsignals.site/performance.js?v=20260924-canonical3' -o /tmp/performance.js
+              test -s /tmp/performance.js
+              echo "PERFORMANCE_ROUTE=PASS"
+              exit 0
+            fi
+            sleep 5
+          done
+          echo "Performance route is still not healthy" >&2
+          exit 1
