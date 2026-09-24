@@ -511,6 +511,7 @@ class CanonicalTelegramPublisherManager(Day34CutoverTelegramPublisherManager):
                         """
                         SELECT
                             pub.id AS publication_id,
+                            pub.signal_id,
                             pub.telegram_message_id,
                             COALESCE(pub.destination_chat_id,:destination_chat_id)
                                 AS destination_chat_id,
@@ -523,9 +524,9 @@ class CanonicalTelegramPublisherManager(Day34CutoverTelegramPublisherManager):
                           AND pub.status='sent'
                           AND pub.telegram_message_id IS NOT NULL
                           AND sig.member_trade_number IS NOT NULL
-                          AND COALESCE(pub.rendered_text,'') ~ 'SS-[0-9A-F]{10}'
+                          AND pub.created_at>=now()-INTERVAL '24 hours'
                         ORDER BY pub.updated_at DESC
-                        LIMIT 20
+                        LIMIT 100
                         """
                     ),
                     {"destination_chat_id": self._destination_chat_id},
@@ -539,6 +540,10 @@ class CanonicalTelegramPublisherManager(Day34CutoverTelegramPublisherManager):
                     rendered,
                     count=1,
                 )
+                if self._trade_ledger is not None:
+                    trade = self._trade_ledger.trade(row["signal_id"])
+                    if trade is not None and trade.legs:
+                        repaired = self._replace_trade_status_snapshot(repaired, trade)
                 if repaired == rendered:
                     continue
                 try:
@@ -578,7 +583,7 @@ class CanonicalTelegramPublisherManager(Day34CutoverTelegramPublisherManager):
                     )
                     session.commit()
                 logger.info(
-                    "Telegram root identity corrected in place message_id=%s trade_number=%s",
+                    "Telegram root trade snapshot corrected in place message_id=%s trade_number=%s",
                     row["telegram_message_id"],
                     row["member_trade_number"],
                 )
@@ -1353,6 +1358,25 @@ class CanonicalTelegramPublisherManager(Day34CutoverTelegramPublisherManager):
                 tp_index = None
             tp_label = f"TP{tp_index}" if tp_index is not None else "POSITION"
             event_pnl = row["event_cash_pnl"]
+            matching_leg = next(
+                (
+                    leg
+                    for leg in (trade.legs if trade is not None else ())
+                    if leg.tp_index == int(tp_index or 1)
+                ),
+                None,
+            )
+            if event_pnl is None and matching_leg is not None:
+                event_pnl = matching_leg.cash_pnl
+            if not event_outcome and matching_leg is not None:
+                if matching_leg.status in {"won", "closed_profit"}:
+                    event_outcome = "won"
+                elif matching_leg.status == "lost":
+                    event_outcome = "lost"
+                elif matching_leg.status == "breakeven":
+                    event_outcome = "breakeven"
+                elif matching_leg.status == "closed_unknown":
+                    event_outcome = "closed_unknown"
 
             has_more_settlements = bool(
                 session.execute(
