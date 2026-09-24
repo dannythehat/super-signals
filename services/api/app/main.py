@@ -389,9 +389,13 @@ async def _lifespan(application: FastAPI) -> AsyncIterator[None]:
         application.state.telegram_listener = listener
         await listener.start()
 
+    research_lane_enabled = (
+        os.getenv("SUPER_SIGNALS_RESEARCH_LANE_ENABLED", "0").strip() == "1"
+    )
+
     if day34_settlement_manager is not None:
         await day34_settlement_manager.start()
-    if shadow_trade_manager is not None:
+    if shadow_trade_manager is not None and research_lane_enabled:
         await shadow_trade_manager.start()
     if push_manager is not None:
         await push_manager.start()
@@ -401,9 +405,6 @@ async def _lifespan(application: FastAPI) -> AsyncIterator[None]:
     # in the production trading process so provider analysis can never compete with
     # Telegram intake, MT5 execution, publisher delivery, health checks, or live DB locks.
     # A dedicated research service may opt in explicitly.
-    research_lane_enabled = (
-        os.getenv("SUPER_SIGNALS_RESEARCH_LANE_ENABLED", "0").strip() == "1"
-    )
     if research_lane_enabled:
         research_start_task = asyncio.create_task(
             _start_research_lane(),
@@ -451,7 +452,7 @@ async def _lifespan(application: FastAPI) -> AsyncIterator[None]:
         await publisher.stop()
         if push_manager is not None:
             await push_manager.stop()
-        if shadow_trade_manager is not None:
+        if shadow_trade_manager is not None and research_lane_enabled:
             await shadow_trade_manager.stop()
         if day34_settlement_manager is not None:
             await day34_settlement_manager.stop()
