@@ -56,6 +56,9 @@ class ProviderResearchProductionListener(CanonicalProductionTelegramListenerMana
         self._startup_task: asyncio.Task[None] | None = None
         self._adaptive_refresh_task: asyncio.Task[None] | None = None
         self._dispatch_gap_task: asyncio.Task[None] | None = None
+        self._research_enabled = (
+            os.getenv("SUPER_SIGNALS_RESEARCH_LANE_ENABLED", "0").strip() == "1"
+        )
         self._stopping = asyncio.Event()
 
     def __getattr__(self, name: str) -> Any:
@@ -294,14 +297,20 @@ class ProviderResearchProductionListener(CanonicalProductionTelegramListenerMana
                     )
                 await self._inner.start()
                 inner_started = True
-                await self._research.start()
-                await self._refresh_adaptive_profiles()
-                if self._adaptive_refresh_task is None or self._adaptive_refresh_task.done():
-                    self._adaptive_refresh_task = asyncio.create_task(
-                        self._adaptive_refresh_loop(),
-                        name="super-signals-adaptive-provider-profile-refresh",
+                if self._research_enabled:
+                    await self._research.start()
+                    await self._refresh_adaptive_profiles()
+                    if self._adaptive_refresh_task is None or self._adaptive_refresh_task.done():
+                        self._adaptive_refresh_task = asyncio.create_task(
+                            self._adaptive_refresh_loop(),
+                            name="super-signals-adaptive-provider-profile-refresh",
+                        )
+                    logger.info("Production Telegram listener and adaptive Provider Lab started")
+                else:
+                    logger.warning(
+                        "Production Telegram listener started with provider research disabled; "
+                        "live execution and publication only"
                     )
-                logger.info("Production Telegram listener and adaptive Provider Lab started")
                 return
             except asyncio.CancelledError:
                 raise
@@ -349,9 +358,12 @@ class ProviderResearchProductionListener(CanonicalProductionTelegramListenerMana
             except asyncio.CancelledError:
                 pass
         self._startup_task = None
-        try:
-            await self._research.stop()
-        finally:
+        if self._research_enabled:
+            try:
+                await self._research.stop()
+            finally:
+                await self._inner.stop()
+        else:
             await self._inner.stop()
 
 
