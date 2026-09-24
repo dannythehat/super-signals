@@ -368,7 +368,13 @@ class Day33PerformanceLedgerServiceV2(Day33PerformanceLedgerService):
             close_reason=(str(row["close_reason"]) if row["close_reason"] else None),
         )
 
-    async def sync_user(self, user_id: UUID) -> Day33SyncResult:
+    async def sync_user(
+        self,
+        user_id: UUID,
+        *,
+        max_history_positions: int | None = None,
+        rebuild_summaries: bool = True,
+    ) -> Day33SyncResult:
         account = self._account(user_id)
         if account is None:
             raise Day33LedgerError("mt5_account_not_configured")
@@ -402,6 +408,8 @@ class Day33PerformanceLedgerServiceV2(Day33PerformanceLedgerService):
         )
 
         positions = self._positions_needing_history(user_id)
+        if max_history_positions is not None:
+            positions = positions[: max(0, int(max_history_positions))]
         deals_added = 0
         for row in positions:
             try:
@@ -424,7 +432,7 @@ class Day33PerformanceLedgerServiceV2(Day33PerformanceLedgerService):
             )
 
         outcomes = self.rebuild_outcomes(user_id)
-        summaries = self.rebuild_summaries(user_id)
+        summaries = self.rebuild_summaries(user_id) if rebuild_summaries else 0
         return Day33SyncResult(
             user_id=user_id,
             broker_deals_added=deals_added,
