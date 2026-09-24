@@ -10,7 +10,6 @@ or modifies a broker trade.
 from __future__ import annotations
 
 import asyncio
-from concurrent.futures import ThreadPoolExecutor
 import json
 import logging
 from dataclasses import dataclass
@@ -58,13 +57,6 @@ class Day34BrokerSettlementManager:
         self._poll_seconds = poll_seconds
         self._task: asyncio.Task[None] | None = None
         self._stop_event = asyncio.Event()
-        # Settlement must never compete with Telegram catch-up, publisher repair or
-        # other default-executor work. One dedicated worker preserves strict serial
-        # broker reconciliation while guaranteeing that the poll can actually start.
-        self._poll_executor = ThreadPoolExecutor(
-            max_workers=1,
-            thread_name_prefix="super-signals-settlement",
-        )
 
     async def start(self) -> None:
         if self._task is not None:
@@ -78,23 +70,14 @@ class Day34BrokerSettlementManager:
             await self._task
             self._task = None
 
-    def _poll_once_isolated(self) -> Day34SettlementPollResult:
-        """Run one broker-settlement pass on its own worker event loop.
-
-        The settlement service mixes synchronous SQLAlchemy reconciliation with async
-        MetaAPI reads. Keeping the whole pass off Uvicorn's event loop prevents a slow
-        broker/database read from starving /health, Telegram intake, or trade dispatch.
-        """
-        return asyncio.run(self.poll_once())
-
     async def _run(self) -> None:
         while not self._stop_event.is_set():
             try:
-                loop = asyncio.get_running_loop()
-                await loop.run_in_executor(
-                    self._poll_executor,
-                    self._poll_once_isolated,
-                )
+                # Run on the application's event loop so cancellation/timeout actually
+                # completes. The previous nested asyncio.run() worker could record a
+                # timeout and then hang during cancelled-task cleanup, preventing the
+                # next settlement cycle from ever starting.
+                await self.poll_once()
             except Exception:
                 # Read-side settlement monitoring must never take down Telegram,
                 # execution, the application, or broker-held SL/TP protection.
