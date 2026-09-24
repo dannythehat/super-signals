@@ -118,7 +118,6 @@ class Day34BrokerSettlementManager:
             sync_reason = "broker_settlement_sync_timeout"
             self._audit_poll_failure(sync_reason, retryable=True)
             self._performance.rebuild_outcomes(self._reference_user_id)
-            self._performance.rebuild_summaries(self._reference_user_id)
         except Day33LedgerError as exc:
             sync_ok = False
             sync_reason = exc.code
@@ -126,7 +125,6 @@ class Day34BrokerSettlementManager:
             # Preserve any immutable broker evidence already stored before a later
             # request failed, then continue local settlement reconciliation.
             self._performance.rebuild_outcomes(self._reference_user_id)
-            self._performance.rebuild_summaries(self._reference_user_id)
 
         # Historical reconciliation is intentionally allowed so stale local rows can be
         # corrected from broker truth. Member-facing lifecycle/result events below are
