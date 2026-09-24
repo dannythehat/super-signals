@@ -85,10 +85,12 @@ def test_realised_settlements_are_kept_in_broker_time_order() -> None:
     assert "sent_same_burst_duplicate_deleted" not in source
 
 
-def test_broker_settlements_never_expire_from_member_queue() -> None:
+def test_current_day_broker_settlements_recover_but_history_never_replays() -> None:
     source = Path("services/api/app/telegram_publisher_canonical.py").read_text()
+    assert "_CURRENT_SOFIA_DAY_START_SQL" in source
     assert "ev.event_type<>'broker_position_settled'" in source
-    assert "(ev.event_type='broker_position_settled' OR ev.created_at>=:fresh_after)" in source
+    assert "ev.occurred_at >= (date_trunc('day', timezone('Europe/Sofia', now())) AT TIME ZONE 'Europe/Sofia')" in source
+    assert "historical_replay_deleted" in source
 
 
 def test_broker_settlement_can_publish_without_sent_root() -> None:
