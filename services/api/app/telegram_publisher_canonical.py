@@ -321,16 +321,11 @@ class CanonicalTelegramPublisherManager(Day34CutoverTelegramPublisherManager):
         )
 
     def _ensure_financial_state(self, session: Any) -> Any:
-        """Return today's locked Telegram money state, creating it when needed.
-
-        This state is deliberately independent from floating MT5 equity. The member
-        feed is a closed-balance ledger: only realised, published broker settlements
-        move Balance and Today's P&L.
-        """
+        """Keep the durable Telegram audit state aligned to the website money view."""
         if self._reference_user_id is None or self._destination_chat_id is None:
             return None
 
-        business_date = self._financial_business_date()
+        business_date, website_balance, website_daily = self._website_financial_snapshot(session)
         row = session.execute(
             text(
                 """
@@ -352,47 +347,6 @@ class CanonicalTelegramPublisherManager(Day34CutoverTelegramPublisherManager):
         if row is not None:
             return row
 
-        previous = session.execute(
-            text(
-                """
-                SELECT balance
-                FROM telegram_financial_state
-                WHERE reference_user_id=:user_id
-                  AND destination_chat_id=:chat_id
-                  AND business_date<:business_date
-                ORDER BY business_date DESC
-                LIMIT 1
-                """
-            ),
-            {
-                "user_id": self._reference_user_id,
-                "chat_id": self._destination_chat_id,
-                "business_date": business_date,
-            },
-        ).mappings().first()
-
-        if previous is not None:
-            opening_balance = Decimal(str(previous["balance"])).quantize(Decimal("0.01"))
-        else:
-            snapshot = session.execute(
-                text(
-                    """
-                    SELECT pas.balance
-                    FROM performance_account_snapshots pas
-                    JOIN mt5_accounts a ON a.id=pas.mt5_account_id
-                    WHERE a.owner_user_id=:user_id
-                      AND a.status<>'revoked'
-                      AND pas.balance IS NOT NULL
-                    ORDER BY pas.captured_at DESC
-                    LIMIT 1
-                    """
-                ),
-                {"user_id": self._reference_user_id},
-            ).mappings().first()
-            opening_balance = Decimal(str(snapshot["balance"] if snapshot else 0)).quantize(
-                Decimal("0.01")
-            )
-
         session.execute(
             text(
                 """
@@ -402,7 +356,7 @@ class CanonicalTelegramPublisherManager(Day34CutoverTelegramPublisherManager):
                 )
                 VALUES(
                     :user_id,:chat_id,:business_date,
-                    :balance,0,NULL,now(),now()
+                    :balance,:daily_pnl,NULL,now(),now()
                 )
                 ON CONFLICT(reference_user_id,destination_chat_id,business_date)
                 DO NOTHING
@@ -412,7 +366,8 @@ class CanonicalTelegramPublisherManager(Day34CutoverTelegramPublisherManager):
                 "user_id": self._reference_user_id,
                 "chat_id": self._destination_chat_id,
                 "business_date": business_date,
-                "balance": opening_balance,
+                "balance": website_balance,
+                "daily_pnl": website_daily,
             },
         )
         return session.execute(
@@ -484,22 +439,7 @@ class CanonicalTelegramPublisherManager(Day34CutoverTelegramPublisherManager):
             )
             return website_balance, website_daily
 
-        state = session.execute(
-            text(
-                """
-                SELECT balance,daily_pnl
-                FROM telegram_financial_state
-                WHERE reference_user_id=:user_id
-                  AND destination_chat_id=:chat_id
-                  AND business_date=:business_date
-                """
-            ),
-            {
-                "user_id": self._reference_user_id,
-                "chat_id": self._destination_chat_id,
-                "business_date": business_date,
-            },
-        ).mappings().first()
+        state = self._ensure_financial_state(session)
         prior_balance = Decimal(
             str(state["balance"] if state is not None else website_balance)
         ).quantize(Decimal("0.01"))
