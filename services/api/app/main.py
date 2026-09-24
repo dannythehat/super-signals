@@ -411,6 +411,10 @@ async def _lifespan(application: FastAPI) -> AsyncIterator[None]:
     if push_manager is not None:
         await push_manager.start()
     await publisher.start()
+    # Seed broker-backed publications before the Telegram connection gate. A temporary
+    # bot/network problem must never make a real TP/SL settlement disappear from the
+    # durable outbox; delivery can wait, evidence creation cannot.
+    await asyncio.to_thread(publisher._seed_missing_publications)
     # Sent trade-post reconciliation is independent of the publisher connection gate:
     # broker truth must repair stale money/status snapshots even when there is no new
     # outbound publication waiting. Failures are isolated inside the repair method and
