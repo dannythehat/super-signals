@@ -134,6 +134,123 @@ class ProviderResearchProductionListener(CanonicalProductionTelegramListenerMana
             )
         return checked
 
+    def _committed_interpretation_gap_rows(self) -> list[dict[str, Any]]:
+        """Find fresh raw provider messages/edits that committed without an AI decision.
+
+        This closes the raw-evidence -> interpretation crash/race window. It never
+        broadens source scope and does not itself execute anything; the canonical
+        freshness/idempotency gates still decide whether a resulting action may route.
+        """
+        with self._inner._session_factory() as session:
+            rows = session.execute(
+                text(
+                    """
+                    WITH gaps AS (
+                        SELECT
+                            m.source_id,
+                            m.telegram_message_id,
+                            0::integer AS revision_index,
+                            m.posted_at AS occurred_at,
+                            m.created_at AS committed_at
+                        FROM messages AS m
+                        JOIN sources AS src ON src.id=m.source_id
+                        WHERE src.status IN ('testing','live')
+                          AND m.deleted_at IS NULL
+                          AND m.created_at >= now() - interval '5 minutes'
+                          AND NOT EXISTS (
+                              SELECT 1
+                              FROM ai_message_decisions AS d
+                              WHERE d.message_id=m.id
+                                AND d.revision_index=0
+                          )
+
+                        UNION ALL
+
+                        SELECT
+                            m.source_id,
+                            m.telegram_message_id,
+                            mr.revision_index,
+                            mr.edited_at AS occurred_at,
+                            mr.created_at AS committed_at
+                        FROM message_revisions AS mr
+                        JOIN messages AS m ON m.id=mr.message_id
+                        JOIN sources AS src ON src.id=m.source_id
+                        WHERE src.status IN ('testing','live')
+                          AND m.deleted_at IS NULL
+                          AND mr.created_at >= now() - interval '5 minutes'
+                          AND NOT EXISTS (
+                              SELECT 1
+                              FROM ai_message_decisions AS d
+                              WHERE d.message_id=m.id
+                                AND d.revision_index=mr.revision_index
+                          )
+                    )
+                    SELECT source_id,telegram_message_id,revision_index,occurred_at
+                    FROM gaps
+                    ORDER BY committed_at,telegram_message_id,revision_index
+                    """
+                )
+            ).mappings().all()
+        return [dict(row) for row in rows]
+
+    async def _recover_committed_interpretation_gaps(self) -> int:
+        """Re-run only fresh durable revisions that never received a decision."""
+        rows = await asyncio.to_thread(self._committed_interpretation_gap_rows)
+        pipeline = getattr(self._inner, "_ai_pipeline", None)
+        if pipeline is None:
+            return 0
+
+        exact_processor = getattr(pipeline, "_process_revision", None)
+        checked = 0
+        for row in rows:
+            source_id = row["source_id"]
+            telegram_message_id = int(row["telegram_message_id"])
+            revision_index = int(row["revision_index"])
+            try:
+                if revision_index == 0:
+                    await asyncio.to_thread(
+                        pipeline.process_original,
+                        source_id,
+                        telegram_message_id,
+                    )
+                elif callable(exact_processor):
+                    await asyncio.to_thread(
+                        exact_processor,
+                        source_id,
+                        telegram_message_id,
+                        revision_index=revision_index,
+                    )
+                else:
+                    logger.error(
+                        "Fresh interpretation gap could not run exact revision message=%s revision=%s",
+                        telegram_message_id,
+                        revision_index,
+                    )
+                    continue
+
+                await self._inner._dispatch_recovered_if_required(
+                    source_id=source_id,
+                    telegram_message_id=telegram_message_id,
+                    revision_index=revision_index,
+                    occurred_at=row["occurred_at"],
+                )
+                checked += 1
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.exception(
+                    "Fresh committed provider revision recovery failed message=%s revision=%s",
+                    telegram_message_id,
+                    revision_index,
+                )
+
+        if checked:
+            logger.warning(
+                "Recovered %d fresh provider revision(s) that had no durable decision",
+                checked,
+            )
+        return checked
+
     async def _dispatch_configured_management_replay(self) -> bool:
         """Replay one explicitly configured recent management message, then rely on idempotency.
 
@@ -242,6 +359,7 @@ class ProviderResearchProductionListener(CanonicalProductionTelegramListenerMana
         """Continuously close fresh commit->dispatch gaps without replaying stale entries."""
         while not self._stopping.is_set():
             try:
+                await self._recover_committed_interpretation_gaps()
                 await self._recover_committed_dispatch_gaps()
             except asyncio.CancelledError:
                 raise
@@ -287,8 +405,10 @@ class ProviderResearchProductionListener(CanonicalProductionTelegramListenerMana
                 # network startup so a confirmed missed protective instruction is not
                 # delayed by provider recovery or Telethon connectivity.
                 await self._dispatch_configured_management_replay()
-                # Recover durable broker work before waiting on Telegram network startup.
-                # This closes the commit->dispatch restart gap without replaying AI.
+                # Recover fresh raw evidence that committed without interpretation,
+                # then close any decision->dispatch gap. Both paths remain freshness-
+                # and idempotency-gated, so stale market entries are never replayed.
+                await self._recover_committed_interpretation_gaps()
                 await self._recover_committed_dispatch_gaps()
                 if self._dispatch_gap_task is None or self._dispatch_gap_task.done():
                     self._dispatch_gap_task = asyncio.create_task(
