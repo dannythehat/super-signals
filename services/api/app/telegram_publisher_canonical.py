@@ -616,10 +616,9 @@ class CanonicalTelegramPublisherManager(Day34CutoverTelegramPublisherManager):
                     rendered,
                     count=1,
                 )
-                if self._trade_ledger is not None:
-                    trade = self._trade_ledger.trade(row["signal_id"])
-                    if trade is not None and trade.legs:
-                        repaired = self._replace_trade_status_snapshot(repaired, trade)
+                # A NEW TRADE post is an immutable entry snapshot. Do not rewrite
+                # historical root status as later TP/SL events arrive; those belong in
+                # chronological lifecycle replies below the root.
                 if repaired == rendered:
                     continue
                 try:
@@ -645,52 +644,15 @@ class CanonicalTelegramPublisherManager(Day34CutoverTelegramPublisherManager):
                         )
                         continue
 
-                    # Telegram occasionally loses editability/addressability for an
-                    # already-sent root while the message may still be visible to members.
-                    # Never keep retrying and never duplicate an old historical trade.
-                    # For a fresh trade only, send one concise truth correction sourced
-                    # from broker deals, then mark the root so this can never spam.
-                    root_created_at = row["root_created_at"]
-                    fresh_for_correction = bool(
-                        root_created_at is not None
-                        and root_created_at >= datetime.now(UTC) - timedelta(hours=2)
-                    )
+                    # Never create a second trade-status post because an old root is
+                    # uneditable. Mark the identity repair as handled and leave the
+                    # chronological lifecycle stream untouched.
                     correction_message_id: int | None = None
                     marker = "sent_root_uneditable_no_correction"
                     marker_reason = (
-                        "Telegram could not edit this historical root; no replacement "
-                        "was posted to avoid duplicate/spam."
+                        "Telegram could not edit this historical root identity; no replacement "
+                        "was posted to avoid duplicate/out-of-sequence messages."
                     )
-                    if fresh_for_correction and self._trade_ledger is not None:
-                        trade = self._trade_ledger.trade(row["signal_id"])
-                        status_lines = _trade_status_lines(trade)
-                        if status_lines:
-                            provider_header = rendered.splitlines()[0] if rendered else ""
-                            correction = "\n".join(
-                                [
-                                    provider_header,
-                                    "",
-                                    f"<b>TRADE {int(row['member_trade_number'])} · CORRECTION</b>",
-                                    "",
-                                    *status_lines,
-                                ]
-                            )
-                            result = _bot_api_call(
-                                self._bot_token,
-                                "sendMessage",
-                                {
-                                    "chat_id": int(self._destination_chat_id),
-                                    "text": correction,
-                                    "parse_mode": "HTML",
-                                    "disable_web_page_preview": "true",
-                                },
-                            )
-                            correction_message_id = int(result["message_id"])
-                            marker = "sent_root_uneditable_truth_corrected"
-                            marker_reason = (
-                                "Telegram could not edit the original root; one broker-backed "
-                                f"correction was sent as message {correction_message_id}."
-                            )
 
                     with self._session_factory() as session:
                         session.execute(
@@ -1299,13 +1261,77 @@ class CanonicalTelegramPublisherManager(Day34CutoverTelegramPublisherManager):
             )
         )
 
+    def _next_member_publication_kind(self) -> str | None:
+        """Choose the earliest real member event across roots and lifecycle updates."""
+        fresh_after = datetime.now(UTC) - _MEMBER_EVENT_FRESHNESS
+        placement_for_pub = self._placement_exists_sql("pub.signal_id")
+        queued_from_confirmed_route = self._queued_from_confirmed_placement_sql("pub")
+        with self._session_factory() as session:
+            return session.execute(
+                text(
+                    f"""
+                    WITH candidates AS (
+                        SELECT
+                            'root'::text AS kind,
+                            pub.created_at AS event_at,
+                            pub.id
+                        FROM telegram_publications pub
+                        JOIN signals sig ON sig.id=pub.signal_id
+                        WHERE pub.status='pending'
+                          AND pub.publication_kind='signal_created'
+                          AND pub.lifecycle_event_id IS NULL
+                          AND sig.member_trade_number IS NOT NULL
+                          AND (
+                              {placement_for_pub}
+                              OR (
+                                  {queued_from_confirmed_route}
+                                  AND pub.created_at>now()-INTERVAL '60 minutes'
+                              )
+                          )
+
+                        UNION ALL
+
+                        SELECT
+                            'lifecycle'::text AS kind,
+                            ev.occurred_at AS event_at,
+                            pub.id
+                        FROM telegram_publications pub
+                        JOIN signal_lifecycle_events ev ON ev.id=pub.lifecycle_event_id
+                        JOIN telegram_publications root
+                          ON root.signal_id=pub.signal_id
+                         AND root.publication_kind='signal_created'
+                         AND root.lifecycle_event_id IS NULL
+                        WHERE pub.status='pending'
+                          AND pub.publication_kind='lifecycle_event'
+                          AND root.status='sent'
+                          AND root.telegram_message_id IS NOT NULL
+                          AND ev.created_at>=:fresh_after
+                    )
+                    SELECT kind
+                    FROM candidates
+                    ORDER BY event_at,id
+                    LIMIT 1
+                    """
+                ),
+                {"fresh_after": fresh_after},
+            ).scalar_one_or_none()
+
     def _claim_next(self) -> PublicationAttempt | SummaryPublicationAttempt | None:
-        root = self._claim_root()
-        if root is not None:
-            return root
-        lifecycle = self._claim_lifecycle()
-        if lifecycle is not None:
-            return lifecycle
+        kind = self._next_member_publication_kind()
+        if kind == "lifecycle":
+            lifecycle = self._claim_lifecycle()
+            if lifecycle is not None:
+                return lifecycle
+            root = self._claim_root()
+            if root is not None:
+                return root
+        else:
+            root = self._claim_root()
+            if root is not None:
+                return root
+            lifecycle = self._claim_lifecycle()
+            if lifecycle is not None:
+                return lifecycle
         return self._claim_summary()
 
     def _claim_root(self) -> PublicationAttempt | None:
@@ -1384,9 +1410,10 @@ class CanonicalTelegramPublisherManager(Day34CutoverTelegramPublisherManager):
                         ]
                     )
                 trade = self._trade_ledger.trade(row["signal_id"])
-                status_lines = _trade_status_lines(trade)
-                if status_lines:
-                    parts.extend(["", *status_lines])
+                if trade is not None and trade.legs:
+                    parts.extend(["", "<b>Trade Status</b>", ""])
+                    for leg in trade.legs:
+                        parts.append(f"TP{leg.tp_index} — <b>PENDING ⏳</b>")
             rendered = "\n".join(parts)
             session.execute(
                 text(
