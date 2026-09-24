@@ -195,7 +195,7 @@ class CanonicalTelegramPublisherManager(Day34CutoverTelegramPublisherManager):
                         SELECT 1
                         FROM sources
                         WHERE chat_id=:chat_id
-                          AND status<>'revoked'
+                          AND status IN ('testing','shadow','live')
                         LIMIT 1
                         """
                     ),
