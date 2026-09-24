@@ -70,10 +70,19 @@ class Day34BrokerSettlementManager:
             await self._task
             self._task = None
 
+    def _poll_once_isolated(self) -> Day34SettlementPollResult:
+        """Run one broker-settlement pass on its own worker event loop.
+
+        The settlement service mixes synchronous SQLAlchemy reconciliation with async
+        MetaAPI reads. Keeping the whole pass off Uvicorn's event loop prevents a slow
+        broker/database read from starving /health, Telegram intake, or trade dispatch.
+        """
+        return asyncio.run(self.poll_once())
+
     async def _run(self) -> None:
         while not self._stop_event.is_set():
             try:
-                await self.poll_once()
+                await asyncio.to_thread(self._poll_once_isolated)
             except Exception:
                 # Read-side settlement monitoring must never take down Telegram,
                 # execution, the application, or broker-held SL/TP protection.
