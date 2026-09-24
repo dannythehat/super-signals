@@ -110,21 +110,32 @@ class Day34BrokerSettlementManager:
             # prioritized by the Day 33 ledger; cap the whole broker read pass and
             # still rebuild from any broker deals that were committed before timeout.
             await asyncio.wait_for(
-                self._performance.sync_user(self._reference_user_id),
+                self._performance.sync_user(
+                    self._reference_user_id,
+                    max_history_positions=2,
+                    rebuild_summaries=False,
+                ),
                 timeout=12.0,
             )
         except TimeoutError:
-            sync_ok = False
             sync_reason = "broker_settlement_sync_timeout"
             self._audit_poll_failure(sync_reason, retryable=True)
-            self._performance.rebuild_outcomes(self._reference_user_id)
+            return Day34SettlementPollResult(
+                synced=False,
+                positions_reconciled=0,
+                position_events_created=0,
+                signal_results_created=0,
+                reason=sync_reason,
+            )
         except Day33LedgerError as exc:
-            sync_ok = False
-            sync_reason = exc.code
             self._audit_poll_failure(exc.code, retryable=exc.retryable)
-            # Preserve any immutable broker evidence already stored before a later
-            # request failed, then continue local settlement reconciliation.
-            self._performance.rebuild_outcomes(self._reference_user_id)
+            return Day34SettlementPollResult(
+                synced=False,
+                positions_reconciled=0,
+                position_events_created=0,
+                signal_results_created=0,
+                reason=exc.code,
+            )
 
         # Historical reconciliation is intentionally allowed so stale local rows can be
         # corrected from broker truth. Member-facing lifecycle/result events below are
