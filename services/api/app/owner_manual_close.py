@@ -106,11 +106,17 @@ class OwnerManualCloseService:
         self._read_gateway = read_gateway
         self._trade_gateway = trade_gateway
 
-    async def close_position(self, user_id: UUID, position_id: UUID) -> OwnerManualCloseResult:
+    async def close_position(
+        self,
+        user_id: UUID,
+        position_id: UUID,
+        *,
+        scope: str = "position",
+    ) -> OwnerManualCloseResult:
         positions = self._positions(user_id=user_id, position_id=position_id)
         if not positions:
             raise OwnerManualCloseError("owner_manual_position_not_open")
-        return await self._close(user_id=user_id, positions=positions, scope="position")
+        return await self._close(user_id=user_id, positions=positions, scope=scope)
 
     async def close_trade(self, user_id: UUID, signal_id: UUID) -> OwnerManualCloseResult:
         positions = self._positions(user_id=user_id, signal_id=signal_id)
@@ -464,7 +470,7 @@ class OwnerManualCloseService:
                     SET status='closed',
                         closed_at=COALESCE(closed_at,:occurred_at),
                         exit_price=COALESCE(exit_price,:exit_price),
-                        close_reason='owner_manual_close',
+                        close_reason=:close_reason,
                         updated_at=:now
                     WHERE id=:position_id
                       AND user_id=:user_id
@@ -478,6 +484,11 @@ class OwnerManualCloseService:
                     "occurred_at": occurred_at,
                     "exit_price": exit_price,
                     "now": now,
+                    "close_reason": (
+                        "stale_position_watchdog"
+                        if scope == "stale_watchdog"
+                        else "owner_manual_close"
+                    ),
                 },
             ).scalar_one_or_none()
             if updated is None:
@@ -486,7 +497,11 @@ class OwnerManualCloseService:
             session.add(
                 AuditEvent(
                     actor_user_id=user_id,
-                    event_type="mt5.owner_manual_close",
+                    event_type=(
+                        "mt5.stale_position_watchdog_close"
+                        if scope == "stale_watchdog"
+                        else "mt5.owner_manual_close"
+                    ),
                     entity_type="position",
                     entity_id=position.id,
                     payload={
@@ -497,7 +512,11 @@ class OwnerManualCloseService:
                         "account_environment": account_environment,
                         "exit_price": str(exit_price) if exit_price is not None else None,
                         "occurred_at": occurred_at.isoformat(),
-                        "initiated_from": "smart_signals_owner_ui",
+                        "initiated_from": (
+                            "stale_position_watchdog"
+                            if scope == "stale_watchdog"
+                            else "smart_signals_owner_ui"
+                        ),
                         "provider_instruction": False,
                         "retry_safe": True,
                     },
