@@ -228,6 +228,7 @@ class _ExecutionHarness(MemberTradingExecutionService):
         planned,
         order_ids,
         broker_positions,
+        price_tick_size,
     ):
         return tuple(
             Day26MappedPosition(
