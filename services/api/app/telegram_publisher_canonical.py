@@ -516,6 +516,7 @@ class CanonicalTelegramPublisherManager(Day34CutoverTelegramPublisherManager):
                             COALESCE(pub.destination_chat_id,:destination_chat_id)
                                 AS destination_chat_id,
                             pub.rendered_text,
+                            pub.created_at AS root_created_at,
                             sig.member_trade_number
                         FROM telegram_publications AS pub
                         JOIN signals AS sig ON sig.id=pub.signal_id
@@ -525,6 +526,10 @@ class CanonicalTelegramPublisherManager(Day34CutoverTelegramPublisherManager):
                           AND pub.telegram_message_id IS NOT NULL
                           AND sig.member_trade_number IS NOT NULL
                           AND pub.created_at>=now()-INTERVAL '24 hours'
+                          AND COALESCE(pub.failure_code,'') NOT IN (
+                              'sent_root_uneditable_truth_corrected',
+                              'sent_root_uneditable_no_correction'
+                          )
                         ORDER BY pub.updated_at DESC
                         LIMIT 100
                         """
@@ -559,11 +564,86 @@ class CanonicalTelegramPublisherManager(Day34CutoverTelegramPublisherManager):
                         },
                     )
                 except TelegramPublishError as exc:
-                    logger.warning(
-                        "Telegram root identity repair failed safely message_id=%s code=%s reason=%s",
+                    reason = exc.reason.lower()
+                    if "message to edit not found" not in reason:
+                        logger.warning(
+                            "Telegram root trade repair failed safely message_id=%s code=%s reason=%s",
+                            row["telegram_message_id"],
+                            exc.code,
+                            exc.reason,
+                        )
+                        continue
+
+                    # Telegram occasionally loses editability/addressability for an
+                    # already-sent root while the message may still be visible to members.
+                    # Never keep retrying and never duplicate an old historical trade.
+                    # For a fresh trade only, send one concise truth correction sourced
+                    # from broker deals, then mark the root so this can never spam.
+                    root_created_at = row["root_created_at"]
+                    fresh_for_correction = bool(
+                        root_created_at is not None
+                        and root_created_at >= datetime.now(UTC) - timedelta(hours=2)
+                    )
+                    correction_message_id: int | None = None
+                    marker = "sent_root_uneditable_no_correction"
+                    marker_reason = (
+                        "Telegram could not edit this historical root; no replacement "
+                        "was posted to avoid duplicate/spam."
+                    )
+                    if fresh_for_correction and self._trade_ledger is not None:
+                        trade = self._trade_ledger.trade(row["signal_id"])
+                        status_lines = _trade_status_lines(trade)
+                        if status_lines:
+                            provider_header = rendered.splitlines()[0] if rendered else ""
+                            correction = "\n".join(
+                                [
+                                    provider_header,
+                                    "",
+                                    f"<b>TRADE {int(row['member_trade_number'])} · CORRECTION</b>",
+                                    "",
+                                    *status_lines,
+                                ]
+                            )
+                            result = _bot_api_call(
+                                self._bot_token,
+                                "sendMessage",
+                                {
+                                    "chat_id": int(self._destination_chat_id),
+                                    "text": correction,
+                                    "parse_mode": "HTML",
+                                    "disable_web_page_preview": "true",
+                                },
+                            )
+                            correction_message_id = int(result["message_id"])
+                            marker = "sent_root_uneditable_truth_corrected"
+                            marker_reason = (
+                                "Telegram could not edit the original root; one broker-backed "
+                                f"correction was sent as message {correction_message_id}."
+                            )
+
+                    with self._session_factory() as session:
+                        session.execute(
+                            text(
+                                """
+                                UPDATE telegram_publications
+                                SET failure_code=:failure_code,
+                                    failure_reason=:failure_reason,
+                                    updated_at=now()
+                                WHERE id=:publication_id AND status='sent'
+                                """
+                            ),
+                            {
+                                "publication_id": row["publication_id"],
+                                "failure_code": marker,
+                                "failure_reason": marker_reason,
+                            },
+                        )
+                        session.commit()
+
+                    logger.info(
+                        "Telegram uneditable root handled once message_id=%s correction_message_id=%s",
                         row["telegram_message_id"],
-                        exc.code,
-                        exc.reason,
+                        correction_message_id,
                     )
                     continue
 
