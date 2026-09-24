@@ -18,7 +18,7 @@ from uuid import UUID
 from zoneinfo import ZoneInfo
 
 import httpx
-from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request, Response, status
 from pydantic import BaseModel
 from sqlalchemy import text
 
@@ -649,6 +649,33 @@ def _public_trades_for_day(
     return tuple(trades)
 
 
+def _public_trade_cache(request: Request) -> dict[date, tuple[float, PublicTradeDayResponse]]:
+    cache = _public_trade_cache(request)
+    return cache
+
+
+def _warm_public_trade_day(
+    app: Any,
+    service: Day33PerformanceLedgerServiceV2,
+    user_id: UUID,
+    reporting_day: date,
+) -> None:
+    """Warm today's trade evidence after the calendar response has already returned."""
+    cache = getattr(app.state, "public_performance_trade_day_cache", None)
+    if not isinstance(cache, dict):
+        cache = {}
+        app.state.public_performance_trade_day_cache = cache
+    cached = cache.get(reporting_day)
+    if isinstance(cached, tuple) and len(cached) == 2 and monotonic() < cached[0]:
+        return
+    result = PublicTradeDayResponse(
+        day=reporting_day,
+        trades=_public_trades_for_day(service, user_id, reporting_day),
+        updated_at=datetime.now(UTC),
+    )
+    cache[reporting_day] = (monotonic() + 15.0, result)
+
+
 @router.get("/gold-quote", response_model=GoldQuoteResponse)
 async def account_gold_quote(
     request: Request,
@@ -694,6 +721,7 @@ async def account_gold_quote(
 def public_performance_calendar(
     request: Request,
     response: Response,
+    background_tasks: BackgroundTasks,
 ) -> PublicPerformanceResponse:
     """Fast 21:00-Sofia equity feed for the public calendar.
 
@@ -709,6 +737,21 @@ def public_performance_calendar(
         and isinstance(cached[1], PublicPerformanceResponse)
     ):
         response.headers["Cache-Control"] = "public, max-age=2, stale-while-revalidate=30"
+        service = _performance_service(request)
+        user_id = _public_owner_reference_user_id(request, service)
+        local_now = datetime.now(UTC).astimezone(ZoneInfo(_PUBLIC_TIMEZONE))
+        current_day = (
+            local_now.date() + timedelta(days=1)
+            if local_now.hour >= 21
+            else local_now.date()
+        )
+        background_tasks.add_task(
+            _warm_public_trade_day,
+            request.app,
+            service,
+            user_id,
+            current_day,
+        )
         return cached[1]
 
     service = _performance_service(request)
@@ -766,6 +809,13 @@ def public_performance_calendar(
         monotonic() + 8.0,
         result,
     )
+    background_tasks.add_task(
+        _warm_public_trade_day,
+        request.app,
+        service,
+        user_id,
+        current_day,
+    )
     response.headers["Cache-Control"] = "public, max-age=2, stale-while-revalidate=30"
     return result
 
@@ -810,7 +860,7 @@ def public_performance_trades(
         trades=_public_trades_for_day(service, user_id, reporting_day),
         updated_at=datetime.now(UTC),
     )
-    cache[reporting_day] = (monotonic() + 8.0, result)
+    cache[reporting_day] = (monotonic() + 15.0, result)
     if len(cache) > 40:
         for key in sorted(cache)[:-30]:
             cache.pop(key, None)
