@@ -269,8 +269,56 @@ class CanonicalTelegramPublisherManager(Day34CutoverTelegramPublisherManager):
             include_origin=include_origin,
         )
 
+    def _website_financial_snapshot(self, session: Any) -> tuple[Any, Decimal, Decimal]:
+        """Return the exact live account-value figures used by the public website."""
+        now = datetime.now(UTC)
+        local_now = now.astimezone(SOFIA)
+        reporting_day = (
+            local_now.date() + timedelta(days=1)
+            if local_now.hour >= 21
+            else local_now.date()
+        )
+        if self._reference_user_id is None:
+            return reporting_day, Decimal("0.00"), Decimal("0.00")
+
+        days = account_value_days(session, self._reference_user_id, now=now)
+        current_day = next(
+            (item for item in reversed(days) if item.day == reporting_day),
+            None,
+        )
+        if current_day is not None:
+            return (
+                reporting_day,
+                current_day.closing_value.quantize(Decimal("0.01")),
+                current_day.pnl.quantize(Decimal("0.01")),
+            )
+
+        latest = session.execute(
+            text(
+                """
+                SELECT pas.equity
+                FROM performance_account_snapshots pas
+                WHERE pas.user_id=:user_id
+                  AND pas.equity IS NOT NULL
+                ORDER BY pas.captured_at DESC
+                LIMIT 1
+                """
+            ),
+            {"user_id": self._reference_user_id},
+        ).scalar_one_or_none()
+        return (
+            reporting_day,
+            Decimal(str(latest or 0)).quantize(Decimal("0.01")),
+            Decimal("0.00"),
+        )
+
     def _financial_business_date(self) -> Any:
-        return datetime.now(UTC).astimezone(SOFIA).date()
+        local_now = datetime.now(UTC).astimezone(SOFIA)
+        return (
+            local_now.date() + timedelta(days=1)
+            if local_now.hour >= 21
+            else local_now.date()
+        )
 
     def _ensure_financial_state(self, session: Any) -> Any:
         """Return today's locked Telegram money state, creating it when needed.
@@ -392,15 +440,21 @@ class CanonicalTelegramPublisherManager(Day34CutoverTelegramPublisherManager):
         publication_id: UUID,
         event_delta: Decimal | int | float | str | None,
     ) -> tuple[Decimal, Decimal]:
-        """Reserve deterministic Balance/P&L values for one Telegram publication.
+        """Snapshot the same Balance and Today's P&L shown by the website.
 
-        Retrying the same publication reuses the same arithmetic. The durable rolling
-        state advances only after Telegram confirms delivery.
+        event_delta remains audit evidence for the TP/SL result, but it no longer
+        drives the displayed account figures.
         """
+        if self._reference_user_id is None or self._destination_chat_id is None:
+            return Decimal("0.00"), Decimal("0.00")
+
+        business_date, website_balance, website_daily = self._website_financial_snapshot(session)
+        delta = Decimal(str(event_delta or 0)).quantize(Decimal("0.01"))
+
         existing = session.execute(
             text(
                 """
-                SELECT new_balance,new_daily_pnl
+                SELECT status
                 FROM telegram_publication_financials
                 WHERE publication_id=:publication_id
                 """
@@ -408,20 +462,50 @@ class CanonicalTelegramPublisherManager(Day34CutoverTelegramPublisherManager):
             {"publication_id": publication_id},
         ).mappings().first()
         if existing is not None:
-            return (
-                Decimal(str(existing["new_balance"])).quantize(Decimal("0.01")),
-                Decimal(str(existing["new_daily_pnl"])).quantize(Decimal("0.01")),
+            session.execute(
+                text(
+                    """
+                    UPDATE telegram_publication_financials
+                    SET business_date=:business_date,
+                        event_delta=:delta,
+                        new_balance=:new_balance,
+                        new_daily_pnl=:new_daily,
+                        updated_at=now()
+                    WHERE publication_id=:publication_id
+                    """
+                ),
+                {
+                    "publication_id": publication_id,
+                    "business_date": business_date,
+                    "delta": delta,
+                    "new_balance": website_balance,
+                    "new_daily": website_daily,
+                },
             )
+            return website_balance, website_daily
 
-        state = self._ensure_financial_state(session)
-        if state is None:
-            return Decimal("0.00"), Decimal("0.00")
-
-        delta = Decimal(str(event_delta or 0)).quantize(Decimal("0.01"))
-        prior_balance = Decimal(str(state["balance"])).quantize(Decimal("0.01"))
-        prior_daily = Decimal(str(state["daily_pnl"])).quantize(Decimal("0.01"))
-        new_balance = (prior_balance + delta).quantize(Decimal("0.01"))
-        new_daily = (prior_daily + delta).quantize(Decimal("0.01"))
+        state = session.execute(
+            text(
+                """
+                SELECT balance,daily_pnl
+                FROM telegram_financial_state
+                WHERE reference_user_id=:user_id
+                  AND destination_chat_id=:chat_id
+                  AND business_date=:business_date
+                """
+            ),
+            {
+                "user_id": self._reference_user_id,
+                "chat_id": self._destination_chat_id,
+                "business_date": business_date,
+            },
+        ).mappings().first()
+        prior_balance = Decimal(
+            str(state["balance"] if state is not None else website_balance)
+        ).quantize(Decimal("0.01"))
+        prior_daily = Decimal(
+            str(state["daily_pnl"] if state is not None else website_daily)
+        ).quantize(Decimal("0.01"))
 
         session.execute(
             text(
@@ -443,15 +527,15 @@ class CanonicalTelegramPublisherManager(Day34CutoverTelegramPublisherManager):
                 "publication_id": publication_id,
                 "user_id": self._reference_user_id,
                 "chat_id": self._destination_chat_id,
-                "business_date": state["business_date"],
+                "business_date": business_date,
                 "delta": delta,
                 "prior_balance": prior_balance,
                 "prior_daily": prior_daily,
-                "new_balance": new_balance,
-                "new_daily": new_daily,
+                "new_balance": website_balance,
+                "new_daily": website_daily,
             },
         )
-        return new_balance, new_daily
+        return website_balance, website_daily
 
     @staticmethod
     def _financial_lines(balance: Decimal, daily_pnl: Decimal) -> list[str]:
