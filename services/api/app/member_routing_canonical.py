@@ -15,6 +15,7 @@ architecture selectors.
 
 from __future__ import annotations
 
+import logging
 import os
 from dataclasses import dataclass
 from decimal import Decimal
@@ -27,6 +28,8 @@ from sqlalchemy.orm import Session, sessionmaker
 from app.models import AuditEvent
 from app.mt5_execution_day26 import Day26ExecutionError
 from app.mt5_management_day27 import Day27ManagementError
+
+logger = logging.getLogger(__name__)
 
 
 def live_execution_enabled() -> bool:
@@ -133,6 +136,11 @@ class MemberDistributionService:
                     error_code=exc.code,
                 )
             except Exception:
+                logger.exception(
+                    "Member signal execution failed unexpectedly user=%s signal=%s",
+                    target.user_id,
+                    signal_id,
+                )
                 outcome = MemberDistributionOutcome(
                     user_id=target.user_id,
                     outcome="skipped",
