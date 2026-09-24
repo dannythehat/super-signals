@@ -235,13 +235,16 @@ def test_tp_open_without_numeric_tp_skips() -> None:
     assert result.reason == "missing_tp"
 
 
-def test_provider_result_out_at_be_is_not_close_instruction() -> None:
+def test_out_at_be_is_explicit_close_instruction() -> None:
     result = apply_v1_message_policy(
         _decision(decision="trade_update", action="apply_update", update_type="close"),
         raw_text="Out at BE ✅",
     )
-    assert result.action == "ignore"
-    assert result.reason == "provider_result_only"
+    assert result.action == "apply_update"
+    assert result.extracted["update_type"] == "close"
+    assert result.extracted["actions"] == [
+        {"type": "close", "target": "all", "value": None}
+    ]
 
 
 @pytest.mark.parametrize("raw", ["BE now", "Breakeven set!", "Make the trade risk free now"])
