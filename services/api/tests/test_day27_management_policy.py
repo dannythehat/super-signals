@@ -164,6 +164,16 @@ def test_close_all_still_wins_over_partial_wording() -> None:
     assert {"type": "close", "target": "TP1", "value": None} not in result.actions
 
 
+def test_live_xauusd_scalping_partial_and_entry_price_stop_is_compound() -> None:
+    """Exact 24 Sep live wording: partial + "Set Stop Loss Entry Price" means protect at BE."""
+    result = extract_day27_management_actions(
+        "XAUUSD Running +48 pips profit✅✅✅Take some Partial Profit🔥🔥 "
+        "And Set Stop Loss Entry Price 🔥"
+    )
+    assert {"type": "close", "target": "TP1", "value": None} in result.actions
+    assert {"type": "move_to_break_even", "target": "all", "value": None} in result.actions
+
+
 def test_partials_combined_with_breakeven_does_both() -> None:
     """"TP1 hit, take partials and move SL to BE" is two instructions, not one."""
     result = extract_day27_management_actions("TP1 hit, take partials and move SL to BE")
