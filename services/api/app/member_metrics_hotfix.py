@@ -13,6 +13,7 @@ No broker trade, close, modify, or pending-order action is created here.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import time
 from dataclasses import replace
@@ -172,7 +173,17 @@ class MemberMetricsBrokerSettlementManager(_BaseSettlementManager):
         read-only account/deal-history sync for the other connected members afterwards.
         """
         result = await super().poll_once()
-        await self._sync_connected_member_metrics()
+        if not result.synced:
+            return result
+        try:
+            await asyncio.wait_for(
+                self._sync_connected_member_metrics(),
+                timeout=5.0,
+            )
+        except TimeoutError:
+            logger.warning(
+                "Connected member metrics sync timed out safely; owner settlement loop continues"
+            )
         return result
 
 
