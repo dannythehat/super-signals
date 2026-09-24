@@ -43,6 +43,14 @@ def test_breakeven_result_is_not_instruction() -> None:
     assert result.reason == "provider_result_only"
 
 
+def test_out_at_be_closes_all_remaining_exposure() -> None:
+    result = extract_day27_management_actions(
+        "Out at BE📊\n\nAfter getting profit near tp2🤝"
+    )
+    assert result.actions == ({"type": "close", "target": "all", "value": None},)
+    assert result.reason == "explicit_literal_close"
+
+
 def test_optional_protective_wording_does_not_mutate_broker_position() -> None:
     """Optional provider wording is not authority to move a stop immediately.
 
