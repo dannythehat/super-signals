@@ -101,34 +101,87 @@ def account_value_days(
     *,
     now: datetime | None = None,
 ) -> tuple[RunningAccountDay, ...]:
-    """Return 21:00-to-21:00 full-equity days from the live cutover onward."""
+    """Return 21:00-to-21:00 full-equity days from the live cutover onward.
+
+    This is intentionally one database round-trip. The previous implementation issued
+    two snapshot queries per day, which made the public website wait several seconds on
+    cold Render/Postgres reads.
+    """
     point = (now or datetime.now(UTC)).astimezone(UTC)
     last_day = _reporting_day(point)
+    if last_day < RUNNING_ACCOUNT_VALUE_START_DAY:
+        return ()
 
-    result: list[RunningAccountDay] = []
-    day = RUNNING_ACCOUNT_VALUE_START_DAY
-    while day <= last_day:
-        opening = _snapshot_equity_at_or_before(
-            session,
-            user_id,
-            _day_start_utc(day),
-        )
-        closing_point = min(_day_end_utc(day), point)
-        closing = _snapshot_equity_at_or_before(
-            session,
-            user_id,
-            closing_point,
-        )
-        if opening is not None and closing is not None:
-            result.append(
-                RunningAccountDay(
-                    day=day,
-                    opening_value=opening,
-                    closing_value=closing,
-                )
+    rows = session.execute(
+        text(
+            """
+            WITH days AS (
+                SELECT gs::date AS day
+                FROM generate_series(
+                    CAST(:start_day AS date),
+                    CAST(:last_day AS date),
+                    INTERVAL '1 day'
+                ) AS gs
+            ),
+            boundaries AS (
+                SELECT
+                    day,
+                    (
+                        ((day - 1)::timestamp + TIME '21:00')
+                        AT TIME ZONE 'Europe/Sofia'
+                    ) AS opening_at,
+                    LEAST(
+                        (
+                            (day::timestamp + TIME '21:00')
+                            AT TIME ZONE 'Europe/Sofia'
+                        ),
+                        CAST(:point AS timestamptz)
+                    ) AS closing_at
+                FROM days
             )
-        day += timedelta(days=1)
-    return tuple(result)
+            SELECT
+                b.day,
+                opening.equity AS opening_value,
+                closing.equity AS closing_value
+            FROM boundaries b
+            LEFT JOIN LATERAL (
+                SELECT pas.equity
+                FROM performance_account_snapshots pas
+                WHERE pas.user_id=:user_id
+                  AND pas.captured_at<=b.opening_at
+                  AND pas.equity IS NOT NULL
+                ORDER BY pas.captured_at DESC
+                LIMIT 1
+            ) opening ON TRUE
+            LEFT JOIN LATERAL (
+                SELECT pas.equity
+                FROM performance_account_snapshots pas
+                WHERE pas.user_id=:user_id
+                  AND pas.captured_at<=b.closing_at
+                  AND pas.equity IS NOT NULL
+                ORDER BY pas.captured_at DESC
+                LIMIT 1
+            ) closing ON TRUE
+            ORDER BY b.day
+            """
+        ),
+        {
+            "start_day": RUNNING_ACCOUNT_VALUE_START_DAY,
+            "last_day": last_day,
+            "point": point,
+            "user_id": user_id,
+        },
+    ).mappings().all()
+
+    return tuple(
+        RunningAccountDay(
+            day=row["day"],
+            opening_value=_money(row["opening_value"]),
+            closing_value=_money(row["closing_value"]),
+        )
+        for row in rows
+        if row["opening_value"] is not None and row["closing_value"] is not None
+    )
 
 
 __all__ = [
