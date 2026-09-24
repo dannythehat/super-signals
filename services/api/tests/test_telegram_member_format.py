@@ -15,13 +15,16 @@ def test_member_telegram_format_is_spacious_and_status_driven() -> None:
     assert "_financial_lines(rolling_balance, rolling_daily)" in source
 
 
-def test_live_board_uses_same_rolling_financial_ledger_as_trade_posts() -> None:
+def test_live_board_and_trade_posts_use_website_account_value_figures() -> None:
     source = Path("services/api/app/telegram_publisher_canonical.py").read_text()
+    assert "from app.running_daily_balance import account_value_days" in source
+    assert "def _website_financial_snapshot" in source
+    assert "current_day.closing_value" in source
+    assert "current_day.pnl" in source
+    assert "(prior_balance + delta)" not in source
     board = source[source.index("    def _render_live_board"):source.index("__all__")]
-    assert "telegram_financial_state" in board
-    assert "financial['balance']" in board
-    assert "financial['daily_pnl']" in board
-    assert "self._trade_ledger.account()" not in board
+    assert "_website_financial_snapshot(session)" in board
+    assert "telegram_financial_state" not in board
 
 
 def test_member_provider_identity_uses_named_emojis_not_colour_pairs() -> None:
