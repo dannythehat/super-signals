@@ -31,7 +31,6 @@ from app.db import get_research_session_factory, get_session_factory
 from app.metaapi_gateway import MetaApiProvisioningGateway
 from app.metaapi_read_gateway import MetaApiReadGateway
 from app.metaapi_trade_gateway import MetaApiTradeGateway
-from app.manual_close_once_20260924 import run_owner_manual_close_once
 from app.mt5_connection_manager import Mt5ConnectionManager
 from app.mt5_connection_service import Mt5ConnectionError, Mt5DemoConnectionService
 from app.mt5_connection_service_day30 import Day30Mt5ConnectionService
@@ -236,12 +235,6 @@ async def _lifespan(application: FastAPI) -> AsyncIterator[None]:
             gateway=gateway,
         )
         application.state.mt5_connection_service = mt5_connection_service
-
-        # Owner-authorized one-shot close. Inert unless the exact target env vars are set.
-        await run_owner_manual_close_once(
-            session_factory=session_factory,
-            cipher=broker_cipher,
-        )
 
         day33_performance_service = CanonicalPerformanceLedgerService(
             session_factory=session_factory,
