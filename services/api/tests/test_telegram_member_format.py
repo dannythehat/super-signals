@@ -97,6 +97,8 @@ def test_broker_settlement_can_publish_without_sent_root() -> None:
     source = Path("services/api/app/telegram_publisher_canonical.py").read_text()
     assert "LEFT JOIN telegram_publications AS root" in source
     assert "ev.event_type='broker_position_settled'" in source
+    assert "_any_confirmed_placement_sql" in source
+    assert "any_placement_for_ev" in source
     assert "attempt.reply_to_message_id is not None" in source
 
 
