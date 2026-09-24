@@ -9,7 +9,7 @@ immutable broker evidence, and revoked providers remain outside user-facing perf
 
 from __future__ import annotations
 
-from datetime import UTC, date, datetime, timedelta
+from datetime import UTC, date, datetime, time, timedelta
 from decimal import Decimal
 from math import isfinite
 from time import monotonic
@@ -110,6 +110,12 @@ class PublicPerformanceResponse(BaseModel):
     daily: tuple[PublicDailyPnlResponse, ...]
     trades: tuple[PublicTradeResponse, ...]
     updated_at: datetime
+
+class PublicTradeDayResponse(BaseModel):
+    day: date
+    trades: tuple[PublicTradeResponse, ...]
+    updated_at: datetime
+
 
 
 def _positive_float(value: object) -> float | None:
@@ -503,6 +509,135 @@ def _public_trades(service: Day33PerformanceLedgerServiceV2, user_id: UUID) -> t
     return tuple(trades)
 
 
+
+def _public_trades_for_day(
+    service: Day33PerformanceLedgerServiceV2,
+    user_id: UUID,
+    reporting_day: date,
+) -> tuple[PublicTradeResponse, ...]:
+    """Fast provider-hidden trade evidence for one 21:00-Sofia reporting day."""
+    zone = ZoneInfo(_PUBLIC_TIMEZONE)
+    start_at = datetime.combine(
+        reporting_day - timedelta(days=1),
+        time(21, 0),
+        tzinfo=zone,
+    ).astimezone(UTC)
+    end_at = datetime.combine(
+        reporting_day,
+        time(21, 0),
+        tzinfo=zone,
+    ).astimezone(UTC)
+
+    exclusion_sql = ""
+    params: dict[str, object] = {
+        "user_id": user_id,
+        "start_at": start_at,
+        "end_at": end_at,
+    }
+    if reporting_day >= _PUBLIC_TRADE_LOG_EXCLUDED_FROM:
+        exclusion_sql = """
+          AND COALESCE(src.chat_id,0) NOT IN (:excluded_chat_1,:excluded_chat_2)
+        """
+        params["excluded_chat_1"] = _PUBLIC_TRADE_LOG_EXCLUDED_CHAT_IDS[0]
+        params["excluded_chat_2"] = _PUBLIC_TRADE_LOG_EXCLUDED_CHAT_IDS[1]
+
+    with service._session_factory() as session:
+        rows = session.execute(
+            text(
+                f"""
+                SELECT
+                    s.id AS signal_id,
+                    s.symbol,
+                    s.side,
+                    s.source_id,
+                    COALESCE(src.source_alias,src.chat_title,'Unknown source') AS source_label,
+                    MIN(o.opened_at) AS opened_at,
+                    MAX(o.closed_at) AS closed_at,
+                    COUNT(o.position_id)::int AS position_count,
+                    COUNT(*) FILTER (WHERE o.status='open')::int AS open_positions,
+                    COUNT(*) FILTER (WHERE o.status='pending')::int AS pending_positions,
+                    COUNT(*) FILTER (
+                        WHERE o.status IN ('won','lost','breakeven','closed_unknown')
+                    )::int AS closed_positions,
+                    SUM(o.cash_pnl) FILTER (WHERE o.cash_pnl IS NOT NULL) AS cash_pnl,
+                    CASE
+                        WHEN COUNT(DISTINCT o.symbol) FILTER (WHERE o.net_pips IS NOT NULL)<=1
+                         AND COUNT(*) FILTER (
+                             WHERE o.status IN ('won','lost','breakeven')
+                               AND o.net_pips IS NULL
+                         )=0
+                        THEN SUM(o.net_pips)
+                        ELSE NULL
+                    END AS net_pips,
+                    SUM(o.model_500_pnl) FILTER (
+                        WHERE o.model_500_pnl IS NOT NULL
+                    ) AS model_500_pnl,
+                    MAX(o.trader_stream) FILTER (
+                        WHERE o.trader_stream IS NOT NULL
+                    ) AS trader_stream,
+                    MAX(o.close_reason) FILTER (
+                        WHERE o.close_reason IS NOT NULL
+                    ) AS close_reason,
+                    BOOL_OR(o.status='won') AS has_win,
+                    BOOL_OR(o.status='lost') AS has_loss,
+                    BOOL_OR(o.status='breakeven') AS has_breakeven,
+                    BOOL_OR(o.status='closed_unknown') AS has_unknown
+                FROM performance_trade_outcomes o
+                JOIN signals s ON s.id=o.signal_id
+                LEFT JOIN sources src ON src.id=s.source_id
+                WHERE o.user_id=:user_id
+                  AND COALESCE(src.status,'')<>'revoked'
+                  {exclusion_sql}
+                GROUP BY
+                    s.id,s.symbol,s.side,s.source_id,src.source_alias,src.chat_title
+                HAVING COALESCE(
+                    MIN(o.opened_at),
+                    MAX(o.closed_at),
+                    MAX(o.derived_at)
+                )>=:start_at
+                   AND COALESCE(
+                    MIN(o.opened_at),
+                    MAX(o.closed_at),
+                    MAX(o.derived_at)
+                )<:end_at
+                ORDER BY COALESCE(
+                    MIN(o.opened_at),
+                    MAX(o.closed_at),
+                    MAX(o.derived_at)
+                ) ASC,
+                s.id
+                """
+            ),
+            params,
+        ).mappings().all()
+
+    trades: list[PublicTradeResponse] = []
+    for row in rows:
+        item = service._timeline_trade(row, provider_visible=False)
+        if int(item.position_count or 0) <= 0:
+            continue
+        trades.append(
+            PublicTradeResponse(
+                day=reporting_day,
+                signal_id=item.signal_id,
+                symbol=item.symbol,
+                side=item.side,
+                status=item.status,
+                status_label=item.status_label,
+                opened_at=item.opened_at,
+                closed_at=item.closed_at,
+                position_count=item.position_count,
+                open_positions=item.open_positions,
+                pending_positions=item.pending_positions,
+                closed_positions=item.closed_positions,
+                cash_pnl=(float(item.cash_pnl) if item.cash_pnl is not None else None),
+                net_pips=(float(item.net_pips) if item.net_pips is not None else None),
+                close_reason=item.close_reason,
+            )
+        )
+    return tuple(trades)
+
+
 @router.get("/gold-quote", response_model=GoldQuoteResponse)
 async def account_gold_quote(
     request: Request,
@@ -555,6 +690,16 @@ def public_performance_calendar(
     trade-detail read can never freeze the live calendar. Historical rows remain in the
     website's published JSON; this feed supplies the live Vantage account-value days.
     """
+    cached = getattr(request.app.state, "public_performance_calendar_cache", None)
+    if (
+        isinstance(cached, tuple)
+        and len(cached) == 2
+        and monotonic() < cached[0]
+        and isinstance(cached[1], PublicPerformanceResponse)
+    ):
+        response.headers["Cache-Control"] = "public, max-age=2, stale-while-revalidate=30"
+        return cached[1]
+
     service = _performance_service(request)
     user_id = _owner_reference_user_id(service)
     now = datetime.now(UTC)
@@ -591,8 +736,7 @@ def public_performance_calendar(
 
     total = round(current - _HISTORICAL_STARTING_BALANCE, 2)
     return_percent = round(total / _HISTORICAL_STARTING_BALANCE * 100, 2)
-    response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
-    return PublicPerformanceResponse(
+    result = PublicPerformanceResponse(
         current_recorded_balance=current,
         total_recorded_pnl=total,
         return_percent=return_percent,
@@ -606,6 +750,41 @@ def public_performance_calendar(
         daily=daily,
         trades=(),
         updated_at=now,
+    )
+    request.app.state.public_performance_calendar_cache = (
+        monotonic() + 3.0,
+        result,
+    )
+    response.headers["Cache-Control"] = "public, max-age=2, stale-while-revalidate=30"
+    return result
+
+
+@router.get(
+    "/public-performance-trades/{reporting_day}",
+    response_model=PublicTradeDayResponse,
+)
+def public_performance_trades(
+    reporting_day: date,
+    request: Request,
+    response: Response,
+) -> PublicTradeDayResponse:
+    """Fast per-day trade evidence for the public calendar drill-down."""
+    if reporting_day < _PUBLIC_TRADE_DETAIL_START:
+        response.headers["Cache-Control"] = "public, max-age=60"
+        return PublicTradeDayResponse(
+            day=reporting_day,
+            trades=(),
+            updated_at=datetime.now(UTC),
+        )
+
+    service = _performance_service(request)
+    user_id = _owner_reference_user_id(service)
+    trades = _public_trades_for_day(service, user_id, reporting_day)
+    response.headers["Cache-Control"] = "public, max-age=5, stale-while-revalidate=30"
+    return PublicTradeDayResponse(
+        day=reporting_day,
+        trades=trades,
+        updated_at=datetime.now(UTC),
     )
 
 
