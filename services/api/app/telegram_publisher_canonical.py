@@ -739,34 +739,6 @@ class CanonicalTelegramPublisherManager(Day34CutoverTelegramPublisherManager):
                 {"fresh_after": fresh_after},
             )
 
-            # Several legs can settle in one broker sweep. Publish only the last one in
-            # that burst so members get one clear status snapshot rather than a stack.
-            session.execute(
-                text(
-                    """
-                    UPDATE telegram_publications AS pub
-                    SET status='suppressed',
-                        failure_code='same_burst_settlement_collapsed',
-                        failure_reason='A later settlement in the same close burst carries the status snapshot.',
-                        updated_at=now()
-                    FROM signal_lifecycle_events AS ev
-                    WHERE pub.lifecycle_event_id=ev.id
-                      AND pub.status='pending'
-                      AND ev.event_type='broker_position_settled'
-                      AND EXISTS (
-                          SELECT 1
-                          FROM signal_lifecycle_events AS sibling
-                          WHERE sibling.signal_id=ev.signal_id
-                            AND sibling.event_type='broker_position_settled'
-                            AND (sibling.occurred_at>ev.occurred_at OR (sibling.occurred_at=ev.occurred_at AND sibling.id>ev.id))
-                            AND sibling.created_at>=:fresh_after
-                            AND ABS(EXTRACT(EPOCH FROM (sibling.occurred_at-ev.occurred_at)))<=30
-                      )
-                    """
-                ),
-                {"fresh_after": fresh_after},
-            )
-
             # Once the broker has declared the trade complete, later provider wording
             # must never resurrect it as another member update. Keep the evidence in
             # PostgreSQL but suppress the Telegram publication.
@@ -814,18 +786,6 @@ class CanonicalTelegramPublisherManager(Day34CutoverTelegramPublisherManager):
                               FROM signal_lifecycle_events AS sibling
                               WHERE sibling.signal_id=ev.signal_id
                                 AND sibling.event_type='broker_position_settled'
-                                AND sibling.created_at>=:fresh_after
-                                AND ABS(EXTRACT(EPOCH FROM (sibling.occurred_at-ev.occurred_at)))<=30
-                          )
-                      )
-                      AND NOT (
-                          ev.event_type='broker_position_settled'
-                          AND EXISTS (
-                              SELECT 1
-                              FROM signal_lifecycle_events AS sibling
-                              WHERE sibling.signal_id=ev.signal_id
-                                AND sibling.event_type='broker_position_settled'
-                                AND (sibling.occurred_at>ev.occurred_at OR (sibling.occurred_at=ev.occurred_at AND sibling.id>ev.id))
                                 AND sibling.created_at>=:fresh_after
                                 AND ABS(EXTRACT(EPOCH FROM (sibling.occurred_at-ev.occurred_at)))<=30
                           )
@@ -1037,6 +997,8 @@ class CanonicalTelegramPublisherManager(Day34CutoverTelegramPublisherManager):
                             event_position.tp_index AS event_tp_index,
                             COALESCE(event_outcome.status,'') AS event_outcome_status,
                             event_outcome.cash_pnl AS repair_event_cash_pnl,
+                            fin.new_balance AS repair_financial_balance,
+                            fin.new_daily_pnl AS repair_financial_daily_pnl,
                             COALESCE(m.raw_text,'') AS source_raw_text,
                             NOT EXISTS (
                                 SELECT 1
@@ -1083,6 +1045,9 @@ class CanonicalTelegramPublisherManager(Day34CutoverTelegramPublisherManager):
                         LEFT JOIN performance_trade_outcomes event_outcome
                           ON event_outcome.position_id=event_position.id
                          AND event_outcome.user_id=:reference_user_id
+                        LEFT JOIN telegram_publication_financials fin
+                          ON fin.publication_id=pub.id
+                         AND fin.status='sent'
                         WHERE pub.status='sent'
                           AND pub.publication_kind='lifecycle_event'
                           AND pub.telegram_message_id IS NOT NULL
@@ -1102,63 +1067,28 @@ class CanonicalTelegramPublisherManager(Day34CutoverTelegramPublisherManager):
                 )
                 message_id = int(row["telegram_message_id"])
 
-                if bool(row["has_newer_same_burst"]):
-                    try:
-                        _bot_api_call(
-                            self._bot_token,
-                            "deleteMessage",
-                            {"chat_id": chat_id, "message_id": message_id},
-                        )
-                    except TelegramPublishError as exc:
-                        if "message to delete not found" not in exc.reason.lower():
-                            raise
-                    with self._session_factory() as session:
-                        session.execute(
-                            text(
-                                """
-                                UPDATE telegram_publications
-                                SET status='suppressed',
-                                    failure_code='sent_same_burst_duplicate_deleted',
-                                    failure_reason='A newer settlement message carries the complete burst result.',
-                                    updated_at=now()
-                                WHERE id=:publication_id
-                                """
-                            ),
-                            {"publication_id": row["publication_id"]},
-                        )
-                        session.commit()
-                    logger.info(
-                        "Deleted duplicate Telegram settlement signal=%s message_id=%s",
-                        row["signal_id"],
-                        message_id,
-                    )
-                    continue
-
                 original = str(row["rendered_text"] or "")
                 if not original:
                     continue
                 repaired = original
 
-                # Rebuild Balance / Today's P&L from broker-confirmed closes as of this
-                # event's timestamp. Delayed Telegram delivery must not borrow the money
-                # state from a later trade.
-                event_at = row["repair_event_occurred_at"]
-                if event_at is not None:
-                    event_account = self._trade_ledger.account(now=event_at)
-                    if event_account.account_value is not None:
-                        balance_text = _balance_money(event_account.account_value)
-                        repaired = re.sub(
-                            r"(<b>Balance</b>\n)<b>[^\n]+</b>",
-                            rf"\1<b>{balance_text}</b>",
-                            repaired,
-                            count=1,
-                        )
-                        repaired = re.sub(
-                            r"(<b>Today’s P&L</b>\n)<b>[^\n]+</b>",
-                            rf"\1<b>{money(event_account.today_pnl)}</b>",
-                            repaired,
-                            count=1,
-                        )
+                # Financial lines are immutable rolling-ledger values. Never rebuild
+                # them from historical equity or an event-time account snapshot.
+                repair_balance = row["repair_financial_balance"]
+                repair_daily = row["repair_financial_daily_pnl"]
+                if repair_balance is not None and repair_daily is not None:
+                    repaired = re.sub(
+                        r"(<b>Balance</b>\n)<b>[^\n]+</b>",
+                        rf"\1<b>{_balance_money(repair_balance)}</b>",
+                        repaired,
+                        count=1,
+                    )
+                    repaired = re.sub(
+                        r"(<b>Today’s P&L</b>\n)<b>[^\n]+</b>",
+                        rf"\1<b>{money(repair_daily)}</b>",
+                        repaired,
+                        count=1,
+                    )
 
                 # Historical TIG-style partial wording: the original source explicitly
                 # names the target milestone. Never leave a sent post claiming TP1 when
