@@ -64,11 +64,22 @@ class Day33PerformanceLedgerServiceV2(Day33PerformanceLedgerService):
                     {"user_id": user_id},
                 ).all()
             )
-        return [
+        unresolved = [
             row
             for row in rows
             if row["broker_position_id"] and row["id"] not in completed_ids
         ]
+
+        # Settlement polling is latency-sensitive. Always check currently open/planned
+        # broker positions before historical unresolved rows, and newest first within
+        # each group. Otherwise an old slow history lookup can delay today's TP/SL
+        # settlement evidence for minutes.
+        active_states = {"open", "planned", "pending"}
+        active = [row for row in unresolved if str(row["status"]) in active_states]
+        backlog = [row for row in unresolved if str(row["status"]) not in active_states]
+        active.sort(key=lambda row: row["created_at"], reverse=True)
+        backlog.sort(key=lambda row: row["created_at"], reverse=True)
+        return active + backlog
 
     def _backfill_account_snapshots_from_audit(
         self,
