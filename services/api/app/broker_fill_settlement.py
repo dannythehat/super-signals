@@ -18,6 +18,15 @@ never invents state. A tranche becomes ``open`` only when the broker's own entry
 exists with no covering exit volume, and ``closed`` only when exit volume covers the
 entry. Without deal evidence the row is left exactly as it is.
 
+A stranded row's own ``broker_position_id`` is not always available: some execution paths
+mark a tranche ``error`` before the broker ever confirms a position id (an ambiguous
+placement outcome, a mapping-validation failure after the order already filled). The
+tranche's ``broker_client_id`` is assigned locally before submission and is always present,
+so it is the fallback key for finding that tranche's real broker deals. At least eleven
+Owner positions across five weeks were stranded this way, silently missing from every P&L
+figure and Telegram post despite the broker having filled and, in most cases, closed them
+for real, small amounts of money.
+
 It also exposes the broker-deal invariant that catches an orphan produced by any future
 code path, not only this one: no broker position may hold unclosed entry volume while the
 application has no ``open`` or ``pending`` row mapped to it.
@@ -141,7 +150,7 @@ class BrokerFillSettlementService:
         for row in rows:
             evidence = self._evidence(
                 mt5_account_id=row["mt5_account_id"],
-                broker_position_id=str(row["broker_position_id"]),
+                broker_position_id=str(row["resolved_broker_position_id"]),
             )
             decision = decide_settlement(evidence)
             if decision.action == ADOPT_OPEN:
@@ -174,19 +183,30 @@ class BrokerFillSettlementService:
                 text(
                     f"""
                     SELECT p.id, p.user_id, p.signal_id, p.broker_position_id,
-                           p.status, p.close_reason, bd.mt5_account_id
+                           p.status, p.close_reason, bd.mt5_account_id,
+                           bd.broker_position_id AS resolved_broker_position_id
                     FROM positions AS p
                     JOIN LATERAL (
-                        SELECT d.mt5_account_id
+                        SELECT d.mt5_account_id, d.broker_position_id
                         FROM broker_deals AS d
-                        WHERE d.broker_position_id=p.broker_position_id
-                          AND d.user_id=p.user_id
+                        WHERE d.user_id=p.user_id
+                          AND (
+                              (
+                                  p.broker_position_id IS NOT NULL
+                                  AND d.broker_position_id=p.broker_position_id
+                              )
+                              OR (
+                                  p.broker_position_id IS NULL
+                                  AND p.broker_client_id IS NOT NULL
+                                  AND d.broker_client_id=p.broker_client_id
+                              )
+                          )
                         ORDER BY d.occurred_at
                         LIMIT 1
                     ) AS bd ON TRUE
                     WHERE p.status='error'
-                      AND p.broker_position_id IS NOT NULL
                       AND p.closed_at IS NULL
+                      AND (p.broker_position_id IS NOT NULL OR p.broker_client_id IS NOT NULL)
                       {clause}
                     ORDER BY p.created_at
                     """
@@ -248,6 +268,7 @@ class BrokerFillSettlementService:
                     """
                     UPDATE positions
                     SET status='open',
+                        broker_position_id=COALESCE(broker_position_id,:broker_position_id),
                         opened_at=COALESCE(opened_at,:opened_at),
                         entry_price=COALESCE(:entry_price,entry_price),
                         close_reason=NULL,
@@ -257,6 +278,7 @@ class BrokerFillSettlementService:
                 ),
                 {
                     "id": row["id"],
+                    "broker_position_id": evidence.broker_position_id,
                     "opened_at": evidence.first_entry_at,
                     "entry_price": evidence.entry_price,
                     "now": now,
@@ -300,6 +322,7 @@ class BrokerFillSettlementService:
                     """
                     UPDATE positions
                     SET status='closed',
+                        broker_position_id=COALESCE(broker_position_id,:broker_position_id),
                         opened_at=COALESCE(opened_at,:opened_at),
                         entry_price=COALESCE(:entry_price,entry_price),
                         exit_price=COALESCE(:exit_price,exit_price),
@@ -312,6 +335,7 @@ class BrokerFillSettlementService:
                 ),
                 {
                     "id": row["id"],
+                    "broker_position_id": evidence.broker_position_id,
                     "opened_at": evidence.first_entry_at,
                     "entry_price": evidence.entry_price,
                     "exit_price": evidence.exit_price,
