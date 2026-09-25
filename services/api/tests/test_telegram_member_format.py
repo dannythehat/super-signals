@@ -87,12 +87,25 @@ def test_realised_settlements_are_kept_in_broker_time_order() -> None:
     assert "sent_same_burst_duplicate_deleted" not in source
 
 
-def test_current_day_broker_settlements_recover_but_history_never_replays() -> None:
+def test_broker_settlements_always_recover_and_replay_cleanup_stays_bounded() -> None:
+    """Broker settlements must never expire just because the calendar day rolled over.
+
+    Regression guard for the Sep-24 hotfix (5de252ff), which compared occurred_at
+    against "today" (recomputed on every run) instead of a fixed incident window. That
+    meant every night, as soon as the Sofia day rolled over, it deleted already-sent
+    settlement messages and blocked pending ones from ever being sent - silently eating
+    real stop-loss/trade-complete notifications for night-hours providers. The cleanup
+    must stay a one-shot, fixed-window job; general settlement eligibility must never be
+    gated by "today" again.
+    """
     source = Path("services/api/app/telegram_publisher_canonical.py").read_text()
-    assert "_CURRENT_SOFIA_DAY_START_SQL" in source
+    assert "_CURRENT_SOFIA_DAY_START_SQL" not in source
+    assert "date_trunc('day', timezone('Europe/Sofia', now()))" not in source
     assert "ev.event_type<>'broker_position_settled'" in source
-    assert "ev.occurred_at >= (date_trunc('day', timezone('Europe/Sofia', now())) AT TIME ZONE 'Europe/Sofia')" in source
     assert "historical_replay_deleted" in source
+    # The one-time incident cleanup stays bounded to fixed timestamps, never "today".
+    assert "ev.occurred_at < TIMESTAMPTZ '2026-09-24 14:54:00+00'" in source
+    assert "pub.sent_at < TIMESTAMPTZ '2026-09-24 18:00:00+00'" in source
 
 
 def test_broker_settlement_can_publish_without_sent_root() -> None:
