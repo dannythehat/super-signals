@@ -38,7 +38,6 @@ from app.trade_identity import public_trade_identity
 _PLACEMENT_EVENT = "mt5.day38_route_new_trade"
 _MEMBER_EVENT_FRESHNESS = timedelta(minutes=5)
 SOFIA = ZoneInfo("Europe/Sofia")
-_CURRENT_SOFIA_DAY_START_SQL = "(date_trunc('day', timezone('Europe/Sofia', now())) AT TIME ZONE 'Europe/Sofia')"
 logger = logging.getLogger(__name__)
 
 
@@ -559,14 +558,22 @@ class CanonicalTelegramPublisherManager(Day34CutoverTelegramPublisherManager):
             session.commit()
 
     def _cleanup_accidental_historical_settlement_replay_safely(self) -> None:
-        """Remove only the accidental Sep-24 replay of pre-day settlements."""
+        """Remove only the accidental Sep-24 14:54-18:00 UTC replay of pre-day settlements.
+
+        Both timestamps are fixed to that one incident window. A previous version of
+        this query compared occurred_at against "today" (recomputed on every run), so
+        every night, as soon as the Sofia calendar day rolled over, it deleted genuine
+        same-day settlement messages sent for night-hours providers (e.g. TIG's Asia
+        Trades) right after the event they reported. Never widen this back to a moving
+        boundary.
+        """
         if not self._bot_token or self._destination_chat_id is None:
             return
         try:
             with self._session_factory() as session:
                 rows = session.execute(
                     text(
-                        f"""
+                        """
                         SELECT pub.id AS publication_id,
                                pub.telegram_message_id,
                                COALESCE(pub.destination_chat_id,:chat_id) AS destination_chat_id
@@ -575,8 +582,9 @@ class CanonicalTelegramPublisherManager(Day34CutoverTelegramPublisherManager):
                         WHERE pub.status='sent'
                           AND pub.publication_kind='lifecycle_event'
                           AND ev.event_type='broker_position_settled'
-                          AND ev.occurred_at < {_CURRENT_SOFIA_DAY_START_SQL}
+                          AND ev.occurred_at < TIMESTAMPTZ '2026-09-24 14:54:00+00'
                           AND pub.sent_at >= TIMESTAMPTZ '2026-09-24 14:54:00+00'
+                          AND pub.sent_at < TIMESTAMPTZ '2026-09-24 18:00:00+00'
                           AND COALESCE(pub.failure_code,'') <> 'historical_replay_deleted'
                         ORDER BY pub.sent_at,pub.id
                         """
@@ -936,12 +944,13 @@ class CanonicalTelegramPublisherManager(Day34CutoverTelegramPublisherManager):
                 {"fresh_after": fresh_after},
             )
 
-            # Hard-stop stale lifecycle rows before claim/send. Broker settlements may
-            # recover beyond the ordinary five-minute window, but only for the current
-            # Sofia date; older settlements remain audit-only forever.
+            # Hard-stop stale lifecycle rows before claim/send. Broker settlements are
+            # always eligible to recover, however late they arrive: a settlement is a
+            # real trade outcome, and a member must always be told about it, even if
+            # the calendar day has rolled over since it occurred.
             session.execute(
                 text(
-                    f"""
+                    """
                     UPDATE telegram_publications AS pub
                     SET status='suppressed',
                         failure_code='stale_lifecycle_audit_only',
@@ -951,13 +960,8 @@ class CanonicalTelegramPublisherManager(Day34CutoverTelegramPublisherManager):
                     WHERE pub.lifecycle_event_id=ev.id
                       AND pub.publication_kind='lifecycle_event'
                       AND pub.status='pending'
-                      AND (
-                          (ev.event_type<>'broker_position_settled' AND ev.created_at<:fresh_after)
-                          OR (
-                              ev.event_type='broker_position_settled'
-                              AND ev.occurred_at < {_CURRENT_SOFIA_DAY_START_SQL}
-                          )
-                      )
+                      AND ev.event_type<>'broker_position_settled'
+                      AND ev.created_at<:fresh_after
                     """
                 ),
                 {"fresh_after": fresh_after},
@@ -1017,14 +1021,8 @@ class CanonicalTelegramPublisherManager(Day34CutoverTelegramPublisherManager):
                     SELECT ev.signal_id,ev.id,'lifecycle_event','pending'
                     FROM signal_lifecycle_events AS ev
                     WHERE (
-                          (
-                              ev.event_type='broker_position_settled'
-                              AND ev.occurred_at >= (date_trunc('day', timezone('Europe/Sofia', now())) AT TIME ZONE 'Europe/Sofia')
-                          )
-                          OR (
-                              ev.event_type<>'broker_position_settled'
-                              AND ev.created_at>=:fresh_after
-                          )
+                          ev.event_type='broker_position_settled'
+                          OR ev.created_at>=:fresh_after
                       )
                       AND (
                           ev.origin<>'provider_update'
@@ -1662,10 +1660,7 @@ class CanonicalTelegramPublisherManager(Day34CutoverTelegramPublisherManager):
                         WHERE pub.status='pending'
                           AND pub.publication_kind='lifecycle_event'
                           AND (
-                              (
-                                  ev.event_type='broker_position_settled'
-                                  AND ev.occurred_at >= (date_trunc('day', timezone('Europe/Sofia', now())) AT TIME ZONE 'Europe/Sofia')
-                              )
+                              ev.event_type='broker_position_settled'
                               OR (
                                   root.status='sent'
                                   AND root.telegram_message_id IS NOT NULL
@@ -1833,10 +1828,7 @@ class CanonicalTelegramPublisherManager(Day34CutoverTelegramPublisherManager):
                     WHERE pub.status='pending'
                       AND pub.publication_kind='lifecycle_event'
                       AND (
-                          (
-                              ev.event_type='broker_position_settled'
-                              AND ev.occurred_at >= (date_trunc('day', timezone('Europe/Sofia', now())) AT TIME ZONE 'Europe/Sofia')
-                          )
+                          ev.event_type='broker_position_settled'
                           OR (
                               root.status='sent'
                               AND root.telegram_message_id IS NOT NULL
@@ -1851,6 +1843,7 @@ class CanonicalTelegramPublisherManager(Day34CutoverTelegramPublisherManager):
                               FROM positions earlier
                               WHERE earlier.signal_id=ev.signal_id
                                 AND earlier.closed_at IS NOT NULL
+                                AND earlier.closed_at > now() - INTERVAL '2 hours'
                                 AND earlier.status NOT IN ('skipped','cancelled','canceled')
                                 AND (
                                     earlier.closed_at<ev.occurred_at
@@ -2005,7 +1998,15 @@ class CanonicalTelegramPublisherManager(Day34CutoverTelegramPublisherManager):
                 elif final_settlement and trade is not None:
                     total = trade.realised_pnl.quantize(Decimal("0.01"))
                     if total < 0:
-                        heading = "<b>TRADE UPDATE 📉 · TRADE COMPLETE</b>"
+                        # The trade's own closing leg may itself be the stop-loss hit
+                        # that ended it; say so, not just that the trade lost money
+                        # overall (an earlier leg's loss should never be misread as
+                        # the reason the trade is now complete).
+                        heading = (
+                            "<b>TRADE UPDATE 📉 · STOP LOSS HIT — TRADE COMPLETE</b>"
+                            if event_outcome == "lost"
+                            else "<b>TRADE UPDATE 📉 · TRADE COMPLETE</b>"
+                        )
                         result = f"🥺😔 <b>TRADE LOSS · {money(total)}</b>"
                     elif total > 0:
                         heading = "<b>TRADE UPDATE 📈 · TRADE COMPLETE</b>"
