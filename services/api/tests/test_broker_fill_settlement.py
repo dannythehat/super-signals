@@ -147,19 +147,25 @@ class _StubSession:
         self._store["commits"] = self._store.get("commits", 0) + 1
 
 
-def _stranded(broker_position_id: str) -> dict:
+def _stranded(broker_position_id: str, *, known_locally: bool = True) -> dict:
+    """A stranded tranche. ``known_locally=False`` mimics a row that never received a
+    ``broker_position_id`` (the ambiguous-placement path): resolution then depends
+    entirely on ``broker_client_id`` matching against ``broker_deals``."""
     return {
         "id": uuid4(),
         "user_id": OWNER,
         "signal_id": uuid4(),
-        "broker_position_id": broker_position_id,
+        "broker_position_id": broker_position_id if known_locally else None,
+        "resolved_broker_position_id": broker_position_id,
         "status": "error",
         "close_reason": "broker_filled_position_not_visible",
         "mt5_account_id": ACCOUNT,
     }
 
 
-def _deal_row(entry_volume: str, exit_volume: str, notional: str) -> dict:
+def _deal_row(
+    entry_volume: str, exit_volume: str, notional: str, *, realised_cash: str = "0"
+) -> dict:
     return {
         "entry_volume": Decimal(entry_volume),
         "exit_volume": Decimal(exit_volume),
@@ -167,7 +173,7 @@ def _deal_row(entry_volume: str, exit_volume: str, notional: str) -> dict:
         "exit_notional": None,
         "first_entry_at": datetime(2026, 8, 25, 6, 10, 29, tzinfo=UTC),
         "last_exit_at": None,
-        "realised_cash": Decimal("0"),
+        "realised_cash": Decimal(realised_cash),
     }
 
 
@@ -208,6 +214,31 @@ def test_the_three_real_orphans_are_all_adopted_open() -> None:
     for item in audits:
         assert item.payload["broker_contacted"] is False
         assert item.payload["trade_action_created"] is False
+
+
+def test_positions_with_no_local_broker_position_id_settle_via_broker_client_id() -> None:
+    """Eleven real Owner positions (e.g. broker_client_id SS_842d397c7347_1) were marked
+    'error' before the broker ever confirmed a position id - an ambiguous placement
+    outcome or a mapping-validation failure after the order had already filled - so
+    broker_position_id itself is null on the local row. broker_client_id is assigned
+    locally before submission and is always present, so it is the only way back to the
+    broker's own deal history for these. This trade actually closed for a real, small
+    profit that never reached pnl_amount, performance_trade_outcomes or Telegram."""
+    store = {
+        "stranded": [_stranded("2071236890", known_locally=False)],
+        "evidence": {"2071236890": _deal_row("0.01", "0.01", "43.376", realised_cash="4.84")},
+    }
+    service = BrokerFillSettlementService(lambda: _StubSession(store))  # type: ignore[arg-type]
+    result = service.settle_once()
+
+    assert result.settled_closed == 1
+    updates = store["updates"]
+    assert len(updates) == 1
+    sql, params = updates[0]
+    assert "status='closed'" in sql
+    assert "broker_position_id=COALESCE(broker_position_id,:broker_position_id)" in sql
+    assert params["broker_position_id"] == "2071236890"
+    assert params["pnl_amount"] == Decimal("4.84")
 
 
 def test_settlement_leaves_a_fill_with_no_deals_untouched() -> None:
