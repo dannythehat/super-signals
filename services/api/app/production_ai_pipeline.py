@@ -64,10 +64,10 @@ _STRUCTURED_TARGET = re.compile(
 _GROUPED_NUMBER = re.compile(r"(?<![\d.])\d{1,3}(?:,\d{3})+(?:\.\d+)?")
 
 # Emergency deterministic interpretation is deliberately narrower than the semantic
-# supervisor. It accepts only a whole-message NOW command with an optional quoted price,
+# supervisor. It accepts only a whole-message NOW command with one optional quoted price,
 # or an explicit Gold/XAUUSD header followed by one SL and one or more numeric TPs.
-# The existing V1 policy still verifies that every extracted number is literally present
-# and directionally valid before a signal can execute.
+# The existing V1 policy still verifies every extracted number is literally present and
+# directionally valid before a signal can execute.
 _BARE_NOW_WITH_PRICE = re.compile(
     r"^\s*(?:(BUY|SELL)\s+(?:GOLD|XAUUSD)|(?:GOLD|XAUUSD)\s+(BUY|SELL))"
     r"\s+NOW\s+\d+(?:\.\d+)?\s*[.!🔥✅🚨⚡]*\s*$",
@@ -289,7 +289,7 @@ class ProductionAiMessagePipeline(CanonicalAiMessagePipeline):
                 "update_value": None,
                 "provider_claimed_pips": None,
             },
-            model="canonical-deterministic-v2",
+            model="canonical-deterministic-v1",
             response_id=None,
             latency_ms=0,
             source="deterministic_no_ai",
@@ -311,16 +311,10 @@ class ProductionAiMessagePipeline(CanonicalAiMessagePipeline):
         if str(source_status or "").strip().lower() not in {"testing", "live"}:
             return None
 
-        exact_side = bare_now_side(raw_text)
-        if exact_side is None:
-            priced_now = _BARE_NOW_WITH_PRICE.fullmatch(raw_text or "")
-            exact_side = (
-                (priced_now.group(1) or priced_now.group(2) or "").upper()
-                if priced_now is not None
-                else None
-            )
-        if exact_side in {"BUY", "SELL"}:
-            return ProductionAiMessagePipeline._bare_trade_decision(raw_text, exact_side)
+        priced_now = _BARE_NOW_WITH_PRICE.fullmatch(raw_text or "")
+        if priced_now is not None:
+            side = (priced_now.group(1) or priced_now.group(2) or "").upper()
+            return ProductionAiMessagePipeline._bare_trade_decision(raw_text, side)
 
         lines = [
             " ".join(line.replace("\u00a0", " ").translate(_SUPERSCRIPT_DIGITS).strip().split())
@@ -445,6 +439,13 @@ class ProductionAiMessagePipeline(CanonicalAiMessagePipeline):
         precursor_side = self._precursor_side(raw_text)
         if precursor_side is not None and self._is_precursor_source(source_id):
             return self._precursor_decision(raw_text, precursor_side)
+
+        # Preserve the long-standing exact bare-NOW contract exactly. Provider-specific
+        # precursor sources have already been handled above; every other enabled source
+        # still gets the original immediate Gold execution profile.
+        side = bare_now_side(raw_text)
+        if side is not None:
+            return self._bare_trade_decision(raw_text, side)
 
         deterministic_trade = self._deterministic_complete_gold_trade(
             raw_text,
