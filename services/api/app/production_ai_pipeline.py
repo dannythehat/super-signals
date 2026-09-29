@@ -53,7 +53,10 @@ _STRUCTURED_ENTRY = re.compile(
     re.IGNORECASE | re.MULTILINE,
 )
 _STRUCTURED_STOP = re.compile(r"\b(?:SL|STOP\s*LOSS)\b", re.IGNORECASE)
-_STRUCTURED_TARGET = re.compile(r"\b(?:TP\s*1|TAKE\s*PROFIT)\b", re.IGNORECASE)
+_STRUCTURED_TARGET = re.compile(
+    r"(?:\bTP(?:\s*[\d#:]|[⁰¹²³⁴⁵⁶⁷⁸⁹])|\bTAKE\s*PROFIT\b)",
+    re.IGNORECASE,
+)
 
 # Gold providers commonly format prices as 4,353 or 4,349.841. The canonical ledger
 # stores the same numeric value without visual thousands separators. This normalisation
@@ -198,6 +201,11 @@ class ProductionAiMessagePipeline(CanonicalAiMessagePipeline):
     @staticmethod
     def _policy_text(raw_text: str, profile: str | None) -> str:
         value = CanonicalAiMessagePipeline._policy_text(raw_text, profile)
+        value = value.translate(_SUPERSCRIPT_DIGITS)
+        priced_now = _BARE_NOW_WITH_PRICE.fullmatch(value)
+        if priced_now is not None:
+            side = (priced_now.group(1) or priced_now.group(2) or "").upper()
+            value = f"{side} GOLD NOW"
         return _GROUPED_NUMBER.sub(lambda match: match.group(0).replace(",", ""), value)
 
     @staticmethod
