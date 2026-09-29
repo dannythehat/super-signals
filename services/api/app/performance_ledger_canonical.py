@@ -14,6 +14,7 @@ The dashboard and settlement watcher use one broker-truth model:
 from __future__ import annotations
 
 import json
+import logging
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from typing import Any
@@ -32,8 +33,33 @@ from app.performance_ledger_day33 import (
 )
 from app.performance_ledger_day33_v2 import Day33PerformanceLedgerServiceV2
 
+logger = logging.getLogger(__name__)
+
 _CHECKPOINT_EVENT = "mt5.performance_full_history_backfilled"
 _HISTORY_OVERLAP = timedelta(minutes=5)
+_PARTIAL_SYNC_TRUNCATED_EVENT = "mt5.performance_deal_sync_partial_truncated"
+_PARTIAL_SYNC_RESOLVED_EVENT = "mt5.performance_deal_sync_partial_resolved"
+
+# One-time incident repair: balance-snapshot reconciliation on 29 Sep 2026 proved these
+# two fixed windows lost real broker deals to the (now fixed) silent
+# metaapi_terminal_data_unavailable truncation - $169.83 on the Friday, $55.67 on the
+# Monday, confirmed by comparing consecutive account balance snapshots (which come
+# straight from the broker) against what broker_deals had stored for the same window.
+# Both bounds are fixed incident timestamps, never a moving "now"-relative window - see
+# _cleanup_accidental_historical_settlement_replay_safely for why that matters.
+_KNOWN_DEAL_GAP_EVENT = "mt5.performance_known_deal_gap_repaired"
+_KNOWN_DEAL_GAP_WINDOWS: tuple[tuple[str, datetime, datetime], ...] = (
+    (
+        "2026-09-25_fri_terminal_unavailable_gap",
+        datetime(2026, 9, 24, 18, 0, tzinfo=UTC),
+        datetime(2026, 9, 25, 18, 0, tzinfo=UTC),
+    ),
+    (
+        "2026-09-28_mon_terminal_unavailable_gap",
+        datetime(2026, 9, 27, 18, 0, tzinfo=UTC),
+        datetime(2026, 9, 28, 18, 0, tzinfo=UTC),
+    ),
+)
 
 
 def _as_utc(value: datetime) -> datetime:
@@ -82,33 +108,269 @@ class CanonicalPerformanceLedgerService(Day33PerformanceLedgerServiceV2):
                     {"user_id": user_id, "account_id": mt5_account_id},
                 ).scalar_one_or_none()
                 anchor = latest_deal or checkpoint
-                return _as_utc(anchor) - _HISTORY_OVERLAP, False
+                start_time, full_backfill = _as_utc(anchor) - _HISTORY_OVERLAP, False
+            else:
+                first_snapshot = session.execute(
+                    text(
+                        """
+                        SELECT MIN(captured_at)
+                        FROM performance_account_snapshots
+                        WHERE user_id=:user_id AND mt5_account_id=:account_id
+                        """
+                    ),
+                    {"user_id": user_id, "account_id": mt5_account_id},
+                ).scalar_one_or_none()
+                first_position = session.execute(
+                    text(
+                        """
+                        SELECT MIN(COALESCE(opened_at,created_at))
+                        FROM positions
+                        WHERE user_id=:user_id AND broker_position_id IS NOT NULL
+                        """
+                    ),
+                    {"user_id": user_id},
+                ).scalar_one_or_none()
 
-            first_snapshot = session.execute(
+                candidates = [
+                    value for value in (first_snapshot, first_position) if value is not None
+                ]
+                if not candidates:
+                    start_time, full_backfill = datetime.now(UTC) - timedelta(days=7), True
+                else:
+                    start_time, full_backfill = (
+                        min(_as_utc(value) for value in candidates) - timedelta(seconds=2),
+                        True,
+                    )
+
+        # A prior sync may have had its broker deal-history fetch cut short mid-page by
+        # a transient metaapi_terminal_data_unavailable error (see sync_user). The stored
+        # watermark above only reflects whatever partial page was already fetched before
+        # that happened, so relying on it alone can silently and permanently skip the
+        # deals between where the partial page ended and where the fetch was cut off.
+        # Re-widen the start back to that earlier sync's original request until a sync
+        # completes cleanly across it.
+        outstanding = self._outstanding_partial_sync_start(user_id, mt5_account_id)
+        if outstanding is not None and outstanding < start_time:
+            start_time = outstanding
+        return start_time, full_backfill
+
+    def _outstanding_partial_sync_start(
+        self,
+        user_id: UUID,
+        mt5_account_id: UUID,
+    ) -> datetime | None:
+        with self._session_factory() as session:
+            row = session.execute(
                 text(
                     """
-                    SELECT MIN(captured_at)
-                    FROM performance_account_snapshots
-                    WHERE user_id=:user_id AND mt5_account_id=:account_id
+                    SELECT event_type, payload
+                    FROM audit_events
+                    WHERE actor_user_id=:user_id
+                      AND entity_type='mt5_account'
+                      AND entity_id=:account_id
+                      AND event_type IN (:truncated_event, :resolved_event)
+                    ORDER BY created_at DESC
+                    LIMIT 1
                     """
                 ),
-                {"user_id": user_id, "account_id": mt5_account_id},
-            ).scalar_one_or_none()
-            first_position = session.execute(
+                {
+                    "user_id": user_id,
+                    "account_id": mt5_account_id,
+                    "truncated_event": _PARTIAL_SYNC_TRUNCATED_EVENT,
+                    "resolved_event": _PARTIAL_SYNC_RESOLVED_EVENT,
+                },
+            ).mappings().first()
+        if row is None or row["event_type"] != _PARTIAL_SYNC_TRUNCATED_EVENT:
+            return None
+        payload = row["payload"] if isinstance(row["payload"], dict) else {}
+        raw = payload.get("requested_start_time")
+        if not raw:
+            return None
+        try:
+            return _as_utc(datetime.fromisoformat(raw))
+        except ValueError:
+            return None
+
+    def _record_partial_sync_truncation(
+        self,
+        *,
+        user_id: UUID,
+        mt5_account_id: UUID,
+        requested_start_time: datetime,
+        requested_end_time: datetime,
+        payloads_fetched: int,
+        offset_reached: int,
+        error_code: str,
+    ) -> None:
+        payload = json.dumps(
+            {
+                "requested_start_time": requested_start_time.isoformat(),
+                "requested_end_time": requested_end_time.isoformat(),
+                "payloads_fetched": payloads_fetched,
+                "offset_reached": offset_reached,
+                "error_code": error_code,
+            },
+            separators=(",", ":"),
+        )
+        with self._session_factory() as session:
+            session.execute(
                 text(
                     """
-                    SELECT MIN(COALESCE(opened_at,created_at))
-                    FROM positions
-                    WHERE user_id=:user_id AND broker_position_id IS NOT NULL
+                    INSERT INTO audit_events (
+                        actor_user_id,event_type,entity_type,entity_id,payload
+                    ) VALUES (
+                        :user_id,:event_type,'mt5_account',:account_id,CAST(:payload AS jsonb)
+                    )
                     """
                 ),
-                {"user_id": user_id},
-            ).scalar_one_or_none()
+                {
+                    "user_id": user_id,
+                    "event_type": _PARTIAL_SYNC_TRUNCATED_EVENT,
+                    "account_id": mt5_account_id,
+                    "payload": payload,
+                },
+            )
+            session.commit()
 
-        candidates = [value for value in (first_snapshot, first_position) if value is not None]
-        if not candidates:
-            return datetime.now(UTC) - timedelta(days=7), True
-        return min(_as_utc(value) for value in candidates) - timedelta(seconds=2), True
+    def _record_partial_sync_resolved(
+        self,
+        *,
+        user_id: UUID,
+        mt5_account_id: UUID,
+    ) -> None:
+        with self._session_factory() as session:
+            session.execute(
+                text(
+                    """
+                    INSERT INTO audit_events (
+                        actor_user_id,event_type,entity_type,entity_id,payload
+                    ) VALUES (
+                        :user_id,:event_type,'mt5_account',:account_id,'{}'::jsonb
+                    )
+                    """
+                ),
+                {
+                    "user_id": user_id,
+                    "event_type": _PARTIAL_SYNC_RESOLVED_EVENT,
+                    "account_id": mt5_account_id,
+                },
+            )
+            session.commit()
+
+    def _repaired_deal_gap_windows(
+        self,
+        user_id: UUID,
+        mt5_account_id: UUID,
+    ) -> set[str]:
+        with self._session_factory() as session:
+            rows = session.execute(
+                text(
+                    """
+                    SELECT payload->>'window_id' AS window_id
+                    FROM audit_events
+                    WHERE actor_user_id=:user_id
+                      AND entity_type='mt5_account'
+                      AND entity_id=:account_id
+                      AND event_type=:event_type
+                    """
+                ),
+                {
+                    "user_id": user_id,
+                    "account_id": mt5_account_id,
+                    "event_type": _KNOWN_DEAL_GAP_EVENT,
+                },
+            ).scalars().all()
+        return {row for row in rows if row}
+
+    def _mark_deal_gap_repaired(
+        self,
+        *,
+        user_id: UUID,
+        mt5_account_id: UUID,
+        window_id: str,
+        deals_added: int,
+    ) -> None:
+        payload = json.dumps(
+            {"window_id": window_id, "deals_added": deals_added},
+            separators=(",", ":"),
+        )
+        with self._session_factory() as session:
+            session.execute(
+                text(
+                    """
+                    INSERT INTO audit_events (
+                        actor_user_id,event_type,entity_type,entity_id,payload
+                    ) VALUES (
+                        :user_id,:event_type,'mt5_account',:account_id,CAST(:payload AS jsonb)
+                    )
+                    """
+                ),
+                {
+                    "user_id": user_id,
+                    "event_type": _KNOWN_DEAL_GAP_EVENT,
+                    "account_id": mt5_account_id,
+                    "payload": payload,
+                },
+            )
+            session.commit()
+
+    async def _repair_known_deal_gaps_safely(
+        self,
+        *,
+        user_id: UUID,
+        mt5_account_id: UUID,
+        token: str,
+        account_id: str,
+        region: str,
+    ) -> int:
+        """Re-fetch the two fixed incident windows (see _KNOWN_DEAL_GAP_WINDOWS) once
+        per account. Safe to call on every sync: broker_deals' own ON CONFLICT DO
+        NOTHING makes a repeat fetch a no-op, and each window is additionally marked
+        done so it stops calling the broker at all once it has cleanly repaired once.
+        """
+        already_repaired = self._repaired_deal_gap_windows(user_id, mt5_account_id)
+        total_added = 0
+        for window_id, window_start, window_end in _KNOWN_DEAL_GAP_WINDOWS:
+            if window_id in already_repaired:
+                continue
+            payloads: list[dict[str, object]] = []
+            offset = 0
+            page_size = 1000
+            clean = True
+            try:
+                while True:
+                    page = await self._gateway.read_deals_by_time_range(
+                        token=token,
+                        account_id=account_id,
+                        region=region,
+                        start_time=window_start,
+                        end_time=window_end,
+                        offset=offset,
+                        limit=page_size,
+                    )
+                    payloads.extend(page)
+                    if len(page) < page_size:
+                        break
+                    offset += len(page)
+                    if offset > 100_000:
+                        clean = False
+                        break
+            except MetaApiGatewayError:
+                clean = False
+            added = self._store_account_deals(
+                user_id=user_id,
+                mt5_account_id=mt5_account_id,
+                payloads=payloads,
+            )
+            total_added += added
+            if clean:
+                self._mark_deal_gap_repaired(
+                    user_id=user_id,
+                    mt5_account_id=mt5_account_id,
+                    window_id=window_id,
+                    deals_added=added,
+                )
+        return total_added
 
     def _mark_full_backfill(
         self,
@@ -295,6 +557,7 @@ class CanonicalPerformanceLedgerService(Day33PerformanceLedgerServiceV2):
         payloads: list[dict[str, object]] = []
         offset = 0
         page_size = 1000
+        truncation_error_code: str | None = None
         try:
             while True:
                 page = await self._gateway.read_deals_by_time_range(
@@ -315,20 +578,51 @@ class CanonicalPerformanceLedgerService(Day33PerformanceLedgerServiceV2):
         except MetaApiGatewayError as exc:
             if exc.code != "metaapi_terminal_data_unavailable":
                 raise Day33LedgerError(exc.code, retryable=exc.retryable) from exc
+            # A terminal blip mid-pagination still leaves whatever pages already came
+            # back in `payloads`. Storing them is correct (real deals, don't discard
+            # them) but accepting this as a clean sync would hide that everything from
+            # here to `captured_at` was never actually fetched. Record the truncation so
+            # `_history_start` re-widens the next attempt back over the gap, instead of
+            # trusting the partial watermark this run is about to leave behind.
+            truncation_error_code = exc.code
 
         added = self._store_account_deals(
             user_id=user_id,
             mt5_account_id=account["id"],
             payloads=payloads,
         )
-        if full_backfill:
-            self._mark_full_backfill(
+        if truncation_error_code is not None and payloads:
+            self._record_partial_sync_truncation(
                 user_id=user_id,
                 mt5_account_id=account["id"],
-                start_time=start_time,
-                end_time=captured_at,
-                deal_count=len(payloads),
+                requested_start_time=start_time,
+                requested_end_time=captured_at,
+                payloads_fetched=len(payloads),
+                offset_reached=offset,
+                error_code=truncation_error_code,
             )
+        elif truncation_error_code is None:
+            if self._outstanding_partial_sync_start(user_id, account["id"]) is not None:
+                self._record_partial_sync_resolved(user_id=user_id, mt5_account_id=account["id"])
+            if full_backfill:
+                self._mark_full_backfill(
+                    user_id=user_id,
+                    mt5_account_id=account["id"],
+                    start_time=start_time,
+                    end_time=captured_at,
+                    deal_count=len(payloads),
+                )
+
+        try:
+            await self._repair_known_deal_gaps_safely(
+                user_id=user_id,
+                mt5_account_id=account["id"],
+                token=token,
+                account_id=account_id,
+                region=region,
+            )
+        except Exception:
+            logger.exception("Known deal-gap repair failed safely; normal sync is unaffected")
 
         mapped_positions = self._mapped_positions(user_id)
         outcomes = self.rebuild_outcomes(user_id)

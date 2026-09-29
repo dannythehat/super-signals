@@ -24,6 +24,17 @@ def test_account_sync_uses_complete_time_range_history() -> None:
     assert "_mark_full_backfill" in source
 
 
+def test_truncated_deal_history_fetch_is_recorded_not_silently_accepted() -> None:
+    """A metaapi_terminal_data_unavailable error mid-pagination must never be treated as
+    a clean sync: it has to be recorded so the next sync re-widens over the gap, and it
+    must never mark a first-ever backfill as complete on partial data."""
+    source = getsource(CanonicalPerformanceLedgerService.sync_user)
+    assert "_record_partial_sync_truncation" in source
+    assert "_record_partial_sync_resolved" in source
+    assert "truncation_error_code is not None and payloads" in source
+    assert "if full_backfill:" in source
+
+
 def test_timeline_repairs_xauusd_pips_from_broker_prices() -> None:
     source = getsource(CanonicalPerformanceLedgerService._timeline_rows)
     assert "UPPER(symbol)='XAUUSD'" in source
