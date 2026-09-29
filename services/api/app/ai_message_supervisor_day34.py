@@ -10,11 +10,13 @@ new trade and never weakens Day 27 fail-closed targeting.
 from __future__ import annotations
 
 import json
+import os
 import time
 from hashlib import sha256
 from typing import Any
 
 import httpx
+from sqlalchemy import text
 
 from app.ai_cost_prefilter import deterministic_ai_cost_prefilter
 from app.ai_message_supervisor import (
@@ -26,6 +28,7 @@ from app.ai_message_supervisor import (
     _guard_execute_decision,
     _guard_provider_intent,
 )
+from app.db import get_session_factory
 
 _DAY34_ACTIVE_TRADE_INSTRUCTIONS = _SYSTEM_INSTRUCTIONS + """
 
@@ -63,6 +66,102 @@ broker state.
 """
 
 
+def _positive_int_env(name: str, default: int) -> int:
+    raw = os.getenv(name, "").strip()
+    if not raw:
+        return default
+    try:
+        value = int(raw)
+    except ValueError:
+        return default
+    return value if value > 0 else default
+
+
+# Persistent spend guard. These counts use the durable decision ledger, so a Render
+# restart/redeploy cannot reset the allowance. Shadow analysis has its own much smaller
+# pool so research can never consume the live/testing semantic allowance.
+_PAID_AI_DAILY_LIMIT = _positive_int_env("SUPER_SIGNALS_AI_DAILY_CALL_LIMIT", 200)
+_PAID_AI_MONTHLY_LIMIT = _positive_int_env("SUPER_SIGNALS_AI_MONTHLY_CALL_LIMIT", 4000)
+_PAID_AI_SHADOW_DAILY_LIMIT = _positive_int_env("SUPER_SIGNALS_AI_SHADOW_DAILY_CALL_LIMIT", 30)
+_PAID_AI_SHADOW_MONTHLY_LIMIT = _positive_int_env("SUPER_SIGNALS_AI_SHADOW_MONTHLY_CALL_LIMIT", 600)
+_MAX_OUTPUT_TOKENS = _positive_int_env("SUPER_SIGNALS_AI_MAX_OUTPUT_TOKENS", 500)
+
+
+def _budget_skip(raw_text: str, reason: str) -> AiMessageDecision:
+    return AiMessageDecision(
+        decision="non_actionable",
+        action="skip",
+        confidence=1.0,
+        reason=reason,
+        extracted={
+            "symbol": None,
+            "side": None,
+            "order_type": None,
+            "entry_low": None,
+            "entry_high": None,
+            "stop_loss": None,
+            "take_profits": [],
+            "double_lot": False,
+            "update_type": None,
+            "update_target": None,
+            "update_value": None,
+            "provider_claimed_pips": None,
+        },
+        model="canonical-ai-budget-guard-v1",
+        response_id=None,
+        latency_ms=0,
+        source="deterministic_no_ai",
+        raw_text_sha256=sha256((raw_text or "").encode("utf-8")).hexdigest(),
+    )
+
+
+def _paid_ai_budget_reason(source_status: str) -> str | None:
+    """Return a fail-closed reason when the persistent paid-AI allowance is exhausted."""
+    try:
+        factory = get_session_factory()
+        with factory() as session:
+            row = session.execute(
+                text(
+                    """
+                    SELECT
+                        COUNT(*) FILTER (
+                            WHERE d.created_at >= date_trunc('day', now())
+                        ) AS day_total,
+                        COUNT(*) AS month_total,
+                        COUNT(*) FILTER (
+                            WHERE d.created_at >= date_trunc('day', now())
+                              AND s.status = 'shadow'
+                        ) AS day_shadow,
+                        COUNT(*) FILTER (
+                            WHERE s.status = 'shadow'
+                        ) AS month_shadow
+                    FROM ai_message_decisions AS d
+                    JOIN messages AS m ON m.id = d.message_id
+                    JOIN sources AS s ON s.id = m.source_id
+                    WHERE d.decision_source = 'openai'
+                      AND d.created_at >= date_trunc('month', now())
+                    """
+                )
+            ).mappings().one()
+    except Exception:
+        # A broken accounting check must never silently permit unlimited paid calls.
+        return "paid_ai_budget_guard_unavailable"
+
+    day_total = int(row["day_total"] or 0)
+    month_total = int(row["month_total"] or 0)
+    if day_total >= _PAID_AI_DAILY_LIMIT:
+        return "paid_ai_daily_limit_reached"
+    if month_total >= _PAID_AI_MONTHLY_LIMIT:
+        return "paid_ai_monthly_limit_reached"
+
+    if str(source_status or "").strip().lower() == "shadow":
+        if int(row["day_shadow"] or 0) >= _PAID_AI_SHADOW_DAILY_LIMIT:
+            return "paid_ai_shadow_daily_limit_reached"
+        if int(row["month_shadow"] or 0) >= _PAID_AI_SHADOW_MONTHLY_LIMIT:
+            return "paid_ai_shadow_monthly_limit_reached"
+    return None
+
+
 class Day34OpenAiMessageSupervisor(OpenAiMessageSupervisor):
     """OpenAI supervisor with explicit same-source broker Active Trade Watch context."""
 
@@ -88,6 +187,10 @@ class Day34OpenAiMessageSupervisor(OpenAiMessageSupervisor):
         if prefiltered is not None:
             return prefiltered
 
+        budget_reason = _paid_ai_budget_reason(source_status)
+        if budget_reason is not None:
+            return _budget_skip(raw_text, budget_reason)
+
         started = time.perf_counter()
         prompt = {
             "source_name": source_name,
@@ -103,7 +206,7 @@ class Day34OpenAiMessageSupervisor(OpenAiMessageSupervisor):
             "model": self._model,
             "store": False,
             "reasoning": {"effort": "minimal"},
-            "max_output_tokens": 1200,
+            "max_output_tokens": _MAX_OUTPUT_TOKENS,
             "instructions": _DAY34_ACTIVE_TRADE_INSTRUCTIONS,
             "input": json.dumps(prompt, ensure_ascii=False),
             "text": {
