@@ -162,6 +162,8 @@ def deterministic_ai_cost_prefilter(
             decision="chatter",
             reason="deterministic_price_pulse_prefilter",
         )
+    if _PURE_PRICE.fullmatch(value):
+        return None
 
     # Preserve semantic interpretation for terse lifecycle language whenever broker truth
     # says this source has something active, and for edits where changed context matters.
