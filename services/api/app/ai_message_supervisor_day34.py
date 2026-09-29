@@ -192,6 +192,13 @@ def _compact_active_context(items: list[dict[str, Any]]) -> list[dict[str, Any]]
     return compact
 
 
+def _deployed_environment() -> bool:
+    return os.getenv("SUPER_SIGNALS_ENV", "development").strip().lower() not in {
+        "development",
+        "test",
+    }
+
+
 class Day34OpenAiMessageSupervisor(OpenAiMessageSupervisor):
     """OpenAI supervisor with explicit same-source broker Active Trade Watch context."""
 
@@ -217,7 +224,7 @@ class Day34OpenAiMessageSupervisor(OpenAiMessageSupervisor):
         if prefiltered is not None:
             return prefiltered
 
-        budget_reason = _paid_ai_budget_reason(source_status)
+        budget_reason = _paid_ai_budget_reason(source_status) if _deployed_environment() else None
         if budget_reason is not None:
             return _budget_skip(raw_text, budget_reason)
 
