@@ -85,6 +85,11 @@ _PAID_AI_MONTHLY_LIMIT = _positive_int_env("SUPER_SIGNALS_AI_MONTHLY_CALL_LIMIT"
 _PAID_AI_SHADOW_DAILY_LIMIT = _positive_int_env("SUPER_SIGNALS_AI_SHADOW_DAILY_CALL_LIMIT", 30)
 _PAID_AI_SHADOW_MONTHLY_LIMIT = _positive_int_env("SUPER_SIGNALS_AI_SHADOW_MONTHLY_CALL_LIMIT", 600)
 _MAX_OUTPUT_TOKENS = _positive_int_env("SUPER_SIGNALS_AI_MAX_OUTPUT_TOKENS", 500)
+_RECENT_CONTEXT_LIMIT = _positive_int_env("SUPER_SIGNALS_AI_RECENT_CONTEXT_LIMIT", 8)
+_RECENT_CONTEXT_TEXT_LIMIT = _positive_int_env("SUPER_SIGNALS_AI_RECENT_TEXT_LIMIT", 500)
+_ACTIVE_CONTEXT_LIMIT = _positive_int_env("SUPER_SIGNALS_AI_ACTIVE_CONTEXT_LIMIT", 6)
+_ACTIVE_LIFECYCLE_LIMIT = _positive_int_env("SUPER_SIGNALS_AI_ACTIVE_LIFECYCLE_LIMIT", 3)
+_ACTIVE_LIFECYCLE_TEXT_LIMIT = _positive_int_env("SUPER_SIGNALS_AI_ACTIVE_LIFECYCLE_TEXT_LIMIT", 250)
 
 
 def _budget_skip(raw_text: str, reason: str) -> AiMessageDecision:
@@ -162,6 +167,31 @@ def _paid_ai_budget_reason(source_status: str) -> str | None:
     return None
 
 
+def _compact_recent_context(messages: list[dict[str, Any]] | None) -> list[dict[str, Any]]:
+    compact: list[dict[str, Any]] = []
+    for item in list(messages or [])[-_RECENT_CONTEXT_LIMIT:]:
+        row = dict(item)
+        row["text"] = str(row.get("text") or "")[:_RECENT_CONTEXT_TEXT_LIMIT]
+        compact.append(row)
+    return compact
+
+
+def _compact_active_context(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    compact: list[dict[str, Any]] = []
+    for item in list(items or [])[:_ACTIVE_CONTEXT_LIMIT]:
+        row = dict(item)
+        lifecycle = []
+        for event in list(row.get("recent_lifecycle") or [])[-_ACTIVE_LIFECYCLE_LIMIT:]:
+            event_row = dict(event)
+            event_row["rendered_text"] = str(event_row.get("rendered_text") or "")[
+                :_ACTIVE_LIFECYCLE_TEXT_LIMIT
+            ]
+            lifecycle.append(event_row)
+        row["recent_lifecycle"] = lifecycle
+        compact.append(row)
+    return compact
+
+
 class Day34OpenAiMessageSupervisor(OpenAiMessageSupervisor):
     """OpenAI supervisor with explicit same-source broker Active Trade Watch context."""
 
@@ -195,8 +225,8 @@ class Day34OpenAiMessageSupervisor(OpenAiMessageSupervisor):
         prompt = {
             "source_name": source_name,
             "source_status": source_status,
-            "active_trade_context": active_trade_context,
-            "recent_source_messages": recent_source_messages or [],
+            "active_trade_context": _compact_active_context(active_trade_context),
+            "recent_source_messages": _compact_recent_context(recent_source_messages),
             "telegram_message": raw_text,
             "reply_context": reply_context,
             "is_edit": is_edit,
