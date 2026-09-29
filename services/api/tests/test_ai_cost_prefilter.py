@@ -51,6 +51,12 @@ def test_result_report_that_was_historically_ignored_is_free_filtered() -> None:
     assert decision.action == "ignore"
     assert decision.reason == "deterministic_result_report_only_prefilter"
 
+    alternate = _prefilter("TP3 ✔️")
+    assert alternate is not None
+    assert alternate.decision == "trade_update"
+    assert alternate.action == "ignore"
+    assert alternate.reason == "deterministic_result_report_only_prefilter"
+
 
 def test_optional_risk_free_advice_is_not_treated_as_instruction() -> None:
     decision = _prefilter("Trade in +40 pips. Make the trade risk-free if you want ✅")
