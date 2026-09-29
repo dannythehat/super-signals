@@ -108,12 +108,14 @@ def deterministic_ai_cost_prefilter(
     source_name: str | None,
     reply_context: str | None,
     is_edit: bool,
+    has_active_trade_context: bool,
 ) -> AiMessageDecision | None:
     """Return a free deterministic ignore decision, or ``None`` to keep semantic AI.
 
     Direct replies are always left to AI because otherwise harmless words such as "yes"
-    can acquire lifecycle meaning from the replied-to trade. Generic edited messages are
-    also left to AI; only unmistakable marketing/result noise is filtered on edits.
+    can acquire lifecycle meaning from the replied-to trade. Generic edited messages and
+    generic messages while a broker-backed trade is active are also left to AI; only
+    unmistakable marketing/result noise is filtered in those higher-context situations.
     """
     value = (raw_text or "").strip()
     if not value:
@@ -161,7 +163,9 @@ def deterministic_ai_cost_prefilter(
             reason="deterministic_price_pulse_prefilter",
         )
 
-    if is_edit:
+    # Preserve semantic interpretation for terse lifecycle language whenever broker truth
+    # says this source has something active, and for edits where changed context matters.
+    if is_edit or has_active_trade_context:
         return None
 
     # A GOLD/XAUUSD message carrying a number can be a provider-specific terse entry even
