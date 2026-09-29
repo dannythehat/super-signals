@@ -15,10 +15,7 @@ def _fallback(text: str, *, source_status: str = "testing"):
 
 
 def test_tig_gold_now_with_price_is_safe_bare_now_trade() -> None:
-    decision = ProductionAiMessagePipeline._deterministic_complete_gold_trade(
-        "BUY GOLD NOW  4125",
-        source_status="testing",
-    )
+    decision = _fallback("BUY GOLD NOW  4125")
     assert decision is not None
     assert decision.decision == "new_trade"
     assert decision.action == "execute"
