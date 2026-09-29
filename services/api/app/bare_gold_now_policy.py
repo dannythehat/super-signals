@@ -2,11 +2,8 @@
 
 This is deliberately not a generic parser rule. It applies only to the whole-message
 forms BUY GOLD NOW, SELL GOLD NOW, GOLD BUY NOW, GOLD SELL NOW and XAUUSD equivalents.
-Providers may append one literal quoted price (for example ``BUY GOLD NOW 4125``); that
-still means execute NOW, so the fresh broker quote remains the execution price rather
-than treating the quoted number as a pending order. Provider protection remains absent
-in canonical Signal truth; execution derives the paper-tested fallback from the fresh
-broker quote.
+Provider protection remains absent in canonical Signal truth; execution derives the
+paper-tested fallback from the fresh broker quote.
 """
 
 from __future__ import annotations
@@ -22,8 +19,7 @@ TAKE_PROFIT_DISTANCE = GOLD_PROVIDER_PIP * TAKE_PROFIT_PIPS
 STOP_LOSS_DISTANCE = GOLD_PROVIDER_PIP * STOP_LOSS_PIPS
 
 _BARE_NOW = re.compile(
-    r"^\s*(?:(BUY|SELL)\s+(?:GOLD|XAUUSD)|(?:GOLD|XAUUSD)\s+(BUY|SELL))"
-    r"\s+NOW(?:\s+\d+(?:\.\d+)?)?\s*[.!🔥✅🚨⚡]*\s*$",
+    r"^\s*(?:(BUY|SELL)\s+(?:GOLD|XAUUSD)|(?:GOLD|XAUUSD)\s+(BUY|SELL))\s+NOW\s*[.!🔥✅🚨⚡]*\s*$",
     re.IGNORECASE,
 )
 
