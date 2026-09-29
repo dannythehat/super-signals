@@ -83,6 +83,7 @@ def test_budget_accounting_failure_fails_closed(monkeypatch):
 
 
 def test_exhausted_budget_never_calls_openai(monkeypatch):
+    monkeypatch.setenv("SUPER_SIGNALS_ENV", "production")
     monkeypatch.setattr(day34, "_paid_ai_budget_reason", lambda _status: "paid_ai_daily_limit_reached")
 
     def _must_not_call(*_args, **_kwargs):
