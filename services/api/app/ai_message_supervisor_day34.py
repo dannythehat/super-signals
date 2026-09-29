@@ -90,6 +90,7 @@ _RECENT_CONTEXT_TEXT_LIMIT = _positive_int_env("SUPER_SIGNALS_AI_RECENT_TEXT_LIM
 _ACTIVE_CONTEXT_LIMIT = _positive_int_env("SUPER_SIGNALS_AI_ACTIVE_CONTEXT_LIMIT", 6)
 _ACTIVE_LIFECYCLE_LIMIT = _positive_int_env("SUPER_SIGNALS_AI_ACTIVE_LIFECYCLE_LIMIT", 3)
 _ACTIVE_LIFECYCLE_TEXT_LIMIT = _positive_int_env("SUPER_SIGNALS_AI_ACTIVE_LIFECYCLE_TEXT_LIMIT", 250)
+_BUDGET_GUARD_STARTED_AT = "2026-09-29 07:40:00+00"
 
 
 def _budget_skip(raw_text: str, reason: str) -> AiMessageDecision:
@@ -127,7 +128,7 @@ def _paid_ai_budget_reason(source_status: str) -> str | None:
         with factory() as session:
             row = session.execute(
                 text(
-                    """
+                    f"""
                     SELECT
                         COUNT(*) FILTER (
                             WHERE d.created_at >= date_trunc('day', now())
@@ -144,7 +145,10 @@ def _paid_ai_budget_reason(source_status: str) -> str | None:
                     JOIN messages AS m ON m.id = d.message_id
                     JOIN sources AS s ON s.id = m.source_id
                     WHERE d.decision_source = 'openai'
-                      AND d.created_at >= date_trunc('month', now())
+                      AND d.created_at >= GREATEST(
+                          date_trunc('month', now()),
+                          TIMESTAMPTZ '{_BUDGET_GUARD_STARTED_AT}'
+                      )
                     """
                 )
             ).mappings().one()
