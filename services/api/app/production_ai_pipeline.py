@@ -1,10 +1,11 @@
 """Final production semantic pipeline.
 
 Production has one trade interpretation path: deterministic current-message rules for
-unambiguous product commands/management, otherwise the source-aware OpenAI supervisor.
-The legacy classification/parse tables are never allowed to become an execution
-fallback. If semantic interpretation is unavailable, the message is recorded as
-non-actionable instead of being re-read by an older restrictive parser.
+unambiguous product commands/management and complete literal Gold trade structures,
+otherwise the source-aware OpenAI supervisor. The legacy classification/parse tables are
+never allowed to become an execution fallback. If semantic interpretation is unavailable,
+only current-message trade geometry that can pass the existing strict mechanical policy
+may execute; ambiguous messages remain non-actionable.
 
 Recovery/idempotency helpers are owned explicitly here so production never depends on a
 removed patch or superseded pipeline generation for durable-decision lookup.
@@ -45,7 +46,10 @@ _OPEN_GOLD_SIDE = re.compile(r"\b(BUY|BUYS|SELL|SELLS)\b", re.IGNORECASE)
 # they do not create or donate any numeric execution values.
 _STRUCTURED_SIDE = re.compile(r"\b(?:BUY(?:S|ING)?|SELL(?:S|ING)?|LONG|SHORT)\b", re.IGNORECASE)
 _STRUCTURED_ENTRY = re.compile(
-    r"\b(?:ENTER|ENTRY(?:\s+ZONE)?|CURRENT\s+PRICE)\b|^\s*(?:BUY|SELL)\s*:",
+    r"\b(?:ENTER|ENTRY(?:\s+ZONE)?|CURRENT\s+PRICE)\b"
+    r"|^\s*(?:BUY|SELL)\s*:"
+    r"|^\s*#?\s*(?:XAUUSD|GOLD)\s+(?:BUY|SELL)\s+\d"
+    r"|^\s*(?:BUY|SELL)\s+(?:XAUUSD|GOLD)\s+\d",
     re.IGNORECASE | re.MULTILINE,
 )
 _STRUCTURED_STOP = re.compile(r"\b(?:SL|STOP\s*LOSS)\b", re.IGNORECASE)
@@ -56,9 +60,35 @@ _STRUCTURED_TARGET = re.compile(r"\b(?:TP\s*1|TAKE\s*PROFIT)\b", re.IGNORECASE)
 # is policy-only: the original Telegram text remains untouched in the audit trail.
 _GROUPED_NUMBER = re.compile(r"(?<![\d.])\d{1,3}(?:,\d{3})+(?:\.\d+)?")
 
+# Emergency deterministic interpretation is deliberately narrower than the semantic
+# supervisor. It accepts only a whole-message NOW command with an optional quoted price,
+# or an explicit Gold/XAUUSD header followed by one SL and one or more numeric TPs.
+# The existing V1 policy still verifies that every extracted number is literally present
+# and directionally valid before a signal can execute.
+_BARE_NOW_WITH_PRICE = re.compile(
+    r"^\s*(?:(BUY|SELL)\s+(?:GOLD|XAUUSD)|(?:GOLD|XAUUSD)\s+(BUY|SELL))"
+    r"\s+NOW\s+\d+(?:\.\d+)?\s*[.!🔥✅🚨⚡]*\s*$",
+    re.IGNORECASE,
+)
+_STRICT_GOLD_HEADER = re.compile(
+    r"^\s*#?\s*(?:(?:XAUUSD|GOLD)\s+(BUY|SELL)|(BUY|SELL)\s+(?:XAUUSD|GOLD))"
+    r"\s*(?:@|:)?\s*(\d+(?:\.\d+)?)(?:\s*[-–]\s*(\d+(?:\.\d+)?))?\s*$",
+    re.IGNORECASE,
+)
+_STRICT_GOLD_SL = re.compile(
+    r"^(?:SL|STOP\s*LOSS)\s*[:=@-]?\s*(\d+(?:\.\d+)?)\s*$",
+    re.IGNORECASE,
+)
+_STRICT_GOLD_TP = re.compile(
+    r"^TP\s*#?\s*(\d*)\s*[:=@-]?\s*(\d+(?:\.\d+)?|OPEN)\s*$",
+    re.IGNORECASE,
+)
+_STRICT_ATTRIBUTION = re.compile(r"^(?:--?\s*)?TRADE\s+BY\b.*$", re.IGNORECASE)
+_SUPERSCRIPT_DIGITS = str.maketrans("⁰¹²³⁴⁵⁶⁷⁸⁹", "0123456789")
+
 
 class ProductionAiMessagePipeline(CanonicalAiMessagePipeline):
-    """Single production AI/semantic pipeline with no legacy trade-parser fallback."""
+    """Single production semantic pipeline with strict current-message fallbacks."""
 
     @staticmethod
     def _load_revision(
@@ -228,6 +258,150 @@ class ProductionAiMessagePipeline(CanonicalAiMessagePipeline):
             raw_text_sha256=sha256((raw_text or "").encode("utf-8")).hexdigest(),
         )
 
+    @staticmethod
+    def _bare_trade_decision(raw_text: str, side: str) -> AiMessageDecision:
+        return AiMessageDecision(
+            decision="new_trade",
+            action="execute",
+            confidence=1.0,
+            reason=PROFILE,
+            extracted={
+                "symbol": "XAUUSD",
+                "side": side,
+                "order_type": "market",
+                "entry_low": None,
+                "entry_high": None,
+                "stop_loss": None,
+                "take_profits": [],
+                "double_lot": False,
+                "tp_open": False,
+                "execution_profile": PROFILE,
+                "update_type": None,
+                "update_target": None,
+                "update_value": None,
+                "provider_claimed_pips": None,
+            },
+            model="canonical-deterministic-v2",
+            response_id=None,
+            latency_ms=0,
+            source="deterministic_no_ai",
+            raw_text_sha256=sha256((raw_text or "").encode("utf-8")).hexdigest(),
+        )
+
+    @staticmethod
+    def _deterministic_complete_gold_trade(
+        raw_text: str,
+        *,
+        source_status: str,
+    ) -> AiMessageDecision | None:
+        """Interpret only literal complete Gold trades when semantic AI is unavailable.
+
+        Shadow messages are evidence-only and never enter this execution fallback. No
+        value is inferred from provider history: every entry/SL/TP comes from this exact
+        message and is subsequently re-verified by ``apply_v1_message_policy``.
+        """
+        if str(source_status or "").strip().lower() not in {"testing", "live"}:
+            return None
+
+        exact_side = bare_now_side(raw_text)
+        if exact_side is None:
+            priced_now = _BARE_NOW_WITH_PRICE.fullmatch(raw_text or "")
+            exact_side = (
+                (priced_now.group(1) or priced_now.group(2) or "").upper()
+                if priced_now is not None
+                else None
+            )
+        if exact_side in {"BUY", "SELL"}:
+            return ProductionAiMessagePipeline._bare_trade_decision(raw_text, exact_side)
+
+        lines = [
+            " ".join(line.replace("\u00a0", " ").translate(_SUPERSCRIPT_DIGITS).strip().split())
+            for line in (raw_text or "").splitlines()
+            if line.strip()
+        ]
+        if len(lines) < 3:
+            return None
+
+        header = _STRICT_GOLD_HEADER.fullmatch(lines[0])
+        if header is None:
+            return None
+        side = (header.group(1) or header.group(2) or "").upper()
+        entry_a = header.group(3)
+        entry_b = header.group(4) or entry_a
+
+        stop_loss: str | None = None
+        indexed_targets: dict[int, str] = {}
+        unnumbered_targets: list[str] = []
+        tp_open = False
+        for line in lines[1:]:
+            stop = _STRICT_GOLD_SL.fullmatch(line)
+            if stop is not None:
+                if stop_loss is not None:
+                    return None
+                stop_loss = stop.group(1)
+                continue
+
+            target = _STRICT_GOLD_TP.fullmatch(line)
+            if target is not None:
+                index_text = target.group(1)
+                value = target.group(2)
+                if value.upper() == "OPEN":
+                    tp_open = True
+                    continue
+                if index_text:
+                    index = int(index_text)
+                    if index <= 0 or index in indexed_targets:
+                        return None
+                    indexed_targets[index] = value
+                else:
+                    unnumbered_targets.append(value)
+                continue
+
+            if _STRICT_ATTRIBUTION.fullmatch(line):
+                continue
+            return None
+
+        if stop_loss is None:
+            return None
+        if indexed_targets and unnumbered_targets:
+            return None
+        if indexed_targets:
+            indexes = sorted(indexed_targets)
+            if indexes != list(range(1, indexes[-1] + 1)):
+                return None
+            take_profits = [indexed_targets[index] for index in indexes]
+        else:
+            take_profits = unnumbered_targets
+        if not take_profits:
+            return None
+
+        return AiMessageDecision(
+            decision="new_trade",
+            action="execute",
+            confidence=1.0,
+            reason="deterministic_complete_gold_trade_no_ai",
+            extracted={
+                "symbol": "XAUUSD",
+                "side": side,
+                "order_type": "market",
+                "entry_low": entry_a,
+                "entry_high": entry_b,
+                "stop_loss": stop_loss,
+                "take_profits": take_profits,
+                "double_lot": False,
+                "tp_open": tp_open,
+                "update_type": None,
+                "update_target": None,
+                "update_value": None,
+                "provider_claimed_pips": None,
+            },
+            model="canonical-deterministic-complete-gold-v1",
+            response_id=None,
+            latency_ms=0,
+            source="deterministic_no_ai",
+            raw_text_sha256=sha256((raw_text or "").encode("utf-8")).hexdigest(),
+        )
+
     def _enforce_locked_risk_semantics(
         self,
         source_id,
@@ -264,34 +438,20 @@ class ProductionAiMessagePipeline(CanonicalAiMessagePipeline):
         if precursor_side is not None and self._is_precursor_source(source_id):
             return self._precursor_decision(raw_text, precursor_side)
 
-        side = bare_now_side(raw_text)
-        if side is not None:
-            return AiMessageDecision(
-                decision="new_trade",
-                action="execute",
-                confidence=1.0,
-                reason=PROFILE,
-                extracted={
-                    "symbol": "XAUUSD",
-                    "side": side,
-                    "order_type": "market",
-                    "entry_low": None,
-                    "entry_high": None,
-                    "stop_loss": None,
-                    "take_profits": [],
-                    "double_lot": False,
-                    "tp_open": False,
-                    "execution_profile": PROFILE,
-                    "update_type": None,
-                    "update_target": None,
-                    "update_value": None,
-                    "provider_claimed_pips": None,
-                },
-                model="canonical-deterministic-v1",
-                response_id=None,
-                latency_ms=0,
-                source="deterministic_no_ai",
-                raw_text_sha256=sha256((raw_text or "").encode("utf-8")).hexdigest(),
+        deterministic_trade = self._deterministic_complete_gold_trade(
+            raw_text,
+            source_status=source_status,
+        )
+        if deterministic_trade is not None:
+            profile = self._source_profile(source_id)
+            deterministic_trade = self._apply_profile(deterministic_trade, profile)
+            deterministic_trade = self._enforce_locked_risk_semantics(
+                source_id,
+                deterministic_trade,
+            )
+            return self._literal_order_type_precedence(
+                deterministic_trade,
+                self._policy_text(raw_text, profile),
             )
 
         profile = self._source_profile(source_id)
@@ -336,6 +496,23 @@ class ProductionAiMessagePipeline(CanonicalAiMessagePipeline):
                     is_edit=revision_index > 0,
                 )
         except AiSupervisorError:
+            # A temporary semantic-provider failure must not suppress a literal complete
+            # trade. Re-run the same narrow deterministic path; ambiguous text remains
+            # fail-closed exactly as before.
+            deterministic_trade = self._deterministic_complete_gold_trade(
+                raw_text,
+                source_status=source_status,
+            )
+            if deterministic_trade is not None:
+                deterministic_trade = self._apply_profile(deterministic_trade, profile)
+                deterministic_trade = self._enforce_locked_risk_semantics(
+                    source_id,
+                    deterministic_trade,
+                )
+                return self._literal_order_type_precedence(
+                    deterministic_trade,
+                    policy_text,
+                )
             return self._non_actionable_without_ai(
                 raw_text,
                 reason="semantic_supervisor_unavailable_no_legacy_trade_fallback",
