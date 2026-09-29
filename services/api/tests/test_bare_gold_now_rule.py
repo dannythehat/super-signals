@@ -50,13 +50,29 @@ def test_bare_now_matcher_is_intentionally_narrow() -> None:
     assert bare_now_side("BUY GOLD NOW") == "BUY"
     assert bare_now_side("Gold sell now🔥") == "SELL"
     assert bare_now_side("SELL XAUUSD NOW") == "SELL"
+    assert bare_now_side("BUY GOLD NOW 4390") == "BUY"
+    assert bare_now_side("SELL GOLD NOW 4141") == "SELL"
     assert bare_now_side("BUY GOLD NOW\nSL 4380\nTP 4400") is None
-    assert bare_now_side("BUY GOLD NOW 4390") is None
     assert bare_now_side("GET READY TO BUY GOLD NOW") is None
 
 
 def test_bare_buy_gold_now_becomes_special_market_profile() -> None:
     result = v1.apply_v1_message_policy(_decision(side="BUY"), raw_text="Buy Gold Now")
+    assert result.decision == "new_trade"
+    assert result.action == "execute"
+    assert result.reason == PROFILE
+    assert result.extracted["execution_profile"] == PROFILE
+    assert result.extracted["entry_low"] is None
+    assert result.extracted["entry_high"] is None
+    assert result.extracted["stop_loss"] is None
+    assert result.extracted["take_profits"] == []
+
+
+def test_priced_bare_gold_now_becomes_same_special_market_profile() -> None:
+    result = v1.apply_v1_message_policy(
+        _decision(side="SELL"),
+        raw_text="SELL GOLD NOW 4141",
+    )
     assert result.decision == "new_trade"
     assert result.action == "execute"
     assert result.reason == PROFILE
@@ -183,5 +199,29 @@ def test_bare_sell_derives_50_tp_and_100_sl_from_live_bid() -> None:
         )
     )
     assert entry == Decimal("4390")
+    assert signal.stop_loss == entry + STOP_LOSS_DISTANCE
+    assert signal.take_profits == (entry - TAKE_PROFIT_DISTANCE,)
+
+
+def test_priced_bare_sell_derives_protection_from_fresh_broker_bid_not_provider_quote() -> None:
+    service = object.__new__(CanonicalTradingExecutionService)
+    service._session_factory = _SessionFactory("SELL GOLD NOW 4141")
+    service._paper_max_signal_age_seconds = 90.0
+    signal = _signal("SELL")
+    state = SimpleNamespace(
+        execution_ready=True,
+        execution_block_reason=None,
+        price=SimpleNamespace(ask=Decimal("4142.5"), bid=Decimal("4142")),
+    )
+    entry, _ = asyncio.run(
+        service._resolve_entry(
+            owner_user_id=uuid4(),
+            signal=signal,
+            day23=SimpleNamespace(),
+            initial_state=state,
+        )
+    )
+    assert entry == Decimal("4142")
+    assert entry != Decimal("4141")
     assert signal.stop_loss == entry + STOP_LOSS_DISTANCE
     assert signal.take_profits == (entry - TAKE_PROFIT_DISTANCE,)
