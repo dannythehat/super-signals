@@ -8,9 +8,14 @@ Defaults:
 - TIG's Asia Trades: 12 hours
 - all other mapped providers: 24 hours
 
-The watchdog is intentionally isolated from Uvicorn's event loop. Each broker-close
-pass runs in a worker thread with its own async loop so a slow MetaAPI response cannot
-starve /health, Telegram intake, or live execution.
+The watchdog also performs one read-only broker health probe per cycle. The probe uses
+the shared resilient MetaAPI reader so a cloud terminal whose account-information
+endpoint has stopped responding can request one bounded redeploy before the next trade
+arrives. The probe never submits, closes or modifies a trade.
+
+The watchdog is intentionally isolated from Uvicorn's event loop. Each broker pass runs
+in a worker thread with its own async loop so a slow MetaAPI response cannot starve
+/health, Telegram intake, or live execution.
 """
 
 from __future__ import annotations
@@ -27,7 +32,9 @@ from sqlalchemy.orm import Session, sessionmaker
 from app.metaapi_read_gateway import MetaApiReadGateway
 from app.metaapi_trade_gateway import MetaApiTradeGateway
 from app.mt5_crypto import MetaApiTokenCipher
+from app.mt5_read_service_day23 import Day23Mt5ReadService, Day23ReadError
 from app.owner_manual_close import OwnerManualCloseError, OwnerManualCloseService
+from app.paper_resilient_read_gateway import PaperResilientMetaApiReadGateway
 
 logger = logging.getLogger(__name__)
 
@@ -41,7 +48,7 @@ class StalePositionCandidate:
 
 
 class StalePositionWatchdog:
-    """Broker-confirmed hard age cap for mapped Smart Signals positions."""
+    """Broker-confirmed hard age cap plus isolated read-only terminal health probe."""
 
     def __init__(
         self,
@@ -113,6 +120,26 @@ class StalePositionWatchdog:
                 )
         return tuple(result)
 
+    def _probe_terminal_isolated(self) -> None:
+        """Read broker truth only; resilient reader may restart a stalled cloud terminal."""
+        service = Day23Mt5ReadService(
+            session_factory=self._session_factory,
+            cipher=self._cipher,
+            gateway=PaperResilientMetaApiReadGateway(
+                timeout_seconds=5.0,
+                attempts=3,
+                retry_delay_seconds=0.25,
+            ),
+        )
+        try:
+            asyncio.run(service.read_owner_live_state(self._owner_user_id))
+        except Day23ReadError as exc:
+            logger.warning(
+                "MT5 read-only health probe failed code=%s retryable=%s",
+                exc.code,
+                exc.retryable,
+            )
+
     def _close_candidate_isolated(self, position_id: UUID):
         service = OwnerManualCloseService(
             session_factory=self._session_factory,
@@ -129,6 +156,11 @@ class StalePositionWatchdog:
         )
 
     async def poll_once(self) -> int:
+        # Repair terminal data independently of trade arrival. This read-only probe is
+        # isolated in a worker thread and cannot weaken the 90-second entry freshness
+        # rule or submit a broker mutation.
+        await asyncio.to_thread(self._probe_terminal_isolated)
+
         now = datetime.now(UTC)
         candidates = await asyncio.to_thread(self._candidates, now)
         closed_count = 0
