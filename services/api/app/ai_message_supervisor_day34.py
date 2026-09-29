@@ -16,6 +16,7 @@ from typing import Any
 
 import httpx
 
+from app.ai_cost_prefilter import deterministic_ai_cost_prefilter
 from app.ai_message_supervisor import (
     AI_DECISION_SCHEMA,
     AiMessageDecision,
@@ -77,6 +78,16 @@ class Day34OpenAiMessageSupervisor(OpenAiMessageSupervisor):
         previous_text: str | None = None,
         is_edit: bool = False,
     ) -> AiMessageDecision:
+        prefiltered = deterministic_ai_cost_prefilter(
+            raw_text=raw_text,
+            source_name=source_name,
+            reply_context=reply_context,
+            is_edit=is_edit,
+            has_active_trade_context=bool(active_trade_context),
+        )
+        if prefiltered is not None:
+            return prefiltered
+
         started = time.perf_counter()
         prompt = {
             "source_name": source_name,
