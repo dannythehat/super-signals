@@ -11,7 +11,8 @@ def _fallback(text: str, *, source_status: str = "testing"):
     )
     if decision is None:
         return None
-    return apply_v1_message_policy(decision, raw_text=text)
+    policy_text = ProductionAiMessagePipeline._policy_text(text, None)
+    return apply_v1_message_policy(decision, raw_text=policy_text)
 
 
 def test_tig_gold_now_with_price_is_safe_bare_now_trade() -> None:
