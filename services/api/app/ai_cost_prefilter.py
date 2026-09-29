@@ -45,7 +45,7 @@ _RESULT_ONLY = re.compile(
     r"FLOATING\s+IN\s+\+?\d+(?:\.\d+)?\s+PIPS(?:\s+PROFIT)?|"
     r"ALL\s+ENT(?:R|RI)IES\s+IN\s+PROFIT|"
     r"ALL['’]?S?\s+TARGETS?\s+DONE|"
-    r"TP\s*#?\s*\d+\s*✅(?:\s*/\s*\d+(?:\.\d+)?\s*PIPS?)?"
+    r"TP\s*#?\s*\d+\s*(?:✅|✔️?|☑️?)(?:\s*/\s*\d+(?:\.\d+)?\s*PIPS?)?"
     r")",
     re.IGNORECASE,
 )
