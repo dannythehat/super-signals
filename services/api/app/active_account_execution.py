@@ -22,7 +22,7 @@ from app.provider_risk_policy import provider_tp_limit
 class ActiveAccountCanonicalTradingExecutionService(
     GracefulCaptureReliableCanonicalTradingExecutionService
 ):
-    """Use the connected canonical MT5 slot regardless of Demo/Live environment."""
+    """Use the canonical MT5 slot regardless of Demo/Live environment."""
 
     def _load_active_account(self, user_id: UUID, signal_id: UUID) -> _AccountInput:
         with self._session_factory() as session:
@@ -68,8 +68,11 @@ class ActiveAccountCanonicalTradingExecutionService(
             raise Day26ExecutionError("mt5_account_not_configured")
         if str(row["account_environment"] or "").lower() not in {"demo", "live"}:
             raise Day26ExecutionError("mt5_account_environment_invalid")
-        if str(row["status"] or "") != "connected":
-            raise Day26ExecutionError("mt5_account_not_connected")
+        # ``status`` is cached by the background connection monitor and can briefly
+        # remain ``error`` after the terminal is already reachable again. The execution
+        # flow immediately performs live MetaAPI reads before any broker mutation, so
+        # connectivity is decided there. Only revoked/unconfigured accounts are vetoed
+        # by local state here.
         return _AccountInput(
             local_account_id=UUID(str(row["id"])),
             metaapi_account_id=str(row["metaapi_account_id"]),
@@ -164,8 +167,8 @@ class ActiveAccountCanonicalTradingExecutionService(
                 raise Day26ExecutionError("mt5_account_not_configured")
             if str(account_row["account_environment"] or "").lower() not in {"demo", "live"}:
                 raise Day26ExecutionError("mt5_account_environment_invalid")
-            if str(account_row["status"] or "") != "connected":
-                raise Day26ExecutionError("mt5_account_not_connected")
+            # Do not veto on cached connection status. Day23/MetaAPI live reads below
+            # are authoritative and already fail closed before an order can be sent.
 
         symbol = str(signal_row["symbol"] or "").strip().upper()
         side = str(signal_row["side"] or "").strip().upper()
