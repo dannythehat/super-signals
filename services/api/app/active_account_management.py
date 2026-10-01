@@ -23,6 +23,7 @@ class ActiveAccountCanonicalTradingManagementService(CanonicalTradingManagementS
                     FROM mt5_accounts
                     WHERE owner_user_id = :owner_user_id
                       AND status != 'revoked'
+                    ORDER BY created_at DESC
                     LIMIT 1
                     """
                 ),
@@ -32,8 +33,10 @@ class ActiveAccountCanonicalTradingManagementService(CanonicalTradingManagementS
             return None
         if str(row["account_environment"] or "").lower() not in {"demo", "live"}:
             raise Day27ManagementError("mt5_account_environment_invalid")
-        if str(row["status"] or "") != "connected":
-            raise Day27ManagementError("mt5_account_not_connected", retryable=True)
+        # mt5_accounts.status is a cached background health observation. It can lag
+        # a recovered MetaAPI terminal after a transient timeout. Management performs
+        # authoritative broker reads before mutation, so only revoked/unconfigured
+        # accounts are blocked here; live gateway state decides connectivity.
         return _Account(
             local_id=UUID(str(row["id"])),
             account_id=str(row["metaapi_account_id"]),
