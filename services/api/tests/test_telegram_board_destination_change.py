@@ -1,5 +1,4 @@
-from contextlib import contextmanager
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 from app import telegram_publisher_day34 as module
@@ -31,7 +30,9 @@ class _Session:
         return _Result(self._row)
 
 
-def _manager(state: dict[str, Any], chat_id: str, monkeypatch: Any) -> tuple[Any, list[tuple[str, dict]]]:
+def _manager(
+    state: dict[str, Any], chat_id: str, monkeypatch: Any
+) -> tuple[Any, list[tuple[str, dict]]]:
     manager = object.__new__(Day34TelegramPublisherManager)
     manager._bot_token = "token"
     manager._destination_chat_id = chat_id
@@ -57,7 +58,7 @@ def _state(chat_id: str) -> dict[str, Any]:
         "telegram_message_id": 3586,
         "destination_chat_id": chat_id,
         "source_digest": "stale",
-        "pinned_at": datetime(2026, 8, 12, tzinfo=timezone.utc),
+        "pinned_at": datetime(2026, 8, 12, tzinfo=UTC),
     }
 
 
