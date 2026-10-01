@@ -442,7 +442,7 @@ class Day34TelegramPublisherManager(Day20TelegramPublisherManager):
             state = session.execute(
                 text(
                     """
-                    SELECT telegram_message_id, source_digest, pinned_at
+                    SELECT telegram_message_id, destination_chat_id, source_digest, pinned_at
                     FROM telegram_live_board_state
                     WHERE id = 1
                     """
@@ -454,8 +454,17 @@ class Day34TelegramPublisherManager(Day20TelegramPublisherManager):
             if state["telegram_message_id"] is not None
             else None
         )
+        stored_chat = state["destination_chat_id"]
+        if (
+            message_id is not None
+            and stored_chat is not None
+            and str(stored_chat) != str(self._destination_chat_id)
+        ):
+            # The destination group changed: the stored message lives in the old chat,
+            # so it cannot be edited here. Post and pin a fresh board in the new chat.
+            message_id = None
         digest_changed = str(state["source_digest"] or "") != digest
-        needs_pin = state["pinned_at"] is None
+        needs_pin = state["pinned_at"] is None or message_id is None
         if message_id is not None and not digest_changed and not needs_pin:
             return
 
