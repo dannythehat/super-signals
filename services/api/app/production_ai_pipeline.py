@@ -87,6 +87,15 @@ _STRICT_GOLD_TP = re.compile(
     re.IGNORECASE,
 )
 _STRICT_ATTRIBUTION = re.compile(r"^(?:--?\s*)?TRADE\s+BY\b.*$", re.IGNORECASE)
+_STRICT_TRADE_IDEA = re.compile(
+    r"^\**\s*NEW\s+TRADE\s+IDEA\s*\**$",
+    re.IGNORECASE,
+)
+_STRICT_RISK_DISCLAIMER = re.compile(
+    r"^TRADE\s+ACCORDINGLY\s+AND\s+ONLY\s+TRADE\s+WITH\s+MONEY\s+YOU\s+CAN\s+AFFORD\s+TO\s+LOSE[.!]*$",
+    re.IGNORECASE,
+)
+_STRICT_DOUBLE_LOTSIZE = re.compile(r"^DOUBLE\s+LOTSIZE$", re.IGNORECASE)
 _SUPERSCRIPT_DIGITS = str.maketrans("⁰¹²³⁴⁵⁶⁷⁸⁹", "0123456789")
 
 
@@ -321,6 +330,8 @@ class ProductionAiMessagePipeline(CanonicalAiMessagePipeline):
             for line in (raw_text or "").splitlines()
             if line.strip()
         ]
+        if lines and _STRICT_TRADE_IDEA.fullmatch(lines[0]):
+            lines = lines[1:]
         if len(lines) < 3:
             return None
 
@@ -360,6 +371,10 @@ class ProductionAiMessagePipeline(CanonicalAiMessagePipeline):
                 continue
 
             if _STRICT_ATTRIBUTION.fullmatch(line):
+                continue
+            if _STRICT_RISK_DISCLAIMER.fullmatch(line):
+                continue
+            if _STRICT_DOUBLE_LOTSIZE.fullmatch(line):
                 continue
             return None
 
