@@ -1,0 +1,64 @@
+name: One-shot paid AI fallback patch
+
+on:
+  push:
+    branches:
+      - fix/paid-ai-cap-live-trade-fallback-20261001
+
+permissions:
+  contents: write
+
+jobs:
+  patch-and-test:
+    if: contains(github.event.head_commit.message, 'Run one-shot paid AI fallback patch')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: fix/paid-ai-cap-live-trade-fallback-20261001
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Apply narrow deterministic wrapper patch
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          p = Path('services/api/app/production_ai_pipeline.py')
+          s = p.read_text()
+
+          old = '''_STRICT_ATTRIBUTION = re.compile(r"^(?:--?\\s*)?TRADE\\s+BY\\b.*$", re.IGNORECASE)\n_SUPERSCRIPT_DIGITS = str.maketrans("⁰¹²³⁴⁵⁶⁷⁸⁹", "0123456789")\n'''
+          new = '''_STRICT_ATTRIBUTION = re.compile(r"^(?:--?\\s*)?TRADE\\s+BY\\b.*$", re.IGNORECASE)\n_STRICT_TRADE_IDEA = re.compile(\n    r"^\\**\\s*NEW\\s+TRADE\\s+IDEA\\s*\\**$",\n    re.IGNORECASE,\n)\n_STRICT_RISK_DISCLAIMER = re.compile(\n    r"^TRADE\\s+ACCORDINGLY\\s+AND\\s+ONLY\\s+TRADE\\s+WITH\\s+MONEY\\s+YOU\\s+CAN\\s+AFFORD\\s+TO\\s+LOSE[.!]*$",\n    re.IGNORECASE,\n)\n_STRICT_DOUBLE_LOTSIZE = re.compile(r"^DOUBLE\\s+LOTSIZE$", re.IGNORECASE)\n_SUPERSCRIPT_DIGITS = str.maketrans("⁰¹²³⁴⁵⁶⁷⁸⁹", "0123456789")\n'''
+          if s.count(old) != 1:
+              raise SystemExit('strict wrapper regex anchor mismatch')
+          s = s.replace(old, new)
+
+          old = '''        if len(lines) < 3:\n            return None\n\n        header = _STRICT_GOLD_HEADER.fullmatch(lines[0])\n'''
+          new = '''        if lines and _STRICT_TRADE_IDEA.fullmatch(lines[0]):\n            lines = lines[1:]\n        if len(lines) < 3:\n            return None\n\n        header = _STRICT_GOLD_HEADER.fullmatch(lines[0])\n'''
+          if s.count(old) != 1:
+              raise SystemExit('trade idea wrapper anchor mismatch')
+          s = s.replace(old, new)
+
+          old = '''            if _STRICT_ATTRIBUTION.fullmatch(line):\n                continue\n            return None\n'''
+          new = '''            if _STRICT_ATTRIBUTION.fullmatch(line):\n                continue\n            if _STRICT_RISK_DISCLAIMER.fullmatch(line):\n                continue\n            if _STRICT_DOUBLE_LOTSIZE.fullmatch(line):\n                continue\n            return None\n'''
+          if s.count(old) != 1:
+              raise SystemExit('strict wrapper line anchor mismatch')
+          s = s.replace(old, new)
+          p.write_text(s)
+          PY
+          git diff --check
+      - name: Install and run focused regressions
+        run: |
+          python -m pip install --disable-pip-version-check --quiet -r requirements-dev.txt
+          export PYTHONPATH="$PWD/services/api"
+          python -m pytest -q services/api/tests/test_paid_ai_cap_complete_gold_fallback.py services/api/tests/test_live_missed_trade_parser_regressions.py
+          python -m compileall -q services/api/app
+      - name: Commit tested patch and remove one-shot workflow
+        run: |
+          git config user.name 'Super Signals Reliability Patch'
+          git config user.email 'reliability-patch@users.noreply.github.com'
+          git rm .github/workflows/one-shot-paid-ai-fallback-patch.yml
+          git add services/api/app/production_ai_pipeline.py services/api/tests/test_paid_ai_cap_complete_gold_fallback.py
+          git commit -m 'Keep complete Gold trades independent of paid AI quota'
+          git push origin HEAD:fix/paid-ai-cap-live-trade-fallback-20261001
