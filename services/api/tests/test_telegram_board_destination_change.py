@@ -75,3 +75,10 @@ def test_board_is_edited_in_place_when_destination_chat_is_unchanged(monkeypatch
     manager._sync_live_board()
     assert [method for method, _ in calls] == ["editMessageText"]
     assert calls[0][1]["message_id"] == 3586
+
+
+def test_new_board_message_clears_the_old_pinned_marker() -> None:
+    import inspect
+
+    source = inspect.getsource(Day34TelegramPublisherManager._record_board_message)
+    assert "pinned_at=CASE WHEN CAST(:created AS boolean) THEN NULL ELSE pinned_at END" in source

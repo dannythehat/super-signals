@@ -619,6 +619,7 @@ class Day34TelegramPublisherManager(Day20TelegramPublisherManager):
                         telegram_message_id=:message_id,
                         rendered_text=:rendered,
                         source_digest=:digest,
+                        pinned_at=CASE WHEN CAST(:created AS boolean) THEN NULL ELSE pinned_at END,
                         status='ready',
                         failure_code=NULL,
                         failure_reason=NULL,
@@ -631,6 +632,7 @@ class Day34TelegramPublisherManager(Day20TelegramPublisherManager):
                     "message_id": message_id,
                     "rendered": rendered,
                     "digest": digest,
+                    "created": created,
                 },
             )
             session.add(
