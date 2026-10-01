@@ -154,6 +154,7 @@ class ActiveAccountCanonicalTradingExecutionService(
                     FROM mt5_accounts
                     WHERE owner_user_id = :owner_user_id
                       AND status != 'revoked'
+                    ORDER BY created_at DESC
                     LIMIT 1
                     """
                 ),
