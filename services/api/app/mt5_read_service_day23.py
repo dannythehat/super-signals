@@ -140,14 +140,17 @@ class Day23Mt5ReadService:
             self._audit_failure(row["id"], "broker_credential_decryption_failed", "decrypt")
             raise Day23ReadError("broker_credential_decryption_failed") from exc
 
-        scope = inspect_metaapi_token_scope(token)
-        if (
-            scope.jwt_payload_decoded
-            and scope.is_explicitly_narrowed
-            and not scope.has_terminal_access
-        ):
-            self._audit_failure(row["id"], "metaapi_terminal_scope_missing", "token_scope")
-            raise Day23ReadError("metaapi_terminal_scope_missing")
+        if getattr(self._gateway, "requires_metaapi_token", True):
+            scope = inspect_metaapi_token_scope(token)
+            if (
+                scope.jwt_payload_decoded
+                and scope.is_explicitly_narrowed
+                and not scope.has_terminal_access
+            ):
+                self._audit_failure(
+                    row["id"], "metaapi_terminal_scope_missing", "token_scope"
+                )
+                raise Day23ReadError("metaapi_terminal_scope_missing")
 
         account_id = str(row["metaapi_account_id"])
         try:

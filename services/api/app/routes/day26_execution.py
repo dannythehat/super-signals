@@ -15,11 +15,9 @@ from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from pydantic import BaseModel, Field
 
 from app.access_control import require_permission
-from app.metaapi_margin_gateway import MetaApiMarginGateway
-from app.metaapi_trade_gateway import MetaApiTradeGateway
+from app.broker_gateway_factory import build_broker_gateways
 from app.mt5_execution_day26 import Day26ExecutionError
 from app.mt5_runtime import require_mt5_service
-from app.paper_resilient_read_gateway import ResilientMetaApiReadGateway
 from app.trading_execution_canonical import CanonicalTradingExecutionService
 
 router = APIRouter(prefix="/owner/mt5/day26", tags=["mt5", "execution"])
@@ -61,12 +59,13 @@ def _service(request: Request) -> CanonicalTradingExecutionService:
     if isinstance(cached, CanonicalTradingExecutionService):
         return cached
     mt5_service = require_mt5_service(request)
+    broker = build_broker_gateways(mt5_service._session_factory)
     service = CanonicalTradingExecutionService(
         session_factory=mt5_service._session_factory,
         cipher=mt5_service._cipher,
-        read_gateway=ResilientMetaApiReadGateway(),
-        margin_gateway=MetaApiMarginGateway(),
-        trade_gateway=MetaApiTradeGateway(),
+        read_gateway=broker.read,
+        margin_gateway=broker.margin,
+        trade_gateway=broker.trade,
     )
     request.app.state.canonical_mt5_execution_service = service
     return service

@@ -12,6 +12,7 @@ from pydantic import BaseModel
 
 from app.access_control import get_current_identity
 from app.admin_portfolio_day35 import Day35AdminPortfolioService, PeriodKey, SortKey
+from app.broker_gateway_factory import broker_transport, build_broker_gateways
 from app.mt5_connection_service_day30 import Day30Mt5ConnectionService
 from app.mt5_runtime import require_mt5_service
 from app.paper_resilient_read_gateway import ResilientMetaApiReadGateway
@@ -151,11 +152,18 @@ def _service(request: Request) -> Day33PerformanceLedgerServiceV2:
                 "message": "Performance data is temporarily unavailable.",
             },
         )
-    service = CanonicalPerformanceRuntimeService(
-        session_factory=base._session_factory,
-        cipher=base._cipher,
-        gateway=ResilientMetaApiReadGateway(),
-    )
+    if broker_transport() == "local_bridge":
+        service = CanonicalPerformanceRuntimeService(
+            session_factory=base._session_factory,
+            cipher=base._cipher,
+            gateway=build_broker_gateways(base._session_factory).read,
+        )
+    else:
+        service = CanonicalPerformanceRuntimeService(
+            session_factory=base._session_factory,
+            cipher=base._cipher,
+            gateway=ResilientMetaApiReadGateway(),
+        )
     request.app.state.day33_performance_service = service
     return service
 

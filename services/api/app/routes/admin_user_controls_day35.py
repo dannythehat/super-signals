@@ -22,10 +22,9 @@ from app.admin_user_controls_day35 import (
     Day35AdminControlError,
     Day35AdminUserControlService,
 )
+from app.broker_gateway_factory import broker_transport, build_broker_gateways
 from app.dashboard_day32 import QuietDay23Mt5ReadService
 from app.dashboard_resilient_runtime import ResilientDashboardRuntimeService
-from app.metaapi_read_gateway import MetaApiReadGateway
-from app.metaapi_trade_gateway import MetaApiTradeGateway
 from app.mt5_connection_service_day30 import Day30Mt5ConnectionService
 from app.mt5_runtime import require_mt5_service
 from app.paper_resilient_read_gateway import ResilientMetaApiReadGateway
@@ -120,11 +119,12 @@ def _service(request: Request) -> Day35AdminUserControlService:
                 "message": "Administrative trading controls are temporarily unavailable.",
             },
         )
+    broker = build_broker_gateways(base._session_factory, resilient_reads=False)
     trading = Day31TradingControlService(
         session_factory=base._session_factory,
         cipher=base._cipher,
-        read_gateway=MetaApiReadGateway(),
-        trade_gateway=MetaApiTradeGateway(),
+        read_gateway=broker.read,
+        trade_gateway=broker.trade,
     )
     service = Day35AdminUserControlService(
         session_factory=base._session_factory,
@@ -148,10 +148,15 @@ def _portfolio_service(request: Request) -> ResilientDashboardRuntimeService:
                 "message": "Account balances are temporarily unavailable.",
             },
         )
+    gateway = ResilientMetaApiReadGateway(timeout_seconds=2.5, attempts=1)
+    if broker_transport() == "local_bridge":
+        gateway = build_broker_gateways(
+            base._session_factory, timeout_seconds=2.5
+        ).read
     read_service = QuietDay23Mt5ReadService(
         session_factory=base._session_factory,
         cipher=base._cipher,
-        gateway=ResilientMetaApiReadGateway(timeout_seconds=2.5, attempts=1),
+        gateway=gateway,
     )
     service = ResilientDashboardRuntimeService(
         session_factory=base._session_factory,

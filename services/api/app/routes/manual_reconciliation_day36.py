@@ -11,11 +11,11 @@ from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from pydantic import BaseModel
 
 from app.access_control import get_current_identity
+from app.broker_gateway_factory import build_broker_gateways
 from app.manual_reconciliation_day36 import (
     Day36ManualMt5ReconciliationService,
     Day36ReconciliationError,
 )
-from app.metaapi_read_gateway import MetaApiReadGateway
 from app.mt5_connection_service_day30 import Day30Mt5ConnectionService
 from app.mt5_runtime import require_mt5_service
 
@@ -58,10 +58,11 @@ def _service(request: Request) -> Day36ManualMt5ReconciliationService:
                 "message": "MT5 activity is temporarily unavailable.",
             },
         )
+    broker = build_broker_gateways(base._session_factory, resilient_reads=False)
     service = Day36ManualMt5ReconciliationService(
         session_factory=base._session_factory,
         cipher=base._cipher,
-        gateway=MetaApiReadGateway(),
+        gateway=broker.read,
     )
     request.app.state.day36_manual_reconciliation_service = service
     return service

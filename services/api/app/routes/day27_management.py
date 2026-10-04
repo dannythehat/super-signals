@@ -9,8 +9,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from pydantic import BaseModel
 
 from app.access_control import require_permission
-from app.metaapi_read_gateway import MetaApiReadGateway
-from app.metaapi_trade_gateway import MetaApiTradeGateway
+from app.broker_gateway_factory import build_broker_gateways
 from app.mt5_management_day27 import Day27ManagementError, Day27Mt5ManagementService
 from app.mt5_runtime import require_mt5_service
 
@@ -40,11 +39,12 @@ def _service(request: Request) -> Day27Mt5ManagementService:
     if cached is not None:
         return cached
     mt5_service = require_mt5_service(request)
+    broker = build_broker_gateways(mt5_service._session_factory)
     service = Day27Mt5ManagementService(
         session_factory=mt5_service._session_factory,
         cipher=mt5_service._cipher,
-        read_gateway=MetaApiReadGateway(),
-        trade_gateway=MetaApiTradeGateway(),
+        read_gateway=broker.read,
+        trade_gateway=broker.trade,
     )
     request.app.state.day27_mt5_management_service = service
     return service

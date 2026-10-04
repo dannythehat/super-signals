@@ -12,6 +12,7 @@ from pydantic import BaseModel
 from sqlalchemy import text
 
 from app.access_control import get_current_identity
+from app.broker_gateway_factory import broker_transport, build_broker_gateways
 from app.dashboard_day32 import QuietDay23Mt5ReadService
 from app.dashboard_resilient_runtime import ResilientDashboardRuntimeService
 from app.dashboard_runtime import CanonicalTodayTradingSummaryService
@@ -20,6 +21,8 @@ from app.mt5_runtime import require_mt5_service
 from app.paper_resilient_read_gateway import ResilientMetaApiReadGateway
 from app.routes.performance_day33 import (
     _service as _performance_service,
+)
+from app.routes.performance_day33 import (
     router as performance_day33_router,
 )
 from app.trading_accounting import CanonicalTradingAccountingService
@@ -173,10 +176,15 @@ def _service(request: Request) -> ResilientDashboardRuntimeService:
                 "message": "Account data is temporarily unavailable.",
             },
         )
+    gateway = ResilientMetaApiReadGateway(timeout_seconds=2.5, attempts=1)
+    if broker_transport() == "local_bridge":
+        gateway = build_broker_gateways(
+            base._session_factory, timeout_seconds=2.5
+        ).read
     read_service = QuietDay23Mt5ReadService(
         session_factory=base._session_factory,
         cipher=base._cipher,
-        gateway=ResilientMetaApiReadGateway(timeout_seconds=2.5, attempts=1),
+        gateway=gateway,
     )
     service = ResilientDashboardRuntimeService(
         session_factory=base._session_factory,

@@ -18,9 +18,10 @@ from app.aidy_decision_runtime import AidyDecisionRuntime
 from app.aidy_grounding_acceptance import AidyGroundingAcceptanceRuntime
 from app.aidy_historical_replay import AidyHistoricalReplayRuntime
 from app.aidy_historical_stress_lab import AidyHistoricalStressLabRuntime
-from app.aidy_reasoning_runtime import AidyReasoningRuntime
 from app.aidy_message_review_runtime import AidyMessageReviewRuntime
+from app.aidy_reasoning_runtime import AidyReasoningRuntime
 from app.aidy_shadow_runtime import AidyShadowRuntime
+from app.broker_gateway_factory import broker_transport, build_broker_gateways
 from app.broker_settlement_canonical import CanonicalBrokerSettlementManager
 from app.config import get_settings
 from app.day26_code_acceptance import run_day26_code_acceptance_probe
@@ -29,8 +30,6 @@ from app.day34_code_acceptance import run_day34_code_acceptance_probe
 from app.day34_live_acceptance import run_day34_live_acceptance_safely
 from app.db import get_research_session_factory, get_session_factory
 from app.metaapi_gateway import MetaApiProvisioningGateway
-from app.metaapi_read_gateway import MetaApiReadGateway
-from app.metaapi_trade_gateway import MetaApiTradeGateway
 from app.mt5_connection_manager import Mt5ConnectionManager
 from app.mt5_connection_service import Mt5ConnectionError, Mt5DemoConnectionService
 from app.mt5_connection_service_day30 import Day30Mt5ConnectionService
@@ -57,6 +56,7 @@ from app.routes.auth import router as auth_router
 from app.routes.day26_execution import router as day26_execution_router
 from app.routes.day27_management import router as day27_management_router
 from app.routes.health import router as health_router
+from app.routes.local_bridge import router as local_bridge_router
 from app.routes.mt5_accounts import router as mt5_accounts_router
 from app.routes.mt5_approvals_day30 import router as mt5_approvals_day30_router
 from app.routes.notifications_day34 import router as notifications_day34_router
@@ -229,6 +229,11 @@ async def _lifespan(application: FastAPI) -> AsyncIterator[None]:
     day34_live_acceptance_task: asyncio.Task[None] | None = None
     if broker_keys:
         broker_cipher = MetaApiTokenCipher(broker_keys)
+        selected_transport = broker_transport()
+        broker = build_broker_gateways(
+            session_factory,
+            timeout_seconds=5.0,
+        )
         gateway = MetaApiProvisioningGateway()
         mt5_connection_service = Day30Mt5ConnectionService(
             session_factory=session_factory,
@@ -240,7 +245,7 @@ async def _lifespan(application: FastAPI) -> AsyncIterator[None]:
         day33_performance_service = CanonicalPerformanceLedgerService(
             session_factory=session_factory,
             cipher=broker_cipher,
-            gateway=MetaApiReadGateway(timeout_seconds=5.0),
+            gateway=broker.read,
         )
         application.state.day33_performance_service = day33_performance_service
 
@@ -261,8 +266,8 @@ async def _lifespan(application: FastAPI) -> AsyncIterator[None]:
                         reference_user_id=day34_reference_user_id,
                         poll_seconds=poll_seconds,
                         cipher=broker_cipher,
-                        read_gateway=MetaApiReadGateway(timeout_seconds=5.0),
-                        trade_gateway=MetaApiTradeGateway(),
+                        read_gateway=broker.read,
+                        trade_gateway=broker.trade,
                     )
                     application.state.day34_settlement_manager = day34_settlement_manager
                 except (ValueError, TypeError):
@@ -271,7 +276,7 @@ async def _lifespan(application: FastAPI) -> AsyncIterator[None]:
         if day34_reference_user_id is not None:
             shadow_trade_manager = ShadowTradeManager(
                 session_factory=session_factory, cipher=broker_cipher,
-                gateway=MetaApiReadGateway(), owner_user_id=day34_reference_user_id,
+                gateway=broker.read, owner_user_id=day34_reference_user_id,
                 poll_seconds=int(os.getenv("SUPER_SIGNALS_SHADOW_POLL_SECONDS", "15") or "15"),
             )
             application.state.shadow_trade_manager = shadow_trade_manager
@@ -282,6 +287,8 @@ async def _lifespan(application: FastAPI) -> AsyncIterator[None]:
                 poll_seconds=60,
                 default_max_age_hours=24.0,
                 tig_max_age_hours=12.0,
+                read_gateway=broker.read,
+                trade_gateway=broker.trade,
             )
             application.state.stale_position_watchdog = stale_position_watchdog
 
@@ -330,22 +337,25 @@ async def _lifespan(application: FastAPI) -> AsyncIterator[None]:
                 except (ValueError, RuntimeError):
                     logger.exception("Day 22 MetaAPI token recovery failed safely")
 
-        if allow_mt5_manager:
+        if allow_mt5_manager and selected_transport == "metaapi":
             mt5_connection_manager = Mt5ConnectionManager(mt5_connection_service)
             await mt5_connection_manager.start()
+        elif selected_transport == "local_bridge":
+            logger.info("MetaAPI connection monitor disabled: local MT5 bridge selected")
         elif not diagnostic_probe:
             logger.error(
                 "Day 22 MT5 reconciliation suppressed because local token verification did not pass"
             )
 
-        mt5_bootstrap_task = asyncio.create_task(
-            _run_day22_mt5_bootstrap(mt5_connection_service),
-            name="super-signals-day22-mt5-bootstrap",
-        )
-        await run_day23_acceptance_probe(
-            session_factory=session_factory,
-            cipher=broker_cipher,
-        )
+        if selected_transport == "metaapi":
+            mt5_bootstrap_task = asyncio.create_task(
+                _run_day22_mt5_bootstrap(mt5_connection_service),
+                name="super-signals-day22-mt5-bootstrap",
+            )
+            await run_day23_acceptance_probe(
+                session_factory=session_factory,
+                cipher=broker_cipher,
+            )
 
     push_manager: Day34PushNotificationManager | None = None
     vapid_private_key = os.getenv("SUPER_SIGNALS_WEB_PUSH_VAPID_PRIVATE_KEY", "").strip()
@@ -552,6 +562,7 @@ def create_app() -> FastAPI:
         provide_day14_telegram_source_service
     )
     application.include_router(health_router)
+    application.include_router(local_bridge_router)
     application.include_router(auth_router)
     application.include_router(access_router)
     application.include_router(admin_accounts_router)

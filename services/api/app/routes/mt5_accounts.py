@@ -12,7 +12,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import text
 
 from app.access_control import require_permission
-from app.metaapi_read_gateway import MetaApiReadGateway
+from app.broker_gateway_factory import build_broker_gateways
 from app.metaapi_token_scope import inspect_metaapi_token_scope
 from app.models import AuditEvent
 from app.mt5_connection_service import Mt5ConnectionError, Mt5ConnectionView
@@ -177,10 +177,11 @@ def _day23_service(request: Request) -> Day23Mt5ReadService:
     if cached is not None:
         return cached
     mt5_service = require_mt5_service(request)
+    broker = build_broker_gateways(mt5_service._session_factory, resilient_reads=False)
     service = Day23Mt5ReadService(
         session_factory=mt5_service._session_factory,
         cipher=mt5_service._cipher,
-        gateway=MetaApiReadGateway(),
+        gateway=broker.read,
     )
     request.app.state.day23_mt5_read_service = service
     return service

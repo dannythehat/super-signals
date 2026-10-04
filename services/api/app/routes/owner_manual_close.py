@@ -9,8 +9,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from pydantic import BaseModel
 
 from app.access_control import get_current_identity
-from app.metaapi_read_gateway import MetaApiReadGateway
-from app.metaapi_trade_gateway import MetaApiTradeGateway
+from app.broker_gateway_factory import build_broker_gateways
 from app.mt5_connection_service_day30 import Day30Mt5ConnectionService
 from app.mt5_runtime import require_mt5_service
 from app.owner_manual_close import OwnerManualCloseError, OwnerManualCloseService
@@ -53,11 +52,12 @@ def _service(request: Request) -> OwnerManualCloseService:
                 "message": "Manual close is temporarily unavailable.",
             },
         )
+    broker = build_broker_gateways(base._session_factory)
     service = OwnerManualCloseService(
         session_factory=base._session_factory,
         cipher=base._cipher,
-        read_gateway=MetaApiReadGateway(),
-        trade_gateway=MetaApiTradeGateway(),
+        read_gateway=broker.read,
+        trade_gateway=broker.trade,
     )
     request.app.state.owner_manual_close_service = service
     return service

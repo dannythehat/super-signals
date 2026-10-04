@@ -59,6 +59,8 @@ class StalePositionWatchdog:
         poll_seconds: int = 60,
         default_max_age_hours: float = 24.0,
         tig_max_age_hours: float = 12.0,
+        read_gateway: MetaApiReadGateway | None = None,
+        trade_gateway: MetaApiTradeGateway | None = None,
     ) -> None:
         if poll_seconds < 15:
             raise ValueError("stale_position_watchdog_poll_too_fast")
@@ -70,6 +72,8 @@ class StalePositionWatchdog:
         self._poll_seconds = poll_seconds
         self._default_max_age_hours = default_max_age_hours
         self._tig_max_age_hours = tig_max_age_hours
+        self._read_gateway = read_gateway
+        self._trade_gateway = trade_gateway
         self._stop_event = asyncio.Event()
         self._task: asyncio.Task[None] | None = None
 
@@ -125,10 +129,9 @@ class StalePositionWatchdog:
         service = Day23Mt5ReadService(
             session_factory=self._session_factory,
             cipher=self._cipher,
-            gateway=PaperResilientMetaApiReadGateway(
-                timeout_seconds=5.0,
-                attempts=3,
-                retry_delay_seconds=0.25,
+            gateway=self._read_gateway
+            or PaperResilientMetaApiReadGateway(
+                timeout_seconds=5.0, attempts=3, retry_delay_seconds=0.25
             ),
         )
         try:
@@ -144,8 +147,8 @@ class StalePositionWatchdog:
         service = OwnerManualCloseService(
             session_factory=self._session_factory,
             cipher=self._cipher,
-            read_gateway=MetaApiReadGateway(),
-            trade_gateway=MetaApiTradeGateway(),
+            read_gateway=self._read_gateway or MetaApiReadGateway(),
+            trade_gateway=self._trade_gateway or MetaApiTradeGateway(),
         )
         return asyncio.run(
             service.close_position(

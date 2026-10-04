@@ -386,3 +386,61 @@ class AuditEvent(Base):
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )
+
+
+class LocalBridgeWorker(TimestampMixin, Base):
+    """A Windows bridge process that has recently authenticated and polled."""
+
+    __tablename__ = "local_bridge_workers"
+    __table_args__ = (
+        Index("ix_local_bridge_workers_profile_seen", "profile", "last_seen_at"),
+    )
+
+    id: Mapped[UUID] = mapped_column(
+        PGUUID(as_uuid=True), primary_key=True, server_default=text("gen_random_uuid()")
+    )
+    worker_id: Mapped[str] = mapped_column(String(100), nullable=False, unique=True)
+    profile: Mapped[str] = mapped_column(String(80), nullable=False)
+    version: Mapped[str] = mapped_column(String(40), nullable=False)
+    capabilities: Mapped[list[str]] = mapped_column(
+        JSONB, nullable=False, server_default=text("'[]'::jsonb")
+    )
+    last_seen_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+
+class LocalBridgeCommand(TimestampMixin, Base):
+    """One immutable broker request and its eventual local-MT5 result."""
+
+    __tablename__ = "local_bridge_commands"
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('queued','claimed','succeeded','failed','ambiguous')",
+            name="ck_local_bridge_commands_status",
+        ),
+        Index("ix_local_bridge_commands_claim", "profile", "status", "created_at"),
+        Index("ix_local_bridge_commands_lease", "claimed_by", "lease_expires_at"),
+    )
+
+    id: Mapped[UUID] = mapped_column(
+        PGUUID(as_uuid=True), primary_key=True, server_default=text("gen_random_uuid()")
+    )
+    profile: Mapped[str] = mapped_column(String(80), nullable=False)
+    account_id: Mapped[str] = mapped_column(String(120), nullable=False)
+    operation: Mapped[str] = mapped_column(String(80), nullable=False)
+    payload: Mapped[dict[str, Any]] = mapped_column(
+        JSONB, nullable=False, server_default=text("'{}'::jsonb")
+    )
+    idempotency_key: Mapped[str | None] = mapped_column(
+        String(255), nullable=True, unique=True
+    )
+    status: Mapped[str] = mapped_column(String(20), nullable=False, server_default="queued")
+    claimed_by: Mapped[str | None] = mapped_column(String(100))
+    lease_token: Mapped[UUID | None] = mapped_column(PGUUID(as_uuid=True))
+    lease_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    attempt_count: Mapped[int] = mapped_column(nullable=False, server_default="0")
+    result: Mapped[dict[str, Any] | list[Any] | None] = mapped_column(JSONB)
+    error_code: Mapped[str | None] = mapped_column(String(100))
+    error_message: Mapped[str | None] = mapped_column(Text)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))

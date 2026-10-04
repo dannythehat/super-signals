@@ -10,9 +10,8 @@ from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
 from app.access_control import get_current_identity, require_permission
+from app.broker_gateway_factory import build_broker_gateways
 from app.db import get_db_session
-from app.metaapi_read_gateway import MetaApiReadGateway
-from app.metaapi_trade_gateway import MetaApiTradeGateway
 from app.mt5_connection_service_day30 import Day30Mt5ConnectionService
 from app.mt5_runtime import require_mt5_service
 from app.subscription_access import require_active_subscription
@@ -107,11 +106,12 @@ def _service(request: Request) -> Day31TradingControlService:
                 "message": "Trading controls are temporarily unavailable.",
             },
         )
+    broker = build_broker_gateways(base._session_factory)
     service = Day31TradingControlService(
         session_factory=base._session_factory,
         cipher=base._cipher,
-        read_gateway=MetaApiReadGateway(),
-        trade_gateway=MetaApiTradeGateway(),
+        read_gateway=broker.read,
+        trade_gateway=broker.trade,
     )
     request.app.state.day31_trading_control_service = service
     return service

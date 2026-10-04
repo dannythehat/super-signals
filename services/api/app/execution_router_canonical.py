@@ -19,14 +19,12 @@ from app.active_account_member_routing import (
     ActiveAccountMemberDistributionService,
     ActiveAccountMemberManagementService,
 )
+from app.broker_gateway_factory import build_broker_gateways
 from app.collective_execution_dispatch import CollectiveAwareCanonicalExecutionDispatcher
 from app.execution_dispatch_canonical import CanonicalExecutionDispatcher
 from app.graceful_market_targets import GracefulCaptureReliableMemberTradingExecutionService
 from app.management_reliability_runtime import ManagementReliabilityRuntime
-from app.metaapi_margin_gateway import MetaApiMarginGateway
-from app.metaapi_trade_gateway import MetaApiTradeGateway
 from app.mt5_crypto import MetaApiTokenCipher
-from app.paper_resilient_read_gateway import PaperResilientMetaApiReadGateway
 from app.trading_management_canonical import MemberTradingManagementService
 from app.unified_pending_reconciler import UnifiedPendingReconciler
 
@@ -73,23 +71,23 @@ def build_canonical_execution_router(
 
     try:
         cipher = MetaApiTokenCipher(broker_keys)
-        owner_read = PaperResilientMetaApiReadGateway()
-        member_read = PaperResilientMetaApiReadGateway()
-        trade = MetaApiTradeGateway()
-        margin = MetaApiMarginGateway()
+        owner_broker = build_broker_gateways(session_factory)
+        member_broker = build_broker_gateways(session_factory)
+        owner_read = owner_broker.read
+        member_read = member_broker.read
 
         owner_execution = ActiveAccountCanonicalTradingExecutionService(
             session_factory=session_factory,
             cipher=cipher,
             read_gateway=owner_read,
-            margin_gateway=margin,
-            trade_gateway=trade,
+            margin_gateway=owner_broker.margin,
+            trade_gateway=owner_broker.trade,
         )
         owner_management = ActiveAccountCanonicalTradingManagementService(
             session_factory=session_factory,
             cipher=cipher,
             read_gateway=owner_read,
-            trade_gateway=trade,
+            trade_gateway=owner_broker.trade,
         )
 
         # Ordinary member Demo/Paper execution uses the same canonical policy as the
@@ -98,14 +96,14 @@ def build_canonical_execution_router(
             session_factory=session_factory,
             cipher=cipher,
             read_gateway=member_read,
-            margin_gateway=margin,
-            trade_gateway=trade,
+            margin_gateway=member_broker.margin,
+            trade_gateway=member_broker.trade,
         )
         demo_member_management = ActiveAccountCanonicalTradingManagementService(
             session_factory=session_factory,
             cipher=cipher,
             read_gateway=member_read,
-            trade_gateway=trade,
+            trade_gateway=member_broker.trade,
         )
 
         # Real member execution retains its additional user-role/account-approval gate.
@@ -113,14 +111,14 @@ def build_canonical_execution_router(
             session_factory=session_factory,
             cipher=cipher,
             read_gateway=member_read,
-            margin_gateway=margin,
-            trade_gateway=trade,
+            margin_gateway=member_broker.margin,
+            trade_gateway=member_broker.trade,
         )
         live_member_management = MemberTradingManagementService(
             session_factory=session_factory,
             cipher=cipher,
             read_gateway=member_read,
-            trade_gateway=trade,
+            trade_gateway=member_broker.trade,
         )
 
         return CollectiveAwareCanonicalExecutionDispatcher(
@@ -172,19 +170,18 @@ def build_management_reliability_runtime(
     )
     try:
         cipher = MetaApiTokenCipher(broker_keys)
-        read_gateway = PaperResilientMetaApiReadGateway()
-        trade = MetaApiTradeGateway()
+        broker = build_broker_gateways(session_factory)
         demo_management = ActiveAccountCanonicalTradingManagementService(
             session_factory=session_factory,
             cipher=cipher,
-            read_gateway=read_gateway,
-            trade_gateway=trade,
+            read_gateway=broker.read,
+            trade_gateway=broker.trade,
         )
         live_management = MemberTradingManagementService(
             session_factory=session_factory,
             cipher=cipher,
-            read_gateway=read_gateway,
-            trade_gateway=trade,
+            read_gateway=broker.read,
+            trade_gateway=broker.trade,
         )
         return ManagementReliabilityRuntime(
             session_factory=session_factory,
@@ -214,11 +211,12 @@ def build_canonical_pending_reconciler(
         broker_keys = _broker_keys()
         if not broker_keys:
             return None
+        broker = build_broker_gateways(session_factory)
         return UnifiedPendingReconciler(
             session_factory=session_factory,
             cipher=MetaApiTokenCipher(broker_keys),
-            gateway=PaperResilientMetaApiReadGateway(),
-            trade_gateway=MetaApiTradeGateway(),
+            gateway=broker.read,
+            trade_gateway=broker.trade,
             owner_user_id=owner_user_id,
             poll_seconds=poll_seconds,
         )
