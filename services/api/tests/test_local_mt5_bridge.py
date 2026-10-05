@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from decimal import Decimal
 from typing import Any
 
 import pytest
@@ -84,6 +85,48 @@ async def test_read_gateway_preserves_broker_payload() -> None:
     assert queue.calls[0]["operation"] == "read_positions"
 
 
+@pytest.mark.asyncio
+async def test_read_gateway_maps_local_demo_balance_to_canonical_paper_ledger() -> None:
+    queue = _Queue(
+        {
+            "currency": "USD",
+            "balance": 10020.0,
+            "credit": 0.0,
+            "equity": 10025.0,
+            "margin": 10.0,
+            "freeMargin": 10015.0,
+            "marginLevel": 100250.0,
+            "leverage": 500,
+            "tradeAllowed": True,
+        }
+    )
+    gateway = LocalBridgeReadGateway(
+        queue,  # type: ignore[arg-type]
+        raw_balance_baseline=Decimal("10000"),
+        canonical_balance_baseline=Decimal("2428.78"),
+    )
+
+    result = await gateway.read_account_information(
+        token="ignored",
+        account_id="account-ref",
+        region="local",
+    )
+
+    assert result["balance"] == pytest.approx(2448.78)
+    assert result["equity"] == pytest.approx(2453.78)
+    assert result["freeMargin"] == pytest.approx(2443.78)
+    assert result["marginLevel"] == pytest.approx(24537.8)
+    assert result["tradeAllowed"] is True
+
+
+def test_read_gateway_rejects_partial_balance_baseline_configuration() -> None:
+    with pytest.raises(ValueError, match="local_bridge_balance_baselines_incomplete"):
+        LocalBridgeReadGateway(
+            _Queue({}),  # type: ignore[arg-type]
+            raw_balance_baseline=Decimal("10000"),
+        )
+
+
 def test_factory_selects_local_transport_only_when_explicit(monkeypatch) -> None:
     monkeypatch.setenv("SUPER_SIGNALS_BROKER_TRANSPORT", "local_bridge")
     monkeypatch.setenv("SUPER_SIGNALS_LOCAL_BRIDGE_PROFILE", "super-signals")
@@ -92,3 +135,14 @@ def test_factory_selects_local_transport_only_when_explicit(monkeypatch) -> None
     assert isinstance(gateways.read, LocalBridgeReadGateway)
     assert isinstance(gateways.trade, LocalBridgeTradeGateway)
     assert isinstance(gateways.margin, LocalBridgeMarginGateway)
+
+
+def test_factory_applies_configured_local_bridge_balance_baselines(monkeypatch) -> None:
+    monkeypatch.setenv("SUPER_SIGNALS_BROKER_TRANSPORT", "local_bridge")
+    monkeypatch.setenv("SUPER_SIGNALS_LOCAL_BRIDGE_RAW_BALANCE_BASELINE", "10000")
+    monkeypatch.setenv("SUPER_SIGNALS_LOCAL_BRIDGE_CANONICAL_BALANCE_BASELINE", "2428.78")
+
+    gateways = build_broker_gateways(object())  # type: ignore[arg-type]
+
+    assert isinstance(gateways.read, LocalBridgeReadGateway)
+    assert gateways.read._account_value_offset == Decimal("-7571.22")  # noqa: SLF001

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime
+from decimal import Decimal, InvalidOperation
 from typing import Any
 
 from app.local_bridge_queue import LocalBridgeQueue
@@ -21,8 +22,18 @@ class LocalBridgeReadGateway(MetaApiReadGateway):
 
     requires_metaapi_token = False
 
-    def __init__(self, queue: LocalBridgeQueue) -> None:
+    def __init__(
+        self,
+        queue: LocalBridgeQueue,
+        *,
+        raw_balance_baseline: Decimal | str | float | None = None,
+        canonical_balance_baseline: Decimal | str | float | None = None,
+    ) -> None:
         self._queue = queue
+        self._account_value_offset = self._balance_offset(
+            raw_balance_baseline=raw_balance_baseline,
+            canonical_balance_baseline=canonical_balance_baseline,
+        )
 
     async def _execute(
         self,
@@ -49,7 +60,47 @@ class LocalBridgeReadGateway(MetaApiReadGateway):
     ) -> dict[str, object]:
         del token, region
         result = await self._execute("read_account_information", account_id=account_id)
-        return self._dict(result)
+        payload = self._dict(result)
+        if self._account_value_offset is None:
+            return payload
+
+        adjusted = dict(payload)
+        for key in ("balance", "equity", "freeMargin"):
+            try:
+                adjusted[key] = float(
+                    Decimal(str(payload[key])) + self._account_value_offset
+                )
+            except (KeyError, InvalidOperation, TypeError, ValueError) as exc:
+                raise MetaApiGatewayError("metaapi_invalid_response") from exc
+
+        try:
+            margin = Decimal(str(payload.get("margin") or 0))
+            adjusted_equity = Decimal(str(adjusted["equity"]))
+        except (InvalidOperation, TypeError, ValueError) as exc:
+            raise MetaApiGatewayError("metaapi_invalid_response") from exc
+        adjusted["marginLevel"] = (
+            float(adjusted_equity / margin * Decimal("100"))
+            if margin > 0
+            else payload.get("marginLevel")
+        )
+        return adjusted
+
+    @staticmethod
+    def _balance_offset(
+        *,
+        raw_balance_baseline: Decimal | str | float | None,
+        canonical_balance_baseline: Decimal | str | float | None,
+    ) -> Decimal | None:
+        if raw_balance_baseline is None and canonical_balance_baseline is None:
+            return None
+        if raw_balance_baseline is None or canonical_balance_baseline is None:
+            raise ValueError("local_bridge_balance_baselines_incomplete")
+        try:
+            return Decimal(str(canonical_balance_baseline)) - Decimal(
+                str(raw_balance_baseline)
+            )
+        except (InvalidOperation, TypeError, ValueError) as exc:
+            raise ValueError("local_bridge_balance_baselines_invalid") from exc
 
     async def read_positions(
         self, *, token: str, account_id: str, region: str
