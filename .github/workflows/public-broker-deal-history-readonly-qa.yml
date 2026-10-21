@@ -1,0 +1,28 @@
+name: Public broker-close trade history read-only QA
+on:
+  pull_request:
+    branches:
+      - feature/day-10-shared-telegram-sources
+    paths:
+      - services/api/app/routes/gold_quote.py
+      - services/api/tests/test_public_broker_deal_history_readonly_contract.py
+      - .github/workflows/public-broker-deal-history-readonly-qa.yml
+permissions:
+  contents: read
+jobs:
+  public-close-history:
+    runs-on: ubuntu-latest
+    timeout-minutes: 14
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - name: Install exact backend dependencies
+        run: |
+          python -m pip install -r services/api/requirements.txt
+          python -m pip install pytest pytest-asyncio
+      - name: Enforce broker-deal response read-only invariants
+        run: |
+          PYTHONPATH=services/api python -m compileall -q services/api/app/routes/gold_quote.py services/api/tests/test_public_broker_deal_history_readonly_contract.py
+          PYTHONPATH=services/api python -m pytest -q services/api/tests/test_public_broker_deal_history_readonly_contract.py
