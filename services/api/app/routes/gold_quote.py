@@ -11,6 +11,7 @@ from __future__ import annotations
 
 from datetime import UTC, date, datetime, time, timedelta
 from decimal import Decimal
+from hashlib import sha256
 from math import isfinite
 from time import monotonic
 from typing import Annotated, Any
@@ -111,9 +112,26 @@ class PublicPerformanceResponse(BaseModel):
     trades: tuple[PublicTradeResponse, ...]
     updated_at: datetime
 
+class PublicBrokerDealResponse(BaseModel):
+    """One immutable, provider-hidden broker close DEAL_ENTRY_OUT on this cash day."""
+    occurred_at: datetime
+    symbol: str
+    side: str
+    price: float | None = None
+    volume_lots: float | None = None
+    gross_profit_usd: float
+    commission_usd: float
+    swap_usd: float
+    net_cash_usd: float
+    receipt: str
+
+
 class PublicTradeDayResponse(BaseModel):
     day: date
     trades: tuple[PublicTradeResponse, ...]
+    broker_closed_deals: tuple[PublicBrokerDealResponse, ...] = ()
+    broker_closed_deals_truncated: bool = False
+    broker_closed_deals_net_usd: float | None = None
     updated_at: datetime
 
 
@@ -521,6 +539,87 @@ def _public_trades(service: Day33PerformanceLedgerServiceV2, user_id: UUID) -> t
 
 
 
+def _public_closed_broker_deals_for_day(
+    service: Day33PerformanceLedgerServiceV2,
+    user_id: UUID,
+    reporting_day: date,
+) -> tuple[tuple[PublicBrokerDealResponse, ...], bool, float]:
+    """Read-only broker cash-deal evidence, matched by CLOSED deal timestamp.
+
+    Use precisely the 21:00-Sofia cash day from the public trade calendar.
+    Signal-level history groups by FIRST opening and cannot reconcile closures
+    for carried positions. Broker deals remain independent and immutable here.
+    This query is bounded, indexed and never modifies balances or orders.
+    """
+    zone = ZoneInfo(_PUBLIC_TIMEZONE)
+    start_at = datetime.combine(
+        reporting_day - timedelta(days=1), time(21, 0), tzinfo=zone
+    ).astimezone(UTC)
+    end_at = datetime.combine(
+        reporting_day, time(21, 0), tzinfo=zone
+    ).astimezone(UTC)
+    params: dict[str, object] = {
+        "user_id": user_id, "start_at": start_at, "end_at": end_at
+    }
+    exclusion_sql = ""
+    if reporting_day >= _PUBLIC_TRADE_LOG_EXCLUDED_FROM:
+        exclusion_sql = (
+            "AND COALESCE(src.chat_id,0) NOT IN "
+            "(:excluded_chat_1,:excluded_chat_2)"
+        )
+        params["excluded_chat_1"] = _PUBLIC_TRADE_LOG_EXCLUDED_CHAT_IDS[0]
+        params["excluded_chat_2"] = _PUBLIC_TRADE_LOG_EXCLUDED_CHAT_IDS[1]
+    with service._session_factory() as session:
+        rows = session.execute(
+            text(
+                f"""
+                SELECT
+                    bd.broker_deal_id, bd.occurred_at, bd.symbol, bd.deal_type,
+                    bd.volume, bd.price, bd.profit, bd.commission, bd.swap
+                FROM broker_deals AS bd
+                JOIN sources AS src ON src.id=bd.source_id
+                WHERE bd.user_id=:user_id
+                  AND src.status<>'revoked'
+                  AND bd.entry_type='DEAL_ENTRY_OUT'
+                  AND (bd.signal_id IS NOT NULL OR bd.broker_client_id LIKE 'SS_%')
+                  AND bd.occurred_at>=:start_at
+                  AND bd.occurred_at<:end_at
+                  AND {BROKER_DEAL_NOT_OVERRIDDEN_SQL}
+                  {exclusion_sql}
+                ORDER BY bd.occurred_at ASC, bd.broker_deal_id ASC
+                LIMIT 501
+                """
+            ),
+            params,
+        ).mappings().all()
+    truncated = len(rows)>500
+    result: list[PublicBrokerDealResponse] = []
+    total = Decimal("0")
+    for row in rows[:500]:
+        gross = Decimal(str(row["profit"] or 0))
+        commission = Decimal(str(row["commission"] or 0))
+        swap = Decimal(str(row["swap"] or 0))
+        net = gross + commission + swap
+        total += net
+        kind = str(row["deal_type"] or "").upper()
+        direction = "BUY" if kind.endswith("BUY") else "SELL" if kind.endswith("SELL") else "CLOSE"
+        result.append(
+            PublicBrokerDealResponse(
+                occurred_at=row["occurred_at"],
+                symbol=str(row["symbol"] or _SYMBOL),
+                side=direction,
+                price=float(row["price"]) if row["price"] is not None else None,
+                volume_lots=float(row["volume"]) if row["volume"] is not None else None,
+                gross_profit_usd=float(gross),
+                commission_usd=float(commission),
+                swap_usd=float(swap),
+                net_cash_usd=float(net),
+                receipt=sha256((str(user_id)+":"+str(row["broker_deal_id"])).encode()).hexdigest()[:12],
+            )
+        )
+    return tuple(result), truncated, round(float(total), 2)
+
+
 def _public_trades_for_day(
     service: Day33PerformanceLedgerServiceV2,
     user_id: UUID,
@@ -668,9 +767,15 @@ def _warm_public_trade_day(
     cached = cache.get(reporting_day)
     if isinstance(cached, tuple) and len(cached) == 2 and monotonic() < cached[0]:
         return
+    broker_deals, truncated, deal_net = _public_closed_broker_deals_for_day(
+        service, user_id, reporting_day
+    )
     result = PublicTradeDayResponse(
         day=reporting_day,
         trades=_public_trades_for_day(service, user_id, reporting_day),
+        broker_closed_deals=broker_deals,
+        broker_closed_deals_truncated=truncated,
+        broker_closed_deals_net_usd=deal_net,
         updated_at=datetime.now(UTC),
     )
     cache[reporting_day] = (monotonic() + 15.0, result)
@@ -855,9 +960,15 @@ def public_performance_trades(
 
     service = _performance_service(request)
     user_id = _public_owner_reference_user_id(request, service)
+    broker_deals, truncated, deal_net = _public_closed_broker_deals_for_day(
+        service, user_id, reporting_day
+    )
     result = PublicTradeDayResponse(
         day=reporting_day,
         trades=_public_trades_for_day(service, user_id, reporting_day),
+        broker_closed_deals=broker_deals,
+        broker_closed_deals_truncated=truncated,
+        broker_closed_deals_net_usd=deal_net,
         updated_at=datetime.now(UTC),
     )
     cache[reporting_day] = (monotonic() + 15.0, result)
