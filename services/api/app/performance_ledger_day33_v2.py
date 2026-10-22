@@ -92,8 +92,12 @@ class Day33PerformanceLedgerServiceV2(Day33PerformanceLedgerService):
         #   3 error/backlog rows.
         # updated_at matters more than creation time for a just-closed old position.
         active_states = {"open", "planned", "pending"}
+        # Without a last-probed key, repeated 2-position watcher passes keep
+        # querying the same unresolvable old positions forever. Round-robin
+        # unsuccessful history probes across all unresolved positions.
+        last_probed = getattr(self, "_history_last_probe", {})
 
-        def priority(row: Any) -> tuple[int, float]:
+        def priority(row: Any) -> tuple[int, float, float]:
             status = str(row["status"])
             deal_count = int(deal_counts.get(row["id"], 0))
             if status in active_states:
@@ -104,8 +108,12 @@ class Day33PerformanceLedgerServiceV2(Day33PerformanceLedgerService):
                 bucket = 2
             else:
                 bucket = 3
-            point = row["updated_at"] or row["created_at"]
-            return (bucket, -point.timestamp())
+            point = (
+                (row["closed_at"] or row["created_at"])
+                if status == "closed"
+                else (row["updated_at"] or row["created_at"])
+            )
+            return (bucket, last_probed.get(str(row["id"]), 0.0), -point.timestamp())
 
         return sorted(unresolved, key=priority)
 
@@ -438,8 +446,15 @@ class Day33PerformanceLedgerServiceV2(Day33PerformanceLedgerService):
         positions = self._positions_needing_history(user_id)
         if max_history_positions is not None:
             positions = positions[: max(0, int(max_history_positions))]
+        # Every bounded pass advances, including when an external broker read
+        # times out. It cannot keep starving the remaining closed positions.
+        from time import monotonic
+
+        if not hasattr(self, "_history_last_probe"):
+            self._history_last_probe = {}
         deals_added = 0
         for row in positions:
+            self._history_last_probe[str(row["id"])] = monotonic()
             try:
                 payloads = await self._gateway.read_deals_by_position(
                     token=token,
