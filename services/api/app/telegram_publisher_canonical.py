@@ -1856,7 +1856,8 @@ class CanonicalTelegramPublisherManager(Day34CutoverTelegramPublisherManager):
                           (ev.event_type='broker_position_settled'
                            AND ev.occurred_at>=:settlement_cutoff)
                           OR (
-                              root.status='sent'
+                              ev.event_type<>'broker_position_settled'
+                              AND root.status='sent'
                               AND root.telegram_message_id IS NOT NULL
                               AND ev.created_at>=:fresh_after
                           )
