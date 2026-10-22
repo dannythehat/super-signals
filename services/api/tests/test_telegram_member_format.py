@@ -82,7 +82,10 @@ def test_lifecycle_posts_use_immutable_event_time_status() -> None:
 
 def test_realised_settlements_are_kept_in_broker_time_order() -> None:
     source = Path("services/api/app/telegram_publisher_canonical.py").read_text()
-    assert "ORDER BY ev.occurred_at,ev.created_at,pub.id" in source
+    assert "ORDER BY ev.occurred_at,event_position.tp_index,ev.created_at,pub.id" in source
+    assert "AND earlier.closed_at<ev.occurred_at" not in source
+    assert "earlier.closed_at<ev.occurred_at" in source
+    assert "AND preceding.status='sent'" in source
     assert "same_burst_settlement_collapsed" not in source
     assert "sent_same_burst_duplicate_deleted" not in source
 
