@@ -526,6 +526,32 @@ class CanonicalTelegramPublisherManager(Day34CutoverTelegramPublisherManager):
             f"<b>{money(daily_pnl)}</b>",
         ]
 
+    @staticmethod
+    def _repair_publication_time_financial_lines(
+        rendered: str, balance: Decimal, daily_pnl: Decimal
+    ) -> str:
+        """Fill only unproven old placeholders from that message's saved ledger.
+
+        Preserve any previously broker-proven per-TP account values and never
+        update a historical post to today's latest broker balance.
+        """
+        rendered = re.sub(
+            r"<b>Balance after this TP</b>\n"
+            r"<b>Broker snapshot confirming…</b>",
+            "<b>Balance (at time of update)</b>\n"
+            f"<b>{_balance_money(balance)}</b>",
+            rendered,
+            count=1,
+        )
+        return re.sub(
+            r"<b>Today's P&L after this TP</b>\n"
+            r"<b>Broker snapshot confirming…</b>",
+            "<b>Today's P&L (at time of update)</b>\n"
+            f"<b>{money(daily_pnl)}</b>",
+            rendered,
+            count=1,
+        )
+
     def _settlement_financial_lines(
         self,
         session: Any,
@@ -1608,26 +1634,13 @@ class CanonicalTelegramPublisherManager(Day34CutoverTelegramPublisherManager):
                         count=1,
                     )
 
-                # Correct today's already-sent settlement updates in place.
-                # Only replace the old "confirming" placeholder, never rewrite a
-                # broker-proven exact post-TP value. Financials come from this very
-                # publication's immutable recorded account-value snapshot.
+                # Repair only saved placeholders from this publication's own
+                # durable broker/website financial reservation.
                 if repair_balance is not None and repair_daily is not None:
-                    repaired = re.sub(
-                        r"<b>Balance after this TP</b>\\n"
-                        r"<b>Broker snapshot confirming…</b>",
-                        "<b>Balance (at time of update)</b>\\n"
-                        f"<b>{_balance_money(repair_balance)}</b>",
+                    repaired = self._repair_publication_time_financial_lines(
                         repaired,
-                        count=1,
-                    )
-                    repaired = re.sub(
-                        r"<b>Today's P&L after this TP</b>\\n"
-                        r"<b>Broker snapshot confirming…</b>",
-                        "<b>Today's P&L (at time of update)</b>\\n"
-                        f"<b>{money(repair_daily)}</b>",
-                        repaired,
-                        count=1,
+                        Decimal(str(repair_balance)),
+                        Decimal(str(repair_daily)),
                     )
 
                 # Historical TIG-style partial wording: the original source explicitly
