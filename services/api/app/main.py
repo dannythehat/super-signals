@@ -422,15 +422,24 @@ async def _lifespan(application: FastAPI) -> AsyncIterator[None]:
     if push_manager is not None:
         await push_manager.start()
     await publisher.start()
-    # Seed broker-backed publications before the Telegram connection gate. A temporary
-    # bot/network problem must never make a real TP/SL settlement disappear from the
-    # durable outbox; delivery can wait, evidence creation cannot.
-    await asyncio.to_thread(publisher._seed_missing_publications)
-    # Sent trade-post reconciliation is independent of the publisher connection gate:
-    # broker truth must repair stale money/status snapshots even when there is no new
-    # outbound publication waiting. Failures are isolated inside the repair method and
-    # can never affect trading or application startup.
-    await asyncio.to_thread(publisher._repair_sent_root_identities_safely)
+
+    # Telegram backfills can contend with the live feed and broker bridge. Never
+    # delay API readiness or risk a failed rollout while an older instance holds
+    # the member-number advisory lock. Keep outbox seeding independent of the
+    # Telegram bot's connection gate, just as before.
+    async def _seed_telegram_at_startup_safely() -> None:
+        try:
+            await asyncio.to_thread(publisher._seed_missing_publications)
+            await asyncio.to_thread(publisher._repair_sent_root_identities_safely)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception("Background Telegram startup reconciliation failed safely")
+
+    startup_telegram_task = asyncio.create_task(
+        _seed_telegram_at_startup_safely(),
+        name="super-signals-telegram-startup-reconciliation",
+    )
     if stale_position_watchdog is not None:
         await stale_position_watchdog.start()
 
@@ -459,6 +468,12 @@ async def _lifespan(application: FastAPI) -> AsyncIterator[None]:
     try:
         yield
     finally:
+        if not startup_telegram_task.done():
+            startup_telegram_task.cancel()
+        try:
+            await startup_telegram_task
+        except asyncio.CancelledError:
+            pass
         if day34_live_acceptance_task is not None:
             if not day34_live_acceptance_task.done():
                 day34_live_acceptance_task.cancel()
