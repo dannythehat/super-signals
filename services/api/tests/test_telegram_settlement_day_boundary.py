@@ -401,7 +401,7 @@ def test_settlement_replay_cleanup_only_touches_the_original_incident_window(
     assert present_day_row["failure_code"] is None
 
 
-def test_late_arriving_settlement_is_claimed_despite_crossing_the_day_boundary(db) -> None:
+def test_late_arriving_settlement_is_audit_only_after_day_boundary(db) -> None:
     session_factory, owner_id, source_id = db
     with session_factory() as session:
         message = _make_message(session, source_id, 10, datetime.now(UTC))
@@ -439,16 +439,15 @@ def test_late_arriving_settlement_is_claimed_despite_crossing_the_day_boundary(d
     manager = _manager(session_factory, owner_id)
     attempt = manager._claim_lifecycle()
 
-    assert attempt is not None
-    assert attempt.publication_id == publication_id
+    assert attempt is None
 
     with session_factory() as session:
         row = session.execute(
             text("SELECT status, attempt_count FROM telegram_publications WHERE id=:id"),
             {"id": publication_id},
         ).mappings().one()
-    assert row["status"] == "sending"
-    assert row["attempt_count"] == 1
+    assert row["status"] == "pending"
+    assert row["attempt_count"] == 0
 
 
 def test_stuck_unsettled_earlier_leg_stops_blocking_siblings_after_a_grace_period(db) -> None:
@@ -582,12 +581,21 @@ def test_final_settlement_says_stop_loss_hit_when_the_closing_leg_is_the_stop_lo
             cash_pnl="10.00",
             closed_at=leg1_closed_at,
         )
-        _make_settlement_event(
+        leg1_event = _make_settlement_event(
             session,
             signal_id=signal_id,
             message_id=message,
             position_id=leg1_position,
             occurred_at=leg1_closed_at,
+        )
+        # TP1 was already sent before the last leg's completion announcement.
+        _make_publication(
+            session,
+            signal_id=signal_id,
+            lifecycle_event_id=leg1_event,
+            status="sent",
+            sent_at=datetime.now(UTC),
+            telegram_message_id=9001,
         )
 
         leg2_closed_at = datetime.now(UTC) - timedelta(minutes=1)
@@ -657,12 +665,21 @@ def test_final_settlement_stays_generic_when_the_closing_leg_itself_was_not_the_
             cash_pnl="-30.00",
             closed_at=leg1_closed_at,
         )
-        _make_settlement_event(
+        leg1_event = _make_settlement_event(
             session,
             signal_id=signal_id,
             message_id=message,
             position_id=leg1_position,
             occurred_at=leg1_closed_at,
+        )
+        # TP1 was already sent before the last leg's completion announcement.
+        _make_publication(
+            session,
+            signal_id=signal_id,
+            lifecycle_event_id=leg1_event,
+            status="sent",
+            sent_at=datetime.now(UTC),
+            telegram_message_id=9001,
         )
 
         leg2_closed_at = datetime.now(UTC) - timedelta(minutes=1)

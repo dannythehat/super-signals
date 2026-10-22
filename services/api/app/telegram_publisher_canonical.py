@@ -27,17 +27,39 @@ from zoneinfo import ZoneInfo
 
 from sqlalchemy import text
 
+from app.running_daily_balance import account_value_days
 from app.telegram_publisher import PublicationAttempt, TelegramPublishError, _bot_api_call
 from app.telegram_publisher_day20 import LifecyclePublicationAttempt
 from app.telegram_publisher_day34 import Day34TelegramPublisherManager, SummaryPublicationAttempt
 from app.telegram_publisher_day34_cutover import Day34CutoverTelegramPublisherManager
-from app.telegram_trade_ledger import TelegramTradeLedger, TradeLedgerSnapshot, money, provider_badge
-from app.running_daily_balance import account_value_days
+from app.telegram_trade_ledger import (
+    TelegramTradeLedger,
+    TradeLedgerSnapshot,
+    money,
+    provider_badge,
+)
 from app.trade_identity import public_trade_identity
 
 _PLACEMENT_EVENT = "mt5.day38_route_new_trade"
 _MEMBER_EVENT_FRESHNESS = timedelta(minutes=5)
+_BROKER_SETTLEMENT_MAX_PUBLICATION_AGE = timedelta(minutes=30)
 SOFIA = ZoneInfo("Europe/Sofia")
+
+
+def _broker_settlement_publication_cutoff(now: datetime) -> datetime:
+    """Late settlements stay in the broker ledger but not the live member feed.
+
+    The performance reporting day starts at 21:00 Europe/Sofia. Old broker
+    transactions must never appear as current-day Telegram updates.
+    """
+    local = now.astimezone(SOFIA)
+    rollover = local.replace(hour=21, minute=0, second=0, microsecond=0)
+    if local.hour < 21:
+        rollover -= timedelta(days=1)
+    return max(
+        now - _BROKER_SETTLEMENT_MAX_PUBLICATION_AGE,
+        rollover.astimezone(UTC),
+    )
 logger = logging.getLogger(__name__)
 
 
@@ -209,6 +231,7 @@ class CanonicalTelegramPublisherManager(Day34CutoverTelegramPublisherManager):
     def _run_member_maintenance_safely(self) -> None:
         """Low-priority Telegram reconciliation that must never block fresh trades."""
         try:
+            self._annotate_oct22_historical_settlements_safely()
             self._cleanup_accidental_historical_settlement_replay_safely()
             self._reconcile_financial_state_safely()
             self._repair_sent_root_identities_safely()
@@ -487,6 +510,144 @@ class CanonicalTelegramPublisherManager(Day34CutoverTelegramPublisherManager):
             f"<b>{money(daily_pnl)}</b>",
         ]
 
+    def _settlement_financial_lines(
+        self,
+        session: Any,
+        *,
+        event_at: datetime,
+        position_id: UUID | None,
+    ) -> list[str]:
+        """Show per-TP account value only when independent broker snapshots prove it.
+
+        Historical deal ingestion is incomplete and broker clocks may be offset.
+        Do not subtract a partial ledger from today's final balance to invent an
+        earlier TP balance. A before/after broker cash movement must equal the
+        independently recorded settlement cash before publishing an exact value.
+        """
+        pending = [
+            "",
+            "<b>Balance after this TP</b>",
+            "<b>Broker snapshot confirming…</b>",
+            "",
+            "<b>Today's P&L after this TP</b>",
+            "<b>Broker snapshot confirming…</b>",
+        ]
+        if self._reference_user_id is None or position_id is None:
+            return pending
+
+        event = session.execute(
+            text(
+                """
+                SELECT mt5_account_id,occurred_at,
+                       COALESCE(profit,0)+COALESCE(commission,0)+COALESCE(swap,0)
+                           AS cash
+                FROM broker_deals
+                WHERE user_id=:user_id
+                  AND position_id=:position_id
+                  AND entry_type IN ('DEAL_ENTRY_OUT','DEAL_ENTRY_OUT_BY')
+                ORDER BY occurred_at DESC,broker_deal_id DESC
+                LIMIT 1
+                """
+            ),
+            {"user_id": self._reference_user_id, "position_id": position_id},
+        ).mappings().first()
+        if event is None:
+            return pending
+
+        # Vantage MT5 broker timestamps are recorded as UTC-labelled server
+        # wall-clock values. Interpret as Sofia wall-clock provisionally,
+        # but require independent cash-step proof before displaying a value.
+        broker_wall_time = event["occurred_at"].astimezone(UTC).replace(tzinfo=None)
+        event_utc = broker_wall_time.replace(tzinfo=SOFIA).astimezone(UTC)
+        samples = session.execute(
+            text(
+                """
+                SELECT
+                    (
+                      SELECT row_to_json(b)
+                      FROM (
+                        SELECT captured_at,balance,equity
+                        FROM performance_account_snapshots
+                        WHERE user_id=:user_id AND mt5_account_id=:account_id
+                          AND captured_at<=:event_at
+                          AND captured_at>=:event_at-INTERVAL '10 minutes'
+                        ORDER BY captured_at DESC LIMIT 1
+                      ) b
+                    ) AS before_snapshot,
+                    (
+                      SELECT row_to_json(a)
+                      FROM (
+                        SELECT captured_at,balance,equity
+                        FROM performance_account_snapshots
+                        WHERE user_id=:user_id AND mt5_account_id=:account_id
+                          AND captured_at>:event_at
+                          AND captured_at<=:event_at+INTERVAL '3 minutes'
+                        ORDER BY captured_at ASC LIMIT 1
+                      ) a
+                    ) AS after_snapshot
+                """
+            ),
+            {
+                "user_id": self._reference_user_id,
+                "account_id": event["mt5_account_id"],
+                "event_at": event_utc,
+            },
+        ).mappings().one()
+        before = samples["before_snapshot"]
+        after = samples["after_snapshot"]
+        if not isinstance(before, dict) or not isinstance(after, dict):
+            return pending
+        if (
+            before.get("balance") is None or after.get("balance") is None
+            or after.get("equity") is None
+        ):
+            return pending
+
+        cash_change = (
+            Decimal(str(after["balance"])) - Decimal(str(before["balance"]))
+        ).quantize(Decimal("0.01"))
+        event_cash = Decimal(str(event["cash"])).quantize(Decimal("0.01"))
+        if cash_change != event_cash:
+            # Other concurrent exits, missing deals or an incorrect broker
+            # timezone can invalidate the inference. Never publish an estimate.
+            return pending
+
+        local = event_utc.astimezone(SOFIA)
+        boundary = local.replace(hour=21, minute=0, second=0, microsecond=0)
+        if local < boundary:
+            boundary -= timedelta(days=1)
+        opening = session.execute(
+            text(
+                """
+                SELECT equity
+                FROM performance_account_snapshots
+                WHERE user_id=:user_id AND mt5_account_id=:account_id
+                  AND captured_at<=:boundary
+                  AND equity IS NOT NULL
+                ORDER BY captured_at DESC LIMIT 1
+                """
+            ),
+            {
+                "user_id": self._reference_user_id,
+                "account_id": event["mt5_account_id"],
+                "boundary": boundary.astimezone(UTC),
+            },
+        ).scalar_one_or_none()
+        account_value = Decimal(str(after["equity"])).quantize(Decimal("0.01"))
+        daily = (
+            money(account_value - Decimal(str(opening)))
+            if opening is not None
+            else "Confirming…"
+        )
+        return [
+            "",
+            "<b>Balance after this TP</b>",
+            f"<b>{_balance_money(account_value)}</b>",
+            "",
+            "<b>Today's P&L after this TP</b>",
+            f"<b>{daily}</b>",
+        ]
+
     def _commit_financial_publication(self, publication_id: UUID) -> None:
         if self._reference_user_id is None or self._destination_chat_id is None:
             return
@@ -556,6 +717,96 @@ class CanonicalTelegramPublisherManager(Day34CutoverTelegramPublisherManager):
                 {"publication_id": publication_id},
             )
             session.commit()
+
+    def _annotate_oct22_historical_settlements_safely(self) -> None:
+        """Correct the specific 22-Oct late replay in place, without changing P&L.
+
+        This is intentionally scoped to the one known incident. Do not generalise
+        it to a moving reporting-day boundary: genuine overnight settlements
+        must never be modified or deleted after a later calendar rollover.
+        """
+        if not self._bot_token or self._destination_chat_id is None:
+            return
+        try:
+            with self._session_factory() as session:
+                rows = session.execute(
+                    text(
+                        """
+                        SELECT pub.id AS publication_id,
+                               pub.telegram_message_id,
+                               COALESCE(pub.destination_chat_id,:chat_id) AS destination_chat_id,
+                               pub.rendered_text,
+                               ev.occurred_at
+                        FROM telegram_publications AS pub
+                        JOIN signal_lifecycle_events AS ev
+                          ON ev.id=pub.lifecycle_event_id
+                        WHERE pub.status='sent'
+                          AND pub.publication_kind='lifecycle_event'
+                          AND pub.telegram_message_id IS NOT NULL
+                          AND ev.event_type='broker_position_settled'
+                          AND ev.occurred_at < TIMESTAMPTZ '2026-10-21 18:00:00+00'
+                          AND pub.sent_at >= TIMESTAMPTZ '2026-10-21 21:00:00+00'
+                          AND pub.sent_at < TIMESTAMPTZ '2026-10-22 18:00:00+00'
+                          AND COALESCE(pub.failure_code,'') <>
+                              'oct22_historical_settlement_annotated'
+                        ORDER BY pub.sent_at,pub.id
+                        LIMIT 30
+                        """
+                    ),
+                    {"chat_id": self._destination_chat_id},
+                ).mappings().all()
+
+            for row in rows:
+                original = str(row["rendered_text"] or "")
+                if not original:
+                    continue
+                # Some broker timestamps retain server-clock offsets. Only
+                # label the confirmed close *date*, never claim a verified hour.
+                closed_day = row["occurred_at"].date().strftime("%-d %B %Y")
+                notice = (
+                    "<b>HISTORICAL TRADE RESULT</b>\n"
+                    f"<b>Broker close date:</b> {_html(closed_day)}\n"
+                    "<b>Published late on 22 October. Not today's trade.</b>\n\n"
+                )
+                corrected = original if original.startswith(
+                    "<b>HISTORICAL TRADE RESULT</b>"
+                ) else notice + original
+                try:
+                    _bot_api_call(
+                        self._bot_token,
+                        "editMessageText",
+                        {
+                            "chat_id": int(row["destination_chat_id"]),
+                            "message_id": int(row["telegram_message_id"]),
+                            "text": corrected,
+                            "parse_mode": "HTML",
+                            "disable_web_page_preview": "true",
+                        },
+                    )
+                except TelegramPublishError as exc:
+                    if "message is not modified" not in exc.reason.lower():
+                        logger.warning(
+                            "Oct-22 historical settlement annotation failed id=%s code=%s",
+                            row["telegram_message_id"], exc.code,
+                        )
+                        continue
+                with self._session_factory() as session:
+                    session.execute(
+                        text(
+                            """
+                            UPDATE telegram_publications
+                            SET rendered_text=:rendered_text,
+                                failure_code='oct22_historical_settlement_annotated',
+                                failure_reason='Broker close was from a prior reporting day.',
+                                updated_at=now()
+                            WHERE id=:id AND status='sent'
+                            """
+                        ),
+                        {"id": row["publication_id"], "rendered_text": corrected},
+                    )
+                    session.commit()
+        except Exception:
+            logger.exception("Oct-22 historical settlement annotation failed safely")
 
     def _cleanup_accidental_historical_settlement_replay_safely(self) -> None:
         """Remove only the accidental Sep-24 14:54-18:00 UTC replay of pre-day settlements.
@@ -866,7 +1117,9 @@ class CanonicalTelegramPublisherManager(Day34CutoverTelegramPublisherManager):
 
     def _seed_missing_publications(self) -> None:
         """Seed only current member events; stale history remains audit-only."""
-        fresh_after = datetime.now(UTC) - _MEMBER_EVENT_FRESHNESS
+        now = datetime.now(UTC)
+        fresh_after = now - _MEMBER_EVENT_FRESHNESS
+        settlement_cutoff = _broker_settlement_publication_cutoff(now)
         with self._session_factory() as session:
             self._assign_member_trade_numbers(session, fresh_after=fresh_after)
             placement_for_pub = self._placement_exists_sql("pub.signal_id")
@@ -944,10 +1197,8 @@ class CanonicalTelegramPublisherManager(Day34CutoverTelegramPublisherManager):
                 {"fresh_after": fresh_after},
             )
 
-            # Hard-stop stale lifecycle rows before claim/send. Broker settlements are
-            # always eligible to recover, however late they arrive: a settlement is a
-            # real trade outcome, and a member must always be told about it, even if
-            # the calendar day has rolled over since it occurred.
+            # Settlements always remain in the broker ledger. Suppress old member
+            # updates instead of replaying yesterday's result as today's trade.
             session.execute(
                 text(
                     """
@@ -960,11 +1211,15 @@ class CanonicalTelegramPublisherManager(Day34CutoverTelegramPublisherManager):
                     WHERE pub.lifecycle_event_id=ev.id
                       AND pub.publication_kind='lifecycle_event'
                       AND pub.status='pending'
-                      AND ev.event_type<>'broker_position_settled'
-                      AND ev.created_at<:fresh_after
+                      AND (
+                          (ev.event_type='broker_position_settled'
+                           AND ev.occurred_at<:settlement_cutoff)
+                          OR (ev.event_type<>'broker_position_settled'
+                              AND ev.created_at<:fresh_after)
+                      )
                     """
                 ),
-                {"fresh_after": fresh_after},
+                {"fresh_after": fresh_after, "settlement_cutoff": settlement_cutoff},
             )
 
             # Aggregate broker_result_* events are durable audit evidence only.
@@ -1021,8 +1276,10 @@ class CanonicalTelegramPublisherManager(Day34CutoverTelegramPublisherManager):
                     SELECT ev.signal_id,ev.id,'lifecycle_event','pending'
                     FROM signal_lifecycle_events AS ev
                     WHERE (
-                          ev.event_type='broker_position_settled'
-                          OR ev.created_at>=:fresh_after
+                          (ev.event_type='broker_position_settled'
+                           AND ev.occurred_at>=:settlement_cutoff)
+                          OR (ev.event_type<>'broker_position_settled'
+                              AND ev.created_at>=:fresh_after)
                       )
                       AND (
                           ev.origin<>'provider_update'
@@ -1065,7 +1322,7 @@ class CanonicalTelegramPublisherManager(Day34CutoverTelegramPublisherManager):
                     ON CONFLICT DO NOTHING
                     """
                 ),
-                {"fresh_after": fresh_after},
+                {"fresh_after": fresh_after, "settlement_cutoff": settlement_cutoff},
             )
 
             self._seed_fresh_in_app_notifications(session, fresh_after=fresh_after)
@@ -1797,7 +2054,9 @@ class CanonicalTelegramPublisherManager(Day34CutoverTelegramPublisherManager):
 
     def _claim_lifecycle(self) -> LifecyclePublicationAttempt | None:
         assert self._destination_chat_id is not None
-        fresh_after = datetime.now(UTC) - _MEMBER_EVENT_FRESHNESS
+        now = datetime.now(UTC)
+        fresh_after = now - _MEMBER_EVENT_FRESHNESS
+        settlement_cutoff = _broker_settlement_publication_cutoff(now)
         with self._session_factory() as session:
             row = session.execute(
                 text(
@@ -1828,14 +2087,48 @@ class CanonicalTelegramPublisherManager(Day34CutoverTelegramPublisherManager):
                     WHERE pub.status='pending'
                       AND pub.publication_kind='lifecycle_event'
                       AND (
-                          ev.event_type='broker_position_settled'
+                          (ev.event_type='broker_position_settled'
+                           AND ev.occurred_at>=:settlement_cutoff)
                           OR (
-                              root.status='sent'
+                              ev.event_type<>'broker_position_settled'
+                              AND root.status='sent'
                               AND root.telegram_message_id IS NOT NULL
                               AND ev.created_at>=:fresh_after
                           )
                       )
                       AND ev.event_type NOT LIKE 'broker_result_%'
+                      -- Keep same-signal TP replies chronological even when broker
+                      -- deal history is delivered in batches or out of order.
+                      AND NOT (
+                          ev.event_type='broker_position_settled'
+                          AND EXISTS (
+                              SELECT 1
+                              FROM positions earlier
+                              WHERE earlier.signal_id=ev.signal_id
+                                AND earlier.user_id=:reference_user_id
+                                AND earlier.id<>event_position.id
+                                AND earlier.closed_at IS NOT NULL
+                                AND earlier.closed_at>=:settlement_cutoff
+                                AND (
+                                    earlier.closed_at<ev.occurred_at
+                                    OR (
+                                        earlier.closed_at=ev.occurred_at
+                                        AND earlier.tp_index<event_position.tp_index
+                                    )
+                                )
+                                AND NOT EXISTS (
+                                    SELECT 1
+                                    FROM telegram_publications preceding
+                                    JOIN signal_lifecycle_events preceding_ev
+                                      ON preceding_ev.id=preceding.lifecycle_event_id
+                                    WHERE preceding.signal_id=ev.signal_id
+                                      AND preceding.status='sent'
+                                      AND preceding_ev.event_type='broker_position_settled'
+                                      AND preceding_ev.aggregate_result->>'position_id'
+                                          =earlier.id::text
+                                )
+                          )
+                      )
                       AND NOT (
                           ev.event_type='broker_position_settled'
                           AND EXISTS (
@@ -1873,23 +2166,31 @@ class CanonicalTelegramPublisherManager(Day34CutoverTelegramPublisherManager):
                                 AND completed.created_at<=ev.created_at
                           )
                       )
-                    ORDER BY ev.occurred_at,ev.created_at,pub.id
+                    ORDER BY ev.occurred_at,event_position.tp_index,ev.created_at,pub.id
                     FOR UPDATE OF pub SKIP LOCKED
                     LIMIT 1
                     """
                 ),
-                {"fresh_after": fresh_after, "reference_user_id": self._reference_user_id},
+                {
+                    "fresh_after": fresh_after,
+                    "settlement_cutoff": settlement_cutoff,
+                    "reference_user_id": self._reference_user_id,
+                },
             ).mappings().first()
             if row is None:
                 session.rollback()
                 return None
-            identity = public_trade_identity(row["signal_id"], row["member_trade_number"])
+            public_trade_identity(row["signal_id"], row["member_trade_number"])
             provider_line = self._provider_line(
                 row["source_id"], str(row["provider_name"] or "Unknown provider")
             )
             trade = self._trade_ledger.trade(row["signal_id"]) if self._trade_ledger else None
             event_type = str(row["event_type"] or "")
             aggregate = row["aggregate_result"] if isinstance(row["aggregate_result"], dict) else {}
+            try:
+                event_position_id = UUID(str(aggregate["position_id"]))
+            except (KeyError, TypeError, ValueError):
+                event_position_id = None
             event_outcome = str(
                 row["event_outcome_status"] or aggregate.get("outcome") or ""
             ).lower()
@@ -2039,7 +2340,16 @@ class CanonicalTelegramPublisherManager(Day34CutoverTelegramPublisherManager):
                     result = f"✅ <b>{money(pnl)}</b>"
 
                 parts = [provider_line, "", heading, "", result]
-                parts.extend(self._financial_lines(rolling_balance, rolling_daily))
+                parts.extend(
+                    self._settlement_financial_lines(
+                        session,
+                        event_at=row["event_occurred_at"],
+                        position_id=(
+                            event_position_id
+                            if event_position_id is not None else None
+                        ),
+                    )
+                )
                 status_lines = self._trade_status_lines_as_of(
                     session,
                     row["signal_id"],

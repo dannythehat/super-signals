@@ -11,6 +11,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from time import monotonic
 from uuid import UUID
 
 from sqlalchemy import text
@@ -29,6 +30,7 @@ _TERMINAL_NO_FILL_STATES = {
     "ORDER_STATE_EXPIRED",
 }
 _FILLED_STATES = {"ORDER_STATE_FILLED", "ORDER_STATE_PARTIAL"}
+_CLEANUP_MIN_INTERVAL_SECONDS = 60.0
 
 
 @dataclass(frozen=True, slots=True)
@@ -54,6 +56,12 @@ class SupersededPendingOrderGuard:
         self._cipher = cipher
         self._read_gateway = read_gateway
         self._trade_gateway = trade_gateway
+        # Periodic reconciliation runs every few seconds. Keep repeated
+        # unresolved broker reads off the critical live trading lane.
+        # New signal execution always performs its own fresh, fail-closed check.
+        self._cleanup_cache: dict[
+            tuple[UUID, str], tuple[float, SupersededPendingResult]
+        ] = {}
 
     async def cancel_before_signal(
         self,
@@ -78,12 +86,26 @@ class SupersededPendingOrderGuard:
         user_id: UUID,
         account_environment: str,
     ) -> SupersededPendingResult:
+        key = (user_id, account_environment.strip().lower())
+        last = self._cleanup_cache.get(key)
+        now = monotonic()
+        if last is not None and now - last[0] < _CLEANUP_MIN_INTERVAL_SECONDS:
+            previous = last[1]
+            return SupersededPendingResult(
+                candidates=previous.candidates,
+                cancelled=0,
+                terminalized=0,
+                unresolved=previous.unresolved,
+            )
+
         rows = self._all_superseded_rows(user_id=user_id)
-        return await self._cancel_rows(
+        result = await self._cancel_rows(
             user_id=user_id,
             rows=rows,
             account_environment=account_environment,
         )
+        self._cleanup_cache[key] = (monotonic(), result)
+        return result
 
     async def _cancel_rows(
         self,
@@ -206,6 +228,21 @@ class SupersededPendingOrderGuard:
                 self._audit_unresolved(user_id, row, "superseded_pending_broker_state_unknown")
                 continue
             state = str(terminal.get("state") or "").strip().upper()
+            if self._confirmed_cancelled_history(
+                row=row,
+                terminal=terminal,
+                active_order_ids=active_order_ids,
+                broker_positions=broker_positions,
+            ) and not self._known_broker_deal_for_order(user_id, order_id, client_id):
+                # This broker/bridge leaves an original PLACED snapshot in the
+                # history endpoint after cancellation; its comment becomes
+                # "SS_...[cancelOrde" (MT5's 32-char comment limit). Both
+                # current broker order and position books are already confirmed
+                # absent, and there must be no ingested fill for this ticket.
+                # Never infer cancellation from absence alone.
+                self._persist_cancelled(user_id, row, broker_mutation=False)
+                terminalized += 1
+                continue
             if state in _TERMINAL_NO_FILL_STATES:
                 self._persist_cancelled(user_id, row, broker_mutation=False)
                 terminalized += 1
@@ -227,6 +264,70 @@ class SupersededPendingOrderGuard:
             terminalized=terminalized,
             unresolved=unresolved,
         )
+
+    @staticmethod
+    def _confirmed_cancelled_history(
+        *,
+        row: dict[str, object],
+        terminal: dict[str, object],
+        active_order_ids: set[str],
+        broker_positions: list[dict[str, object]],
+    ) -> bool:
+        """Require MT5 cancellation annotation AND current broker absence.
+
+        Some MT5/local-bridge histories preserve ORDER_STATE_PLACED from order
+        creation while annotating a cancelled ticket's clientId. Truncation to
+        32 characters means the marker is often exactly '[cancelOrde'.
+        Never infer this from state PLACED or missing active orders alone.
+        """
+        order_id = str(row.get("broker_order_id") or "").strip()
+        client_id = str(row.get("broker_client_id") or "").strip()
+        history_client = str(terminal.get("clientId") or "").strip()
+        state = str(terminal.get("state") or "").strip().upper()
+        if not order_id or not client_id or str(terminal.get("id") or "").strip() != order_id:
+            return False
+        if state != "ORDER_STATE_PLACED":
+            return False
+        if not history_client.startswith(client_id + "[cancelOrde"):
+            return False
+        if order_id in active_order_ids:
+            return False
+        if str(terminal.get("symbol") or "").upper() != str(row.get("symbol") or "").upper():
+            return False
+        if str(terminal.get("positionId") or "").strip():
+            return False
+        for position in broker_positions:
+            if (
+                str(position.get("orderId") or "").strip() == order_id
+                or str(position.get("clientId") or "").strip() == client_id
+            ):
+                return False
+        return True
+
+    def _known_broker_deal_for_order(
+        self,
+        user_id: UUID,
+        order_id: str,
+        client_id: str,
+    ) -> bool:
+        """Do not write a no-fill disposition over any known broker fill."""
+        with self._session_factory() as session:
+            return bool(session.execute(
+                text(
+                    """
+                    SELECT 1 FROM broker_deals
+                    WHERE user_id=:user_id
+                      AND (broker_order_id=:order_id
+                           OR broker_client_id=:client_id)
+                    LIMIT 1
+                    """
+                ),
+                {
+                    "user_id": user_id,
+                    "order_id": order_id,
+                    "client_id": client_id,
+                },
+            ).scalar_one_or_none())
 
     def _superseded_rows_for_signal(
         self,
@@ -388,6 +489,9 @@ class SupersededPendingOrderGuard:
             and (
                 not str(item.get("clientId") or "").strip()
                 or str(item.get("clientId") or "").strip() == client_id
+                or str(item.get("clientId") or "").strip().startswith(
+                    client_id + "[cancelOrde"
+                )
             )
         ]
         return matches[0] if len(matches) == 1 else None
