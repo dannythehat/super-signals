@@ -37,7 +37,24 @@ from app.trade_identity import public_trade_identity
 
 _PLACEMENT_EVENT = "mt5.day38_route_new_trade"
 _MEMBER_EVENT_FRESHNESS = timedelta(minutes=5)
+_BROKER_SETTLEMENT_MAX_PUBLICATION_AGE = timedelta(minutes=30)
 SOFIA = ZoneInfo("Europe/Sofia")
+
+
+def _broker_settlement_publication_cutoff(now: datetime) -> datetime:
+    """Late settlements stay in the broker ledger but not the live member feed.
+
+    The performance reporting day starts at 21:00 Europe/Sofia. Old broker
+    transactions must never appear as current-day Telegram updates.
+    """
+    local = now.astimezone(SOFIA)
+    rollover = local.replace(hour=21, minute=0, second=0, microsecond=0)
+    if local.hour < 21:
+        rollover -= timedelta(days=1)
+    return max(
+        now - _BROKER_SETTLEMENT_MAX_PUBLICATION_AGE,
+        rollover.astimezone(UTC),
+    )
 logger = logging.getLogger(__name__)
 
 
@@ -866,7 +883,9 @@ class CanonicalTelegramPublisherManager(Day34CutoverTelegramPublisherManager):
 
     def _seed_missing_publications(self) -> None:
         """Seed only current member events; stale history remains audit-only."""
-        fresh_after = datetime.now(UTC) - _MEMBER_EVENT_FRESHNESS
+        now = datetime.now(UTC)
+        fresh_after = now - _MEMBER_EVENT_FRESHNESS
+        settlement_cutoff = _broker_settlement_publication_cutoff(now)
         with self._session_factory() as session:
             self._assign_member_trade_numbers(session, fresh_after=fresh_after)
             placement_for_pub = self._placement_exists_sql("pub.signal_id")
@@ -944,10 +963,8 @@ class CanonicalTelegramPublisherManager(Day34CutoverTelegramPublisherManager):
                 {"fresh_after": fresh_after},
             )
 
-            # Hard-stop stale lifecycle rows before claim/send. Broker settlements are
-            # always eligible to recover, however late they arrive: a settlement is a
-            # real trade outcome, and a member must always be told about it, even if
-            # the calendar day has rolled over since it occurred.
+            # Settlements always remain in the broker ledger. Suppress old member
+            # updates instead of replaying yesterday's result as today's trade.
             session.execute(
                 text(
                     """
@@ -960,11 +977,15 @@ class CanonicalTelegramPublisherManager(Day34CutoverTelegramPublisherManager):
                     WHERE pub.lifecycle_event_id=ev.id
                       AND pub.publication_kind='lifecycle_event'
                       AND pub.status='pending'
-                      AND ev.event_type<>'broker_position_settled'
-                      AND ev.created_at<:fresh_after
+                      AND (
+                          (ev.event_type='broker_position_settled'
+                           AND ev.occurred_at<:settlement_cutoff)
+                          OR (ev.event_type<>'broker_position_settled'
+                              AND ev.created_at<:fresh_after)
+                      )
                     """
                 ),
-                {"fresh_after": fresh_after},
+                {"fresh_after": fresh_after, "settlement_cutoff": settlement_cutoff},
             )
 
             # Aggregate broker_result_* events are durable audit evidence only.
@@ -1021,8 +1042,10 @@ class CanonicalTelegramPublisherManager(Day34CutoverTelegramPublisherManager):
                     SELECT ev.signal_id,ev.id,'lifecycle_event','pending'
                     FROM signal_lifecycle_events AS ev
                     WHERE (
-                          ev.event_type='broker_position_settled'
-                          OR ev.created_at>=:fresh_after
+                          (ev.event_type='broker_position_settled'
+                           AND ev.occurred_at>=:settlement_cutoff)
+                          OR (ev.event_type<>'broker_position_settled'
+                              AND ev.created_at>=:fresh_after)
                       )
                       AND (
                           ev.origin<>'provider_update'
@@ -1065,7 +1088,7 @@ class CanonicalTelegramPublisherManager(Day34CutoverTelegramPublisherManager):
                     ON CONFLICT DO NOTHING
                     """
                 ),
-                {"fresh_after": fresh_after},
+                {"fresh_after": fresh_after, "settlement_cutoff": settlement_cutoff},
             )
 
             self._seed_fresh_in_app_notifications(session, fresh_after=fresh_after)
@@ -1797,7 +1820,9 @@ class CanonicalTelegramPublisherManager(Day34CutoverTelegramPublisherManager):
 
     def _claim_lifecycle(self) -> LifecyclePublicationAttempt | None:
         assert self._destination_chat_id is not None
-        fresh_after = datetime.now(UTC) - _MEMBER_EVENT_FRESHNESS
+        now = datetime.now(UTC)
+        fresh_after = now - _MEMBER_EVENT_FRESHNESS
+        settlement_cutoff = _broker_settlement_publication_cutoff(now)
         with self._session_factory() as session:
             row = session.execute(
                 text(
@@ -1828,7 +1853,8 @@ class CanonicalTelegramPublisherManager(Day34CutoverTelegramPublisherManager):
                     WHERE pub.status='pending'
                       AND pub.publication_kind='lifecycle_event'
                       AND (
-                          ev.event_type='broker_position_settled'
+                          (ev.event_type='broker_position_settled'
+                           AND ev.occurred_at>=:settlement_cutoff)
                           OR (
                               root.status='sent'
                               AND root.telegram_message_id IS NOT NULL
@@ -1878,7 +1904,11 @@ class CanonicalTelegramPublisherManager(Day34CutoverTelegramPublisherManager):
                     LIMIT 1
                     """
                 ),
-                {"fresh_after": fresh_after, "reference_user_id": self._reference_user_id},
+                {
+                    "fresh_after": fresh_after,
+                    "settlement_cutoff": settlement_cutoff,
+                    "reference_user_id": self._reference_user_id,
+                },
             ).mappings().first()
             if row is None:
                 session.rollback()
