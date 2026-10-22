@@ -1122,6 +1122,9 @@ class CanonicalTelegramPublisherManager(Day34CutoverTelegramPublisherManager):
         settlement_cutoff = _broker_settlement_publication_cutoff(now)
         with self._session_factory() as session:
             self._assign_member_trade_numbers(session, fresh_after=fresh_after)
+            # Release the advisory transaction lock immediately, rather than
+            # holding it throughout the rest of the outbox seed/repair queries.
+            session.commit()
             placement_for_pub = self._placement_exists_sql("pub.signal_id")
             placement_for_sig = self._placement_exists_sql("sig.id")
             placement_for_ev = self._placement_exists_sql("ev.signal_id")
@@ -1686,71 +1689,92 @@ class CanonicalTelegramPublisherManager(Day34CutoverTelegramPublisherManager):
     def _assign_member_trade_numbers(session: Any, *, fresh_after: datetime) -> None:
         """Assign the lowest free active slot and keep it for the trade lifecycle."""
 
-        session.execute(
-            text("SELECT pg_advisory_xact_lock(hashtext('super-signals-member-trade-numbers'))")
-        )
-        active_sql = """
-            EXISTS (
-                SELECT 1
-                FROM positions AS p
-                LEFT JOIN performance_trade_outcomes AS o ON o.position_id=p.id
-                WHERE p.signal_id=sig.id
-                  AND (
-                      o.status='pending'
-                      OR (
-                          COALESCE(o.status,'open')
-                              NOT IN ('won','lost','breakeven','closed_unknown')
-                          AND (
-                              (p.status='open' AND p.broker_position_id IS NOT NULL)
-                              OR (
-                                  p.status IN ('planned','pending')
-                                  AND COALESCE(p.broker_order_id,p.broker_position_id)
-                                      IS NOT NULL
-                              )
-                          )
-                      )
-                  )
+        # A prior blocking advisory lock caused Telegram publication queues and
+        # even the next Render instance startup to wait for minutes. If another
+        # publisher owns the allocator, skip this cycle. Its transaction owns the
+        # assignment; the next poll will pick up the committed numbers.
+        acquired = session.execute(
+            text(
+                "SELECT pg_try_advisory_xact_lock("
+                "hashtext('super-signals-member-trade-numbers'))"
+            )
+        ).scalar_one()
+        if not acquired:
+            return
+
+        active_filter = """
+            (
+                o.status='pending'
+                OR (
+                    COALESCE(o.status,'open')
+                        NOT IN ('won','lost','breakeven','closed_unknown')
+                    AND (
+                        (p.status='open' AND p.broker_position_id IS NOT NULL)
+                        OR (
+                            p.status IN ('planned','pending')
+                            AND COALESCE(p.broker_order_id,p.broker_position_id)
+                                IS NOT NULL
+                        )
+                    )
+                )
             )
         """
+        # Drive this query from the ~3k broker positions rather than scanning
+        # signals and evaluating correlated position/outcome probes for each.
         used = {
             int(value)
             for value in session.execute(
                 text(
                     f"""
                     SELECT DISTINCT sig.member_trade_number
-                    FROM signals AS sig
+                    FROM positions AS p
+                    JOIN signals AS sig ON sig.id=p.signal_id
+                    LEFT JOIN performance_trade_outcomes AS o ON o.position_id=p.id
                     WHERE sig.member_trade_number IS NOT NULL
-                      AND {active_sql}
+                      AND {active_filter}
                     """
                 )
             ).scalars()
             if value is not None
         }
+
+        # Restrict the allocation work to recent unnumbered signals and actual
+        # active broker positions; old provider-signal archives are not candidates.
+        # Preserve the existing broker-confirmed audit condition.
         candidates = session.execute(
             text(
                 f"""
+                WITH relevant AS (
+                    SELECT sig.id
+                    FROM signals AS sig
+                    WHERE sig.member_trade_number IS NULL
+                      AND sig.created_at>=:fresh_after
+                    UNION
+                    SELECT sig.id
+                    FROM positions AS p
+                    JOIN signals AS sig ON sig.id=p.signal_id
+                    LEFT JOIN performance_trade_outcomes AS o ON o.position_id=p.id
+                    WHERE sig.member_trade_number IS NULL
+                      AND {active_filter}
+                )
                 SELECT sig.id
-                FROM signals AS sig
-                WHERE sig.member_trade_number IS NULL
-                  AND (
-                      sig.created_at>=:fresh_after
-                      OR {active_sql}
-                  )
-                  AND EXISTS (
-                      SELECT 1
-                      FROM audit_events AS placed
-                      WHERE placed.entity_type='signal'
-                        AND placed.entity_id=sig.id
-                        AND (
-                            placed.event_type='mt5.day26_execution_success'
-                            OR (
-                                placed.event_type='{_PLACEMENT_EVENT}'
-                                AND placed.payload->>'outcome'='executed'
-                            )
-                        )
-                  )
+                FROM relevant AS r
+                JOIN signals AS sig ON sig.id=r.id
+                WHERE EXISTS (
+                    SELECT 1
+                    FROM audit_events AS placed
+                    WHERE placed.entity_type='signal'
+                      AND placed.entity_id=sig.id
+                      AND (
+                          placed.event_type='mt5.day26_execution_success'
+                          OR (
+                              placed.event_type='{_PLACEMENT_EVENT}'
+                              AND placed.payload->>'outcome'='executed'
+                          )
+                      )
+                )
                 ORDER BY sig.created_at,sig.id
-                FOR UPDATE
+                FOR UPDATE OF sig
                 """
             ),
             {"fresh_after": fresh_after},
