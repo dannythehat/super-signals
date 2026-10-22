@@ -77,3 +77,73 @@ async def test_periodic_pending_cleanup_is_throttled_but_not_execution_guard() -
     assert "superseded_pending_not_proven_safe" in inspect.getsource(
         SupersededPendingOrderGuard.cancel_before_signal
     )
+
+
+def _stale_ticket() -> tuple[dict[str, object], dict[str, object]]:
+    row = {
+        "broker_order_id": "2218888267",
+        "broker_client_id": "SS_63b994fc24ed_E2T2",
+        "symbol": "XAUUSD",
+    }
+    history = {
+        "id": "2218888267",
+        "clientId": "SS_63b994fc24ed_E2T2[cancelOrde",
+        "state": "ORDER_STATE_PLACED",
+        "symbol": "XAUUSD",
+        "type": "ORDER_TYPE_BUY_LIMIT",
+        "currentVolume": 0.05,
+    }
+    return row, history
+
+
+def test_cancelled_mt5_ticket_matches_truncated_annotation_not_arbitrary_id() -> None:
+    row, historical = _stale_ticket()
+    assert SupersededPendingOrderGuard._matching_history(row, [historical]) == historical
+    assert SupersededPendingOrderGuard._matching_history(
+        row, [{**historical, "id": "unrelated"}]
+    ) is None
+
+
+def test_stale_pending_cancel_reconciles_only_with_multiple_broker_checks() -> None:
+    row, historical = _stale_ticket()
+
+    def confirmed(orders=None, positions=None, record=None):
+        return SupersededPendingOrderGuard._confirmed_cancelled_history(
+            row=row,
+            terminal=record or historical,
+            active_order_ids=set(orders or []),
+            broker_positions=positions or [],
+        )
+
+    assert confirmed()
+    assert not confirmed(orders=["2218888267"])
+    assert not confirmed(positions=[{"orderId": "2218888267"}])
+    assert not confirmed(positions=[{"clientId": row["broker_client_id"]}])
+    assert not confirmed(record={**historical, "clientId": row["broker_client_id"]})
+    assert not confirmed(record={**historical, "state": "ORDER_STATE_FILLED"})
+    assert not confirmed(record={**historical, "symbol": "EURUSD"})
+    assert not confirmed(record={**historical, "positionId": "some-filled-position"})
+
+
+def test_no_fill_guard_remains_before_terminalisation() -> None:
+    source = inspect.getsource(SupersededPendingOrderGuard._cancel_rows)
+    assert "_confirmed_cancelled_history(" in source
+    assert "not self._known_broker_deal_for_order" in source
+    assert "self._persist_cancelled(user_id, row, broker_mutation=False)" in source
+
+
+def test_tp_publications_require_older_confirmed_tp_to_be_sent_first() -> None:
+    claim = inspect.getsource(CanonicalTelegramPublisherManager._claim_lifecycle)
+    assert "AND preceding.status='sent'" in claim
+    assert "earlier.tp_index<event_position.tp_index" in claim
+    assert "ORDER BY ev.occurred_at,event_position.tp_index" in claim
+
+
+def test_tp_balance_is_not_current_equity_snapshot_copied_to_past_events() -> None:
+    formatter = inspect.getsource(
+        CanonicalTelegramPublisherManager._settlement_financial_lines
+    )
+    assert "cash_change != event_cash" in formatter
+    assert "Broker snapshot confirming" in formatter
+    claim = inspect.getsource(CanonicalTelegramPublisherManager._claim_lifecycle)
+    assert "self._settlement_financial_lines(" in claim
