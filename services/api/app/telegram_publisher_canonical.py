@@ -510,28 +510,40 @@ class CanonicalTelegramPublisherManager(Day34CutoverTelegramPublisherManager):
             f"<b>{money(daily_pnl)}</b>",
         ]
 
+    @staticmethod
+    def _publication_time_financial_lines(balance: Decimal, daily_pnl: Decimal) -> list[str]:
+        """Verified website/account values at publication, not reconstructed TP cash.
+
+        This must use the figures reserved in telegram_publication_financials for the
+        same message. A later broker snapshot must not rewrite an earlier update.
+        """
+        return [
+            "",
+            "<b>Balance (at time of update)</b>",
+            f"<b>{_balance_money(balance)}</b>",
+            "",
+            "<b>Today's P&L (at time of update)</b>",
+            f"<b>{money(daily_pnl)}</b>",
+        ]
+
     def _settlement_financial_lines(
         self,
         session: Any,
         *,
         event_at: datetime,
         position_id: UUID | None,
+        publication_balance: Decimal,
+        publication_daily_pnl: Decimal,
     ) -> list[str]:
-        """Show per-TP account value only when independent broker snapshots prove it.
+        """Show exact post-TP balance only if independent cash snapshots prove it.
 
-        Historical deal ingestion is incomplete and broker clocks may be offset.
-        Do not subtract a partial ledger from today's final balance to invent an
-        earlier TP balance. A before/after broker cash movement must equal the
-        independently recorded settlement cash before publishing an exact value.
+        Otherwise use the same reserved broker/website account figures shown in
+        the new-trade message, explicitly labelled as publication-time values.
+        Never back-calculate a false historical TP balance from current equity.
         """
-        pending = [
-            "",
-            "<b>Balance after this TP</b>",
-            "<b>Broker snapshot confirming…</b>",
-            "",
-            "<b>Today's P&L after this TP</b>",
-            "<b>Broker snapshot confirming…</b>",
-        ]
+        pending = self._publication_time_financial_lines(
+            publication_balance, publication_daily_pnl
+        )
         if self._reference_user_id is None or position_id is None:
             return pending
 
@@ -1596,6 +1608,28 @@ class CanonicalTelegramPublisherManager(Day34CutoverTelegramPublisherManager):
                         count=1,
                     )
 
+                # Correct today's already-sent settlement updates in place.
+                # Only replace the old "confirming" placeholder, never rewrite a
+                # broker-proven exact post-TP value. Financials come from this very
+                # publication's immutable recorded account-value snapshot.
+                if repair_balance is not None and repair_daily is not None:
+                    repaired = re.sub(
+                        r"<b>Balance after this TP</b>\\n"
+                        r"<b>Broker snapshot confirming…</b>",
+                        "<b>Balance (at time of update)</b>\\n"
+                        f"<b>{_balance_money(repair_balance)}</b>",
+                        repaired,
+                        count=1,
+                    )
+                    repaired = re.sub(
+                        r"<b>Today's P&L after this TP</b>\\n"
+                        r"<b>Broker snapshot confirming…</b>",
+                        "<b>Today's P&L (at time of update)</b>\\n"
+                        f"<b>{money(repair_daily)}</b>",
+                        repaired,
+                        count=1,
+                    )
+
                 # Historical TIG-style partial wording: the original source explicitly
                 # names the target milestone. Never leave a sent post claiming TP1 when
                 # the provider actually said TP2/TP3/etc.
@@ -2372,6 +2406,8 @@ class CanonicalTelegramPublisherManager(Day34CutoverTelegramPublisherManager):
                             event_position_id
                             if event_position_id is not None else None
                         ),
+                        publication_balance=rolling_balance,
+                        publication_daily_pnl=rolling_daily,
                     )
                 )
                 status_lines = self._trade_status_lines_as_of(
