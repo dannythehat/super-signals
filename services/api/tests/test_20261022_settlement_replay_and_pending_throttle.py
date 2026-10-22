@@ -47,7 +47,8 @@ def test_outbox_suppresses_late_broker_events_at_seed_and_claim() -> None:
     assert "ev.occurred_at<:settlement_cutoff" in seed
     assert "ev.occurred_at>=:settlement_cutoff" in seed
     assert "ev.occurred_at>=:settlement_cutoff" in claim
-    assert "ev.event_type<>'broker_position_settled'\\n                              AND root.status" in claim
+    assert "ev.event_type<>'broker_position_settled'" in claim
+    assert "AND root.status='sent'" in claim
 
 
 @pytest.mark.asyncio
