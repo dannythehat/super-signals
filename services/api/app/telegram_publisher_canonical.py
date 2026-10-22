@@ -27,12 +27,17 @@ from zoneinfo import ZoneInfo
 
 from sqlalchemy import text
 
+from app.running_daily_balance import account_value_days
 from app.telegram_publisher import PublicationAttempt, TelegramPublishError, _bot_api_call
 from app.telegram_publisher_day20 import LifecyclePublicationAttempt
 from app.telegram_publisher_day34 import Day34TelegramPublisherManager, SummaryPublicationAttempt
 from app.telegram_publisher_day34_cutover import Day34CutoverTelegramPublisherManager
-from app.telegram_trade_ledger import TelegramTradeLedger, TradeLedgerSnapshot, money, provider_badge
-from app.running_daily_balance import account_value_days
+from app.telegram_trade_ledger import (
+    TelegramTradeLedger,
+    TradeLedgerSnapshot,
+    money,
+    provider_badge,
+)
 from app.trade_identity import public_trade_identity
 
 _PLACEMENT_EVENT = "mt5.day38_route_new_trade"
@@ -2004,7 +2009,7 @@ class CanonicalTelegramPublisherManager(Day34CutoverTelegramPublisherManager):
             if row is None:
                 session.rollback()
                 return None
-            identity = public_trade_identity(row["signal_id"], row["member_trade_number"])
+            public_trade_identity(row["signal_id"], row["member_trade_number"])
             provider_line = self._provider_line(
                 row["source_id"], str(row["provider_name"] or "Unknown provider")
             )
