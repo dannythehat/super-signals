@@ -11,6 +11,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from time import monotonic
 from uuid import UUID
 
 from sqlalchemy import text
@@ -29,6 +30,7 @@ _TERMINAL_NO_FILL_STATES = {
     "ORDER_STATE_EXPIRED",
 }
 _FILLED_STATES = {"ORDER_STATE_FILLED", "ORDER_STATE_PARTIAL"}
+_CLEANUP_MIN_INTERVAL_SECONDS = 60.0
 
 
 @dataclass(frozen=True, slots=True)
@@ -54,6 +56,12 @@ class SupersededPendingOrderGuard:
         self._cipher = cipher
         self._read_gateway = read_gateway
         self._trade_gateway = trade_gateway
+        # Periodic reconciliation runs every few seconds. Keep repeated
+        # unresolved broker reads off the critical live trading lane.
+        # New signal execution always performs its own fresh, fail-closed check.
+        self._cleanup_cache: dict[
+            tuple[UUID, str], tuple[float, SupersededPendingResult]
+        ] = {}
 
     async def cancel_before_signal(
         self,
@@ -78,12 +86,26 @@ class SupersededPendingOrderGuard:
         user_id: UUID,
         account_environment: str,
     ) -> SupersededPendingResult:
+        key = (user_id, account_environment.strip().lower())
+        last = self._cleanup_cache.get(key)
+        now = monotonic()
+        if last is not None and now - last[0] < _CLEANUP_MIN_INTERVAL_SECONDS:
+            previous = last[1]
+            return SupersededPendingResult(
+                candidates=previous.candidates,
+                cancelled=0,
+                terminalized=0,
+                unresolved=previous.unresolved,
+            )
+
         rows = self._all_superseded_rows(user_id=user_id)
-        return await self._cancel_rows(
+        result = await self._cancel_rows(
             user_id=user_id,
             rows=rows,
             account_environment=account_environment,
         )
+        self._cleanup_cache[key] = (monotonic(), result)
+        return result
 
     async def _cancel_rows(
         self,
