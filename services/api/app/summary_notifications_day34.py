@@ -314,7 +314,8 @@ class Day34SummaryNotificationService(Day34ScheduledPerformanceReportService):
                     elif "message to edit not found" in reason:
                         self.record_missing_sent_report(repair)
                         logger.warning(
-                            "Telegram summary repair retired missing message notification_id=%s message_id=%s",
+                            "Telegram summary repair retired missing message "
+                            "notification_id=%s message_id=%s",
                             repair.notification_id,
                             repair.telegram_message_id,
                         )
