@@ -517,136 +517,135 @@ class CanonicalTelegramPublisherManager(Day34CutoverTelegramPublisherManager):
         event_at: datetime,
         position_id: UUID | None,
     ) -> list[str]:
-        """Reconstruct per-TP broker cash, never copy final-day equity backwards.
+        """Show per-TP account value only when independent broker snapshots prove it.
 
-        The present website account value is the current equity, NOT the cash
-        balance that existed after an earlier TP. Financial history must be
-        derived from actual broker deal movements or explicitly marked pending.
+        Historical deal ingestion is incomplete and broker clocks may be offset.
+        Do not subtract a partial ledger from today's final balance to invent an
+        earlier TP balance. A before/after broker cash movement must equal the
+        independently recorded settlement cash before publishing an exact value.
         """
         pending = [
             "",
             "<b>Balance after this TP</b>",
-            "<b>Confirming broker cash history…</b>",
+            "<b>Broker snapshot confirming…</b>",
             "",
-            "<b>Today's realised P&L</b>",
-            "<b>Confirming…</b>",
+            "<b>Today's P&L after this TP</b>",
+            "<b>Broker snapshot confirming…</b>",
         ]
         if self._reference_user_id is None or position_id is None:
             return pending
 
-        snapshot = session.execute(
+        event = session.execute(
             text(
                 """
-                SELECT mt5_account_id,balance,captured_at
-                FROM performance_account_snapshots
-                WHERE user_id=:user_id AND balance IS NOT NULL
-                ORDER BY captured_at DESC
-                LIMIT 1
-                """
-            ),
-            {"user_id": self._reference_user_id},
-        ).mappings().first()
-        if snapshot is None:
-            return pending
-
-        now = datetime.now(UTC)
-        if (
-            snapshot["captured_at"] < event_at
-            or now - snapshot["captured_at"] > timedelta(minutes=15)
-        ):
-            return pending
-
-        # A settlement is eligible only when its exit is actually in the
-        # immutable broker deal stream. A local/inferred TP must not invent
-        # an account balance.
-        anchor_deal = session.execute(
-            text(
-                """
-                SELECT occurred_at,broker_deal_id
+                SELECT mt5_account_id,occurred_at,
+                       COALESCE(profit,0)+COALESCE(commission,0)+COALESCE(swap,0)
+                           AS cash
                 FROM broker_deals
                 WHERE user_id=:user_id
-                  AND mt5_account_id=:mt5_account_id
                   AND position_id=:position_id
                   AND entry_type IN ('DEAL_ENTRY_OUT','DEAL_ENTRY_OUT_BY')
-                  AND occurred_at<=:event_at
                 ORDER BY occurred_at DESC,broker_deal_id DESC
                 LIMIT 1
                 """
             ),
-            {
-                "user_id": self._reference_user_id,
-                "mt5_account_id": snapshot["mt5_account_id"],
-                "position_id": position_id,
-                "event_at": event_at,
-            },
+            {"user_id": self._reference_user_id, "position_id": position_id},
         ).mappings().first()
-        if anchor_deal is None:
+        if event is None:
             return pending
 
-        local_event = event_at.astimezone(SOFIA)
-        day_start = local_event.replace(
-            hour=21, minute=0, second=0, microsecond=0
-        )
-        if local_event < day_start:
-            day_start -= timedelta(days=1)
-        start_at = day_start.astimezone(UTC)
-        params = {
-            "user_id": self._reference_user_id,
-            "account_id": snapshot["mt5_account_id"],
-            "event_at": anchor_deal["occurred_at"],
-            "deal_id": anchor_deal["broker_deal_id"],
-            "snapshot_at": snapshot["captured_at"],
-            "start_at": start_at,
-        }
-        later_cash = session.execute(
+        # Vantage MT5 broker timestamps are recorded as UTC-labelled server
+        # wall-clock values. Interpret as Sofia wall-clock provisionally,
+        # but require independent cash-step proof before displaying a value.
+        broker_wall_time = event["occurred_at"].astimezone(UTC).replace(tzinfo=None)
+        event_utc = broker_wall_time.replace(tzinfo=SOFIA).astimezone(UTC)
+        samples = session.execute(
             text(
                 """
-                SELECT COALESCE(SUM(
-                    COALESCE(profit,0)+COALESCE(commission,0)+COALESCE(swap,0)
-                ),0)
-                FROM broker_deals
-                WHERE user_id=:user_id
-                  AND mt5_account_id=:account_id
-                  AND occurred_at<=:snapshot_at
-                  AND (
-                      occurred_at>:event_at
-                      OR (occurred_at=:event_at AND broker_deal_id>:deal_id)
-                  )
+                SELECT
+                    (
+                      SELECT row_to_json(b)
+                      FROM (
+                        SELECT captured_at,balance,equity
+                        FROM performance_account_snapshots
+                        WHERE user_id=:user_id AND mt5_account_id=:account_id
+                          AND captured_at<=:event_at
+                          AND captured_at>=:event_at-INTERVAL '10 minutes'
+                        ORDER BY captured_at DESC LIMIT 1
+                      ) b
+                    ) AS before_snapshot,
+                    (
+                      SELECT row_to_json(a)
+                      FROM (
+                        SELECT captured_at,balance,equity
+                        FROM performance_account_snapshots
+                        WHERE user_id=:user_id AND mt5_account_id=:account_id
+                          AND captured_at>:event_at
+                          AND captured_at<=:event_at+INTERVAL '3 minutes'
+                        ORDER BY captured_at ASC LIMIT 1
+                      ) a
+                    ) AS after_snapshot
                 """
             ),
-            params,
-        ).scalar_one()
-        realised_today = session.execute(
-            text(
-                """
-                SELECT COALESCE(SUM(
-                    COALESCE(profit,0)+COALESCE(commission,0)+COALESCE(swap,0)
-                ),0)
-                FROM broker_deals
-                WHERE user_id=:user_id
-                  AND mt5_account_id=:account_id
-                  AND entry_type IN ('DEAL_ENTRY_OUT','DEAL_ENTRY_OUT_BY')
-                  AND occurred_at>=:start_at
-                  AND (
-                      occurred_at<:event_at
-                      OR (occurred_at=:event_at AND broker_deal_id<=:deal_id)
-                  )
-                """
-            ),
-            params,
-        ).scalar_one()
+            {
+                "user_id": self._reference_user_id,
+                "account_id": event["mt5_account_id"],
+                "event_at": event_utc,
+            },
+        ).mappings().one()
+        before = samples["before_snapshot"]
+        after = samples["after_snapshot"]
+        if not isinstance(before, dict) or not isinstance(after, dict):
+            return pending
+        if (
+            before.get("balance") is None or after.get("balance") is None
+            or after.get("equity") is None
+        ):
+            return pending
 
-        cash = (
-            Decimal(str(snapshot["balance"])) - Decimal(str(later_cash))
+        cash_change = (
+            Decimal(str(after["balance"])) - Decimal(str(before["balance"]))
         ).quantize(Decimal("0.01"))
-        realised = Decimal(str(realised_today)).quantize(Decimal("0.01"))
+        event_cash = Decimal(str(event["cash"])).quantize(Decimal("0.01"))
+        if cash_change != event_cash:
+            # Other concurrent exits, missing deals or an incorrect broker
+            # timezone can invalidate the inference. Never publish an estimate.
+            return pending
+
+        local = event_utc.astimezone(SOFIA)
+        boundary = local.replace(hour=21, minute=0, second=0, microsecond=0)
+        if local < boundary:
+            boundary -= timedelta(days=1)
+        opening = session.execute(
+            text(
+                """
+                SELECT equity
+                FROM performance_account_snapshots
+                WHERE user_id=:user_id AND mt5_account_id=:account_id
+                  AND captured_at<=:boundary
+                  AND equity IS NOT NULL
+                ORDER BY captured_at DESC LIMIT 1
+                """
+            ),
+            {
+                "user_id": self._reference_user_id,
+                "account_id": event["mt5_account_id"],
+                "boundary": boundary.astimezone(UTC),
+            },
+        ).scalar_one_or_none()
+        account_value = Decimal(str(after["equity"])).quantize(Decimal("0.01"))
+        daily = (
+            money(account_value - Decimal(str(opening)))
+            if opening is not None
+            else "Confirming…"
+        )
         return [
             "",
-            "<b>Broker cash balance after this TP</b>",
-            f"<b>{_balance_money(cash)}</b>",
+            "<b>Balance after this TP</b>",
+            f"<b>{_balance_money(account_value)}</b>",
             "",
-            "<b>Today's realised trading P&L</b>",
-            f"<b>{money(realised)}</b>",
+            "<b>Today's P&L after this TP</b>",
+            f"<b>{daily}</b>",
         ]
 
     def _commit_financial_publication(self, publication_id: UUID) -> None:
