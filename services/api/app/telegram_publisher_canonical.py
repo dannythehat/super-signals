@@ -1958,6 +1958,38 @@ class CanonicalTelegramPublisherManager(Day34CutoverTelegramPublisherManager):
                           )
                       )
                       AND ev.event_type NOT LIKE 'broker_result_%'
+                      -- Keep same-signal TP replies chronological even when broker
+                      -- deal history is delivered in batches or out of order.
+                      AND NOT (
+                          ev.event_type='broker_position_settled'
+                          AND EXISTS (
+                              SELECT 1
+                              FROM positions earlier
+                              WHERE earlier.signal_id=ev.signal_id
+                                AND earlier.user_id=:reference_user_id
+                                AND earlier.id<>event_position.id
+                                AND earlier.closed_at IS NOT NULL
+                                AND earlier.closed_at>=:settlement_cutoff
+                                AND (
+                                    earlier.closed_at<ev.occurred_at
+                                    OR (
+                                        earlier.closed_at=ev.occurred_at
+                                        AND earlier.tp_index<event_position.tp_index
+                                    )
+                                )
+                                AND NOT EXISTS (
+                                    SELECT 1
+                                    FROM telegram_publications preceding
+                                    JOIN signal_lifecycle_events preceding_ev
+                                      ON preceding_ev.id=preceding.lifecycle_event_id
+                                    WHERE preceding.signal_id=ev.signal_id
+                                      AND preceding.status='sent'
+                                      AND preceding_ev.event_type='broker_position_settled'
+                                      AND preceding_ev.aggregate_result->>'position_id'
+                                          =earlier.id::text
+                                )
+                          )
+                      )
                       AND NOT (
                           ev.event_type='broker_position_settled'
                           AND EXISTS (
@@ -1995,7 +2027,7 @@ class CanonicalTelegramPublisherManager(Day34CutoverTelegramPublisherManager):
                                 AND completed.created_at<=ev.created_at
                           )
                       )
-                    ORDER BY ev.occurred_at,ev.created_at,pub.id
+                    ORDER BY ev.occurred_at,event_position.tp_index,ev.created_at,pub.id
                     FOR UPDATE OF pub SKIP LOCKED
                     LIMIT 1
                     """
