@@ -63,6 +63,11 @@ def source_id(conn) -> UUID:
         text("INSERT INTO users (id,email,status) VALUES (:id,:email,'active')"),
         {"id": user_id, "email": f"{user_id}@example.test"},
     )
+    # Position FK requires a real reference account. Keep this transaction-scoped.
+    conn.execute(
+        text("INSERT INTO users (id,email,status) VALUES (:id,:email,'active')"),
+        {"id": OWNER, "email": f"{OWNER}@example.test"},
+    )
     conn.execute(
         text(
             "INSERT INTO telegram_accounts "
@@ -230,7 +235,7 @@ def test_a_never_executed_signal_still_links_via_the_existing_legacy_path_when_u
 
     assert linked is not None
     assert linked["id"] == signal_id
-    assert reason == "standalone_legacy_unique"
+    assert reason == "standalone_unique_active"
 
 
 def test_a_source_with_no_signal_history_at_all_stays_genuinely_unresolved(
@@ -288,12 +293,17 @@ def test_a_position_still_open_for_another_user_on_the_same_signal_is_never_mask
         conn, source_id=source_id, symbol="XAUUSD", provider_message_id=506, posted_at=posted_at
     )
     _insert_position(conn, signal_id=signal_id, status="closed", broker_position_id="broker-6a")
+    other_user_id = uuid4()
+    conn.execute(
+        text("INSERT INTO users (id,email,status) VALUES (:id,:email,'active')"),
+        {"id": other_user_id, "email": f"{other_user_id}@example.test"},
+    )
     conn.execute(
         text(
             "INSERT INTO positions (id,signal_id,user_id,tp_index,status,planned_risk_percent,"
             "broker_position_id) VALUES (:id,:signal,:user,1,'open',1.0,'broker-6b')"
         ),
-        {"id": uuid4(), "signal": signal_id, "user": uuid4()},
+        {"id": uuid4(), "signal": signal_id, "user": other_user_id},
     )
 
     linked, reason = AiLifecycleBridge._resolve_signal(
