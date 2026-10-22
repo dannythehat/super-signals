@@ -38,7 +38,8 @@ describe('DailyProfitChart', () => {
     expect(screen.queryByRole('button', { name: 'Aug 26' })).not.toBeInTheDocument();
 
     fireEvent.click(screen.getByRole('button', { name: 'Monthly' }));
-    expect(screen.getByText((text) => text.includes('9.92%') && text.includes('MTD'))).toBeInTheDocument();
+    expect(screen.getByText((text) => text.includes('9.92%'))).toBeInTheDocument();
+    expect(screen.getByText('Completed month')).toBeInTheDocument();
     expect(screen.getAllByText((text) => text.includes('$99') || text.includes('US$99')).length).toBeGreaterThan(0);
   });
 });
