@@ -401,7 +401,7 @@ def test_settlement_replay_cleanup_only_touches_the_original_incident_window(
     assert present_day_row["failure_code"] is None
 
 
-def test_late_arriving_settlement_is_claimed_despite_crossing_the_day_boundary(db) -> None:
+def test_late_arriving_settlement_is_audit_only_after_day_boundary(db) -> None:
     session_factory, owner_id, source_id = db
     with session_factory() as session:
         message = _make_message(session, source_id, 10, datetime.now(UTC))
@@ -439,16 +439,15 @@ def test_late_arriving_settlement_is_claimed_despite_crossing_the_day_boundary(d
     manager = _manager(session_factory, owner_id)
     attempt = manager._claim_lifecycle()
 
-    assert attempt is not None
-    assert attempt.publication_id == publication_id
+    assert attempt is None
 
     with session_factory() as session:
         row = session.execute(
             text("SELECT status, attempt_count FROM telegram_publications WHERE id=:id"),
             {"id": publication_id},
         ).mappings().one()
-    assert row["status"] == "sending"
-    assert row["attempt_count"] == 1
+    assert row["status"] == "pending"
+    assert row["attempt_count"] == 0
 
 
 def test_stuck_unsettled_earlier_leg_stops_blocking_siblings_after_a_grace_period(db) -> None:
