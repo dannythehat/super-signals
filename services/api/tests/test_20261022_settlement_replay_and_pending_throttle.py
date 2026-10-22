@@ -144,7 +144,10 @@ def test_tp_balance_is_not_current_equity_snapshot_copied_to_past_events() -> No
         CanonicalTelegramPublisherManager._settlement_financial_lines
     )
     assert "cash_change != event_cash" in formatter
-    assert "Broker snapshot confirming" in formatter
+    assert "self._publication_time_financial_lines(" in formatter
+    assert "publication_balance=rolling_balance" in inspect.getsource(
+        CanonicalTelegramPublisherManager._claim_lifecycle
+    )
     claim = inspect.getsource(CanonicalTelegramPublisherManager._claim_lifecycle)
     assert "self._settlement_financial_lines(" in claim
 
