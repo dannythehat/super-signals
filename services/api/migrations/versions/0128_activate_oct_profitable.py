@@ -71,8 +71,11 @@ def upgrade() -> None:
             ),
             {"source_id": source_id, "chat_id": chat_id},
         ).mappings().one_or_none()
-        if row is None or row["status"] not in ("shadow", "testing"):
-            raise RuntimeError(f"Provider missing or no longer eligible: {title}")
+        if row is None:
+            verified.append((None, source_id, title))
+            continue
+        if row["status"] not in ("shadow", "testing"):
+            raise RuntimeError(f"Provider no longer eligible: {title}")
         if bool(row["graduated"]):
             raise RuntimeError(f"Provider already graduated to member LIVE: {title}")
         if (
@@ -82,7 +85,16 @@ def upgrade() -> None:
             raise RuntimeError(f"Provider no longer profitable October and all-time: {title}")
         verified.append((row, source_id, title))
 
+    # A clean first installation has no shared sources yet. Nothing to
+    # activate, but the schema must still migrate successfully. Production
+    # must have both exact sources or fail atomically, not activate just one.
+    if all(row is None for row, _, _ in verified):
+        return
+    if any(row is None for row, _, _ in verified):
+        raise RuntimeError("Profitable provider basket incomplete: refusing partial activation")
+
     for row, source_id, title in verified:
+        assert row is not None
         if row["status"] == "testing":
             continue  # idempotent, do not rewrite an existing live-source state
 
