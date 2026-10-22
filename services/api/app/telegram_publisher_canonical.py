@@ -620,9 +620,9 @@ class CanonicalTelegramPublisherManager(Day34CutoverTelegramPublisherManager):
                 closed_local = row["occurred_at"].astimezone(SOFIA)
                 closed_text = _html(closed_local.strftime("%-d %B %Y, %H:%M"))
                 notice = (
-                    "<b>HISTORICAL TRADE RESULT</b>\\n"
-                    f"<b>Closed:</b> {closed_text} (Sofia time)\\n"
-                    "<b>Published late on 22 October. Not today's trade.</b>\\n\\n"
+                    "<b>HISTORICAL TRADE RESULT</b>\n"
+                    f"<b>Closed:</b> {closed_text} (Sofia time)\n"
+                    "<b>Published late on 22 October. Not today's trade.</b>\n\n"
                 )
                 corrected = original if original.startswith(
                     "<b>HISTORICAL TRADE RESULT</b>"
