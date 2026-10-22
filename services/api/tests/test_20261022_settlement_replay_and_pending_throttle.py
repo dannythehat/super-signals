@@ -147,3 +147,41 @@ def test_tp_balance_is_not_current_equity_snapshot_copied_to_past_events() -> No
     assert "Broker snapshot confirming" in formatter
     claim = inspect.getsource(CanonicalTelegramPublisherManager._claim_lifecycle)
     assert "self._settlement_financial_lines(" in claim
+
+
+def test_member_number_allocator_never_waits_for_another_publisher() -> None:
+    class NoLockSession:
+        def __init__(self) -> None:
+            self.calls = []
+
+        def execute(self, statement, _params=None):
+            self.calls.append(str(statement))
+            return self
+
+        def scalar_one(self):
+            return False
+
+    session = NoLockSession()
+    CanonicalTelegramPublisherManager._assign_member_trade_numbers(
+        session, fresh_after=datetime.now(UTC)
+    )
+    assert len(session.calls) == 1
+    assert "pg_try_advisory_xact_lock" in session.calls[0]
+    source = inspect.getsource(
+        CanonicalTelegramPublisherManager._assign_member_trade_numbers
+    )
+    assert "FROM positions AS p" in source
+    assert "SELECT sig.id" in source
+    assert "WITH relevant AS" in source
+
+
+def test_startup_telegram_seed_and_identity_repairs_do_not_block_readiness() -> None:
+    from pathlib import Path
+
+    main = Path("services/api/app/main.py").read_text(encoding="utf-8")
+    assert "startup_telegram_task = asyncio.create_task(" in main
+    assert "await asyncio.to_thread(publisher._seed_missing_publications)" in main
+    startup = main[main.index("    await publisher.start()"):main.index(
+        "    if stale_position_watchdog is not None:"
+    )]
+    assert "await _seed_telegram_at_startup_safely()" not in startup
