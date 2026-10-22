@@ -581,12 +581,21 @@ def test_final_settlement_says_stop_loss_hit_when_the_closing_leg_is_the_stop_lo
             cash_pnl="10.00",
             closed_at=leg1_closed_at,
         )
-        _make_settlement_event(
+        leg1_event = _make_settlement_event(
             session,
             signal_id=signal_id,
             message_id=message,
             position_id=leg1_position,
             occurred_at=leg1_closed_at,
+        )
+        # TP1 was already sent before the last leg's completion announcement.
+        _make_publication(
+            session,
+            signal_id=signal_id,
+            lifecycle_event_id=leg1_event,
+            status="sent",
+            sent_at=datetime.now(UTC),
+            telegram_message_id=9001,
         )
 
         leg2_closed_at = datetime.now(UTC) - timedelta(minutes=1)
@@ -656,12 +665,21 @@ def test_final_settlement_stays_generic_when_the_closing_leg_itself_was_not_the_
             cash_pnl="-30.00",
             closed_at=leg1_closed_at,
         )
-        _make_settlement_event(
+        leg1_event = _make_settlement_event(
             session,
             signal_id=signal_id,
             message_id=message,
             position_id=leg1_position,
             occurred_at=leg1_closed_at,
+        )
+        # TP1 was already sent before the last leg's completion announcement.
+        _make_publication(
+            session,
+            signal_id=signal_id,
+            lifecycle_event_id=leg1_event,
+            status="sent",
+            sent_at=datetime.now(UTC),
+            telegram_message_id=9001,
         )
 
         leg2_closed_at = datetime.now(UTC) - timedelta(minutes=1)
