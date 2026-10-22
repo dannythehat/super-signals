@@ -6,10 +6,10 @@ provider risk, or AIDY authority.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-from datetime import UTC, datetime, timedelta
 import os
 import re
+from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta
 from decimal import ROUND_HALF_UP, Decimal
 from hashlib import sha256
 from uuid import UUID
@@ -282,7 +282,10 @@ class TelegramTradeLedger:
             captured = captured_at
             if captured.tzinfo is None:
                 captured = captured.replace(tzinfo=UTC)
-            stale = (point - captured.astimezone(UTC)).total_seconds() > ACCOUNT_SNAPSHOT_MAX_AGE_SECONDS
+            stale = (
+                (point - captured.astimezone(UTC)).total_seconds()
+                > ACCOUNT_SNAPSHOT_MAX_AGE_SECONDS
+            )
 
         # Today's P&L is the movement in full Vantage account value from the most recent
         # 21:00 Sofia boundary. It therefore includes realised and floating P/L and resets
