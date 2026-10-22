@@ -226,6 +226,7 @@ class CanonicalTelegramPublisherManager(Day34CutoverTelegramPublisherManager):
     def _run_member_maintenance_safely(self) -> None:
         """Low-priority Telegram reconciliation that must never block fresh trades."""
         try:
+            self._annotate_oct22_historical_settlements_safely()
             self._cleanup_accidental_historical_settlement_replay_safely()
             self._reconcile_financial_state_safely()
             self._repair_sent_root_identities_safely()
@@ -573,6 +574,95 @@ class CanonicalTelegramPublisherManager(Day34CutoverTelegramPublisherManager):
                 {"publication_id": publication_id},
             )
             session.commit()
+
+    def _annotate_oct22_historical_settlements_safely(self) -> None:
+        """Correct the specific 22-Oct late replay in place, without changing P&L.
+
+        This is intentionally scoped to the one known incident. Do not generalise
+        it to a moving reporting-day boundary: genuine overnight settlements
+        must never be modified or deleted after a later calendar rollover.
+        """
+        if not self._bot_token or self._destination_chat_id is None:
+            return
+        try:
+            with self._session_factory() as session:
+                rows = session.execute(
+                    text(
+                        """
+                        SELECT pub.id AS publication_id,
+                               pub.telegram_message_id,
+                               COALESCE(pub.destination_chat_id,:chat_id) AS destination_chat_id,
+                               pub.rendered_text,
+                               ev.occurred_at
+                        FROM telegram_publications AS pub
+                        JOIN signal_lifecycle_events AS ev
+                          ON ev.id=pub.lifecycle_event_id
+                        WHERE pub.status='sent'
+                          AND pub.publication_kind='lifecycle_event'
+                          AND pub.telegram_message_id IS NOT NULL
+                          AND ev.event_type='broker_position_settled'
+                          AND ev.occurred_at < TIMESTAMPTZ '2026-10-21 18:00:00+00'
+                          AND pub.sent_at >= TIMESTAMPTZ '2026-10-21 21:00:00+00'
+                          AND pub.sent_at < TIMESTAMPTZ '2026-10-22 18:00:00+00'
+                          AND COALESCE(pub.failure_code,'') <>
+                              'oct22_historical_settlement_annotated'
+                        ORDER BY pub.sent_at,pub.id
+                        LIMIT 30
+                        """
+                    ),
+                    {"chat_id": self._destination_chat_id},
+                ).mappings().all()
+
+            for row in rows:
+                original = str(row["rendered_text"] or "")
+                if not original:
+                    continue
+                closed_local = row["occurred_at"].astimezone(SOFIA)
+                closed_text = _html(closed_local.strftime("%-d %B %Y, %H:%M"))
+                notice = (
+                    "<b>HISTORICAL TRADE RESULT</b>\\n"
+                    f"<b>Closed:</b> {closed_text} (Sofia time)\\n"
+                    "<b>Published late on 22 October. Not today's trade.</b>\\n\\n"
+                )
+                corrected = original if original.startswith(
+                    "<b>HISTORICAL TRADE RESULT</b>"
+                ) else notice + original
+                try:
+                    _bot_api_call(
+                        self._bot_token,
+                        "editMessageText",
+                        {
+                            "chat_id": int(row["destination_chat_id"]),
+                            "message_id": int(row["telegram_message_id"]),
+                            "text": corrected,
+                            "parse_mode": "HTML",
+                            "disable_web_page_preview": "true",
+                        },
+                    )
+                except TelegramPublishError as exc:
+                    if "message is not modified" not in exc.reason.lower():
+                        logger.warning(
+                            "Oct-22 historical settlement annotation failed id=%s code=%s",
+                            row["telegram_message_id"], exc.code,
+                        )
+                        continue
+                with self._session_factory() as session:
+                    session.execute(
+                        text(
+                            """
+                            UPDATE telegram_publications
+                            SET rendered_text=:rendered_text,
+                                failure_code='oct22_historical_settlement_annotated',
+                                failure_reason='Broker close was from a prior reporting day.',
+                                updated_at=now()
+                            WHERE id=:id AND status='sent'
+                            """
+                        ),
+                        {"id": row["publication_id"], "rendered_text": corrected},
+                    )
+                    session.commit()
+        except Exception:
+            logger.exception("Oct-22 historical settlement annotation failed safely")
 
     def _cleanup_accidental_historical_settlement_replay_safely(self) -> None:
         """Remove only the accidental Sep-24 14:54-18:00 UTC replay of pre-day settlements.
