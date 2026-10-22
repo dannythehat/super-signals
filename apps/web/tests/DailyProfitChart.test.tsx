@@ -25,7 +25,7 @@ describe('DailyProfitChart', () => {
         currency="USD"
         timezoneName="Europe/Sofia"
         currentBalance={1099.17}
-        currentMonthPnl={99.17}
+        currentMonthPnl={null}
         allTimePnl={198.34}
         ownerDemo
       />,
