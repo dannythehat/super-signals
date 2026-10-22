@@ -510,6 +510,145 @@ class CanonicalTelegramPublisherManager(Day34CutoverTelegramPublisherManager):
             f"<b>{money(daily_pnl)}</b>",
         ]
 
+    def _settlement_financial_lines(
+        self,
+        session: Any,
+        *,
+        event_at: datetime,
+        position_id: UUID | None,
+    ) -> list[str]:
+        """Reconstruct per-TP broker cash, never copy final-day equity backwards.
+
+        The present website account value is the current equity, NOT the cash
+        balance that existed after an earlier TP. Financial history must be
+        derived from actual broker deal movements or explicitly marked pending.
+        """
+        pending = [
+            "",
+            "<b>Balance after this TP</b>",
+            "<b>Confirming broker cash history…</b>",
+            "",
+            "<b>Today's realised P&L</b>",
+            "<b>Confirming…</b>",
+        ]
+        if self._reference_user_id is None or position_id is None:
+            return pending
+
+        snapshot = session.execute(
+            text(
+                """
+                SELECT mt5_account_id,balance,captured_at
+                FROM performance_account_snapshots
+                WHERE user_id=:user_id AND balance IS NOT NULL
+                ORDER BY captured_at DESC
+                LIMIT 1
+                """
+            ),
+            {"user_id": self._reference_user_id},
+        ).mappings().first()
+        if snapshot is None:
+            return pending
+
+        now = datetime.now(UTC)
+        if (
+            snapshot["captured_at"] < event_at
+            or now - snapshot["captured_at"] > timedelta(minutes=15)
+        ):
+            return pending
+
+        # A settlement is eligible only when its exit is actually in the
+        # immutable broker deal stream. A local/inferred TP must not invent
+        # an account balance.
+        anchor_deal = session.execute(
+            text(
+                """
+                SELECT occurred_at,broker_deal_id
+                FROM broker_deals
+                WHERE user_id=:user_id
+                  AND mt5_account_id=:mt5_account_id
+                  AND position_id=:position_id
+                  AND entry_type IN ('DEAL_ENTRY_OUT','DEAL_ENTRY_OUT_BY')
+                  AND occurred_at<=:event_at
+                ORDER BY occurred_at DESC,broker_deal_id DESC
+                LIMIT 1
+                """
+            ),
+            {
+                "user_id": self._reference_user_id,
+                "mt5_account_id": snapshot["mt5_account_id"],
+                "position_id": position_id,
+                "event_at": event_at,
+            },
+        ).mappings().first()
+        if anchor_deal is None:
+            return pending
+
+        local_event = event_at.astimezone(SOFIA)
+        day_start = local_event.replace(
+            hour=21, minute=0, second=0, microsecond=0
+        )
+        if local_event < day_start:
+            day_start -= timedelta(days=1)
+        start_at = day_start.astimezone(UTC)
+        params = {
+            "user_id": self._reference_user_id,
+            "account_id": snapshot["mt5_account_id"],
+            "event_at": anchor_deal["occurred_at"],
+            "deal_id": anchor_deal["broker_deal_id"],
+            "snapshot_at": snapshot["captured_at"],
+            "start_at": start_at,
+        }
+        later_cash = session.execute(
+            text(
+                """
+                SELECT COALESCE(SUM(
+                    COALESCE(profit,0)+COALESCE(commission,0)+COALESCE(swap,0)
+                ),0)
+                FROM broker_deals
+                WHERE user_id=:user_id
+                  AND mt5_account_id=:account_id
+                  AND occurred_at<=:snapshot_at
+                  AND (
+                      occurred_at>:event_at
+                      OR (occurred_at=:event_at AND broker_deal_id>:deal_id)
+                  )
+                """
+            ),
+            params,
+        ).scalar_one()
+        realised_today = session.execute(
+            text(
+                """
+                SELECT COALESCE(SUM(
+                    COALESCE(profit,0)+COALESCE(commission,0)+COALESCE(swap,0)
+                ),0)
+                FROM broker_deals
+                WHERE user_id=:user_id
+                  AND mt5_account_id=:account_id
+                  AND entry_type IN ('DEAL_ENTRY_OUT','DEAL_ENTRY_OUT_BY')
+                  AND occurred_at>=:start_at
+                  AND (
+                      occurred_at<:event_at
+                      OR (occurred_at=:event_at AND broker_deal_id<=:deal_id)
+                  )
+                """
+            ),
+            params,
+        ).scalar_one()
+
+        cash = (
+            Decimal(str(snapshot["balance"])) - Decimal(str(later_cash))
+        ).quantize(Decimal("0.01"))
+        realised = Decimal(str(realised_today)).quantize(Decimal("0.01"))
+        return [
+            "",
+            "<b>Broker cash balance after this TP</b>",
+            f"<b>{_balance_money(cash)}</b>",
+            "",
+            "<b>Today's realised trading P&L</b>",
+            f"<b>{money(realised)}</b>",
+        ]
+
     def _commit_financial_publication(self, publication_id: UUID) -> None:
         if self._reference_user_id is None or self._destination_chat_id is None:
             return
@@ -2048,6 +2187,10 @@ class CanonicalTelegramPublisherManager(Day34CutoverTelegramPublisherManager):
             trade = self._trade_ledger.trade(row["signal_id"]) if self._trade_ledger else None
             event_type = str(row["event_type"] or "")
             aggregate = row["aggregate_result"] if isinstance(row["aggregate_result"], dict) else {}
+            try:
+                event_position_id = UUID(str(aggregate["position_id"]))
+            except (KeyError, TypeError, ValueError):
+                event_position_id = None
             event_outcome = str(
                 row["event_outcome_status"] or aggregate.get("outcome") or ""
             ).lower()
@@ -2197,7 +2340,16 @@ class CanonicalTelegramPublisherManager(Day34CutoverTelegramPublisherManager):
                     result = f"✅ <b>{money(pnl)}</b>"
 
                 parts = [provider_line, "", heading, "", result]
-                parts.extend(self._financial_lines(rolling_balance, rolling_daily))
+                parts.extend(
+                    self._settlement_financial_lines(
+                        session,
+                        event_at=row["event_occurred_at"],
+                        position_id=(
+                            event_position_id
+                            if event_position_id is not None else None
+                        ),
+                    )
+                )
                 status_lines = self._trade_status_lines_as_of(
                     session,
                     row["signal_id"],
