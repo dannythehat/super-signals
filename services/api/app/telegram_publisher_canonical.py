@@ -761,11 +761,12 @@ class CanonicalTelegramPublisherManager(Day34CutoverTelegramPublisherManager):
                 original = str(row["rendered_text"] or "")
                 if not original:
                     continue
-                closed_local = row["occurred_at"].astimezone(SOFIA)
-                closed_text = _html(closed_local.strftime("%-d %B %Y, %H:%M"))
+                # Some broker timestamps retain server-clock offsets. Only
+                # label the confirmed close *date*, never claim a verified hour.
+                closed_day = row["occurred_at"].date().strftime("%-d %B %Y")
                 notice = (
                     "<b>HISTORICAL TRADE RESULT</b>\n"
-                    f"<b>Closed:</b> {closed_text} (Sofia time)\n"
+                    f"<b>Broker close date:</b> {_html(closed_day)}\n"
                     "<b>Published late on 22 October. Not today's trade.</b>\n\n"
                 )
                 corrected = original if original.startswith(
