@@ -1,4 +1,4 @@
-"""A provider on probation only fires on its own historically-best side -- against real tables.
+"""Probation forward-tests both valid sides on the reference account -- against real tables.
 
 Same reason the other Decision Ledger integration suites use PostgreSQL directly: the
 sample-floor gating and the "not listed = unaffected" default are meant to be exercised
@@ -134,9 +134,9 @@ def test_probation_matches_the_providers_own_best_side(conn, source_id) -> None:
         opposite = check_probation_eligibility(session, source_id=source_id, side="SELL")
 
     assert matching.eligible is True
-    assert matching.reason == "probation_matches_best_side"
-    assert opposite.eligible is False
-    assert "probation_side_not_historically_best" in opposite.reason
+    assert matching.reason == "probation_forward_test_all_sides"
+    assert opposite.eligible is True
+    assert opposite.reason == "probation_forward_test_all_sides"
 
 
 def test_probation_holds_back_when_evidence_is_still_too_thin(conn, source_id) -> None:
@@ -152,8 +152,8 @@ def test_probation_holds_back_when_evidence_is_still_too_thin(conn, source_id) -
     with session_factory() as session:
         result = check_probation_eligibility(session, source_id=source_id, side="BUY")
 
-    assert result.eligible is False
-    assert result.reason == "probation_insufficient_evidence"
+    assert result.eligible is True
+    assert result.reason == "probation_forward_test_all_sides"
 
 
 def test_probation_holds_back_with_no_fingerprint_at_all_yet(conn, source_id) -> None:
@@ -168,8 +168,8 @@ def test_probation_holds_back_with_no_fingerprint_at_all_yet(conn, source_id) ->
     with session_factory() as session:
         result = check_probation_eligibility(session, source_id=source_id, side="BUY")
 
-    assert result.eligible is False
-    assert result.reason == "probation_insufficient_evidence"
+    assert result.eligible is True
+    assert result.reason == "probation_forward_test_all_sides"
 
 
 def test_a_graduated_provider_is_no_longer_restricted(conn, source_id) -> None:
@@ -240,7 +240,7 @@ def test_a_provider_with_thin_session_spread_but_solid_side_evidence_still_gradu
         result = check_probation_eligibility(session, source_id=source_id, side="SELL")
 
     assert result.eligible is True
-    assert result.reason == "probation_matches_best_side"
+    assert result.reason == "probation_forward_test_all_sides"
 
 
 def test_unknown_signal_side_is_held_back_not_guessed(conn, source_id) -> None:
