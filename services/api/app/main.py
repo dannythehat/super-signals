@@ -44,6 +44,7 @@ from app.performance_runtime import (
     CanonicalPerformanceRuntimeService as CanonicalPerformanceLedgerService,
 )
 from app.production_listener import build_production_listener_manager
+from app.pu_live_preflight_background import check_pu_master_once
 from app.provider_fingerprint_runtime import ProviderFingerprintRuntime
 from app.provider_management_language_audit_runtime import ProviderManagementLanguageAuditRuntime
 from app.provider_trade_scoring_runtime import ProviderTradeScoringRuntime
@@ -440,6 +441,10 @@ async def _lifespan(application: FastAPI) -> AsyncIterator[None]:
         _seed_telegram_at_startup_safely(),
         name="super-signals-telegram-startup-reconciliation",
     )
+    pu_preflight_task = asyncio.create_task(
+        check_pu_master_once(session_factory),
+        name="pu-master-read-only-preflight",
+    )
     if stale_position_watchdog is not None:
         await stale_position_watchdog.start()
 
@@ -468,6 +473,12 @@ async def _lifespan(application: FastAPI) -> AsyncIterator[None]:
     try:
         yield
     finally:
+        if not pu_preflight_task.done():
+            pu_preflight_task.cancel()
+        try:
+            await pu_preflight_task
+        except asyncio.CancelledError:
+            pass
         if not startup_telegram_task.done():
             startup_telegram_task.cancel()
         try:
