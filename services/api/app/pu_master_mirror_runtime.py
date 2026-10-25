@@ -71,6 +71,8 @@ class PuMirrorRuntime:
         self._source: LocalBridgeQueue | None = None
         self._target: LocalBridgeQueue | None = None
         self._failure_codes: dict[str, str] = {}
+        self._opening_paused = False
+
         if self.mode != "off":
             if not self.source_account_id or not self.target_account_id or not self.owner_user_id or self._since is None:
                 raise ValueError("pu_mirror_requires_explicit_accounts_owner_and_start_time")
@@ -80,8 +82,10 @@ class PuMirrorRuntime:
                 != "confirmed-target-36394935"
             ):
                 raise ValueError("pu_mirror_live_confirmation_missing")
-            if self.mode == "execute" and os.getenv("SUPER_SIGNALS_PU_MIRROR_HEDGING_VERIFIED", "") != "hedging-verified":
-                raise ValueError("pu_mirror_needs_broker_hedging_mode_confirmation")
+            # Account-level hedging cannot be inferred from broker-wide permission.
+            # Live execution verifies each independent broker position after entry;
+            # any netting, merged volume or missing protection pauses new orders.
+
             self._source = LocalBridgeQueue(
                 session_factory, profile="super-signals",
                 account_id=self.source_account_id, timeout_seconds=15,
@@ -304,10 +308,75 @@ class PuMirrorRuntime:
             take_profit=float(plan.take_profit) if plan.take_profit is not None else None,
             client_id=client_id,
         )
+        # A broker may accept an order in netting mode and aggregate multiple
+        # 0.01 lots into a 0.02+ position. Never assume all accepted orders are
+        # independent TP legs. Assert broker truth before sending another order.
+        await self._verify_live_entry(
+            source_ticket=ticket,
+            client_id=client_id,
+            expected_position=result.position_id,
+            expected_stop=plan.stop_loss,
+            expected_target=plan.take_profit,
+        )
         logger.warning(
-            "PU MIRROR confirmed order source=%s order=%s position=%s",
+            "PU MIRROR broker-verified source=%s order=%s position=%s volume=0.01",
             ticket, result.order_id, result.position_id,
         )
+
+    async def _verify_live_entry(
+        self, *, source_ticket: str, client_id: str,
+        expected_position: str | None, expected_stop: Decimal,
+        expected_target: Decimal | None,
+    ) -> None:
+        assert self._target is not None
+        # A filled deal may take seconds to appear in the terminal's position
+        # snapshot. A missing confirmation is AMBIGUOUS and must never be
+        # handled by retrying the original order.
+        for attempt in range(3):
+            positions = await self._queue_read(
+                self._target, self.target_account_id, "read_positions",
+            )
+            if not isinstance(positions, list):
+                self._opening_paused = True
+                raise MirrorRejected("pu_post_trade_snapshot_invalid")
+            matching = [
+                item for item in positions
+                if isinstance(item, dict)
+                and str(item.get("clientId") or "") == client_id
+                and item.get("symbol") == "XAUUSD.s"
+            ]
+            if len(matching) == 1:
+                target = matching[0]
+                volume = Decimal(str(target.get("volume") or 0))
+                stop = Decimal(str(target.get("stopLoss") or 0))
+                target_tp = Decimal(str(target.get("takeProfit") or 0))
+                expected_tp = expected_target if expected_target is not None else Decimal("0")
+                identity_ok = (not expected_position or
+                    _position_id(target) == expected_position)
+                if (
+                    identity_ok and volume == Decimal("0.01")
+                    and stop == expected_stop and target_tp == expected_tp
+                ):
+                    return
+                self._opening_paused = True
+                logger.error(
+                    "PU MIRROR FAIL CLOSED source=%s actual_volume=%s position_match=%s protection_ok=%s",
+                    source_ticket, volume, identity_ok,
+                    stop == expected_stop and target_tp == expected_tp,
+                )
+                raise MirrorRejected("pu_broker_position_or_protection_mismatch")
+            if len(matching) > 1:
+                self._opening_paused = True
+                raise MirrorRejected("pu_duplicate_broker_positions")
+            if attempt < 2:
+                await asyncio.sleep(2)
+        self._opening_paused = True
+        logger.error(
+            "PU MIRROR UNCONFIRMED trade source=%s; "
+            "future openings paused until manually reviewed",
+            source_ticket,
+        )
+        raise MirrorRejected("pu_broker_trade_confirmation_missing")
 
     async def _manage_existing(
         self, source_by_ticket: dict[str, dict[str, Any]],
@@ -327,7 +396,8 @@ class PuMirrorRuntime:
             if not ticket or target.get("symbol") != "XAUUSD.s":
                 continue
             if Decimal(str(target.get("volume") or 0)) != Decimal("0.01"):
-                logger.error("PU MIRROR unexpected target volume source=%s target=%s", source_ticket, ticket)
+                self._opening_paused = True
+                logger.error("PU MIRROR unexpected target volume source=%s target=%s new_entries_paused=true", source_ticket, ticket)
                 continue
             source = source_by_ticket.get(source_ticket)
             if source is None:
@@ -415,8 +485,11 @@ class PuMirrorRuntime:
         source_by_ticket = {_position_id(p): p for p in source_positions if isinstance(p, dict)}
         if len(source_by_ticket) != len(source_positions):
             raise MirrorRejected("duplicate_or_invalid_source_positions")
-        # Always settle existing copied exposure even when no new entries qualify.
+        # Even a paused entry lane continues risk-reducing management of known
+        # tickets. No new exposure is created until reconciliation is safe.
         await self._manage_existing(source_by_ticket, target_positions)
+        if self._opening_paused:
+            return
         candidates: list[tuple[dict[str, Any], dict[str, Any]]] = []
         for position in source_positions:
             if not isinstance(position, dict) or position.get("symbol") != "XAUUSD":
