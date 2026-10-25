@@ -146,6 +146,7 @@ class BridgeWorker:
         return {
             "worker_id": self.settings.worker_id,
             "profile": self.settings.profile,
+            "account_id": self.settings.expected_account_id,
             "version": __version__,
             "capabilities": CAPABILITIES,
         }
