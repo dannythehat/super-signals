@@ -30,7 +30,7 @@ async def check_pu_master_once(session_factory: Any) -> None:
     operations = (
         ("read_terminal_identity", {}),
         ("read_account_information", {}),
-        ("read_symbol_specification", {"symbol": "XAUUSD.s"}),
+        ("read_symbol_specification", {"symbol": "XAUUSD"}),
         ("read_positions", {}),
         ("read_orders", {}),
     )
