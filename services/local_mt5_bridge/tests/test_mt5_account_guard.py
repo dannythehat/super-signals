@@ -54,7 +54,7 @@ class FakeTerminal(types.ModuleType):
 
     def symbol_info(self, name: str) -> SimpleNamespace | None:
         if name == "XAUUSD.s":
-            return SimpleNamespace(visible=True)
+            return SimpleNamespace(visible=True, volume_min=0.01, volume_step=0.01)
         return None
 
 
@@ -133,6 +133,16 @@ class Mt5AccountGuardTests(unittest.TestCase):
 
     def test_pu_prime_gold_symbol_is_selectable(self) -> None:
         self.assertEqual(self.adapter._select_symbol("XAUUSD"), "XAUUSD.s")
+
+    def test_read_only_cloud_probe_confirms_login_server_and_gold(self) -> None:
+        self.adapter.connect()
+        result = self.adapter.execute("read_terminal_identity", {})
+        self.assertEqual(result["login"], 36394935)
+        self.assertEqual(result["server"], "PUPrime-Live 6")
+        self.assertEqual(result["goldSymbol"], "XAUUSD.s")
+        self.assertEqual(result["volumeMin"], 0.01)
+        self.assertEqual(self.fake.sends, [])
+
 
 
 if __name__ == "__main__":
