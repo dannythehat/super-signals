@@ -44,6 +44,7 @@ from app.performance_runtime import (
     CanonicalPerformanceRuntimeService as CanonicalPerformanceLedgerService,
 )
 from app.production_listener import build_production_listener_manager
+from app.pu_master_mirror_runtime import PuMirrorRuntime
 from app.pu_live_preflight_background import check_pu_master_once
 from app.provider_fingerprint_runtime import ProviderFingerprintRuntime
 from app.provider_management_language_audit_runtime import ProviderManagementLanguageAuditRuntime
@@ -424,6 +425,17 @@ async def _lifespan(application: FastAPI) -> AsyncIterator[None]:
         await push_manager.start()
     await publisher.start()
 
+    # The PU Prime master has its own isolated connection. Mode defaults to OFF.
+    # A failure here must never stall the existing Vantage or Telegram routes.
+    pu_mirror_runtime: PuMirrorRuntime | None = None
+    if os.getenv("SUPER_SIGNALS_PU_MIRROR_MODE", "off").strip().lower() != "off":
+        try:
+            pu_mirror_runtime = PuMirrorRuntime(session_factory)
+            await pu_mirror_runtime.start()
+        except Exception:
+            logger.exception("PU Prime mirror safely disabled; Vantage and Telegram unaffected")
+            pu_mirror_runtime = None
+
     # Telegram backfills can contend with the live feed and broker bridge. Never
     # delay API readiness or risk a failed rollout while an older instance holds
     # the member-number advisory lock. Keep outbox seeding independent of the
@@ -510,6 +522,8 @@ async def _lifespan(application: FastAPI) -> AsyncIterator[None]:
                 )
         if stale_position_watchdog is not None:
             await stale_position_watchdog.stop()
+        if pu_mirror_runtime is not None:
+            await pu_mirror_runtime.stop()
         await publisher.stop()
         if push_manager is not None:
             await push_manager.stop()
