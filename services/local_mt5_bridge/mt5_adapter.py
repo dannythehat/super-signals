@@ -30,6 +30,7 @@ class Mt5Adapter:
         server: str,
         magic: int,
         deviation: int = 20,
+        use_existing_session: bool = False,
     ) -> None:
         try:
             import MetaTrader5 as mt5  # type: ignore[import-not-found]
@@ -42,15 +43,24 @@ class Mt5Adapter:
         self.server = server
         self.magic = magic
         self.deviation = deviation
+        self.use_existing_session = use_existing_session
 
     def connect(self) -> None:
-        ok = self.mt5.initialize(
-            path=self.terminal_path,
-            login=self.login,
-            password=self.password,
-            server=self.server,
-            timeout=30_000,
-        )
+        if self.use_existing_session:
+            # Bind to the already-authenticated MT5 desktop without a second password copy.
+            # The exact login AND server are asserted below before any operation.
+            ok = self.mt5.initialize(
+                path=self.terminal_path,
+                timeout=30_000,
+            )
+        else:
+            ok = self.mt5.initialize(
+                path=self.terminal_path,
+                login=self.login,
+                password=self.password,
+                server=self.server,
+                timeout=30_000,
+            )
         if not ok:
             raise LocalMt5Error("local_bridge_mt5_unavailable", str(self.mt5.last_error()))
         try:
