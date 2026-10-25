@@ -17,6 +17,15 @@ def _iso(value: datetime) -> str:
     return value.isoformat().replace("+00:00", "Z")
 
 
+def _bridge_compatible_symbol(symbol: str) -> str:
+    """Older Windows worker uppercases XAUUSD.s and loses the lowercase suffix.
+
+    Send its existing XAUUSD alias for lookup, margin and trade requests. The
+    worker resolves the real broker symbol XAUUSD.s, preserving exact fills.
+    """
+    return "XAUUSD" if symbol.strip().upper() == "XAUUSD.S" else symbol
+
+
 class LocalBridgeReadGateway(MetaApiReadGateway):
     """Expose local MT5 reads through the existing canonical gateway contract."""
 
@@ -42,10 +51,13 @@ class LocalBridgeReadGateway(MetaApiReadGateway):
         account_id: str,
         payload: dict[str, Any] | None = None,
     ) -> Any:
+        safe_payload = dict(payload or {})
+        if "symbol" in safe_payload and isinstance(safe_payload["symbol"], str):
+            safe_payload["symbol"] = _bridge_compatible_symbol(safe_payload["symbol"])
         return await self._queue.execute(
             account_id=account_id,
             operation=operation,
-            payload=payload,
+            payload=safe_payload,
         )
 
     async def resolve_account_region(self, *, token: str, account_id: str) -> str:
@@ -265,10 +277,13 @@ class LocalBridgeTradeGateway(MetaApiTradeGateway):
         idempotency_key = None
         if client_id and action.startswith("ORDER_TYPE_"):
             idempotency_key = f"mt5-order:{account_id}:{client_id}"
+        safe_body = dict(json_body)
+        if isinstance(safe_body.get("symbol"), str):
+            safe_body["symbol"] = _bridge_compatible_symbol(safe_body["symbol"])
         result = await self._queue.execute(
             account_id=account_id,
             operation="trade",
-            payload=dict(json_body),
+            payload=safe_body,
             idempotency_key=idempotency_key,
         )
         payload = LocalBridgeReadGateway._dict(result)
@@ -305,7 +320,7 @@ class LocalBridgeMarginGateway(MetaApiMarginGateway):
             account_id=account_id,
             operation="calculate_margin",
             payload={
-                "symbol": symbol,
+                "symbol": _bridge_compatible_symbol(symbol),
                 "side": side,
                 "volume": volume,
                 "open_price": open_price,
