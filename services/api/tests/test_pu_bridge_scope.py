@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from fastapi import HTTPException
@@ -111,3 +111,41 @@ def test_complete_cannot_cross_profile_even_for_terminal_status() -> None:
             lease_token=MagicMock(),
             status="succeeded",
         )
+
+
+@pytest.mark.asyncio
+async def test_authenticated_pu_smoke_does_not_send_mutation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _separate_credentials(monkeypatch)
+    from app.routes.local_bridge import pu_connection_smoke
+
+    fake_queue = MagicMock()
+    fake_queue.execute = AsyncMock(
+        return_value={
+            "login": 36394935,
+            "server": "PUPrime-Live 6",
+            "goldSymbol": "XAUUSD.s",
+            "volumeMin": 0.01,
+            "volumeStep": 0.01,
+        }
+    )
+    with patch("app.routes.local_bridge.LocalBridgeQueue", return_value=fake_queue):
+        with patch("app.routes.local_bridge.get_session_factory", return_value=MagicMock()):
+            result = await pu_connection_smoke(authorization_scope="pu")
+    assert result["status"] == "connected"
+    assert result["terminal"]["login"] == 36394935
+    fake_queue.execute.assert_awaited_once_with(
+        account_id="pu-account-ref",
+        operation="read_terminal_identity",
+        payload={},
+    )
+
+
+@pytest.mark.asyncio
+async def test_legacy_token_cannot_run_pu_smoke() -> None:
+    from app.routes.local_bridge import pu_connection_smoke
+
+    with pytest.raises(HTTPException) as error:
+        await pu_connection_smoke(authorization_scope="legacy")
+    assert error.value.status_code == 403
