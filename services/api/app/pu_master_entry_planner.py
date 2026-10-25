@@ -1,7 +1,7 @@
 """Strict read-only PU Prime entry planner for accepted GOLD provider signals.
 
-No order, bridge-queue, or database mutation lives here. Risk is calculated
-from the new PU master equity, never the legacy Vantage accounting balance.
+No order, bridge-queue, or database mutation lives here. Stop-loss exposure is checked using the PU broker's own equity, never Vantage.
+Every planned TP has exactly 0.01 lots, and no PU live trade is enabled.
 This planner is NOT sufficient to make PU copy trading operational.
 """
 from __future__ import annotations
@@ -11,7 +11,13 @@ from datetime import datetime, timezone, timedelta
 from decimal import Decimal
 from typing import Any
 
-from app.provider_risk_policy import provider_risk_profile, provider_tp_limit
+from app.provider_risk_policy import (
+    FIXED_PROVIDER_LEG_VOLUME,
+    FIXED_PROVIDER_MAX_STOP_RISK_PERCENT,
+    FIXED_PROVIDER_MAX_SIGNAL_RISK_PERCENT,
+    provider_risk_profile,
+    provider_tp_limit,
+)
 from app.risk_sizing_day24 import BrokerVolumeRules, Day24RiskSizer, Day24RiskSizingError
 
 
@@ -138,28 +144,24 @@ def plan_pu_entry(
 
     legs: list[PuPlannedLeg] = []
     for idx, target in viable:
-        # Cast approved provider marker back to plain Decimal. The PU master
-        # must NEVER exploit Vantage's 2.5% min-lot overshoot accommodation.
-        allowed_risk = Decimal(str(profile[idx - 1]))
-        if allowed_risk != Decimal("1"):
-            raise PuPlanBlocked("risk_profile_requires_review")
+        # 25 October owner authority: every PU source TP uses exactly 0.01
+        # lots, never 1%-of-equity-derived volume or broker rounding.
+        # Check the actual stop-loss cash exposure per leg and for the basket.
         try:
-            sized = Day24RiskSizer.size(
+            sized = Day24RiskSizer.size_fixed_volume(
                 balance=equity,
-                risk_percent=allowed_risk,
                 signal_entry_price=executable,
                 signal_stop_loss=stop,
                 tick_size=tick_size,
                 tick_value=loss_tick_value,
-                take_profit_count=1,
+                take_profit_count=len(viable),
                 volume_rules=rules,
-                signal_requests_double_lot=False,
-                double_lot_approved=False,
+                fixed_volume=FIXED_PROVIDER_LEG_VOLUME,
+                max_stop_risk_percent=FIXED_PROVIDER_MAX_STOP_RISK_PERCENT,
+                max_signal_risk_percent=FIXED_PROVIDER_MAX_SIGNAL_RISK_PERCENT,
             )
         except Day24RiskSizingError as exc:
             raise PuPlanBlocked(exc.code) from exc
-        if sized.actual_risk_per_position > (equity * Decimal("0.01")):
-            raise PuPlanBlocked("per_target_risk_cap_exceeded")
         legs.append(PuPlannedLeg(
             tp_index=idx,
             volume=sized.volume,
