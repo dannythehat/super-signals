@@ -54,9 +54,9 @@ def _targets(target: str, mapped: tuple[PuMappedPosition, ...]) -> tuple[PuMappe
 
 def _is_protective(position: PuMappedPosition, proposed: Decimal) -> bool:
     if position.side == "BUY":
-        return proposed >= position.stop_loss and proposed <= position.open_price
+        return proposed >= position.stop_loss
     if position.side == "SELL":
-        return proposed <= position.stop_loss and proposed >= position.open_price
+        return proposed <= position.stop_loss
     raise PuManagementBlocked("invalid_position_side")
 
 
