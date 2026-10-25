@@ -1,4 +1,4 @@
-"""Read-only PU master signal planning, per-target risk and fail-closed tests."""
+"""Read-only PU master planning with fixed 0.01 lots per target."""
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from dataclasses import replace
@@ -34,10 +34,11 @@ def sample():
     }
 
 
-def test_exact_one_percent_risk_per_tp_and_no_mutations():
+def test_exact_001_lots_per_tp_and_no_mutations():
     plan = plan_pu_entry(**sample())
     assert len(plan.legs) == 3
     assert {p.tp_index for p in plan.legs} == {1, 2, 3}
+    assert all(p.volume == Decimal("0.01") for p in plan.legs)
     assert all(p.risk_usd <= Decimal("100") for p in plan.legs)
     assert plan.total_risk_usd <= Decimal("300")
     assert plan.symbol == "XAUUSD.s"
@@ -62,7 +63,7 @@ def test_shadow_and_paused_cannot_execute(status):
 def test_broker_minimum_risk_violation_fails_closed():
     args = sample()
     args["account"]["equity"] = 10
-    with pytest.raises(PuPlanBlocked, match="broker_minimum_exceeds_risk_budget"):
+    with pytest.raises(PuPlanBlocked, match="fixed_lot_stop_risk_exceeded"):
         plan_pu_entry(**args)
 
 
@@ -99,4 +100,26 @@ def test_trading_disabled_never_plans():
     args = sample()
     args["account"]["tradeAllowed"] = False
     with pytest.raises(PuPlanBlocked, match="broker_trading_disabled"):
+        plan_pu_entry(**args)
+
+
+@pytest.mark.parametrize("equity", [500, 1000, 5000, 10000])
+def test_pu_lot_size_does_not_grow_with_master_equity(equity):
+    args = sample()
+    args["account"]["equity"] = equity
+    plan = plan_pu_entry(**args)
+    assert [p.volume for p in plan.legs] == [Decimal("0.01")] * 3
+
+
+def test_pu_broker_minimum_above_001_fails_closed():
+    args = sample()
+    args["specification"]["minVolume"] = 0.02
+    with pytest.raises(PuPlanBlocked, match="fixed_lot_not_supported_by_broker"):
+        plan_pu_entry(**args)
+
+
+def test_pu_multiple_leg_risk_guard_preserved():
+    args = sample()
+    args["account"]["equity"] = 100
+    with pytest.raises(PuPlanBlocked, match="fixed_lot_stop_risk_exceeded"):
         plan_pu_entry(**args)
