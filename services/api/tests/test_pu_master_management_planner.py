@@ -77,3 +77,46 @@ def test_unmapped_entry_layer_is_not_guessed():
             event_id="evt6", actions=[{"type": "close", "target": "entry_2"}],
             mapped_positions=legs, broker_positions=live,
         )
+
+def test_profit_locking_stop_beyond_entry_allowed():
+    legs, live = fixture()
+    updates = plan_pu_management(
+        event_id="evt7",
+        actions=[{"type": "edit_stop_loss", "target": "TP2", "value": 4505}],
+        mapped_positions=legs,
+        broker_positions=live,
+    )
+    assert len(updates) == 1
+    assert updates[0].ticket == "1002"
+    assert updates[0].payload["stopLoss"] == 4505
+    assert updates[0].payload["takeProfit"] == 4520
+
+
+def test_sell_stop_tightens_into_profit_without_widening():
+    legs, live = fixture()
+    short = PuMappedPosition(
+        "1001", 1, "PU_001_1", "SELL", "XAUUSD.s",
+        Decimal("4500"), Decimal("4510"), Decimal("4490"),
+    )
+    update = plan_pu_management(
+        event_id="evt8",
+        actions=[{"type": "edit_stop_loss", "target": "TP1", "value": 4495}],
+        mapped_positions=(short,),
+        broker_positions=live[:1],
+    )
+    assert update[0].payload["stopLoss"] == 4495
+    assert update[0].payload["takeProfit"] == 4490
+
+
+def test_sell_widening_stop_fails_closed():
+    legs, live = fixture()
+    short = PuMappedPosition(
+        "1001", 1, "PU_001_1", "SELL", "XAUUSD.s",
+        Decimal("4500"), Decimal("4510"), Decimal("4490"),
+    )
+    with pytest.raises(PuManagementBlocked, match="provider_would_widen_stop_loss"):
+        plan_pu_management(
+            event_id="evt9",
+            actions=[{"type": "edit_stop_loss", "target": "TP1", "value": 4515}],
+            mapped_positions=(short,), broker_positions=live[:1],
+        )
