@@ -91,6 +91,23 @@ class Mt5Adapter:
         self._assert_expected_account()
         return handler(payload)
 
+    def _op_read_terminal_identity(self, _: dict[str, Any]) -> dict[str, Any]:
+        """Read-only authenticated probe; never calls order_check/order_send."""
+        self._assert_expected_account()
+        account = self.mt5.account_info()
+        if account is None:
+            raise LocalMt5Error("local_bridge_mt5_unavailable")
+        spec = self.mt5.symbol_info("XAUUSD.s")
+        if spec is None:
+            raise LocalMt5Error("local_bridge_symbol_unavailable")
+        return {
+            "login": int(account.login),
+            "server": str(account.server),
+            "goldSymbol": "XAUUSD.s",
+            "volumeMin": float(spec.volume_min),
+            "volumeStep": float(spec.volume_step),
+        }
+
     def _op_resolve_account_region(self, _: dict[str, Any]) -> dict[str, str]:
         return {"region": "local"}
 
