@@ -80,6 +80,8 @@ class PuMirrorRuntime:
                 != "confirmed-target-36394935"
             ):
                 raise ValueError("pu_mirror_live_confirmation_missing")
+            if os.getenv("SUPER_SIGNALS_PU_MIRROR_HEDGING_VERIFIED", "") != "hedging-verified":
+                raise ValueError("pu_mirror_needs_broker_hedging_mode_confirmation")
             self._source = LocalBridgeQueue(
                 session_factory, profile="super-signals",
                 account_id=self.source_account_id, timeout_seconds=15,
@@ -119,9 +121,13 @@ class PuMirrorRuntime:
                     SELECT p.signal_id::text AS signal_id, p.status, p.created_at,
                            p.tp_index, s.side, s.order_type,
                            s.parser_status, src.status AS source_status,
-                           (SELECT COUNT(*) FROM positions p2
-                            WHERE p2.signal_id=p.signal_id AND p2.user_id=p.user_id
-                              AND p2.broker_position_id IS NOT NULL) AS signal_legs
+                           GREATEST(
+                             (SELECT COUNT(*) FROM positions p2
+                              WHERE p2.signal_id=p.signal_id AND p2.user_id=p.user_id
+                                AND p2.broker_position_id IS NOT NULL),
+                             COALESCE(jsonb_array_length(s.take_profits), 0)
+                             + CASE WHEN s.has_open_runner THEN 1 ELSE 0 END
+                           ) AS signal_legs
                     FROM positions p
                     JOIN signals s ON s.id=p.signal_id
                     JOIN sources src ON src.id=s.source_id
@@ -262,6 +268,26 @@ class PuMirrorRuntime:
                             ticket, signal.get("tp_index"), plan.stop_risk_usd)
                 self._failure_codes[ticket] = "observe_candidate"
             return
+        # The paper leg must still exist and have the same protective geometry
+        # immediately before sending an irreversible real-money order.
+        assert self._source is not None
+        latest_source = await self._queue_read(
+            self._source, self.source_account_id, "read_positions",
+        )
+        if not isinstance(latest_source, list) or not any(
+            isinstance(item, dict)
+            and _position_id(item) == ticket
+            and item.get("clientId") == source_pos.get("clientId")
+            and item.get("stopLoss") == source_pos.get("stopLoss")
+            and item.get("takeProfit") == source_pos.get("takeProfit")
+            for item in latest_source
+        ):
+            logger.warning("PU MIRROR source=%s withdrawn_before_order", ticket)
+            return
+        fresh_proof = await asyncio.to_thread(self._find_owned_source, source_pos)
+        if fresh_proof is None or fresh_proof.get("status") != "open":
+            logger.warning("PU MIRROR source=%s no_longer_open_in_ledger", ticket)
+            return
         logger.warning(
             "PU MIRROR placing source=%s tp=%s volume=%s risk=%s",
             ticket, signal.get("tp_index"), plan.volume, plan.stop_risk_usd,
@@ -389,7 +415,18 @@ class PuMirrorRuntime:
         )
         if not isinstance(spec, dict) or not isinstance(quote, dict):
             raise MirrorRejected("pu_quote_spec_invalid")
-        for source_pos, signal in candidates[:10]:
+        for index, (source_pos, signal) in enumerate(candidates[:10]):
+            # Each successful leg changes available margin and open stop risk.
+            # Never reuse the previous leg's free margin/position snapshot.
+            if self.mode == "execute" and index:
+                target_positions = await self._queue_read(
+                    self._target, self.target_account_id, "read_positions",
+                )
+                account = await self._queue_read(
+                    self._target, self.target_account_id, "read_account_information",
+                )
+                if not isinstance(target_positions, list) or not isinstance(account, dict):
+                    raise MirrorRejected("pu_reconciliation_invalid")
             await self._consider_entry(
                 source_pos, signal, target_positions, account, quote, spec,
             )
