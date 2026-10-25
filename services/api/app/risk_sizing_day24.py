@@ -237,6 +237,83 @@ class Day24RiskSizer:
             positions=positions,
         )
 
+
+    @classmethod
+    def size_fixed_volume(
+        cls, *,
+        balance: DecimalInput,
+        signal_entry_price: DecimalInput,
+        signal_stop_loss: DecimalInput,
+        tick_size: DecimalInput,
+        tick_value: DecimalInput,
+        take_profit_count: int,
+        volume_rules: BrokerVolumeRules,
+        fixed_volume: DecimalInput,
+        max_stop_risk_percent: DecimalInput,
+        max_signal_risk_percent: DecimalInput,
+        signal_requests_double_lot: bool = False,
+    ) -> Day24RiskSizingResult:
+        """Use exactly the locked volume per TP or reject; never resize."""
+        b = _decimal(balance)
+        entry = _decimal(signal_entry_price)
+        stop = _decimal(signal_stop_loss)
+        ts = _decimal(tick_size)
+        tv = _decimal(tick_value)
+        volume = _decimal(fixed_volume)
+        cap = _decimal(max_stop_risk_percent)
+        basket_cap = _decimal(max_signal_risk_percent)
+        cls._validate_inputs(
+            balance=b, base_risk=Decimal("1"), entry=entry, stop=stop,
+            tick_size=ts, tick_value=tv, take_profit_count=take_profit_count,
+            volume_rules=volume_rules, allow_profile_risk=False,
+        )
+        if volume <= _ZERO or not (_ZERO < cap <= _ONE_HUNDRED):
+            raise Day24RiskSizingError("fixed_lot_policy_invalid")
+        if not (_ZERO < basket_cap <= _ONE_HUNDRED):
+            raise Day24RiskSizingError("fixed_lot_policy_invalid")
+        steps = (volume - volume_rules.minimum) / volume_rules.step
+        if (
+            volume < volume_rules.minimum
+            or volume > volume_rules.maximum
+            or steps != steps.to_integral_value()
+        ):
+            raise Day24RiskSizingError("fixed_lot_not_supported_by_broker")
+        distance = abs(entry - stop)
+        loss_per_lot = (distance / ts) * tv
+        if loss_per_lot <= _ZERO:
+            raise Day24RiskSizingError("loss_per_lot_invalid")
+        cash_risk = loss_per_lot * volume
+        actual_percent = cash_risk * _ONE_HUNDRED / b
+        if actual_percent > cap:
+            raise Day24RiskSizingError("fixed_lot_stop_risk_exceeded")
+        total_cash_risk = cash_risk * Decimal(take_profit_count)
+        if total_cash_risk * _ONE_HUNDRED / b > basket_cap:
+            raise Day24RiskSizingError("fixed_lot_signal_risk_exceeded")
+        positions = tuple(
+            Day24PositionSize(
+                take_profit_number=i, volume=volume,
+                risk_budget=cash_risk, actual_risk=cash_risk,
+            )
+            for i in range(1, take_profit_count + 1)
+        )
+        return Day24RiskSizingResult(
+            balance=b,
+            base_risk_percent=actual_percent,
+            effective_risk_percent=actual_percent,
+            signal_requests_double_lot=signal_requests_double_lot,
+            double_lot_approved=False, double_lot_applied=False,
+            signal_entry_price=entry, signal_stop_loss=stop,
+            stop_distance=distance, tick_size=ts, tick_value=tv,
+            loss_per_lot_at_stop=loss_per_lot,
+            raw_volume=volume, volume=volume,
+            risk_budget_per_position=cash_risk,
+            actual_risk_per_position=cash_risk,
+            position_count=take_profit_count,
+            total_risk_budget=total_cash_risk,
+            total_actual_risk=total_cash_risk,
+            broker_minimum_applied=False, positions=positions,
+        )
+
     @classmethod
     def size_profile(
         cls,

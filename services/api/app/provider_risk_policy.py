@@ -5,10 +5,10 @@ old migration comments and provider-performance experiments must never alter liv
 eligibility or risk. Production execution imports this module directly; no other module
 may invent a provider direction veto or a hidden TP risk ladder.
 
-Owner authority from 9 September 2026: every enabled TP/runner broker leg carries exactly
-1% planned risk. Entry sections distribute those target legs; they never multiply the
-risk budget. Four TP/runner legs therefore mean 4% planned signal risk, whether the
-provider supplied one entry or several entry sections.
+Owner authority from 25 October 2026: every executed TP/runner leg uses 0.01 lots,
+independent of equity, target index and provider double-size wording. Oversized
+stop-loss risk or unsupported exact broker volume blocks the order. The legacy
+percentage profile remains for compatibility; it does not size executed positions.
 """
 
 from __future__ import annotations
@@ -17,7 +17,10 @@ from decimal import Decimal
 
 from app.risk_sizing_day24 import ApprovedProviderRisk
 
-POLICY_GENERATION = "owner-authority-2026-09-09-v2-one-percent-per-tp"
+POLICY_GENERATION = "owner-authority-2026-10-25-v1-fixed-001-lots"
+FIXED_PROVIDER_LEG_VOLUME = Decimal("0.01")
+FIXED_PROVIDER_MAX_STOP_RISK_PERCENT = Decimal("2.5")
+FIXED_PROVIDER_MAX_SIGNAL_RISK_PERCENT = Decimal("10")
 
 
 def _approved(value: str) -> ApprovedProviderRisk:
@@ -99,11 +102,11 @@ def provider_risk_profile(
     side: str,
     position_count: int,
 ) -> tuple[Decimal, ...] | None:
-    """Return the owner's global 1%-per-TP/runner allocation.
+    """Return the owner's legacy percentage profile (not executed volume).
 
     ``position_count`` is the executed target/runner leg count, not entry_count ×
     target_count. Multiple entry sections only decide where those target legs are placed.
-    They must never turn four targets into eight percent of planned risk.
+    They must never multiply the fixed 0.01 lots used by execution.
     """
     if position_count < 1:
         raise ValueError("provider_position_count_invalid")

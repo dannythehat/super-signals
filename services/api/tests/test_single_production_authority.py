@@ -23,7 +23,7 @@ def test_main_has_one_production_listener_entrypoint() -> None:
 
 
 def test_current_owner_provider_policy_cannot_regress_to_old_tig_veto() -> None:
-    assert POLICY_GENERATION == "owner-authority-2026-09-09-v2-one-percent-per-tp"
+    assert POLICY_GENERATION == "owner-authority-2026-10-25-v1-fixed-001-lots"
     source = "TIG’s Asia Trades"
     for side in ("BUY", "SELL"):
         assert provider_side_enabled(source_name=source, side=side)
