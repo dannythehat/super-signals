@@ -326,6 +326,9 @@ class PuMirrorRuntime:
             ticket = _position_id(target)
             if not ticket or target.get("symbol") != "XAUUSD.s":
                 continue
+            if Decimal(str(target.get("volume") or 0)) != Decimal("0.01"):
+                logger.error("PU MIRROR unexpected target volume source=%s target=%s", source_ticket, ticket)
+                continue
             source = source_by_ticket.get(source_ticket)
             if source is None:
                 if not await asyncio.to_thread(self._source_row_closed, source_ticket):
@@ -344,6 +347,9 @@ class PuMirrorRuntime:
                 continue
             proof = await asyncio.to_thread(self._find_owned_source, source)
             if proof is None:
+                continue
+            if source.get("type") != target.get("type"):
+                logger.error("PU MIRROR broker position side mismatch source=%s target=%s", source_ticket, ticket)
                 continue
             proposed = source.get("stopLoss")
             old = target.get("stopLoss")
