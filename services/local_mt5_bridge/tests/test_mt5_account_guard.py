@@ -27,8 +27,10 @@ class FakeTerminal(types.ModuleType):
         self.checks = 0
         self.closed = 0
         self.switch_during_check = False
+        self.initialize_args: dict[str, object] | None = None
 
     def initialize(self, **kwargs: object) -> bool:
+        self.initialize_args = kwargs
         return True
 
     def account_info(self) -> SimpleNamespace:
@@ -73,6 +75,23 @@ class Mt5AccountGuardTests(unittest.TestCase):
     def test_connect_accepts_exact_login_and_server(self) -> None:
         self.adapter.connect()
         self.assertEqual(self.fake.closed, 0)
+
+    def test_existing_session_reuses_terminal_without_password(self) -> None:
+        self.adapter.use_existing_session = True
+        self.adapter.password = ""
+        self.adapter.connect()
+        self.assertEqual(self.fake.initialize_args.get("path"), self.adapter.terminal_path)
+        self.assertNotIn("login", self.fake.initialize_args)
+        self.assertNotIn("password", self.fake.initialize_args)
+        self.assertEqual(self.fake.closed, 0)
+
+    def test_existing_session_rejects_other_broker_account(self) -> None:
+        self.adapter.use_existing_session = True
+        self.adapter.password = ""
+        self.fake.login = 99999
+        with self.assertRaisesRegex(LocalMt5Error, "local_bridge_account_mismatch"):
+            self.adapter.connect()
+        self.assertEqual(self.fake.closed, 1)
 
     def test_connect_rejects_wrong_server_even_with_correct_login(self) -> None:
         self.fake.server = "PUPrime-Live6"
