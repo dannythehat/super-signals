@@ -51,7 +51,7 @@ def test_total_basket_cap_blocks():
         size(balance="100", stop="4002", count=6)
 
 
-@pytest.mark.parametrize("minimum,step", [("0.02", "0.01"), ("0.001", "0.003")])
+@pytest.mark.parametrize("minimum,step", [("0.02", "0.01"), ("0.001", "0.004")])
 def test_broker_exact_volume_not_supported_blocks(minimum, step):
     with pytest.raises(Day24RiskSizingError, match="fixed_lot_not_supported_by_broker"):
         size(minimum=minimum, step=step)
