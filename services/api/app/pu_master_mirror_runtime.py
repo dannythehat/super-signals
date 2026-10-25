@@ -80,7 +80,7 @@ class PuMirrorRuntime:
                 != "confirmed-target-36394935"
             ):
                 raise ValueError("pu_mirror_live_confirmation_missing")
-            if os.getenv("SUPER_SIGNALS_PU_MIRROR_HEDGING_VERIFIED", "") != "hedging-verified":
+            if self.mode == "execute" and os.getenv("SUPER_SIGNALS_PU_MIRROR_HEDGING_VERIFIED", "") != "hedging-verified":
                 raise ValueError("pu_mirror_needs_broker_hedging_mode_confirmation")
             self._source = LocalBridgeQueue(
                 session_factory, profile="super-signals",
