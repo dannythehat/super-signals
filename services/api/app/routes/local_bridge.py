@@ -14,6 +14,7 @@ from pydantic import BaseModel, Field
 from app.db import get_session_factory
 from app.local_bridge_queue import LocalBridgeQueue
 from app.metaapi_gateway import MetaApiGatewayError
+from app.pu_broker_readiness import assess_broker_preflight
 
 router = APIRouter(prefix="/internal/local-bridge/v1", tags=["local-mt5-bridge"])
 _IDENTIFIER = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{2,99}$")
@@ -193,6 +194,59 @@ async def pu_connection_smoke(
     if not isinstance(result, dict):
         raise HTTPException(status_code=503, detail="pu_bridge_probe_invalid_result")
     return {"status": "connected", "terminal": result}
+
+
+@router.post("/pu-preflight")
+async def pu_broker_preflight(
+    authorization_scope: Annotated[str, Depends(_authorize)],
+) -> dict[str, Any]:
+    """Read only: inspect live PU identity, balance, trade permissions and exposure.
+
+    This endpoint never enqueues a trade. Even 'passed' here does NOT mean
+    provider->PU dispatch or copier mirroring is operational.
+    """
+    if authorization_scope != "pu":
+        raise HTTPException(status_code=403, detail="pu_token_required")
+    profile, account_id = _scope(None, authorization_scope)
+    assert account_id is not None
+    queue = LocalBridgeQueue(
+        get_session_factory(), profile=profile, account_id=account_id,
+        timeout_seconds=20.0,
+    )
+    try:
+        results = {}
+        for operation, payload in (
+            ("read_terminal_identity", {}),
+            ("read_account_information", {}),
+            ("read_symbol_specification", {"symbol": "XAUUSD.s"}),
+            ("read_positions", {}),
+            ("read_orders", {}),
+        ):
+            results[operation] = await queue.execute(
+                account_id=account_id,
+                operation=operation,
+                payload=payload,
+            )
+    except MetaApiGatewayError as exc:
+        raise HTTPException(
+            status_code=503, detail="pu_broker_preflight_unavailable"
+        ) from exc
+    identity = results["read_terminal_identity"]
+    account = results["read_account_information"]
+    symbol = results["read_symbol_specification"]
+    positions = results["read_positions"]
+    orders = results["read_orders"]
+    if not all(isinstance(item, dict) for item in (identity, account, symbol)):
+        raise HTTPException(status_code=503, detail="pu_broker_preflight_invalid_payload")
+    if not isinstance(positions, list) or not isinstance(orders, list):
+        raise HTTPException(status_code=503, detail="pu_broker_preflight_invalid_exposure")
+    return assess_broker_preflight(
+        identity=identity,
+        account=account,
+        symbol=symbol,
+        positions=positions,
+        orders=orders,
+    )
 
 
 __all__ = ["router"]
