@@ -64,7 +64,7 @@ class PuMirrorRuntime:
             raise ValueError("pu_mirror_mode_invalid")
         self.source_account_id = os.getenv("SUPER_SIGNALS_PU_MIRROR_SOURCE_ACCOUNT_ID", "").strip()
         self.target_account_id = os.getenv("SUPER_SIGNALS_PU_BRIDGE_ACCOUNT_ID", "").strip()
-        self.owner_user_id = os.getenv("SUPER_SIGNALS_DAY28_OWNER_ID", "").strip()
+        self.owner_user_id = (os.getenv("SUPER_SIGNALS_PU_MIRROR_OWNER_USER_ID", "").strip() or os.getenv("SUPER_SIGNALS_DAY28_OWNER_ID", "").strip())
         self._since = _as_datetime(os.getenv("SUPER_SIGNALS_PU_MIRROR_ACTIVATE_AFTER", "").strip())
         self._poll_seconds = max(4, int(os.getenv("SUPER_SIGNALS_PU_MIRROR_POLL_SECONDS", "5")))
         self._task: asyncio.Task[None] | None = None
@@ -346,40 +346,58 @@ class PuMirrorRuntime:
                 logger.warning("PU MIRROR closed settled source=%s target=%s", source_ticket, ticket)
                 continue
             proof = await asyncio.to_thread(self._find_owned_source, source)
-            if proof is None:
+            if proof is None or proof.get("status") != "open":
                 continue
             if source.get("type") != target.get("type"):
                 logger.error("PU MIRROR broker position side mismatch source=%s target=%s", source_ticket, ticket)
                 continue
-            proposed = source.get("stopLoss")
-            old = target.get("stopLoss")
-            if proposed is None or old is None:
+            if source.get("stopLoss") is None or target.get("stopLoss") is None:
+                logger.error("PU MIRROR refused unprotected broker position target=%s", ticket)
                 continue
             try:
-                next_sl, old_sl = Decimal(str(proposed)), Decimal(str(old))
+                source_stop = Decimal(str(source["stopLoss"]))
+                old_stop = Decimal(str(target["stopLoss"]))
                 is_buy = target.get("type") == "POSITION_TYPE_BUY"
-                protective = next_sl > old_sl if is_buy else next_sl < old_sl
-                if not protective or next_sl <= 0:
+                if source_stop <= 0 or old_stop <= 0:
                     continue
-                # MT5 treats MODIFY as replacement. Preserve target TP exactly.
-                target_tp = float(target.get("takeProfit") or 0)
+                # Never widen stop-loss, even if the paper source does.
+                new_stop = (
+                    max(old_stop, source_stop) if is_buy
+                    else min(old_stop, source_stop)
+                )
+                old_tp = Decimal(str(target.get("takeProfit") or 0))
+                new_tp = old_tp
+                requested_tp = source.get("takeProfit")
+                if requested_tp is not None and Decimal(str(requested_tp)) > 0:
+                    source_tp = Decimal(str(requested_tp))
+                    price = Decimal(str(target.get("currentPrice") or 0))
+                    if price > 0 and (
+                        (is_buy and source_tp > price)
+                        or (not is_buy and source_tp < price)
+                    ):
+                        new_tp = source_tp
+                if new_stop == old_stop and new_tp == old_tp:
+                    continue
+                if not all(x.is_finite() for x in (new_stop,new_tp,old_stop)):
+                    continue
+                # SL/TP replacement is atomic: pass both values to MT5.
                 await self._target.execute(
                     account_id=self.target_account_id,
                     operation="trade",
                     payload={
                         "actionType": "POSITION_MODIFY",
                         "positionId": ticket,
-                        "stopLoss": float(next_sl),
-                        "takeProfit": target_tp,
+                        "stopLoss": float(new_stop),
+                        "takeProfit": float(new_tp),
                     },
-                    idempotency_key=f"pu:sl:{source_ticket}:{ticket}:{next_sl}",
+                    idempotency_key=f"pu:protect:{source_ticket}:{ticket}:{new_stop}:{new_tp}",
                 )
                 logger.warning(
-                    "PU MIRROR tightened source=%s target=%s stop=%s",
-                    source_ticket, ticket, next_sl,
+                    "PU MIRROR protected source=%s target=%s stop=%s tp=%s",
+                    source_ticket, ticket, new_stop, new_tp,
                 )
             except (ValueError, ArithmeticError):
-                logger.error("PU MIRROR invalid protective stop source=%s", source_ticket)
+                logger.error("PU MIRROR invalid protective update source=%s", source_ticket)
 
     async def _cycle(self) -> None:
         assert self._source is not None and self._target is not None
