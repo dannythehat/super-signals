@@ -27,7 +27,8 @@ class PuRecoveryScriptsTest(unittest.TestCase):
         self.assertIn("RepetitionInterval", install)
         self.assertIn("IgnoreNew", install)
         self.assertIn("LogonType Interactive", install)
-        self.assertIn("ColdBootWithoutLogin", install) if "ColdBootWithoutLogin" in install else None
+        self.assertIn("AtLogOn", install)
+        self.assertIn("New-TimeSpan -Minutes 1", install)
 
 
 if __name__ == "__main__":
