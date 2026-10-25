@@ -113,6 +113,15 @@ class LocalBridgeQueue:
                 )
                 if existing is None:
                     raise
+                # Unique idempotency keys are global, never adopt another
+                # account's command when a different bridge route collides.
+                if (
+                    existing.profile != self.profile
+                    or existing.account_id != normalized_account
+                    or existing.operation != normalized_operation
+                    or (self.account_id is not None and existing.account_id != self.account_id)
+                ):
+                    raise MetaApiGatewayError("local_bridge_idempotency_scope_mismatch")
                 return existing.id
 
     def _result_state(self, command_id: UUID) -> tuple[str, Any, str | None, bool]:
