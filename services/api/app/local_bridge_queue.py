@@ -31,11 +31,13 @@ class LocalBridgeQueue:
         session_factory: sessionmaker[Session],
         *,
         profile: str = "super-signals",
+        account_id: str | None = None,
         timeout_seconds: float = 30.0,
         poll_seconds: float = 0.20,
     ) -> None:
         self._session_factory = session_factory
         self.profile = profile.strip()
+        self.account_id = account_id.strip() if account_id else None
         self.timeout_seconds = max(1.0, float(timeout_seconds))
         self.poll_seconds = min(max(float(poll_seconds), 0.05), 2.0)
         if not self.profile:
@@ -86,6 +88,8 @@ class LocalBridgeQueue:
         normalized_operation = operation.strip()
         if not normalized_account or not normalized_operation:
             raise MetaApiGatewayError("local_bridge_request_invalid")
+        if self.account_id is not None and normalized_account != self.account_id:
+            raise MetaApiGatewayError("local_bridge_account_mismatch")
         command = LocalBridgeCommand(
             profile=self.profile,
             account_id=normalized_account,
@@ -180,11 +184,18 @@ class LocalBridgeQueue:
     ) -> LocalBridgeCommand | None:
         now = datetime.now(UTC)
         lease_until = now + timedelta(seconds=min(max(lease_seconds, 15), 120))
+        if profile != self.profile:
+            raise PermissionError("local_bridge_profile_mismatch")
         with self._session_factory() as session:
             command = session.scalar(
                 select(LocalBridgeCommand)
                 .where(
                     LocalBridgeCommand.profile == profile,
+                    *(
+                        (LocalBridgeCommand.account_id == self.account_id,)
+                        if self.account_id is not None
+                        else ()
+                    ),
                     or_(
                         LocalBridgeCommand.status == "queued",
                         (
@@ -227,6 +238,10 @@ class LocalBridgeQueue:
             command = session.get(LocalBridgeCommand, command_id, with_for_update=True)
             if command is None:
                 raise LookupError("local_bridge_command_missing")
+            if command.profile != self.profile or (
+                self.account_id is not None and command.account_id != self.account_id
+            ):
+                raise PermissionError("local_bridge_scope_mismatch")
             if command.status in TERMINAL_STATUSES:
                 return command.status
             if command.claimed_by != worker_id or command.lease_token != lease_token:
