@@ -39,7 +39,12 @@ from app.risk_sizing_day24 import (
     Day24RiskSizingError,
     Day24RiskSizingResult,
 )
-from app.provider_risk_policy import provider_risk_profile, provider_tp_limit
+from app.provider_risk_policy import (
+    FIXED_PROVIDER_LEG_VOLUME,
+    FIXED_PROVIDER_MAX_STOP_RISK_PERCENT,
+    FIXED_PROVIDER_MAX_SIGNAL_RISK_PERCENT,
+    provider_risk_profile, provider_tp_limit,
+)
 from app.trade_preflight_day25 import Day25TradePreflightService
 from app.trading_accounting import CanonicalTradingAccountingService
 
@@ -679,17 +684,20 @@ class Day26Mt5ExecutionService:
                 maximum=specification.get("maxVolume"),
                 step=specification.get("volumeStep"),
             )
-            return Day24RiskSizer.size(
+            # Owner rule: fixed 0.01 lots, not a percent-derived volume.
+            # Reject unsafe stops or unsupported broker steps, never upsize.
+            return Day24RiskSizer.size_fixed_volume(
                 balance=balance,
-                risk_percent=risk_percent,
                 signal_entry_price=execution_entry,
                 signal_stop_loss=signal.stop_loss,
                 tick_size=specification.get("tickSize"),
                 tick_value=price_loss_tick_value,
                 take_profit_count=signal.position_count,
                 volume_rules=rules,
+                fixed_volume=FIXED_PROVIDER_LEG_VOLUME,
+                max_stop_risk_percent=FIXED_PROVIDER_MAX_STOP_RISK_PERCENT,
+                max_signal_risk_percent=FIXED_PROVIDER_MAX_SIGNAL_RISK_PERCENT,
                 signal_requests_double_lot=signal.signal_requests_double_lot,
-                double_lot_approved=double_lot_approved,
             )
         except Day24RiskSizingError as exc:
             raise Day26ExecutionError(exc.code) from exc
