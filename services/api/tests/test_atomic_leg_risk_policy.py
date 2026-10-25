@@ -59,7 +59,7 @@ def test_demo_and_live_share_one_unmodified_risk_sizer() -> None:
     assert PaperCriticalExecutionService._size_signal is Day26Mt5ExecutionService._size_signal
 
 
-def test_one_target_uses_one_percent_of_real_balance() -> None:
+def test_one_target_uses_fixed_001_lots() -> None:
     service = object.__new__(CanonicalTradingExecutionService)
     profile = provider_risk_profile(
         source_name="TIG’s Asia Trades",
@@ -84,13 +84,13 @@ def test_one_target_uses_one_percent_of_real_balance() -> None:
     )
 
     assert actual.balance == Decimal("2000.0")
-    assert actual.effective_risk_percent == Decimal("1")
-    assert actual.risk_budget_per_position == Decimal("20.0")
-    assert actual.volume == Decimal("0.03")
-    assert actual.actual_risk_per_position == Decimal("18.00")
+    assert actual.effective_risk_percent == Decimal("0.300")
+    assert actual.risk_budget_per_position == Decimal("6.00")
+    assert actual.volume == Decimal("0.01")
+    assert actual.actual_risk_per_position == Decimal("6.00")
 
 
-def test_double_lot_wording_cannot_turn_one_percent_target_into_two_percent() -> None:
+def test_double_lot_wording_cannot_change_fixed_volume() -> None:
     service = object.__new__(CanonicalTradingExecutionService)
     signal = _signal()
     object.__setattr__(signal, "signal_requests_double_lot", True)
@@ -117,6 +117,7 @@ def test_double_lot_wording_cannot_turn_one_percent_target_into_two_percent() ->
         double_lot_approved=True,
     )
 
-    assert actual.effective_risk_percent == Decimal("1")
-    assert actual.risk_budget_per_position == Decimal("15.0")
+    assert actual.volume == Decimal("0.01")
+    assert actual.effective_risk_percent == Decimal("0.400")
+    assert actual.risk_budget_per_position == Decimal("6.00")
     assert not actual.double_lot_applied
