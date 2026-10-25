@@ -31,7 +31,7 @@ class _Entry:
 
 
 def test_provider_policy_generation_is_current_owner_authority() -> None:
-    assert POLICY_GENERATION == "owner-authority-2026-09-09-v2-one-percent-per-tp"
+    assert POLICY_GENERATION == "owner-authority-2026-10-25-v1-fixed-001-lots"
 
 
 @pytest.mark.parametrize(
