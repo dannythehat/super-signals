@@ -13,6 +13,7 @@ from pydantic import BaseModel, Field
 
 from app.db import get_session_factory
 from app.local_bridge_queue import LocalBridgeQueue
+from app.metaapi_gateway import MetaApiGatewayError
 
 router = APIRouter(prefix="/internal/local-bridge/v1", tags=["local-mt5-bridge"])
 _IDENTIFIER = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{2,99}$")
@@ -165,6 +166,33 @@ def complete(
     except PermissionError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     return {"status": final_status}
+
+@router.post("/pu-smoke")
+async def pu_connection_smoke(
+    authorization_scope: Annotated[str, Depends(_authorize)],
+) -> dict[str, Any]:
+    """Operator-triggered read-only cloud -> queue -> Contabo -> MT5 probe."""
+    if authorization_scope != "pu":
+        raise HTTPException(status_code=403, detail="pu_token_required")
+    profile, account_id = _scope(None, authorization_scope)
+    assert account_id is not None
+    queue = LocalBridgeQueue(
+        get_session_factory(), profile=profile, account_id=account_id,
+        timeout_seconds=20.0,
+    )
+    try:
+        result = await queue.execute(
+            account_id=account_id,
+            operation="read_terminal_identity",
+            payload={},
+        )
+    except MetaApiGatewayError as exc:
+        raise HTTPException(
+            status_code=503, detail="pu_bridge_worker_unavailable_or_failed"
+        ) from exc
+    if not isinstance(result, dict):
+        raise HTTPException(status_code=503, detail="pu_bridge_probe_invalid_result")
+    return {"status": "connected", "terminal": result}
 
 
 __all__ = ["router"]
