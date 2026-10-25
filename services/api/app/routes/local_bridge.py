@@ -218,7 +218,7 @@ async def pu_broker_preflight(
         for operation, payload in (
             ("read_terminal_identity", {}),
             ("read_account_information", {}),
-            ("read_symbol_specification", {"symbol": "XAUUSD.s"}),
+            ("read_symbol_specification", {"symbol": "XAUUSD"}),
             ("read_positions", {}),
             ("read_orders", {}),
         ):
