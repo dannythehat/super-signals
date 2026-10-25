@@ -43,6 +43,7 @@ class Settings:
     login: int
     password: str
     server: str
+    use_existing_session: bool
     magic: int
     deviation: int
     poll_seconds: float
@@ -58,7 +59,6 @@ class Settings:
                 "SUPER_SIGNALS_LOCAL_BRIDGE_ACCOUNT_ID",
                 "SUPER_SIGNALS_MT5_TERMINAL_PATH",
                 "SUPER_SIGNALS_MT5_LOGIN",
-                "SUPER_SIGNALS_MT5_PASSWORD",
                 "SUPER_SIGNALS_MT5_SERVER",
             )
         }
@@ -67,6 +67,11 @@ class Settings:
             raise RuntimeError("Missing required settings: " + ", ".join(missing))
         if len(required["SUPER_SIGNALS_LOCAL_BRIDGE_TOKEN"]) < 32:
             raise RuntimeError("SUPER_SIGNALS_LOCAL_BRIDGE_TOKEN must be at least 32 characters")
+        use_existing_session = os.getenv(
+            "SUPER_SIGNALS_MT5_USE_EXISTING_SESSION", ""
+        ).strip().lower() in {"1", "true", "yes"}
+        if not use_existing_session and not os.getenv("SUPER_SIGNALS_MT5_PASSWORD", "").strip():
+            raise RuntimeError("Missing required settings: SUPER_SIGNALS_MT5_PASSWORD")
         data_root = Path(os.getenv("PROGRAMDATA", str(Path.home()))) / "SuperSignals" / "bridge"
         return cls(
             api_url=required["SUPER_SIGNALS_API_URL"].rstrip("/"),
@@ -79,8 +84,9 @@ class Settings:
             expected_account_id=required["SUPER_SIGNALS_LOCAL_BRIDGE_ACCOUNT_ID"],
             terminal_path=required["SUPER_SIGNALS_MT5_TERMINAL_PATH"],
             login=int(required["SUPER_SIGNALS_MT5_LOGIN"]),
-            password=required["SUPER_SIGNALS_MT5_PASSWORD"],
+            password=os.getenv("SUPER_SIGNALS_MT5_PASSWORD", "").strip(),
             server=required["SUPER_SIGNALS_MT5_SERVER"],
+            use_existing_session=use_existing_session,
             magic=int(os.getenv("SUPER_SIGNALS_MT5_MAGIC", "2601001")),
             deviation=int(os.getenv("SUPER_SIGNALS_MT5_DEVIATION", "20")),
             poll_seconds=max(
@@ -109,6 +115,7 @@ class BridgeWorker:
             login=settings.login,
             password=settings.password,
             server=settings.server,
+            use_existing_session=settings.use_existing_session,
             magic=settings.magic,
             deviation=settings.deviation,
         )
@@ -146,6 +153,7 @@ class BridgeWorker:
         return {
             "worker_id": self.settings.worker_id,
             "profile": self.settings.profile,
+            "account_id": self.settings.expected_account_id,
             "version": __version__,
             "capabilities": CAPABILITIES,
         }

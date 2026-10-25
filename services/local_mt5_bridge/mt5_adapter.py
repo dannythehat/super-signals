@@ -30,6 +30,7 @@ class Mt5Adapter:
         server: str,
         magic: int,
         deviation: int = 20,
+        use_existing_session: bool = False,
     ) -> None:
         try:
             import MetaTrader5 as mt5  # type: ignore[import-not-found]
@@ -42,20 +43,40 @@ class Mt5Adapter:
         self.server = server
         self.magic = magic
         self.deviation = deviation
+        self.use_existing_session = use_existing_session
 
     def connect(self) -> None:
-        ok = self.mt5.initialize(
-            path=self.terminal_path,
-            login=self.login,
-            password=self.password,
-            server=self.server,
-            timeout=30_000,
-        )
+        if self.use_existing_session:
+            # Bind to the already-authenticated MT5 desktop without a second password copy.
+            # The exact login AND server are asserted below before any operation.
+            ok = self.mt5.initialize(
+                path=self.terminal_path,
+                timeout=30_000,
+            )
+        else:
+            ok = self.mt5.initialize(
+                path=self.terminal_path,
+                login=self.login,
+                password=self.password,
+                server=self.server,
+                timeout=30_000,
+            )
         if not ok:
             raise LocalMt5Error("local_bridge_mt5_unavailable", str(self.mt5.last_error()))
-        account = self.mt5.account_info()
-        if account is None or int(account.login) != self.login:
+        try:
+            self._assert_expected_account()
+        except LocalMt5Error:
             self.mt5.shutdown()
+            raise
+
+    def _assert_expected_account(self) -> None:
+        """Fail closed if the terminal switched accounts or broker servers."""
+        account = self.mt5.account_info()
+        if (
+            account is None
+            or int(account.login) != self.login
+            or str(account.server) != self.server
+        ):
             raise LocalMt5Error("local_bridge_account_mismatch")
 
     def close(self) -> None:
@@ -67,7 +88,25 @@ class Mt5Adapter:
             raise LocalMt5Error("local_bridge_operation_unsupported")
         if self.mt5.terminal_info() is None:
             self.connect()
+        self._assert_expected_account()
         return handler(payload)
+
+    def _op_read_terminal_identity(self, _: dict[str, Any]) -> dict[str, Any]:
+        """Read-only authenticated probe; never calls order_check/order_send."""
+        self._assert_expected_account()
+        account = self.mt5.account_info()
+        if account is None:
+            raise LocalMt5Error("local_bridge_mt5_unavailable")
+        spec = self.mt5.symbol_info("XAUUSD.s")
+        if spec is None:
+            raise LocalMt5Error("local_bridge_symbol_unavailable")
+        return {
+            "login": int(account.login),
+            "server": str(account.server),
+            "goldSymbol": "XAUUSD.s",
+            "volumeMin": float(spec.volume_min),
+            "volumeStep": float(spec.volume_step),
+        }
 
     def _op_resolve_account_region(self, _: dict[str, Any]) -> dict[str, str]:
         return {"region": "local"}
@@ -259,6 +298,7 @@ class Mt5Adapter:
         return self._send(request)
 
     def _send(self, request: dict[str, Any], *, client_id: str = "") -> dict[str, Any]:
+        self._assert_expected_account()
         if request.get("action") in {
             self.mt5.TRADE_ACTION_DEAL,
             self.mt5.TRADE_ACTION_PENDING,
@@ -271,6 +311,8 @@ class Mt5Adapter:
                     else str(self.mt5.last_error())
                 )
                 raise LocalMt5Error("local_bridge_trade_check_rejected", message)
+        # Re-check even after order_check: a GUI operator may switch accounts.
+        self._assert_expected_account()
         result = self.mt5.order_send(request)
         if result is None:
             raise LocalMt5Error("local_bridge_trade_result_missing", str(self.mt5.last_error()))
@@ -297,7 +339,7 @@ class Mt5Adapter:
         normalized = symbol.strip().upper()
         candidates = [normalized]
         if normalized == "XAUUSD":
-            candidates.extend(("GOLD", "XAUUSD.", "XAUUSDm"))
+            candidates.extend(("XAUUSD.s", "GOLD", "XAUUSD.", "XAUUSDm"))
         for candidate in candidates:
             info = self.mt5.symbol_info(candidate)
             if info is not None and (info.visible or self.mt5.symbol_select(candidate, True)):
