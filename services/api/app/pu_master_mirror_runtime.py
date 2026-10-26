@@ -40,8 +40,25 @@ def _as_datetime(value: object) -> datetime | None:
 
 
 def _quote_recent(quote: dict[str, Any], now: datetime) -> bool:
+    """Check PU broker quote freshness using its verified server-time offset.
+
+    PUPrime-Live 6 tick times are currently three hours ahead of true UTC,
+    although the worker serialises them with Z. Do not treat future broker
+    timestamps as fresh UTC timestamps without normalising them.
+    """
     moment = _as_datetime(quote.get("time"))
-    return moment is not None and timedelta(seconds=0) <= now - moment <= timedelta(seconds=45)
+    if moment is None:
+        return False
+    raw_age = now - moment
+    if timedelta(seconds=0) <= raw_age <= timedelta(seconds=45):
+        return True
+    # Explicit override is available if PU Prime changes its server UTC
+    # offset at the seasonal clock transition. Any other offset fails shut.
+    broker_hours = int(os.getenv("SUPER_SIGNALS_PU_BROKER_TICK_OFFSET_HOURS", "3"))
+    if broker_hours not in {2, 3}:
+        return False
+    adjusted_age = now - (moment - timedelta(hours=broker_hours))
+    return timedelta(seconds=0) <= adjusted_age <= timedelta(seconds=45)
 
 
 def _position_id(item: dict[str, Any]) -> str:
@@ -248,13 +265,13 @@ class PuMirrorRuntime:
                     "open_price": float(ask_or_bid),
                 },
             )
-            committed = self._open_risk_usd(pu_positions, quote, specification)
+            # Owner removed unapproved aggregate stop-risk caps. Keep exact
+            # lots and broker margin verification, not a percentage veto.
             plan = plan_pu_mirror_leg(
                 source=source_pos, account=account, quote=quote,
                 specification=specification,
                 calculated_margin=margin_result["margin"],
                 source_signal_legs=int(signal["signal_legs"]),
-                existing_risk_usd=committed,
             )
         except (MirrorRejected, KeyError, ValueError, ArithmeticError) as exc:
             code = exc.code if isinstance(exc, MirrorRejected) else "invalid_broker_or_position_data"
