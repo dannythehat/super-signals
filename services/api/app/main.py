@@ -59,6 +59,7 @@ from app.routes.day26_execution import router as day26_execution_router
 from app.routes.day27_management import router as day27_management_router
 from app.routes.health import router as health_router
 from app.routes.local_bridge import router as local_bridge_router
+from app.routes.server_monitor import router as server_monitor_router
 from app.routes.mt5_accounts import router as mt5_accounts_router
 from app.routes.mt5_approvals_day30 import router as mt5_approvals_day30_router
 from app.routes.notifications_day34 import router as notifications_day34_router
@@ -604,6 +605,7 @@ def create_app() -> FastAPI:
     )
     application.include_router(health_router)
     application.include_router(local_bridge_router)
+    application.include_router(server_monitor_router)
     application.include_router(auth_router)
     application.include_router(access_router)
     application.include_router(admin_accounts_router)
