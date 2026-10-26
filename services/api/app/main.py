@@ -44,7 +44,7 @@ from app.performance_runtime import (
     CanonicalPerformanceRuntimeService as CanonicalPerformanceLedgerService,
 )
 from app.production_listener import build_production_listener_manager
-from app.pu_master_mirror_runtime import PuMirrorRuntime
+from app.pu_master_mirror_runtime import PuMirrorRuntime, pu_mirror_effective_mode
 from app.pu_live_preflight_background import check_pu_master_once
 from app.provider_fingerprint_runtime import ProviderFingerprintRuntime
 from app.provider_management_language_audit_runtime import ProviderManagementLanguageAuditRuntime
@@ -425,10 +425,11 @@ async def _lifespan(application: FastAPI) -> AsyncIterator[None]:
         await push_manager.start()
     await publisher.start()
 
-    # The PU Prime master has its own isolated connection. Mode defaults to OFF.
-    # A failure here must never stall the existing Vantage or Telegram routes.
+    # Pin the owner-authorised live master mode only on its production Render service.
+    # Standby/old deployments may still log their previous mode during rollout.
+    # Any failure here must never stall Vantage or Telegram.
     pu_mirror_runtime: PuMirrorRuntime | None = None
-    if os.getenv("SUPER_SIGNALS_PU_MIRROR_MODE", "off").strip().lower() != "off":
+    if pu_mirror_effective_mode() != "off":
         try:
             pu_mirror_runtime = PuMirrorRuntime(session_factory)
             await pu_mirror_runtime.start()
