@@ -1,7 +1,7 @@
-"""Strict isolated safety gate for Vantage paper -> PU Prime live XAUUSD.s copying.
+"""Fixed 0.01-lot PU Prime master copying, without percentage-risk vetoes.
 
-Never resizes the locked 0.01 lots, uses target broker equity/tick value,
-checks stop direction, actual market quote, spread and free margin.
+Respect original protective SL/TP, broker minimums, exact 0.01 lot and
+available margin. Stop-distance percentage is recorded, not used to veto.
 """
 from __future__ import annotations
 
@@ -9,12 +9,8 @@ from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
 from typing import Any
 
-from app.provider_risk_policy import (
-    FIXED_PROVIDER_LEG_VOLUME,
-    FIXED_PROVIDER_MAX_STOP_RISK_PERCENT,
-    FIXED_PROVIDER_MAX_SIGNAL_RISK_PERCENT,
-)
-from app.risk_sizing_day24 import BrokerVolumeRules, Day24RiskSizer, Day24RiskSizingError
+from app.provider_risk_policy import FIXED_PROVIDER_LEG_VOLUME
+from app.risk_sizing_day24 import BrokerVolumeRules, Day24RiskSizingError
 
 
 class MirrorRejected(ValueError):
@@ -90,33 +86,29 @@ def plan_pu_mirror_leg(
         or (side == "SELL" and target >= quote_entry)
     ):
         raise MirrorRejected("source_target_already_passed")
-    if margin * Decimal("1.20") > free_margin:
-        raise MirrorRejected("pu_margin_insufficient_with_buffer")
+    # The user explicitly removed arbitrary percentage risk caps and the
+    # additional 20% margin buffer. Broker free margin and exact lot size
+    # remain mandatory. The original source stop and take profit are preserved.
+    if margin > free_margin:
+        raise MirrorRejected("pu_margin_insufficient")
     try:
         rules = BrokerVolumeRules.from_values(
             minimum=specification["minVolume"],
             maximum=specification["maxVolume"],
             step=specification["volumeStep"],
         )
-        risk = Day24RiskSizer.size_fixed_volume(
-            balance=equity,
-            signal_entry_price=quote_entry,
-            signal_stop_loss=stop,
-            tick_size=specification["tickSize"],
-            tick_value=quote["lossTickValue"],
-            take_profit_count=source_signal_legs,
-            volume_rules=rules,
-            fixed_volume=FIXED_PROVIDER_LEG_VOLUME,
-            max_stop_risk_percent=FIXED_PROVIDER_MAX_STOP_RISK_PERCENT,
-            max_signal_risk_percent=FIXED_PROVIDER_MAX_SIGNAL_RISK_PERCENT,
-        )
     except (Day24RiskSizingError, KeyError, TypeError, InvalidOperation) as exc:
-        code = exc.code if isinstance(exc, Day24RiskSizingError) else "pu_broker_spec_invalid"
-        raise MirrorRejected(code) from exc
-    if committed < 0 or committed + risk.actual_risk_per_position > (
-        equity * FIXED_PROVIDER_MAX_SIGNAL_RISK_PERCENT / Decimal("100")
-    ):
-        raise MirrorRejected("pu_total_open_stop_risk_exceeded")
+        raise MirrorRejected("pu_broker_spec_invalid") from exc
+    volume = FIXED_PROVIDER_LEG_VOLUME
+    steps = (volume - rules.minimum) / rules.step
+    if (volume < rules.minimum or volume > rules.maximum
+            or steps != steps.to_integral_value()):
+        raise MirrorRejected("fixed_lot_not_supported_by_broker")
+    tick_size = _d(specification.get("tickSize"))
+    tick_value = _d(quote.get("lossTickValue"))
+    if tick_size <= 0 or tick_value <= 0:
+        raise MirrorRejected("pu_broker_tick_value_invalid")
+    stop_risk_usd = abs(quote_entry - stop) / tick_size * tick_value * volume
     return MirroredOrderPlan(
         side=side,
         symbol="XAUUSD.s",
@@ -124,6 +116,6 @@ def plan_pu_mirror_leg(
         stop_loss=stop,
         take_profit=target,
         entry_quote=quote_entry,
-        stop_risk_usd=risk.actual_risk_per_position,
+        stop_risk_usd=stop_risk_usd,
         margin_usd=margin,
     )
