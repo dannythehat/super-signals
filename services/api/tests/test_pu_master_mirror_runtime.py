@@ -21,3 +21,10 @@ def test_quotes_reject_weekend_staleness_and_clock_future():
 def test_timestamp_parsing_for_source_cutoff():
     assert _as_datetime("2026-10-25T18:00:00Z").tzinfo is not None
     assert _as_datetime("invalid") is None
+
+
+def test_pu_broker_three_hour_quote_offset_normalised():
+    now = datetime.now(timezone.utc)
+    assert _quote_recent({"time": (now + timedelta(hours=3) - timedelta(seconds=5)).isoformat()}, now)
+    assert not _quote_recent({"time": (now + timedelta(hours=3) - timedelta(minutes=3)).isoformat()}, now)
+    assert not _quote_recent({"time": (now + timedelta(hours=3, seconds=2)).isoformat()}, now)
