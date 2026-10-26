@@ -1,7 +1,10 @@
 """PU mirror forward-only, idempotency and broker quote safety checks."""
 from datetime import datetime, timedelta, timezone
 
-from app.pu_master_mirror_runtime import _as_datetime, _mirror_client_id, _quote_recent
+from app.pu_master_mirror_runtime import (
+    _as_datetime, _mirror_client_id, _quote_recent,
+    pu_mirror_effective_mode, pu_mirror_effective_since,
+)
 
 
 def test_unique_short_mt5_client_id_and_no_guess_for_non_tickets():
@@ -28,3 +31,29 @@ def test_pu_broker_three_hour_quote_offset_normalised():
     assert _quote_recent({"time": (now + timedelta(hours=3) - timedelta(seconds=5)).isoformat()}, now)
     assert not _quote_recent({"time": (now + timedelta(hours=3) - timedelta(minutes=3)).isoformat()}, now)
     assert not _quote_recent({"time": (now + timedelta(hours=3, seconds=2)).isoformat()}, now)
+
+
+def test_production_pins_execute_mode_and_original_forward_only_cutoff(monkeypatch):
+    monkeypatch.setenv("RENDER_SERVICE_ID", "srv-d9qmcgks728c73a555m0")
+    monkeypatch.setenv("SUPER_SIGNALS_PU_MIRROR_MODE", "observe")
+    monkeypatch.setenv("SUPER_SIGNALS_PU_MIRROR_ACTIVATE_AFTER", "2026-10-24T00:00:00Z")
+    monkeypatch.delenv("SUPER_SIGNALS_PU_MIRROR_EMERGENCY_STOP", raising=False)
+    assert pu_mirror_effective_mode() == "execute"
+    assert pu_mirror_effective_since().isoformat() == "2026-10-26T08:37:54.662000+00:00"
+    monkeypatch.setenv("SUPER_SIGNALS_PU_MIRROR_MODE", "off")
+    assert pu_mirror_effective_mode() == "execute"
+
+
+def test_explicit_emergency_stop_does_not_reopen_historical_trades(monkeypatch):
+    monkeypatch.setenv("RENDER_SERVICE_ID", "srv-d9qmcgks728c73a555m0")
+    monkeypatch.setenv("SUPER_SIGNALS_PU_MIRROR_EMERGENCY_STOP", "stop")
+    assert pu_mirror_effective_mode() == "off"
+    assert pu_mirror_effective_since().isoformat() == "2026-10-26T08:37:54.662000+00:00"
+
+
+def test_nonproduction_cannot_activate_from_production_pin(monkeypatch):
+    monkeypatch.setenv("RENDER_SERVICE_ID", "other-service")
+    monkeypatch.setenv("SUPER_SIGNALS_PU_MIRROR_MODE", "observe")
+    monkeypatch.setenv("SUPER_SIGNALS_PU_MIRROR_ACTIVATE_AFTER", "2026-10-25T00:00:00Z")
+    assert pu_mirror_effective_mode() == "observe"
+    assert pu_mirror_effective_since().isoformat() == "2026-10-25T00:00:00+00:00"
