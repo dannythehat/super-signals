@@ -26,6 +26,31 @@ from app.pu_mirror_safety import MirrorRejected, plan_pu_mirror_leg
 logger = logging.getLogger(__name__)
 _PREFIX = "SS_PU_"
 
+# Owner-authorised production activation is pinned to the actual Render service
+# and its original forward-only cutoff. Environment group changes or a rollout
+# must not silently downgrade this service to observe mode or replay older legs.
+_PU_MASTER_RENDER_SERVICE_ID = "srv-d9qmcgks728c73a555m0"
+_PU_MASTER_FIRST_ACTIVATION = datetime.fromisoformat("2026-10-26T08:37:54.662+00:00")
+
+
+def pu_mirror_effective_mode() -> str:
+    requested = os.getenv("SUPER_SIGNALS_PU_MIRROR_MODE", "off").strip().lower()
+    if os.getenv("RENDER_SERVICE_ID", "").strip() != _PU_MASTER_RENDER_SERVICE_ID:
+        return requested
+    # Explicit operational kill switch remains available without code changes.
+    if os.getenv("SUPER_SIGNALS_PU_MIRROR_EMERGENCY_STOP", "").strip() == "stop":
+        logger.error("PU MIRROR explicit emergency stop engaged")
+        return "off"
+    if requested != "execute":
+        logger.error("PU MIRROR environment drift: %r; enforcing pinned production execution", requested)
+    return "execute"
+
+
+def pu_mirror_effective_since() -> datetime | None:
+    if os.getenv("RENDER_SERVICE_ID", "").strip() == _PU_MASTER_RENDER_SERVICE_ID:
+        return _PU_MASTER_FIRST_ACTIVATION
+    return _as_datetime(os.getenv("SUPER_SIGNALS_PU_MIRROR_ACTIVATE_AFTER", "").strip())
+
 
 def _as_datetime(value: object) -> datetime | None:
     if isinstance(value, datetime):
@@ -72,17 +97,17 @@ def _mirror_client_id(ticket: str) -> str | None:
 
 
 class PuMirrorRuntime:
-    """Never enabled by default; observe mode cannot place or amend broker trades."""
+    """Production PU source is pinned; non-production defaults to off."""
 
     def __init__(self, session_factory: sessionmaker[Session]) -> None:
         self._factory = session_factory
-        self.mode = os.getenv("SUPER_SIGNALS_PU_MIRROR_MODE", "off").strip().lower()
+        self.mode = pu_mirror_effective_mode()
         if self.mode not in {"off", "observe", "execute"}:
             raise ValueError("pu_mirror_mode_invalid")
         self.source_account_id = os.getenv("SUPER_SIGNALS_PU_MIRROR_SOURCE_ACCOUNT_ID", "").strip()
         self.target_account_id = os.getenv("SUPER_SIGNALS_PU_BRIDGE_ACCOUNT_ID", "").strip()
         self.owner_user_id = (os.getenv("SUPER_SIGNALS_PU_MIRROR_OWNER_USER_ID", "").strip() or os.getenv("SUPER_SIGNALS_DAY28_OWNER_ID", "").strip())
-        self._since = _as_datetime(os.getenv("SUPER_SIGNALS_PU_MIRROR_ACTIVATE_AFTER", "").strip())
+        self._since = pu_mirror_effective_since()
         self._poll_seconds = max(4, int(os.getenv("SUPER_SIGNALS_PU_MIRROR_POLL_SECONDS", "5")))
         self._task: asyncio.Task[None] | None = None
         self._source: LocalBridgeQueue | None = None
