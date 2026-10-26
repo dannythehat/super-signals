@@ -1,4 +1,4 @@
-"""PU Prime master mirror fixed-volume risk policy regression tests."""
+"""PU Prime mirror owner-authorised uncapped risk and fixed-volume regression tests."""
 from decimal import Decimal
 
 import pytest
@@ -28,25 +28,29 @@ def inputs():
     }
 
 
-def test_exact_001_per_tp_small_pu_account_only_when_risk_fits():
+def test_exact_001_per_tp_small_pu_account():
     plan = plan_pu_mirror_leg(**inputs())
     assert plan.volume == Decimal("0.01")
     assert plan.stop_risk_usd == Decimal("2.10")
     assert plan.symbol == "XAUUSD.s"
 
 
-def test_pu_broker_equity_prohibits_typical_wide_stops_with_112():
+def test_wide_stop_is_not_rejected_by_percentage_risk_cap():
     v = inputs()
     v["source"]["stopLoss"] = 3988
-    with pytest.raises(MirrorRejected, match="fixed_lot_stop_risk_exceeded"):
-        plan_pu_mirror_leg(**v)
+    plan = plan_pu_mirror_leg(**v)
+    assert plan.volume == Decimal("0.01")
+    assert plan.stop_risk_usd == Decimal("12.10")
+    assert plan.stop_loss == Decimal("3988")
 
 
-def test_small_balance_never_resizes_to_smaller_lots():
+def test_small_balance_preserves_exact_lot_even_if_percentage_high():
     v = inputs()
     v["account"]["equity"] = 40
-    with pytest.raises(MirrorRejected, match="fixed_lot_stop_risk_exceeded"):
-        plan_pu_mirror_leg(**v)
+    v["source"]["stopLoss"] = 3988
+    plan = plan_pu_mirror_leg(**v)
+    assert plan.volume == Decimal("0.01")
+    assert plan.stop_risk_usd == Decimal("12.10")
 
 
 def test_different_gold_symbol_is_rejected():
@@ -56,11 +60,11 @@ def test_different_gold_symbol_is_rejected():
         plan_pu_mirror_leg(**v)
 
 
-def test_risk_sum_counts_other_open_pu_positions():
+def test_existing_risk_is_not_a_percentage_veto():
     v = inputs()
-    v["existing_risk_usd"] = 10
-    with pytest.raises(MirrorRejected, match="pu_total_open_stop_risk_exceeded"):
-        plan_pu_mirror_leg(**v)
+    v["existing_risk_usd"] = 100
+    plan = plan_pu_mirror_leg(**v)
+    assert plan.volume == Decimal("0.01")
 
 
 def test_source_broker_quote_is_not_chased():
@@ -81,10 +85,12 @@ def test_never_remove_stop_or_follow_expired_tp():
         plan_pu_mirror_leg(**v)
 
 
-def test_margin_buffer_and_disabled_account_fail_closed():
+def test_actual_broker_margin_and_disabled_account_fail_closed():
     v = inputs()
     v["calculated_margin"] = 100
-    with pytest.raises(MirrorRejected, match="pu_margin_insufficient_with_buffer"):
+    assert plan_pu_mirror_leg(**v).volume == Decimal("0.01")
+    v["calculated_margin"] = 113
+    with pytest.raises(MirrorRejected, match="pu_margin_insufficient"):
         plan_pu_mirror_leg(**v)
     v = inputs()
     v["account"]["tradeAllowed"] = False
