@@ -38,7 +38,11 @@ def money(value: Decimal | int | float | str | None) -> str:
     return f"{sign}$" + f"{abs(amount):,.2f}"
 
 
-def provider_badge(source_id: UUID | str | None) -> str:
+def provider_badge(source_id: UUID | str | None, provider_name: str = "") -> str:
+    # Keep existing provider badges stable; give Wolves Trading its own icon.
+    normalized_name = " ".join(provider_name.casefold().split())
+    if normalized_name.startswith(("wolves trading", "wolves trades")):
+        return "🐺"
     raw = str(source_id or "unknown").encode("utf-8")
     digest = sha256(raw).digest()
     first = digest[0] % len(_PROVIDER_COLOURS)
