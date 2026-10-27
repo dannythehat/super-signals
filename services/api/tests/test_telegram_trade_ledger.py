@@ -17,6 +17,14 @@ def test_provider_badge_is_stable_and_distinguishes_sources() -> None:
     assert provider_badge(one) != provider_badge(two)
 
 
+def test_wolves_trading_has_wolf_badge_without_changing_other_providers() -> None:
+    source_id = UUID("11111111-1111-4111-8111-111111111111")
+    assert provider_badge(source_id, "Wolves Trading") == "🐺"
+    assert provider_badge(source_id, "WOLVES TRADING VIP") == "🐺"
+    assert provider_badge(source_id, "Wolves Trades") == "🐺"
+    assert provider_badge(source_id, "Another Provider") == provider_badge(source_id)
+
+
 def test_money_is_plain_signed_usd() -> None:
     assert money(Decimal("12.345")) == "+$12.35"
     assert money(Decimal("-2.5")) == "-$2.50"
