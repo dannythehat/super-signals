@@ -150,7 +150,7 @@ class CanonicalTelegramPublisherManager(Day34CutoverTelegramPublisherManager):
 
     @staticmethod
     def _provider_line(source_id: UUID | str | None, provider_name: str) -> str:
-        return f"{provider_badge(source_id)} <b>{_html(provider_name)}</b>"
+        return f"{provider_badge(source_id, provider_name)} <b>{_html(provider_name)}</b>"
 
     @staticmethod
     def _placement_exists_sql(alias: str) -> str:
