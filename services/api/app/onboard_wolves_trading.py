@@ -70,7 +70,7 @@ async def onboard() -> None:
             chat_id = await asyncio.wait_for(
                 _find_joined_chat(
                     telegram_session, settings.telegram_api_id, settings.telegram_api_hash
-                ), timeout=50
+                ), timeout=18
             )
         except Exception as exc:
             print(
