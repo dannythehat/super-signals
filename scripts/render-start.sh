@@ -5,6 +5,9 @@ cd /app/services/api
 alembic -c alembic.ini upgrade head
 python -m app.retire_tdc_provider_once
 python -m app.bootstrap
+# Enrol the explicitly requested Wolves Trading channel only if one of the
+# existing private readers has already joined @WolvesTrades. No historical replay.
+python -m app.onboard_wolves_trading
 
 # MT5 member onboarding/reconnect is handled only by Connection V2. Legacy one-off
 # diagnostics, deferred redeploy jobs and environment-driven partner onboarding are

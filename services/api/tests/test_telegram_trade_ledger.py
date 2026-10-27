@@ -17,6 +17,9 @@ def test_provider_badge_is_stable_and_distinguishes_sources() -> None:
     assert provider_badge(one) != provider_badge(two)
     assert provider_badge(one, "TIG’s Asia Trades") == "🇯🇵"
     assert provider_badge(two, "FTX") == "🏎️"
+    assert provider_badge(one, "WOLVES TRADING") == "🐺"
+    assert provider_badge(two, "Wolves Trading VIP") == "🐺"
+    assert provider_badge(two, "Another trader") != "🐺"
 
 
 def test_money_is_plain_signed_usd() -> None:

@@ -43,6 +43,8 @@ def _normalise_provider_name(value: str) -> str:
 def provider_badge(source_id: UUID | str | None, provider_name: str = "") -> str:
     """One recognisable provider emoji; never the old coloured-dot pair."""
     name = _normalise_provider_name(provider_name)
+    if name.startswith(("wolves trading", "wolves trades")):
+        return "🐺"
     if "tig's asia trades" in name or ("asia" in name and "tig" in name):
         return "🇯🇵"
     if "ftx" in name:
