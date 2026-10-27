@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import asyncio
 
-from sqlalchemy import select
+from sqlalchemy import select, text
 from telethon import TelegramClient
 from telethon.sessions import StringSession
 
@@ -91,6 +91,16 @@ async def onboard() -> None:
             # paused, never reactivate it during a later application restart.
             already_enrolled = existing is not None
             if already_enrolled:
+                # The migration-created instrument column is not mapped on
+                # the legacy Source ORM model. Persist it with targeted SQL.
+                session.execute(
+                    text(
+                        "UPDATE sources SET declared_instrument='XAUUSD' "
+                        "WHERE id=:source_id AND declared_instrument IS NULL"
+                    ),
+                    {"source_id": existing.id},
+                )
+                session.commit()
                 print(
                     f"WOLVES_SETUP already_registered source={existing.id} status={existing.status}",
                     flush=True,
@@ -109,7 +119,13 @@ async def onboard() -> None:
                 source = session.get(Source, selected.source_id)
                 if source is None:
                     raise RuntimeError("Selected source was not persisted")
-                source.declared_instrument = "XAUUSD"
+                session.execute(
+                    text(
+                        "UPDATE sources SET declared_instrument='XAUUSD' "
+                        "WHERE id=:source_id AND declared_instrument IS NULL"
+                    ),
+                    {"source_id": source.id},
+                )
                 session.commit()
                 service.change_source_status(
                     session, actor=actor, source_id=source.id, new_status="live"
