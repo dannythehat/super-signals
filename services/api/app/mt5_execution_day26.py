@@ -236,12 +236,17 @@ class Day26Mt5ExecutionService:
         # on. Sizing off the broker's closed-trade balance field understated it by the
         # whole floating P&L, and the previous paper-epoch derivation understated it
         # further by anchoring to a hard-coded 1517.23.
-        risk_balance = CanonicalTradingAccountingService(
-            self._session_factory
-        ).displayed_balance(
-            owner_user_id,
-            broker_account_value=live_state.account.equity,
-        ) if self._session_factory is not None else live_state.account.equity
+        # Fixed mode preserves historical product/account value behaviour.
+        # Explicit owner-approved dynamic mode uses each broker account's
+        # actual closed-trade BALANCE, not shared dashboard equity or paper offset.
+        dynamic_risk_mode = os.getenv("SUPER_SIGNALS_OWNER_RISK_MODE", "fixed").strip().lower() == "one-percent-per-tp"
+        risk_balance = (
+            Decimal(str(live_state.account.balance))
+            if dynamic_risk_mode
+            else CanonicalTradingAccountingService(self._session_factory).displayed_balance(
+                owner_user_id, broker_account_value=live_state.account.equity
+            ) if self._session_factory is not None else live_state.account.equity
+        )
         targets = list(signal.take_profits) + ([None] if signal.has_open_runner else [])
         risk_profile = provider_risk_profile(
             source_name=self._source_name(signal.signal_id),
@@ -684,8 +689,27 @@ class Day26Mt5ExecutionService:
                 maximum=specification.get("maxVolume"),
                 step=specification.get("volumeStep"),
             )
-            # Owner rule: fixed 0.01 lots, not a percent-derived volume.
-            # Reject unsafe stops or unsupported broker steps, never upsize.
+            # Owner change dated 29 Oct 2026: broker-balanced 1% risk per TP.
+            # An explicit flag gates activation until account connectivity,
+            # follower tests and reboot supervision are independently verified.
+            if os.getenv("SUPER_SIGNALS_OWNER_RISK_MODE", "fixed").strip().lower() == "one-percent-per-tp":
+                if Decimal(str(risk_percent)) != Decimal("1"):
+                    # Preserve existing direction veto and disallow alternate sizing.
+                    raise Day26ExecutionError("provider_direction_disabled_or_risk_invalid")
+                return Day24RiskSizer.size(
+                    balance=balance,
+                    risk_percent=Decimal("1"),
+                    signal_entry_price=execution_entry,
+                    signal_stop_loss=signal.stop_loss,
+                    tick_size=specification.get("tickSize"),
+                    tick_value=price_loss_tick_value,
+                    take_profit_count=signal.position_count,
+                    volume_rules=rules,
+                    signal_requests_double_lot=False,
+                    double_lot_approved=False,
+                    allow_broker_minimum_overshoot=False,
+                )
+            # Historical fixed-lot behaviour is the safe default until activation.
             return Day24RiskSizer.size_fixed_volume(
                 balance=balance,
                 signal_entry_price=execution_entry,
