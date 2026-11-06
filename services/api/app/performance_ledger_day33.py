@@ -37,6 +37,39 @@ class Day33LedgerError(RuntimeError):
         self.retryable = retryable
 
 
+TRADING_DEAL_TYPES = frozenset({
+    "DEAL_TYPE_BUY", "DEAL_TYPE_SELL", "DEAL_TYPE_CHARGE", "DEAL_TYPE_COMMISSION",
+    "DEAL_TYPE_COMMISSION_DAILY", "DEAL_TYPE_COMMISSION_MONTHLY",
+    "DEAL_TYPE_COMMISSION_AGENT_DAILY", "DEAL_TYPE_COMMISSION_AGENT_MONTHLY",
+    "DEAL_TYPE_INTEREST", "DEAL_TYPE_TAX",
+})
+TRADING_DEAL_TYPES_SQL = ",".join("'" + name + "'" for name in sorted(TRADING_DEAL_TYPES))
+
+# Charges remain in immutable raw_payload; no fee-column migration or backfill.
+BROKER_FEE_SQL = """CASE WHEN jsonb_typeof(raw_payload->'fee')='number'
+ OR (jsonb_typeof(raw_payload->'fee')='string' AND
+     (raw_payload->>'fee') ~ '^[+-]?[0-9]+([.][0-9]+)?([eE][+-]?[0-9]+)?$')
+ THEN (raw_payload->>'fee')::numeric ELSE 0 END"""
+
+def _broker_deal_fee(deal: Any) -> Decimal | None:
+    """Only a supplied finite broker fee is evidence; missing is not a zero charge."""
+    raw = deal.get("raw_payload") or {}
+    value = raw.get("fee") if isinstance(raw, dict) else None
+    if value is None:
+        value = deal.get("fee")
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        fee = Decimal(str(value))
+        return fee if fee.is_finite() else None
+    except (ValueError, ArithmeticError):
+        return None
+
+
+def _broker_deal_cash(deal: Any) -> Decimal:
+    return sum((_d(deal.get(k)) for k in ("profit", "commission", "swap")), Decimal("0")) + (_broker_deal_fee(deal) or Decimal("0"))
+
+
 @dataclass(frozen=True, slots=True)
 class Day33SyncResult:
     user_id: UUID
@@ -289,7 +322,7 @@ class Day33PerformanceLedgerService:
                     text(
                         """
                         SELECT broker_deal_id, deal_type, entry_type, symbol, volume, price,
-                               profit, commission, swap, occurred_at
+                               profit, commission, swap, occurred_at, raw_payload, mt5_account_id
                         FROM broker_deals
                         WHERE position_id=:position_id
                         ORDER BY occurred_at, broker_deal_id
@@ -298,7 +331,7 @@ class Day33PerformanceLedgerService:
                     {"position_id": row["id"]},
                 ).mappings().all()
                 outcome = self._derive_outcome(session, row, deal_rows)
-                session.execute(
+                persisted = session.execute(
                     text(
                         """
                         INSERT INTO performance_trade_outcomes (
@@ -334,10 +367,16 @@ class Day33PerformanceLedgerService:
                             broker_deal_count=EXCLUDED.broker_deal_count,
                             source_digest=EXCLUDED.source_digest,
                             derived_at=EXCLUDED.derived_at
+                        WHERE performance_trade_outcomes.status NOT IN ('won','lost','breakeven')
+                        RETURNING position_id
                         """
                     ),
                     outcome,
                 )
+                # Automatic sync may finish an open outcome, never rewrite a final
+                # historical financial result or its position mirror on rollout.
+                if persisted.first() is None:
+                    continue
                 if outcome["cash_pnl"] is not None or outcome["exit_price"] is not None:
                     session.execute(
                         text(
@@ -512,7 +551,9 @@ class Day33PerformanceLedgerService:
         balance = payload.get("balance")
         credit = payload.get("credit") or 0
         equity = payload.get("equity")
-        currency = str(payload.get("currency") or "USD")
+        currency = str(payload.get("currency") or "").strip()
+        if not currency:
+            raise Day33LedgerError("broker_account_currency_unavailable")
         if balance is None or equity is None:
             return
         effective_balance = _d(balance) + _d(credit)
@@ -611,12 +652,14 @@ class Day33PerformanceLedgerService:
         exit_price = self._weighted_price(exit_deals) or (Decimal(str(row["exit_price"])) if row["exit_price"] is not None else None)
         entry_volume = sum((_d(d["volume"]) for d in entry_deals), Decimal("0"))
         exit_volume = sum((_d(d["volume"]) for d in exit_deals), Decimal("0"))
-        broker_complete = bool(exit_deals) and (entry_volume == 0 or exit_volume + Decimal("0.00000001") >= entry_volume)
+        broker_complete = bool(exit_deals) and entry_volume > 0 and exit_volume + Decimal("0.00000001") >= entry_volume and not any(str(d["entry_type"]) == "DEAL_ENTRY_INOUT" for d in deals)
         cash = None
         if broker_complete:
-            cash = _money(sum((_d(d["profit"]) + _d(d["commission"]) + _d(d["swap"]) for d in deals), Decimal("0")))
+            cash = _money(sum((_broker_deal_cash(d) for d in deals), Decimal("0")))
 
         status = "open" if str(row["status"]) == "open" else "closed_unknown"
+        if entry_volume > exit_volume:
+            status = "open"
         if str(row["status"]) == "planned" and row["broker_order_id"] and not row["broker_position_id"]:
             status = "pending"
         if broker_complete and cash is not None:
@@ -649,18 +692,19 @@ class Day33PerformanceLedgerService:
                 model_return = _pct(model_pnl / MODEL_BALANCE * Decimal("100"))
 
         return_percent = None
-        if cash is not None and row["opened_at"] is not None:
+        accounts={d.get("mt5_account_id") for d in deals if d.get("mt5_account_id") is not None}
+        if cash is not None and row["opened_at"] is not None and len(accounts)==1:
             baseline = session.execute(
                 text(
                     """
                     SELECT balance
                     FROM performance_account_snapshots
-                    WHERE user_id=:user_id AND captured_at<=:opened_at
+                    WHERE user_id=:user_id AND mt5_account_id=:account_id AND captured_at<=:opened_at
                     ORDER BY captured_at DESC
                     LIMIT 1
                     """
                 ),
-                {"user_id": row["user_id"], "opened_at": row["opened_at"]},
+                {"user_id": row["user_id"], "opened_at": row["opened_at"], "account_id": next(iter(accounts))},
             ).scalar_one_or_none()
             if baseline is not None and _d(baseline) > 0:
                 return_percent = _pct(cash / _d(baseline) * Decimal("100"))
@@ -675,6 +719,7 @@ class Day33PerformanceLedgerService:
                 "profit": str(d["profit"]),
                 "commission": str(d["commission"]),
                 "swap": str(d["swap"]),
+                "fee": str(_broker_deal_fee(d)),
                 "time": _utc(d["occurred_at"]).isoformat(),
             }
             for d in deals

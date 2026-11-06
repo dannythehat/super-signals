@@ -77,6 +77,13 @@ class PublicDailyPnlResponse(BaseModel):
     opening_balance: float | None = None
     closing_balance: float | None = None
     running: bool = False
+    realised_pnl: float | None = None
+    floating_pnl_change: float | None = None
+    cash_movement: float | None = None
+    credit_movement: float | None = None
+    charges_complete: bool | None = None
+    reconciliation_gap: float | None = None
+    currency: str | None = None
 
 
 class PublicTradeResponse(BaseModel):
@@ -456,6 +463,13 @@ def _public_daily(service: Day33PerformanceLedgerServiceV2, user_id: UUID) -> tu
                     opening_balance=round(float(account_day.opening_value), 2),
                     closing_balance=round(float(account_day.closing_value), 2),
                     running=day == current_day,
+                    realised_pnl=float(account_day.realised_pnl),
+                    floating_pnl_change=float(account_day.floating_pnl_change),
+                    cash_movement=float(account_day.cash_movement),
+                    credit_movement=float(account_day.credit_movement),
+                    reconciliation_gap=float(account_day.reconciliation_gap),
+                    currency=account_day.currency,
+                    charges_complete=account_day.charges_complete,
                 )
             )
         else:
@@ -878,6 +892,13 @@ def public_performance_calendar(
             opening_balance=round(float(item.opening_value), 2),
             closing_balance=round(float(item.closing_value), 2),
             running=item.day == current_day,
+            realised_pnl=float(item.realised_pnl),
+            floating_pnl_change=float(item.floating_pnl_change),
+            cash_movement=float(item.cash_movement),
+            credit_movement=float(item.credit_movement),
+            reconciliation_gap=float(item.reconciliation_gap),
+            currency=item.currency,
+            charges_complete=item.charges_complete,
         )
         for item in account_days
     )

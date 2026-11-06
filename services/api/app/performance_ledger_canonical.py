@@ -27,6 +27,9 @@ from app.performance_ledger_day33 import (
     Day33LedgerError,
     Day33SyncResult,
     _d,
+    _broker_deal_cash,
+    _broker_deal_fee,
+    TRADING_DEAL_TYPES,
     _parse_time,
     trader_stream_for,
 )
@@ -416,93 +419,57 @@ class CanonicalPerformanceLedgerService(Day33PerformanceLedgerServiceV2):
         return rows
 
     def read_account_reconciliation(
-        self,
-        user_id: UUID,
-        *,
-        start_time: datetime,
-        end_time: datetime,
-    ) -> dict[str, Decimal | bool | None]:
+        self, user_id: UUID, *, start_time: datetime, end_time: datetime,
+        mt5_account_id: UUID | None = None,
+    ) -> dict[str, Any]:
+        """Read-only native-account reconciliation; never pools accounts or currencies."""
+        params = dict(user_id=user_id, start_time=start_time, end_time=end_time, account_id=mt5_account_id)
+        unavailable = dict(opening_balance=None, closing_balance=None, balance_change=None,
+                           trading_cash=None, non_trade_cash=None, reconciliation_gap=None, reconciled=False)
         with self._session_factory() as session:
-            first = session.execute(
-                text(
-                    """
-                    SELECT balance,captured_at
-                    FROM performance_account_snapshots
-                    WHERE user_id=:user_id
-                      AND captured_at>=:start_time
-                      AND captured_at<:end_time
-                    ORDER BY captured_at ASC
-                    LIMIT 1
-                    """
-                ),
-                {"user_id": user_id, "start_time": start_time, "end_time": end_time},
-            ).mappings().first()
-            last = session.execute(
-                text(
-                    """
-                    SELECT balance,captured_at
-                    FROM performance_account_snapshots
-                    WHERE user_id=:user_id
-                      AND captured_at>=:start_time
-                      AND captured_at<:end_time
-                    ORDER BY captured_at DESC
-                    LIMIT 1
-                    """
-                ),
-                {"user_id": user_id, "start_time": start_time, "end_time": end_time},
-            ).mappings().first()
-            if first is None or last is None or first["captured_at"] == last["captured_at"]:
-                return {
-                    "opening_balance": None,
-                    "closing_balance": None,
-                    "balance_change": None,
-                    "trading_cash": Decimal("0"),
-                    "non_trade_cash": Decimal("0"),
-                    "reconciliation_gap": None,
-                    "reconciled": False,
-                }
-            deal_row = session.execute(
-                text(
-                    """
-                    SELECT
-                        COALESCE(SUM(profit+commission+swap) FILTER (
-                            WHERE broker_position_id IS NOT NULL
-                               OR symbol IS NOT NULL
-                               OR UPPER(COALESCE(entry_type,'')) LIKE 'DEAL_ENTRY_%'
-                        ),0) AS trading_cash,
-                        COALESCE(SUM(profit+commission+swap) FILTER (
-                            WHERE broker_position_id IS NULL
-                              AND symbol IS NULL
-                              AND UPPER(COALESCE(entry_type,'')) NOT LIKE 'DEAL_ENTRY_%'
-                        ),0) AS non_trade_cash,
-                        COALESCE(SUM(profit+commission+swap),0) AS all_cash
-                    FROM broker_deals
-                    WHERE user_id=:user_id
-                      AND occurred_at>:first_at
-                      AND occurred_at<=:last_at
-                    """
-                ),
-                {
-                    "user_id": user_id,
-                    "first_at": first["captured_at"],
-                    "last_at": last["captured_at"],
-                },
-            ).mappings().one()
-        opening = _d(first["balance"])
-        closing = _d(last["balance"])
-        movement = closing - opening
-        trading = _d(deal_row["trading_cash"])
-        non_trade = _d(deal_row["non_trade_cash"])
-        gap = movement - _d(deal_row["all_cash"])
-        return {
-            "opening_balance": opening,
-            "closing_balance": closing,
-            "balance_change": movement,
-            "trading_cash": trading,
-            "non_trade_cash": non_trade,
-            "reconciliation_gap": gap,
-            "reconciled": abs(gap) <= Decimal("0.01"),
-        }
+            snapshots = session.execute(text("""
+                SELECT mt5_account_id,currency,balance,captured_at
+                FROM performance_account_snapshots
+                WHERE user_id=:user_id AND captured_at>=:start_time AND captured_at<:end_time
+                  AND (CAST(:account_id AS uuid) IS NULL OR mt5_account_id=CAST(:account_id AS uuid))
+                ORDER BY captured_at
+            """), params).mappings().all()
+            identities = {(r['mt5_account_id'],r['currency']) for r in snapshots}
+            if len(identities) != 1:
+                return dict(unavailable, reason='account_or_currency_scope_unavailable')
+            first,last = snapshots[0],snapshots[-1]
+            if first['captured_at'] == last['captured_at']:
+                return dict(unavailable, reason='insufficient_snapshots')
+            deals = session.execute(text("""
+                SELECT deal_type,profit,commission,swap,raw_payload,broker_position_id
+                FROM broker_deals WHERE user_id=:user_id AND mt5_account_id=:account_id
+                  AND occurred_at>:first_at AND occurred_at<=:last_at
+                ORDER BY occurred_at,broker_deal_id
+            """), dict(user_id=user_id,account_id=first['mt5_account_id'],
+                       first_at=first['captured_at'],last_at=last['captured_at'])).mappings().all()
+        trading = capital = credit = other = Decimal('0')
+        missing_fee = 0
+        for deal in deals:
+            cash = _broker_deal_cash(deal)
+            typ = str(deal['deal_type']).upper()
+            if typ in TRADING_DEAL_TYPES:
+                trading += cash
+            elif typ == 'DEAL_TYPE_BALANCE':
+                capital += cash
+            elif typ == 'DEAL_TYPE_CREDIT':
+                credit += cash
+            else:
+                other += cash
+            missing_fee += _broker_deal_fee(deal) is None
+        opening,closing = _d(first['balance']),_d(last['balance'])
+        gap = closing-opening-trading-capital-other
+        return dict(opening_balance=opening,closing_balance=closing,balance_change=closing-opening,
+                    trading_cash=trading,non_trade_cash=capital+other,cash_movement=capital,
+                    credit_movement=credit,unclassified_cash=other,reconciliation_gap=gap,
+                    currency=first['currency'],mt5_account_id=first['mt5_account_id'],
+                    missing_fee_evidence=missing_fee,charges_complete=missing_fee==0,
+                    reconciled=abs(gap)<=Decimal('0.01'),
+                    evidence_complete=missing_fee==0 and other==0)
 
 
 __all__ = ["CanonicalPerformanceLedgerService"]
