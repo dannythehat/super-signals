@@ -464,7 +464,7 @@ class CanonicalPerformanceLedgerService(Day33PerformanceLedgerServiceV2):
         opening,closing = _d(first['balance']),_d(last['balance'])
         gap = closing-opening-trading-capital-other
         return dict(opening_balance=opening,closing_balance=closing,balance_change=closing-opening,
-                    trading_cash=trading,non_trade_cash=capital+credit+other,cash_movement=capital,
+                    trading_cash=trading,non_trade_cash=capital+other,cash_movement=capital,
                     credit_movement=credit,unclassified_cash=other,reconciliation_gap=gap,
                     currency=first['currency'],mt5_account_id=first['mt5_account_id'],
                     missing_fee_evidence=missing_fee,charges_complete=missing_fee==0,

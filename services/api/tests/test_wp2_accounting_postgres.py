@@ -107,6 +107,16 @@ def test_daily_and_reconciliation_sql_preserve_cash_currency_and_floating(ledger
         mt5_account_id=account,
     )
     assert r["trading_cash"] == 44 and r["cash_movement"] == 800 and r["reconciled"]
+    # Broker credit changes equity, not trading P&L or the cash balance.
+    insert_deal(session, user, account, "4", "DEAL_TYPE_CREDIT", 20)
+    session.execute(
+        text("INSERT INTO performance_account_snapshots VALUES (:u,:a,'USC',10844,10874,:t)"),
+        dict(u=user, a=account, t=datetime(2026, 11, 6, 4, 1, tzinfo=UTC)),
+    )
+    credited = account_value_days(session, user, now=datetime(2026, 11, 6, 4, 1, tzinfo=UTC))[-1]
+    assert (
+        credited.pnl == 54 and credited.credit_movement == 20 and credited.reconciliation_gap == 0
+    )
     # A second currency/account cannot silently become a combined daily portfolio.
     session.execute(
         text("INSERT INTO performance_account_snapshots VALUES (:u,:a,'USD',500,500,:t)"),
