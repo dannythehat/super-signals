@@ -7,11 +7,14 @@ permissions:
 jobs:
   bridge:
     runs-on: windows-latest
+    strategy:
+      matrix:
+        python: ['3.11', '3.13']
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
-          python-version: '3.13'
+          python-version: '${{ matrix.python }}'
       - run: python -m pip install httpx
       - run: python -m unittest discover -s services/local_mt5_bridge/tests -v
       - shell: pwsh
