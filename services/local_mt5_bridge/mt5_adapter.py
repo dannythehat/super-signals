@@ -314,7 +314,11 @@ class Mt5Adapter:
                 raise LocalMt5Error("local_bridge_trade_check_rejected", message)
         # Re-check even after order_check: a GUI operator may switch accounts.
         self._assert_expected_account()
-        result = self.mt5.order_send(request)
+        try:
+            result = self.mt5.order_send(request)
+        except Exception as exc:
+            # Once submission starts, an exception is not proof of nonexecution.
+            raise LocalMt5Error("local_bridge_trade_outcome_unknown") from exc
         if result is None:
             raise LocalMt5Error("local_bridge_trade_result_missing", str(self.mt5.last_error()))
         code = int(result.retcode)

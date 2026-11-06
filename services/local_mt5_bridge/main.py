@@ -171,6 +171,13 @@ class BridgeWorker:
         )
         while True:
             try:
+                # Probe this adapter only. Cached identity is not connectivity.
+                try:
+                    self.mt5._assert_expected_account()
+                except LocalMt5Error:
+                    self.mt5.close()
+                    self.mt5.connect()
+                self._broker_health = "ready"
                 command = self._claim()
                 state = getattr(self, "_broker_health", "ready")
                 self._health(state, progress=True)
@@ -180,6 +187,10 @@ class BridgeWorker:
                 self._process(command)
             except KeyboardInterrupt:
                 return
+            except LocalMt5Error as exc:
+                self._broker_health = "broker_unavailable"
+                self._health("disconnected", error=exc.code)
+                time.sleep(5.0)
             except httpx.HTTPError as exc:
                 self._health("api_unavailable", error=type(exc).__name__)
                 LOG.warning("Render connection unavailable: %s", type(exc).__name__)
@@ -246,14 +257,16 @@ class BridgeWorker:
             self._health("broker_unavailable", error=exc.code, progress=True)
             LOG.warning("MT5 command failed id=%s code=%s", command_id, exc.code)
             completion = {
-                "status": "failed",
+                "status": "ambiguous" if exc.code in {
+                    "local_bridge_trade_result_missing", "local_bridge_trade_outcome_unknown"
+                } else "failed",
                 "error_code": exc.code,
                 "error_message": str(exc),
             }
         except Exception as exc:
             LOG.exception("MT5 command crashed id=%s", command_id)
             completion = {
-                "status": "failed",
+                "status": "ambiguous" if command["operation"] == "trade" else "failed",
                 "error_code": "local_bridge_command_failed",
                 "error_message": type(exc).__name__,
             }

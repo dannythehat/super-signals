@@ -58,3 +58,26 @@ class Recovery(unittest.TestCase):
             "broker_unavailable", error="local_bridge_mt5_read_failed", progress=True
         )
         self.assertEqual(w._complete.call_args.kwargs["status"], "failed")
+
+    def test_unknown_submission_is_ambiguous_and_never_executed_twice(self):
+        w=self.worker();del w._process
+        w.journal=Mock();w.journal.begin.return_value=('new',None);w._complete=Mock()
+        w.mt5.execute.side_effect=LocalMt5Error('local_bridge_trade_result_missing')
+        command={'id':'fixture','account_id':'fixture','operation':'trade'}
+        w._process(command)
+        saved=w._complete.call_args.kwargs
+        self.assertEqual(saved['status'],'ambiguous')
+        w.journal.begin.return_value=('completed',saved)
+        w._process(command)
+        w.mt5.execute.assert_called_once()
+
+    def test_runtime_disconnect_recovers_before_claiming_any_command(self):
+        w=self.worker()
+        w.mt5._assert_expected_account.side_effect=[LocalMt5Error('ipc'),KeyboardInterrupt]
+        w.mt5.connect.side_effect=[None,LocalMt5Error('ipc')]
+        w._claim=Mock()
+        with patch('local_mt5_bridge.main.time.sleep'):
+            w.run()
+        w._claim.assert_not_called()
+        w.mt5.close.assert_called_once()
+        w._health.assert_any_call('disconnected',error='ipc')
