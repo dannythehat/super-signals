@@ -44,6 +44,7 @@ from sqlalchemy import text
 from sqlalchemy.orm import Session, sessionmaker
 
 from app.models import AuditEvent
+from app.performance_ledger_day33 import BROKER_FEE_SQL
 
 logger = logging.getLogger(__name__)
 
@@ -224,7 +225,7 @@ class BrokerFillSettlementService:
         with self._session_factory() as session:
             row = session.execute(
                 text(
-                    """
+                    f"""
                     SELECT
                         COALESCE(SUM(volume) FILTER (WHERE entry_type=:entry_type),0)
                             AS entry_volume,
@@ -239,8 +240,8 @@ class BrokerFillSettlementService:
                         SUM(price*volume) FILTER (WHERE entry_type=ANY(:exit_types))
                             AS exit_notional,
                         COALESCE(SUM(
-                            COALESCE(profit,0)+COALESCE(commission,0)+COALESCE(swap,0)
-                        ) FILTER (WHERE entry_type=ANY(:exit_types)),0) AS realised_cash
+                            COALESCE(profit,0)+COALESCE(commission,0)+COALESCE(swap,0) + ({BROKER_FEE_SQL})
+                        ) FILTER (WHERE entry_type=:entry_type OR entry_type=ANY(:exit_types)),0) AS realised_cash
                     FROM broker_deals
                     WHERE mt5_account_id=:mt5_account_id
                       AND broker_position_id=:broker_position_id

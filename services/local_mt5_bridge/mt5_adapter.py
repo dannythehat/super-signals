@@ -419,6 +419,11 @@ class Mt5Adapter:
             self.mt5.DEAL_TYPE_BALANCE: "DEAL_TYPE_BALANCE",
             self.mt5.DEAL_TYPE_CREDIT: "DEAL_TYPE_CREDIT",
         }
+        for number, name in ((4,"CHARGE"),(5,"CORRECTION"),(6,"BONUS"),(7,"COMMISSION"),
+                             (8,"COMMISSION_DAILY"),(9,"COMMISSION_MONTHLY"),
+                             (10,"COMMISSION_AGENT_DAILY"),(11,"COMMISSION_AGENT_MONTHLY"),
+                             (12,"INTEREST"),(17,"TAX")):
+            type_names[getattr(self.mt5,"DEAL_TYPE_" + name,number)] = "DEAL_TYPE_" + name
         return {
             "id": str(item.ticket),
             "orderId": str(item.order),
@@ -431,6 +436,7 @@ class Mt5Adapter:
             "profit": item.profit,
             "commission": item.commission,
             "swap": item.swap,
+            "fee": getattr(item, "fee", None),
             "time": _time(item.time),
             "clientId": item.comment or None,
             "reason": reason_names.get(item.reason, str(item.reason)),
