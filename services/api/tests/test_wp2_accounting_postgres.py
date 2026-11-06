@@ -165,7 +165,7 @@ def test_automatic_sync_preserves_final_historical_financial_result(ledger):
     from app.performance_ledger_day33 import Day33PerformanceLedgerService
 
     session, user, account = ledger
-    session.execute(text("ALTER TABLE broker_deals ADD COLUMN position_id uuid"))
+    session.execute(text("ALTER TABLE broker_deals ADD COLUMN position_id uuid, ADD COLUMN symbol text"))
     fields = "position_id user_id signal_id source_id trader_stream symbol side status opened_at closed_at entry_price exit_price volume cash_pnl return_percent net_pips pip_size model_500_pnl model_500_return_percent planned_risk_percent close_reason broker_deal_count source_digest derived_at".split()
     uuids = {"position_id", "user_id", "signal_id", "source_id"}
     numeric = {
