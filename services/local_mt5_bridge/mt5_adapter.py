@@ -71,6 +71,9 @@ class Mt5Adapter:
 
     def _assert_expected_account(self) -> None:
         """Fail closed if the terminal switched accounts or broker servers."""
+        terminal = self.mt5.terminal_info()
+        if terminal is None or not getattr(terminal, "connected", False):
+            raise LocalMt5Error("local_bridge_mt5_disconnected")
         account = self.mt5.account_info()
         if (
             account is None
