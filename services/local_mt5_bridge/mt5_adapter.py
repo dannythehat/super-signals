@@ -128,38 +128,36 @@ class Mt5Adapter:
         }
 
     def _op_read_positions(self, _: dict[str, Any]) -> list[dict[str, Any]]:
-        return [self._position(item) for item in (self.mt5.positions_get() or ())]
+        return [self._position(item) for item in self._read_rows(self.mt5.positions_get())]
 
     def _op_read_orders(self, _: dict[str, Any]) -> list[dict[str, Any]]:
-        return [self._order(item) for item in (self.mt5.orders_get() or ())]
+        return [self._order(item) for item in self._read_rows(self.mt5.orders_get())]
 
     def _op_read_history_orders_by_ticket(self, payload: dict[str, Any]) -> list[dict[str, Any]]:
-        rows = self.mt5.history_orders_get(ticket=int(payload["order_id"])) or ()
+        rows = self._read_rows(self.mt5.history_orders_get(ticket=int(payload["order_id"])))
         return [self._order(item) for item in rows]
 
     def _op_read_history_orders_by_time_range(
         self, payload: dict[str, Any]
     ) -> list[dict[str, Any]]:
-        rows = (
+        rows = self._read_rows(
             self.mt5.history_orders_get(
                 self._datetime(payload["start_time"]), self._datetime(payload["end_time"])
             )
-            or ()
         )
         start = int(payload.get("offset", 0))
         limit = int(payload.get("limit", 1000))
         return [self._order(item) for item in rows[start : start + limit]]
 
     def _op_read_deals_by_position(self, payload: dict[str, Any]) -> list[dict[str, Any]]:
-        rows = self.mt5.history_deals_get(position=int(payload["position_id"])) or ()
+        rows = self._read_rows(self.mt5.history_deals_get(position=int(payload["position_id"])))
         return [self._deal(item) for item in rows]
 
     def _op_read_deals_by_time_range(self, payload: dict[str, Any]) -> list[dict[str, Any]]:
-        rows = (
+        rows = self._read_rows(
             self.mt5.history_deals_get(
                 self._datetime(payload["start_time"]), self._datetime(payload["end_time"])
             )
-            or ()
         )
         start = int(payload.get("offset", 0))
         limit = int(payload.get("limit", 1000))
@@ -442,6 +440,11 @@ class Mt5Adapter:
     def _datetime(value: Any) -> datetime:
         parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
         return parsed if parsed.tzinfo else parsed.replace(tzinfo=UTC)
+
+    def _read_rows(self, rows: Any) -> Any:
+        if rows is None:
+            raise LocalMt5Error("local_bridge_mt5_read_failed")
+        return rows
 
 
 __all__ = ["LocalMt5Error", "Mt5Adapter"]

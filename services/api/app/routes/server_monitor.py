@@ -71,6 +71,14 @@ def _account_snapshot(
                 "take_profit": pos.get("takeProfit"),
                 "client_id": str(pos.get("clientId") or ""),
             })
+    def freshness(operation: str) -> dict[str, Any]:
+        item = record(operation)
+        at = (item.get('completed_at') or item.get('created_at')) if item else None
+        age = (now - at).total_seconds() if at else None
+        return {'status': 'unavailable' if age is None else
+                'fresh' if 0 <= age <= 90 else 'stale',
+                'observed_at': at, 'age_seconds': age}
+
     position_record = record("read_positions")
     account_record = record("read_account_information")
     return {
@@ -87,7 +95,13 @@ def _account_snapshot(
         "server": identity.get("server") if identity else None,
         "account_updated_at": account_record["created_at"] if account_record else None,
         "positions_updated_at": position_record["created_at"] if position_record else None,
-        "positions": clean_positions,
+        "positions": clean_positions if positions is not None else None,
+        "components": {op: freshness(op) for op in sorted(_OPERATIONS)},
+        "broker_state": ('unavailable' if seen_age is None else
+                         'disconnected' if seen_age > 90 else
+                         'fresh' if all(freshness(op)['status'] == 'fresh'
+                                        for op in ('read_positions','read_account_information'))
+                         else 'stale'),
         "gold": {
             "symbol": quote.get("symbol"),
             "bid": quote.get("bid"),
@@ -110,7 +124,7 @@ def read_server_monitor(response: Response, identity: OwnerIdentity) -> dict[str
         # Narrow bounded read using the existing (profile,status,created_at)
         # index. This uses snapshots from workers, never triggers an MT5 read.
         rows = session.execute(text("""
-            SELECT profile, operation, result, created_at
+            SELECT profile, operation, result, created_at, completed_at
             FROM local_bridge_commands
             WHERE profile IN ('pu-prime','super-signals')
               AND status = 'succeeded'
@@ -143,5 +157,7 @@ def read_server_monitor(response: Response, identity: OwnerIdentity) -> dict[str
             "forward_only_since": pu_mirror_effective_since(),
             "target_login": "36394935",
         },
+        "components": {p: _account_snapshot(p, latest, workers, now)["broker_state"]
+                       for p in _PROFILES},
         "source": "Latest successful MT5 worker snapshots; read only",
     }
