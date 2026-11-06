@@ -18,6 +18,15 @@ jobs:
         run: ./services/local_mt5_bridge/tests/test_watchdog_identity.ps1
   api:
     runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:18
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: super_signals_test
+        ports: ['5432:5432']
+        options: --health-cmd "pg_isready -U postgres -d super_signals_test" --health-interval 5s --health-timeout 5s --health-retries 12
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -27,4 +36,5 @@ jobs:
       - name: Offline API regression tests
         env:
           PYTHONPATH: services/api
-        run: python -m pytest -q services/api/tests/test_health.py services/api/tests/test_server_monitor_freshness.py services/api/tests/test_local_mt5_bridge.py services/api/tests/test_pu_bridge_scope.py
+          DATABASE_URL: postgresql+psycopg://postgres:postgres@localhost:5432/super_signals_test
+        run: python -m pytest -q services/api/tests/test_health.py services/api/tests/test_server_monitor_freshness.py services/api/tests/test_local_mt5_bridge.py services/api/tests/test_pu_bridge_scope.py services/api/tests/test_wp1_release_postgres.py

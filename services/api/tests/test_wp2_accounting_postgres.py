@@ -159,3 +159,64 @@ def test_settlement_sql_includes_entry_fees_and_every_partial_exit(ledger):
     svc._session_factory = lambda: nullcontext(session)
     r = svc._evidence(mt5_account_id=account, broker_position_id="fixture-position")
     assert r.entry_volume == D(".10") and r.exit_volume == D(".10") and r.realised_cash == 92
+
+
+def test_automatic_sync_preserves_final_historical_financial_result(ledger):
+    from app.performance_ledger_day33 import Day33PerformanceLedgerService
+
+    session, user, account = ledger
+    session.execute(text("ALTER TABLE broker_deals ADD COLUMN position_id uuid"))
+    fields = "position_id user_id signal_id source_id trader_stream symbol side status opened_at closed_at entry_price exit_price volume cash_pnl return_percent net_pips pip_size model_500_pnl model_500_return_percent planned_risk_percent close_reason broker_deal_count source_digest derived_at".split()
+    uuids = {"position_id", "user_id", "signal_id", "source_id"}
+    numeric = {
+        "entry_price",
+        "exit_price",
+        "volume",
+        "cash_pnl",
+        "return_percent",
+        "net_pips",
+        "pip_size",
+        "model_500_pnl",
+        "model_500_return_percent",
+        "planned_risk_percent",
+    }
+    columns = []
+    for f in fields:
+        typ = (
+            "uuid"
+            if f in uuids
+            else "numeric"
+            if f in numeric
+            else "timestamptz"
+            if f in ("opened_at", "closed_at", "derived_at")
+            else "integer"
+            if f == "broker_deal_count"
+            else "text"
+        )
+        columns.append(f + " " + typ + (" PRIMARY KEY" if f == "position_id" else ""))
+    session.execute(
+        text(
+            "CREATE TEMP TABLE performance_trade_outcomes ("
+            + ",".join(columns)
+            + ") ON COMMIT DROP"
+        )
+    )
+    pid = uuid4()
+    session.execute(
+        text(
+            "INSERT INTO performance_trade_outcomes(position_id,status,cash_pnl,source_digest) VALUES (:p,'won',10,'original-evidence')"
+        ),
+        {"p": pid},
+    )
+    svc = object.__new__(Day33PerformanceLedgerService)
+    svc._session_factory = lambda: nullcontext(session)
+    svc._mapped_positions = lambda user: [{"id": pid}]
+    candidate = {f: None for f in fields}
+    candidate.update(position_id=pid, status="won", cash_pnl=9, source_digest="new-fee-basis")
+    svc._derive_outcome = lambda *a: candidate
+    assert svc.rebuild_outcomes(user) == 0
+    row = session.execute(
+        text("SELECT cash_pnl,source_digest FROM performance_trade_outcomes WHERE position_id=:p"),
+        {"p": pid},
+    ).one()
+    assert row == (10, "original-evidence")

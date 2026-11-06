@@ -322,7 +322,7 @@ class Day33PerformanceLedgerService:
                     text(
                         """
                         SELECT broker_deal_id, deal_type, entry_type, symbol, volume, price,
-                               profit, commission, swap, occurred_at, raw_payload
+                               profit, commission, swap, occurred_at, raw_payload, mt5_account_id
                         FROM broker_deals
                         WHERE position_id=:position_id
                         ORDER BY occurred_at, broker_deal_id
@@ -331,7 +331,7 @@ class Day33PerformanceLedgerService:
                     {"position_id": row["id"]},
                 ).mappings().all()
                 outcome = self._derive_outcome(session, row, deal_rows)
-                session.execute(
+                persisted = session.execute(
                     text(
                         """
                         INSERT INTO performance_trade_outcomes (
@@ -367,10 +367,16 @@ class Day33PerformanceLedgerService:
                             broker_deal_count=EXCLUDED.broker_deal_count,
                             source_digest=EXCLUDED.source_digest,
                             derived_at=EXCLUDED.derived_at
+                        WHERE performance_trade_outcomes.status NOT IN ('won','lost','breakeven')
+                        RETURNING position_id
                         """
                     ),
                     outcome,
                 )
+                # Automatic sync may finish an open outcome, never rewrite a final
+                # historical financial result or its position mirror on rollout.
+                if persisted.first() is None:
+                    continue
                 if outcome["cash_pnl"] is not None or outcome["exit_price"] is not None:
                     session.execute(
                         text(
@@ -686,18 +692,19 @@ class Day33PerformanceLedgerService:
                 model_return = _pct(model_pnl / MODEL_BALANCE * Decimal("100"))
 
         return_percent = None
-        if cash is not None and row["opened_at"] is not None:
+        accounts={d.get("mt5_account_id") for d in deals if d.get("mt5_account_id") is not None}
+        if cash is not None and row["opened_at"] is not None and len(accounts)==1:
             baseline = session.execute(
                 text(
                     """
                     SELECT balance
                     FROM performance_account_snapshots
-                    WHERE user_id=:user_id AND captured_at<=:opened_at
+                    WHERE user_id=:user_id AND mt5_account_id=:account_id AND captured_at<=:opened_at
                     ORDER BY captured_at DESC
                     LIMIT 1
                     """
                 ),
-                {"user_id": row["user_id"], "opened_at": row["opened_at"]},
+                {"user_id": row["user_id"], "opened_at": row["opened_at"], "account_id": next(iter(accounts))},
             ).scalar_one_or_none()
             if baseline is not None and _d(baseline) > 0:
                 return_percent = _pct(cash / _d(baseline) * Decimal("100"))
