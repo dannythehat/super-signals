@@ -1,6 +1,7 @@
 from decimal import Decimal
 
 from app.graceful_market_targets import original_target_risk, remaining_market_targets
+from app.risk_sizing_day24 import ApprovedProviderRisk
 
 
 def test_sell_keeps_tp2_and_tp3_after_tp1_is_crossed() -> None:
@@ -47,13 +48,15 @@ def test_invalid_stop_side_does_not_recover_trade() -> None:
     assert targets == ()
 
 
-def test_fx_risk_uses_one_percent_per_original_tp_number_after_compaction() -> None:
+def test_fx_risk_preserves_fraction_and_approval_marker_after_compaction() -> None:
     source = "FXTradingVision l Forex & Crypto Signals 🚀"
     for target_index in (1, 2, 3):
-        assert original_target_risk(
+        allocated = original_target_risk(
             source_name=source,
             side="SELL",
             original_position_count=3,
             original_target_index=target_index,
             selected_risk=Decimal("1"),
-        ) == Decimal("1")
+        )
+        assert isinstance(allocated, ApprovedProviderRisk)
+        assert allocated == Decimal("1") / Decimal("3")
