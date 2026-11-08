@@ -214,6 +214,10 @@ class PaperCriticalManagementService(Day27Mt5ManagementService):
                         if self._same_price(current_sl, desired_sl):
                             self._update_local_stop(item.id, desired_sl)
                             continue
+                        self._assert_stop_not_widened(
+                            broker=broker, current_stop=current_sl,
+                            desired_stop=desired_sl, side=side,
+                        )
                         await self._trade.modify_position(
                             token=token,
                             account_id=account.account_id,
