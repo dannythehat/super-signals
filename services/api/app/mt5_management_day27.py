@@ -177,6 +177,9 @@ class Day27Mt5ManagementService:
                         if self._same_price(current_sl, desired_sl):
                             self._update_local_stop(item.id, desired_sl)
                             continue
+                        self._assert_stop_not_widened(
+                            broker=broker, current_stop=current_sl, desired_stop=desired_sl,
+                        )
                         await self._trade.modify_position(
                             token=token,
                             account_id=account.account_id,
@@ -556,6 +559,32 @@ class Day27Mt5ManagementService:
         except (InvalidOperation, ValueError, TypeError):
             return None
         return parsed if parsed.is_finite() and parsed > 0 else None
+
+    @staticmethod
+    def _assert_stop_not_widened(
+        *, broker: dict[str, object], current_stop: Decimal | None,
+        desired_stop: Decimal, side: str | None = None,
+    ) -> None:
+        """Never increase stop-loss exposure after a GoldThinker entry.
+
+        The complete-signal risk cap is calculated at entry. Provider lifecycle
+        updates may only maintain or tighten protection, never increase it.
+        If broker direction or the current stop cannot be verified, fail closed.
+        """
+        if current_stop is None:
+            raise Day27ManagementError("day27_current_stop_unverified")
+        raw = str(
+            side or broker.get("type") or broker.get("positionType")
+            or broker.get("side") or ""
+        ).upper().strip()
+        if raw in {"POSITION_TYPE_BUY", "ORDER_TYPE_BUY", "BUY", "0"}:
+            if desired_stop < current_stop:
+                raise Day27ManagementError("day27_stop_widening_refused")
+        elif raw in {"POSITION_TYPE_SELL", "ORDER_TYPE_SELL", "SELL", "1"}:
+            if desired_stop > current_stop:
+                raise Day27ManagementError("day27_stop_widening_refused")
+        else:
+            raise Day27ManagementError("day27_broker_position_side_unverified")
 
     @staticmethod
     def _same_price(left: Decimal | None, right: Decimal | None) -> bool:
