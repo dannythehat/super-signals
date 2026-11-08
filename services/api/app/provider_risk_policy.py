@@ -1,14 +1,6 @@
-"""Single production source of truth for provider execution and risk policy.
-
-Only rules explicitly approved by the owner belong here. Historical audit rankings,
-old migration comments and provider-performance experiments must never alter live trade
-eligibility or risk. Production execution imports this module directly; no other module
-may invent a provider direction veto or a hidden TP risk ladder.
-
-Owner authority from 9 September 2026: every enabled TP/runner broker leg carries exactly
-1% planned risk. Entry sections distribute those target legs; they never multiply the
-risk budget. Four TP/runner legs therefore mean 4% planned signal risk, whether the
-provider supplied one entry or several entry sections.
+"""Canonical provider direction policy and strict one-percent PER COMPLETE SIGNAL risk.
+A complete signal includes all take-profit legs, runners and allocated entry sections.
+No provider can increase this risk by requesting extra targets or DOUBLE LOT.
 """
 
 from __future__ import annotations
@@ -17,14 +9,14 @@ from decimal import Decimal
 
 from app.risk_sizing_day24 import ApprovedProviderRisk
 
-POLICY_GENERATION = "owner-authority-2026-09-09-v2-one-percent-per-tp"
+POLICY_GENERATION = "owner-authority-2026-11-08-v3-one-percent-per-signal"
 
 
 def _approved(value: str) -> ApprovedProviderRisk:
     return ApprovedProviderRisk(value)
 
 
-_ONE_PERCENT_PER_TARGET = _approved("1")
+_ONE_PERCENT_PER_SIGNAL = Decimal("1")
 _DISABLED_PROFILE_RISK = Decimal("0")
 
 
@@ -86,7 +78,7 @@ def provider_side_enabled(*, source_name: str, side: str) -> bool:
 
 def provider_tp_limit(*, source_name: str, side: str) -> int | None:
     # Keep existing direction/target eligibility separate from risk. FX remains capped
-    # at its approved three targets; each target now carries the same global 1% risk.
+    # at its approved three targets; each target shares the same one-percent total signal budget.
     normalized_side = side.strip().upper()
     if _is_fxtradingvision(source_name=source_name) and normalized_side in {"BUY", "SELL"}:
         return 3
@@ -99,11 +91,10 @@ def provider_risk_profile(
     side: str,
     position_count: int,
 ) -> tuple[Decimal, ...] | None:
-    """Return the owner's global 1%-per-TP/runner allocation.
+    """Split one percent of the account across every TP/runner leg.
 
-    ``position_count`` is the executed target/runner leg count, not entry_count ×
-    target_count. Multiple entry sections only decide where those target legs are placed.
-    They must never turn four targets into eight percent of planned risk.
+    A provider with 1, 3 or 4 targets receives the SAME total risk budget.
+    Decimal rounding can leave an immaterial amount unused; it never rounds up.
     """
     if position_count < 1:
         raise ValueError("provider_position_count_invalid")
@@ -112,4 +103,5 @@ def provider_risk_profile(
     if not provider_side_enabled(source_name=source_name, side=side):
         return (_DISABLED_PROFILE_RISK,) * position_count
 
-    return (_ONE_PERCENT_PER_TARGET,) * position_count
+    per_leg = _ONE_PERCENT_PER_SIGNAL / Decimal(position_count)
+    return tuple(_approved(str(per_leg)) for _ in range(position_count))

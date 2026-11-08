@@ -107,7 +107,9 @@ def original_target_risk(
         position_count=original_position_count,
     )
     if profile is not None:
-        return Decimal(str(profile[original_target_index - 1]))
+        # Keep the ApprovedProviderRisk marker: a Decimal cast would reopen
+        # DOUBLE LOT and invalid fraction paths after target compaction.
+        return profile[original_target_index - 1]
     return target_risk_percent(selected_risk, original_target_index)
 
 

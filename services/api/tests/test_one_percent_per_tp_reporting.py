@@ -7,17 +7,17 @@ from app.risk_sizing_day24 import BrokerVolumeRules, Day24RiskSizer
 ROOT = Path(__file__).resolve().parents[1]
 
 
-def test_four_targets_are_four_percent_planned_total() -> None:
+def test_new_four_target_signals_are_one_percent_planned_total() -> None:
     profile = provider_risk_profile(
         source_name="Any Enabled Provider",
         side="BUY",
         position_count=4,
     )
     assert profile is not None
-    assert profile == (Decimal("1"),) * 4
+    assert profile == (Decimal("0.25"),) * 4
 
     result = Day24RiskSizer.size_profile(
-        balance=Decimal("2000"),
+        balance=Decimal("4000"),
         risk_percents=profile,
         signal_entry_price=Decimal("4390"),
         signal_stop_loss=Decimal("4380"),
@@ -27,8 +27,8 @@ def test_four_targets_are_four_percent_planned_total() -> None:
             minimum="0.01", maximum="100", step="0.01"
         ),
     )
-    assert result.total_risk_budget == Decimal("80")
-    assert result.total_risk_budget / result.balance * Decimal("100") == Decimal("4")
+    assert result.total_risk_budget == Decimal("40")
+    assert result.total_risk_budget / result.balance * Decimal("100") == Decimal("1")
 
 
 def test_reporting_normalizer_uses_stored_planned_risk_not_signal_multiplier() -> None:

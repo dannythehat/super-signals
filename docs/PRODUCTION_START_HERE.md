@@ -47,22 +47,21 @@ Current provider execution/risk rules live only in:
 
 `services/api/app/provider_risk_policy.py`
 
-Policy generation:
+Policy generation (proposed GoldThinker restart branch):
 
-`owner-authority-2026-09-09-v1`
+`owner-authority-2026-11-08-v3-one-percent-per-signal`
 
-Historical migrations, provider rankings, old tests and build notes cannot override this module.
+### GoldThinker launch gate (proposed, not yet deployed)
 
-### Current locked rules
-
-- **FXTradingVision — BUY:** TP1 5%, TP2 5%, TP3 1%.
-- **FXTradingVision — SELL:** TP1 5%, TP2 5%, TP3 1%.
-- **TIG’s Asia Trades — BUY:** enabled, 1% per atomic provider position/leg.
-- **TIG’s Asia Trades — SELL:** enabled, 1% per atomic provider position/leg.
-- **TIG:** no hidden direction veto and no historical TP cap.
-- Other provider-specific restrictions remain exactly as encoded in `provider_risk_policy.py` until the owner explicitly changes them.
-
-Any future provider/risk change must be made in this single policy module and protected by regression tests in the same change.
+- **One complete provider signal has a total stop-loss cash risk budget equal to 1% of the designated account value**, no matter how many TP positions or runners it creates.
+- Every TP/runner receives `1% / number_of_executed_legs`. Multiple entry sections allocate the legs, never multiply them.
+- An account of $1,000 may risk no more than $10 for the **entire** signal; an account of $50,000 no more than $500.
+- Each broker-valid volume is rounded down; if the broker minimum lot would exceed a leg allocation, **skip that trade rather than round up**.
+- Ignore provider `DOUBLE LOT` or "HIGH RISK" prompts for position-size escalation. Missing/invalid stops block entry.
+- Respect existing allowed provider directions and any existing TP eligibility, until a new verified performance review approves changes.
+- These rules are in the reviewed source branch only. Do NOT deploy before risk tests, current master MT5 identity, broker contract-size verification, and legacy-worker isolation are checked.
+- Historical performance and positions prior to this policy generation remain unmodified. Never rewrite historical trades to present them as if the new limit applied.
+- Execution via an independent VPS copier or third-party Social Trader Tools must be separately validated: this API policy does **not** automatically control those systems. Cross-account cent/standard scaling and subscriber sizing require their own safeguards.
 
 ## Telegram reliability invariants
 
