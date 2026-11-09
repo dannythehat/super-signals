@@ -1798,6 +1798,29 @@ class CanonicalTelegramPublisherManager(Day34CutoverTelegramPublisherManager):
             if value is not None
         }
 
+        # The reset demo master has its own MT5 positions, which are deliberately
+        # not part of the old canonical positions/financial ledger. Reserve public
+        # trade numbers for its recent broker-confirmed roots to prevent duplicate
+        # TRADE N labels when two owner signals arrive on the same trading day.
+        used.update(
+            int(value)
+            for value in session.execute(
+                text(
+                    """
+                    SELECT DISTINCT sig.member_trade_number
+                    FROM signals AS sig
+                    JOIN audit_events AS placed
+                      ON placed.entity_type='signal' AND placed.entity_id=sig.id
+                    WHERE placed.event_type='mt5.owner_demo_700207861_execution_success'
+                      AND placed.payload->>'master_login'='700207861'
+                      AND placed.created_at > now()-interval '24 hours'
+                      AND sig.member_trade_number IS NOT NULL
+                    """
+                )
+            ).scalars()
+            if value is not None
+        )
+
         # Restrict the allocation work to recent unnumbered signals and actual
         # active broker positions; old provider-signal archives are not candidates.
         # Preserve the existing broker-confirmed audit condition.
