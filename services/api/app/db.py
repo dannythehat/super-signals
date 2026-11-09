@@ -91,3 +91,40 @@ def get_db_session() -> Iterator[Session]:
         yield session
     finally:
         session.close()
+
+
+@lru_cache
+def get_owner_feed_engine() -> Engine:
+    """Independent, bounded read-only lane for the time-critical owner DEMO feed.
+
+    Slow canonical publisher, MetaAPI and old broker reconciliations must never
+    occupy all DB pool slots while a fresh signal is waiting. Same Postgres,
+    no extra database or ledger. PostgreSQL role is reused without mutation.
+    """
+    return create_engine(
+        get_settings().database_url,
+        pool_pre_ping=True,
+        pool_recycle=120,
+        pool_use_lifo=True,
+        pool_size=1,
+        max_overflow=1,
+        pool_timeout=2,
+        connect_args={
+            "connect_timeout": 3,
+            "application_name": "super-signals-owner-demo-feed",
+            "options": (
+                "-c statement_timeout=3500 "
+                "-c lock_timeout=750 "
+                "-c idle_in_transaction_session_timeout=6000 "
+                "-c default_transaction_read_only=on"
+            ),
+        },
+        future=True,
+    )
+
+
+@lru_cache
+def get_owner_feed_session_factory() -> sessionmaker[Session]:
+    return sessionmaker(
+        bind=get_owner_feed_engine(), autoflush=False, expire_on_commit=False
+    )

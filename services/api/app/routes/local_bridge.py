@@ -11,7 +11,7 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, Header, HTTPException, Response, status
 from pydantic import BaseModel, Field
 
-from app.db import get_session_factory
+from app.db import get_session_factory, get_owner_feed_session_factory
 from app.local_bridge_queue import LocalBridgeQueue
 from app.metaapi_gateway import MetaApiGatewayError
 from app.pu_broker_readiness import assess_broker_preflight
@@ -273,7 +273,7 @@ def owner_demo_700207861_feed(
         raise HTTPException(status_code=403, detail="bridge_token_required")
     from sqlalchemy import text as sql_text
 
-    with get_session_factory()() as session:
+    with get_owner_feed_session_factory()() as session:
         rows = session.execute(
             sql_text(
                 """
