@@ -26,7 +26,19 @@ def upgrade() -> None:
           AND symbol='XAUUSD'
         """
     )
+    # Canonical Telegram must reserve active owner trade references cheaply.
+    # Without this partial index it scans thousands of unrelated audit events
+    # every publisher poll, contributing to the original feed bottleneck.
+    op.execute(
+        """
+        CREATE INDEX IF NOT EXISTS ix_audit_owner_demo_placed_recent
+        ON audit_events (created_at DESC, entity_id)
+        WHERE entity_type='signal'
+          AND event_type='mt5.owner_demo_700207861_execution_success'
+        """
+    )
 
 
 def downgrade() -> None:
+    op.execute("DROP INDEX IF EXISTS ix_audit_owner_demo_placed_recent")
     op.execute("DROP INDEX IF EXISTS ix_signals_owner_demo_recent")
