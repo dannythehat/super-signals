@@ -269,8 +269,8 @@ def owner_demo_700207861_feed(
     their general site-wide trading status. No historical playback and no
     execution permissions are conferred by this endpoint.
     """
-    if authorization_scope != "legacy":
-        raise HTTPException(status_code=403, detail="legacy_bridge_token_required")
+    if authorization_scope not in {"legacy", "pu"}:
+        raise HTTPException(status_code=403, detail="bridge_token_required")
     from sqlalchemy import text as sql_text
 
     with get_session_factory()() as session:
