@@ -382,7 +382,21 @@ class TelegramPublisherManager:
                       ON pub.signal_id = sig.id
                      AND pub.publication_kind = 'signal_created'
                     WHERE pub.id IS NULL
-                    ON CONFLICT (signal_id, publication_kind) DO NOTHING
+                      AND sig.parser_status = 'accepted'
+                      AND sig.created_at >= now() - interval '90 seconds'
+                      AND sig.source_posted_at >= now() - interval '150 seconds'
+                      AND sig.provider_chat_id IN (
+                         -1001313672961, -1002176701424, -1001651583302,
+                         -1001588519179, -1002625307834, -1001649736978,
+                         -1001391285381, -1003368777331, -1002148698027,
+                         -1001957768371
+                      )
+                      AND EXISTS (
+                         SELECT 1 FROM sources AS src
+                         WHERE src.id = sig.source_id
+                           AND src.status IN ('testing', 'live')
+                      )
+                    ON CONFLICT DO NOTHING
                     """
                 )
             )
