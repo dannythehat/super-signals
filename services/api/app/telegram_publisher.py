@@ -8,6 +8,8 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
+import time
 from dataclasses import dataclass
 from decimal import Decimal
 from typing import Any
@@ -217,6 +219,7 @@ class TelegramPublisherManager:
         self._poll_seconds = poll_seconds
         self._task: asyncio.Task[None] | None = None
         self._stop_event = asyncio.Event()
+        self._last_error_log_monotonic = 0.0
 
     @property
     def configured(self) -> bool:
@@ -237,16 +240,27 @@ class TelegramPublisherManager:
 
     async def _run(self) -> None:
         while not self._stop_event.is_set():
+            phase = "connection"
             try:
                 connection = await asyncio.to_thread(self.check_connection)
                 if connection.minimum_permissions_ok and not connection.source_collision:
+                    phase = "seed"
                     await asyncio.to_thread(self._seed_missing_publications)
+                    phase = "claim"
                     attempt = await asyncio.to_thread(self._claim_next)
                     if attempt is not None:
+                        phase = "delivery"
                         await self._deliver(attempt)
-            except Exception:
-                # Publishing must never stop ingestion or application health.
-                pass
+            except Exception as exc:
+                # Do not let publishing failures affect ingestion or orders.
+                # Error class and stage only: never log Telegram credentials.
+                now = time.monotonic()
+                if now - self._last_error_log_monotonic >= 30:
+                    logging.getLogger(__name__).error(
+                        "telegram_publisher_cycle_failed phase=%s exception=%s",
+                        phase, type(exc).__name__,
+                    )
+                    self._last_error_log_monotonic = now
             try:
                 await asyncio.wait_for(self._stop_event.wait(), timeout=self._poll_seconds)
             except TimeoutError:
@@ -383,6 +397,9 @@ class TelegramPublisherManager:
                      AND pub.publication_kind = 'signal_created'
                     WHERE pub.id IS NULL
                       AND sig.parser_status = 'accepted'
+                      AND sig.entry_low IS NOT NULL
+                      AND sig.stop_loss IS NOT NULL
+                      AND sig.take_profits IS NOT NULL
                       AND sig.created_at >= now() - interval '90 seconds'
                       AND sig.source_posted_at >= now() - interval '150 seconds'
                       AND sig.provider_chat_id IN (
