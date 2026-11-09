@@ -41,6 +41,22 @@ from app.telegram_trade_ledger import (
 from app.trade_identity import public_trade_identity
 
 _PLACEMENT_EVENT = "mt5.day38_route_new_trade"
+_OWNER_DEMO_PLACEMENT_EVENT = "mt5.owner_demo_700207861_execution_success"
+
+
+def _confirmed_placement_sql(alias: str) -> str:
+    """Only confirmed canonical executions or authenticated PU Prime demo fills."""
+    return f"""(
+        ({alias}.event_type='{_PLACEMENT_EVENT}'
+         AND {alias}.payload->>'outcome'='executed')
+        OR
+        ({alias}.event_type='{_OWNER_DEMO_PLACEMENT_EVENT}'
+         AND {alias}.payload->>'master_login'='700207861'
+         AND {alias}.payload->>'magic'='2601001'
+         AND {alias}.payload->>'owner_demo_only'='true'
+         AND {alias}.payload->>'orders_submitted_by_this_endpoint'='false'
+         AND jsonb_array_length(COALESCE({alias}.payload->'broker_reported_deals','[]'::jsonb)) > 0)
+    )"""
 _MEMBER_EVENT_FRESHNESS = timedelta(minutes=5)
 _BROKER_SETTLEMENT_MAX_PUBLICATION_AGE = timedelta(minutes=30)
 SOFIA = ZoneInfo("Europe/Sofia")
@@ -1099,8 +1115,7 @@ class CanonicalTelegramPublisherManager(Day34CutoverTelegramPublisherManager):
                 FROM audit_events AS placed
                 WHERE placed.entity_type='signal'
                   AND placed.entity_id={alias}
-                  AND placed.event_type='{_PLACEMENT_EVENT}'
-                  AND placed.payload->>'outcome'='executed'
+                  AND {_confirmed_placement_sql('placed')}
                   AND placed.created_at>:fresh_after
             )
         """
@@ -1114,8 +1129,7 @@ class CanonicalTelegramPublisherManager(Day34CutoverTelegramPublisherManager):
                 FROM audit_events AS placed
                 WHERE placed.entity_type='signal'
                   AND placed.entity_id={alias}.signal_id
-                  AND placed.event_type='{_PLACEMENT_EVENT}'
-                  AND placed.payload->>'outcome'='executed'
+                  AND {_confirmed_placement_sql('placed')}
             )
         """
 
@@ -1146,8 +1160,7 @@ class CanonicalTelegramPublisherManager(Day34CutoverTelegramPublisherManager):
                 FROM audit_events AS placed
                 WHERE placed.entity_type='signal'
                   AND placed.entity_id={alias}.signal_id
-                  AND placed.event_type='{_PLACEMENT_EVENT}'
-                  AND placed.payload->>'outcome'='executed'
+                  AND {_confirmed_placement_sql('placed')}
                   AND {alias}.created_at>=placed.created_at
                   AND {alias}.created_at<=placed.created_at+INTERVAL '5 minutes'
             )
@@ -1814,10 +1827,7 @@ class CanonicalTelegramPublisherManager(Day34CutoverTelegramPublisherManager):
                       AND placed.entity_id=sig.id
                       AND (
                           placed.event_type='mt5.day26_execution_success'
-                          OR (
-                              placed.event_type='{_PLACEMENT_EVENT}'
-                              AND placed.payload->>'outcome'='executed'
-                          )
+                          OR {_confirmed_placement_sql('placed')}
                       )
                 )
                 ORDER BY sig.created_at,sig.id
@@ -2033,6 +2043,14 @@ class CanonicalTelegramPublisherManager(Day34CutoverTelegramPublisherManager):
                     SELECT
                         pub.id AS publication_id,pub.signal_id,sig.member_trade_number,
                         sig.source_id,
+                        EXISTS (
+                            SELECT 1 FROM audit_events AS owner_event
+                            WHERE owner_event.entity_type='signal'
+                              AND owner_event.entity_id=sig.id
+                              AND owner_event.event_type='{_OWNER_DEMO_PLACEMENT_EVENT}'
+                              AND owner_event.payload->>'master_login'='700207861'
+                              AND owner_event.payload->>'owner_demo_only'='true'
+                        ) AS owner_demo_master,
                         COALESCE(NULLIF(src.chat_title,''),src.source_alias,'Unknown provider')
                             AS provider_name,
                         sig.symbol,sig.side,sig.entry_low,sig.entry_high,sig.stop_loss,
@@ -2085,14 +2103,16 @@ class CanonicalTelegramPublisherManager(Day34CutoverTelegramPublisherManager):
                 "",
                 _render_root(row),
             ]
-            if self._reference_user_id is not None:
+            # The new demo master has a separate account ledger following the reset.
+            # Never substitute the old reference account's balance or P&L.
+            if self._reference_user_id is not None and not row["owner_demo_master"]:
                 rolling_balance, rolling_daily = self._reserve_financial_publication(
                     session,
                     row["publication_id"],
                     Decimal("0"),
                 )
                 parts.extend(self._financial_lines(rolling_balance, rolling_daily))
-            if self._trade_ledger is not None:
+            if self._trade_ledger is not None and not row["owner_demo_master"]:
                 trade = self._trade_ledger.trade(row["signal_id"])
                 if trade is not None and trade.legs:
                     parts.extend(["", "<b>Trade Status</b>", ""])
