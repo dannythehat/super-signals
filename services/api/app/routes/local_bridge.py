@@ -249,4 +249,83 @@ async def pu_broker_preflight(
     )
 
 
+
+# Owner-selected PU Prime DEMO source feed. This is read-only and never
+# creates broker trades or alters global source status.
+_OWNER_DEMO_CHAT_IDS = (
+    -1001313672961, -1002176701424, -1001651583302,
+    -1001588519179, -1002625307834, -1001649736978,
+    -1001391285381, -1003368777331, -1002148698027,
+    -1001957768371,
+)
+
+@router.get("/owner-demo-700207861-feed")
+def owner_demo_700207861_feed(
+    authorization_scope: Annotated[str, Depends(_authorize)],
+) -> dict[str, Any]:
+    """Fresh accepted *entry* signals for the isolated owner DEMO executor.
+
+    It deliberately includes approved testing/shadow sources without promoting
+    their general site-wide trading status. No historical playback and no
+    execution permissions are conferred by this endpoint.
+    """
+    if authorization_scope != "legacy":
+        raise HTTPException(status_code=403, detail="legacy_bridge_token_required")
+    from sqlalchemy import text as sql_text
+
+    with get_session_factory()() as session:
+        rows = session.execute(
+            sql_text(
+                """
+                SELECT sig.id::text AS signal_id, src.chat_id,
+                       sig.side, sig.symbol, sig.order_type,
+                       sig.entry_low, sig.entry_high, sig.stop_loss,
+                       sig.take_profits, sig.has_open_runner,
+                       sig.created_at, sig.source_posted_at
+                FROM signals sig JOIN sources src ON sig.source_id=src.id
+                WHERE src.chat_id IN (
+                    -1001313672961, -1002176701424, -1001651583302,
+                    -1001588519179, -1002625307834, -1001649736978,
+                    -1001391285381, -1003368777331, -1002148698027,
+                    -1001957768371
+                )
+                  AND src.status IN ('testing', 'live', 'shadow')
+                  AND sig.parser_status='accepted'
+                  AND sig.order_type='market'
+                  AND sig.symbol='XAUUSD'
+                  AND sig.side IN ('BUY', 'SELL')
+                  AND sig.created_at >= now() - INTERVAL '100 seconds'
+                  AND sig.source_posted_at >= now() - INTERVAL '150 seconds'
+                  AND sig.created_at <= now() + INTERVAL '5 seconds'
+                  AND sig.source_posted_at <= now() + INTERVAL '5 seconds'
+                ORDER BY sig.created_at DESC, sig.id DESC
+                LIMIT 30
+                """
+            )
+        ).mappings().all()
+    def number(value: object) -> float | None:
+        return None if value is None else float(value)
+
+    return {
+        "feed": "owner-demo-700207861",
+        "trading_permission": False,
+        "signals": [
+            {
+                "id": str(r["signal_id"]),
+                "chat_id": int(r["chat_id"]),
+                "side": str(r["side"]),
+                "symbol": str(r["symbol"]),
+                "order_type": str(r["order_type"]),
+                "entry_low": number(r["entry_low"]),
+                "entry_high": number(r["entry_high"]),
+                "stop_loss": number(r["stop_loss"]),
+                "take_profits": list(r["take_profits"] or []),
+                "has_open_runner": bool(r["has_open_runner"]),
+                "created_at": r["created_at"].isoformat(),
+                "source_posted_at": r["source_posted_at"].isoformat() if r["source_posted_at"] else None,
+            }
+            for r in rows
+        ],
+    }
+
 __all__ = ["router"]
