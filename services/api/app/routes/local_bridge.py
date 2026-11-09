@@ -15,6 +15,7 @@ from app.db import get_session_factory, get_owner_feed_session_factory
 from app.local_bridge_queue import LocalBridgeQueue
 from app.metaapi_gateway import MetaApiGatewayError
 from app.pu_broker_readiness import assess_broker_preflight
+from app.owner_demo_account_reporting import OwnerDemoAccountReport, queue_owner_demo_report
 
 router = APIRouter(prefix="/internal/local-bridge/v1", tags=["local-mt5-bridge"])
 _IDENTIFIER = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{2,99}$")
@@ -443,5 +444,19 @@ def owner_demo_700207861_confirmed_execution(
         )
         session.commit()
     return {"status": "recorded", "signal_id": str(payload.signal_id)}
+
+
+@router.post("/owner-demo-700207861-account-report")
+def owner_demo_700207861_account_report(
+    payload: OwnerDemoAccountReport,
+    authorization_scope: Annotated[str, Depends(_authorize)],
+) -> dict[str, str | int]:
+    """Broker-verified DEMO balance and realised P&L to existing Telegram outbox.
+
+    Never sends trading commands or reads legacy Vantage balance/P&L.
+    """
+    if authorization_scope not in {"legacy", "pu"}:
+        raise HTTPException(status_code=403, detail="bridge_token_required")
+    return queue_owner_demo_report(payload)
 
 __all__ = ["router"]
