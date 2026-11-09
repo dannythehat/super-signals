@@ -165,7 +165,7 @@ class Day34CutoverTelegramPublisherManager(Day34TelegramPublisherManager):
                           FROM audit_events AS placed
                           WHERE placed.entity_type='signal'
                             AND placed.entity_id=pub.signal_id
-                            AND placed.event_type='mt5.day26_execution_success'
+                            AND placed.event_type IN ('mt5.day26_execution_success', 'mt5.owner_demo_700207861_execution_success')
                             AND placed.created_at > :publish_after
                       )
                     """
@@ -194,7 +194,7 @@ class Day34CutoverTelegramPublisherManager(Day34TelegramPublisherManager):
                           FROM audit_events AS placed
                           WHERE placed.entity_type='signal'
                             AND placed.entity_id=pub.signal_id
-                            AND placed.event_type='mt5.day26_execution_success'
+                            AND placed.event_type IN ('mt5.day26_execution_success', 'mt5.owner_demo_700207861_execution_success')
                             AND placed.created_at > :publish_after
                       )
                     """
@@ -215,7 +215,7 @@ class Day34CutoverTelegramPublisherManager(Day34TelegramPublisherManager):
                         FROM audit_events AS placed
                         WHERE placed.entity_type='signal'
                           AND placed.entity_id=sig.id
-                          AND placed.event_type='mt5.day26_execution_success'
+                          AND placed.event_type IN ('mt5.day26_execution_success', 'mt5.owner_demo_700207861_execution_success')
                           AND placed.created_at > :publish_after
                     )
                       AND NOT EXISTS (
@@ -259,7 +259,7 @@ class Day34CutoverTelegramPublisherManager(Day34TelegramPublisherManager):
                               FROM audit_events AS placed
                               WHERE placed.entity_type='signal'
                                 AND placed.entity_id=ev.signal_id
-                                AND placed.event_type='mt5.day26_execution_success'
+                                AND placed.event_type IN ('mt5.day26_execution_success', 'mt5.owner_demo_700207861_execution_success')
                                 AND placed.created_at > :publish_after
                           )
                       )
@@ -416,7 +416,7 @@ class Day34CutoverTelegramPublisherManager(Day34TelegramPublisherManager):
                     FROM audit_events AS placed
                     WHERE placed.entity_type='signal'
                       AND placed.entity_id=sig.id
-                      AND placed.event_type='mt5.day26_execution_success'
+                      AND placed.event_type IN ('mt5.day26_execution_success', 'mt5.owner_demo_700207861_execution_success')
                       AND placed.created_at > :publish_after
                 )
                 ON CONFLICT (event_key) DO NOTHING
@@ -475,7 +475,7 @@ class Day34CutoverTelegramPublisherManager(Day34TelegramPublisherManager):
                           FROM audit_events AS placed
                           WHERE placed.entity_type='signal'
                             AND placed.entity_id=ev.signal_id
-                            AND placed.event_type='mt5.day26_execution_success'
+                            AND placed.event_type IN ('mt5.day26_execution_success', 'mt5.owner_demo_700207861_execution_success')
                             AND placed.created_at > :publish_after
                       )
                   )

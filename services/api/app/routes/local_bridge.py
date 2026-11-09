@@ -328,4 +328,120 @@ def owner_demo_700207861_feed(
         ],
     }
 
+
+# Broker-confirmed, forward-only owner DEMO master publication receipt.
+# It records evidence only. The existing Day34 publisher sends the Telegram post.
+# The caller is the separate owner master journal bridge, never the signal reader.
+class OwnerDemoExecutionLeg(BaseModel):
+    order: int = Field(gt=0)
+    deal: int = Field(gt=0)
+    retcode: Literal[10009, 10010]
+
+
+class OwnerDemoExecutionNotice(BaseModel):
+    signal_id: UUID
+    master_login: Literal[700207861]
+    magic: Literal[2601001]
+    placed_at: str = Field(min_length=20, max_length=40)
+    results: list[OwnerDemoExecutionLeg] = Field(min_length=1, max_length=5)
+
+
+@router.post("/owner-demo-700207861-confirmed-execution")
+def owner_demo_700207861_confirmed_execution(
+    payload: OwnerDemoExecutionNotice,
+    authorization_scope: Annotated[str, Depends(_authorize)],
+) -> dict[str, Any]:
+    """Report an already-filled MT5 demo master trade to the existing publisher.
+
+    This cannot submit broker orders, and never publishes unfilled/old signals.
+    An audit event is created idempotently so Day34 preserves its broker-placement
+    gate for other trade sources.
+    """
+    if authorization_scope not in {"legacy", "pu"}:
+        raise HTTPException(status_code=403, detail="bridge_token_required")
+    from datetime import datetime, timezone, timedelta
+    from sqlalchemy import text as sql_text
+    from app.models import AuditEvent
+
+    try:
+        placed_at = datetime.fromisoformat(payload.placed_at.replace("Z", "+00:00"))
+        if placed_at.tzinfo is None:
+            raise ValueError("timezone_missing")
+        placed_at = placed_at.astimezone(timezone.utc)
+    except (ValueError, TypeError):
+        raise HTTPException(status_code=422, detail="placement_timestamp_invalid") from None
+
+    now = datetime.now(timezone.utc)
+    if not (now - timedelta(seconds=180) <= placed_at <= now + timedelta(seconds=5)):
+        raise HTTPException(status_code=409, detail="placement_not_fresh")
+
+    with get_session_factory()() as session:
+        # Serialise repeated notices for this signal before testing for duplicates.
+        matched = session.execute(
+            sql_text("""
+                SELECT sig.id, sig.source_posted_at, sig.created_at
+                FROM signals sig JOIN sources src ON src.id=sig.source_id
+                WHERE sig.id=:id
+                  AND src.chat_id IN (
+                    -1001313672961,-1002176701424,-1001651583302,
+                    -1001588519179,-1002625307834,-1001649736978,
+                    -1001391285381,-1003368777331,-1002148698027,
+                    -1001957768371
+                  )
+                  AND src.status IN ('testing','live','shadow')
+                  AND sig.parser_status='accepted'
+                  AND sig.order_type='market'
+                  AND sig.symbol='XAUUSD'
+                  AND sig.side IN ('BUY','SELL')
+                  AND sig.entry_low IS NOT NULL
+                  AND sig.stop_loss IS NOT NULL
+                  AND sig.take_profits IS NOT NULL
+                FOR UPDATE OF sig
+            """),
+            {"id": payload.signal_id},
+        ).mappings().first()
+        if matched is None:
+            raise HTTPException(status_code=409, detail="signal_not_eligible")
+        # Broker confirmation cannot retroactively make a stale signal tradable.
+        created = matched["created_at"]
+        posted = matched["source_posted_at"]
+        if not posted or created > placed_at + timedelta(seconds=5) or (
+            placed_at - posted
+        ).total_seconds() > 180:
+            raise HTTPException(status_code=409, detail="source_signal_stale")
+        event_type = "mt5.owner_demo_700207861_execution_success"
+        existing = session.execute(
+            sql_text("""
+                SELECT id FROM audit_events
+                WHERE entity_type='signal' AND entity_id=:id
+                  AND event_type=:event_type
+                LIMIT 1
+            """),
+            {"id": payload.signal_id, "event_type": event_type},
+        ).scalar_one_or_none()
+        if existing is not None:
+            session.rollback()
+            return {"status": "already_recorded", "signal_id": str(payload.signal_id)}
+
+        session.add(
+            AuditEvent(
+                actor_user_id=None,
+                event_type=event_type,
+                entity_type="signal",
+                entity_id=payload.signal_id,
+                payload={
+                    "master_login": payload.master_login,
+                    "magic": payload.magic,
+                    "placed_at": placed_at.isoformat(),
+                    "broker_reported_deals": [
+                        result.model_dump() for result in payload.results
+                    ],
+                    "owner_demo_only": True,
+                    "orders_submitted_by_this_endpoint": False,
+                },
+            )
+        )
+        session.commit()
+    return {"status": "recorded", "signal_id": str(payload.signal_id)}
+
 __all__ = ["router"]
