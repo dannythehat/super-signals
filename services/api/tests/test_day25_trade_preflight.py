@@ -5,8 +5,8 @@ from uuid import uuid4
 
 import httpx
 
-from app.metaapi_gateway import MetaApiGatewayError
-from app.metaapi_margin_gateway import MetaApiMarginGateway
+from app.retired_remote_broker_contracts import MetaApiGatewayError
+from app.retired_remote_broker_contracts import MetaApiMarginGateway
 from app.mt5_read_service_day23 import Day23AccountState, Day23LiveState, Day23PriceState
 from app.risk_sizing_day24 import BrokerVolumeRules, Day24RiskSizer
 from app.trade_preflight_day25 import Day25TradePreflightService
