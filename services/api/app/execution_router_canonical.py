@@ -19,7 +19,7 @@ from app.active_account_member_routing import (
     ActiveAccountMemberDistributionService,
     ActiveAccountMemberManagementService,
 )
-from app.broker_gateway_factory import build_broker_gateways
+from app.broker_gateway_factory import broker_transport, build_broker_gateways
 from app.collective_execution_dispatch import CollectiveAwareCanonicalExecutionDispatcher
 from app.execution_dispatch_canonical import CanonicalExecutionDispatcher
 from app.graceful_market_targets import GracefulCaptureReliableMemberTradingExecutionService
@@ -50,6 +50,12 @@ def build_canonical_execution_router(
     *,
     session_factory: sessionmaker[Session],
 ) -> CanonicalExecutionDispatcher | None:
+    # The canonical Vantage/MetaAPI path is retired. Selected provider signals
+    # are recorded by the Telegram listener and executed only on Contabo MT5.
+    # Returning None also disables legacy pending/management broker workers.
+    if broker_transport() == "local_bridge":
+        logger.info("Legacy canonical broker execution retired: Contabo owner DEMO master is authoritative")
+        return None
     if not _enabled(os.getenv("SUPER_SIGNALS_DAY28_AUTO_EXECUTION_ENABLED")):
         return None
     try:
