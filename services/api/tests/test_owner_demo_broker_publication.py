@@ -93,3 +93,27 @@ def test_tp2_protection_posts_broker_confirmed_remaining_stop():
     _, title, text = broker_notification(event, NOW, provider_name="Julia")
     assert title == "Julia"
     assert "After TP 2" in text and "TP 3 SL 4076.38" in text
+
+
+@pytest.mark.parametrize('already_sent', [True, False])
+def test_grouped_notice_reuses_legacy_fill_receipts_without_a_second_post(monkeypatch, already_sent):
+    from unittest.mock import MagicMock
+    from app import owner_demo_broker_publication as publication
+    now = datetime.now(UTC) - timedelta(seconds=1)
+    event = grouped(occurred_at=now, opened_at=now, source='manual')
+    session = MagicMock()
+    session.__enter__.return_value = session
+    originals = [dict(event_key=f'owner-demo-deal:700207861:{f.deal_id}', telegram_message_id=1199+i)
+                 for i, f in enumerate(event.fills)]
+    session.execute.return_value.mappings.return_value.all.return_value = originals if already_sent else originals[:1]
+    session.execute.return_value.scalar_one_or_none.return_value = 55
+    monkeypatch.setattr(publication, 'get_session_factory', lambda: lambda: session)
+    result = publication.queue_broker_notice(event)
+    if already_sent:
+        assert result == {'status': 'duplicate', 'telegram_message_id': 1200}
+        assert session.execute.call_count == 1
+        session.commit.assert_not_called()
+    else:
+        assert result['status'] == 'pending'
+        assert session.execute.call_count == 3
+        session.commit.assert_called_once()
