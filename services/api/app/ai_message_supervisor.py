@@ -354,9 +354,9 @@ def _guard_execute_decision(
         guarded["action"] = "skip"
         guarded["reason"] = "provider_instruction_incomplete"
         return guarded
-    if entry_low > entry_high:
+    if entry_low != entry_high:
         guarded["action"] = "skip"
-        guarded["reason"] = "signal_entry_invalid"
+        guarded["reason"] = "unsupported_entry_range"
         return guarded
 
     literals = _literal_numbers(evidence_text)
@@ -372,16 +372,17 @@ def _guard_execute_decision(
         return guarded
 
     concrete_targets = tuple(value for value in take_profits if value is not None)
+    entry = entry_low
     if side == "BUY":
         valid_direction = (
-            stop_loss < entry_low
-            and all(target > entry_high for target in concrete_targets)
+            stop_loss < entry
+            and all(target > entry for target in concrete_targets)
             and all(right > left for left, right in zip(concrete_targets, concrete_targets[1:]))
         )
     else:
         valid_direction = (
-            stop_loss > entry_high
-            and all(target < entry_low for target in concrete_targets)
+            stop_loss > entry
+            and all(target < entry for target in concrete_targets)
             and all(right < left for left, right in zip(concrete_targets, concrete_targets[1:]))
         )
     if not valid_direction:
