@@ -22,6 +22,8 @@ def sample(captured: datetime | None = None) -> OwnerDemoAccountReport:
         currency="USD", connected=True, balance=Decimal("10090.26"),
         equity=Decimal("10090.26"), floating_pnl=Decimal("0"),
         credit=Decimal("0"), realised_net=Decimal("90.26"),
+        month_realised_net=Decimal("470.73"), month_capital=Decimal("10000"),
+        all_time_realised_net=Decimal("500.00"),
         cash_movements=Decimal("0"), closed_deal_fills=5,
         open_positions=0, reporting_start_utc=reporting_day_start(captured),
         captured_at=captured,
@@ -34,11 +36,11 @@ def test_new_demo_balance_and_daily_net_do_not_use_legacy_vantage():
         report, now=report.captured_at + timedelta(seconds=5)
     )
     text = _body(report, start)
-    assert "PU Prime DEMO | Master 700207861" in text
-    assert "Balance: $10,090.26" in text
-    assert "Today's realised P&L: +$90.26" in text
-    assert "Equity: $10,090.26" in text
-    assert "08 Nov 21:00 to 09 Nov 21:00" in text
+    assert "Daily profit / loss = +$90.26" in text
+    assert "Month to date - +$470.73 (4.71%)" in text
+    assert "All-time profit / loss - +$500.00" in text
+    assert "Total balance - $10,090.26" in text
+    assert "08 Nov 21:00 to 09 Nov 21:00 Sofia" in text
     assert "Vantage" not in text
 
 

@@ -12,7 +12,8 @@ import time
 import urllib.error
 import urllib.request
 from collections import Counter
-from datetime import date, datetime, time as clock_time, timedelta, timezone
+from datetime import datetime, time as clock_time, timedelta, timezone
+from decimal import Decimal
 from pathlib import Path
 
 import MetaTrader5 as mt5
@@ -43,6 +44,21 @@ def reporting_start(now: datetime) -> datetime:
     local_anchor_utc = datetime.combine(day, clock_time(21), tzinfo=timezone.utc)
     offset = sofia_utc_offset(local_anchor_utc - timedelta(hours=2))
     return local_anchor_utc - timedelta(hours=offset)
+
+
+def month_reporting_start(start: datetime) -> datetime:
+    local = start + timedelta(hours=sofia_utc_offset(start))
+    first_day = (local.date() + timedelta(days=1)).replace(day=1)
+    first_window = datetime.combine(first_day - timedelta(days=1), clock_time(21), tzinfo=timezone.utc)
+    return first_window - timedelta(hours=sofia_utc_offset(first_window - timedelta(hours=2)))
+
+
+def deal_net(deal) -> Decimal:
+    return sum(Decimal(str(getattr(deal, field, 0) or 0)) for field in ("profit", "commission", "swap", "fee"))
+
+
+def trading_pnl_type(deal) -> bool:
+    return int(deal.type) in (0, 1, 7, 8, 9, 10, 11)
 
 
 def offset_from_execution_journal(deals: list, *, now: datetime) -> int:
@@ -101,23 +117,25 @@ def verified_snapshot():
 
         # Read extra 4h each side because the broker's deal ledger stamps server time.
         # Calibrate this offset from real broker-confirmed deal IDs in our journal.
-        records = mt5.history_deals_get(start - timedelta(hours=4), now + timedelta(hours=4))
+        records = mt5.history_deals_get(0, int((now + timedelta(hours=4)).timestamp()))
         if records is None:
             raise RuntimeError("broker_history_unavailable_" + str(mt5.last_error()[0]))
         records = list(records)
         broker_offset = offset_from_execution_journal(records, now=now)
-        selected = [
-            d for d in records
-            if start <= datetime.fromtimestamp(
-                int(d.time), timezone.utc
-            ) - timedelta(hours=broker_offset) <= now + timedelta(seconds=15)
-        ]
-
-        def net(d):
-            return float(d.profit) + float(d.commission) + float(d.swap) + float(d.fee)
-
-        trade_deals = [d for d in selected if d.type in (0, 1)]
-        cash_deals = [d for d in selected if d.type not in (0, 1)]
+        timestamp = lambda deal: datetime.fromtimestamp(
+            int(deal.time), timezone.utc
+        ) - timedelta(hours=broker_offset)
+        records = [d for d in records if timestamp(d) <= now + timedelta(seconds=15)]
+        selected = [d for d in records if timestamp(d) >= start]
+        month_start = month_reporting_start(start)
+        month = [d for d in records if timestamp(d) >= month_start]
+        trade_deals = [d for d in selected if trading_pnl_type(d)]
+        cash_deals = [d for d in selected if not trading_pnl_type(d)]
+        month_net = sum((deal_net(d) for d in month if trading_pnl_type(d)), Decimal(0))
+        all_time_net = sum((deal_net(d) for d in records if trading_pnl_type(d)), Decimal(0))
+        # Month opening capital plus net deposits and withdrawals during the month.
+        opening_balance = Decimal(str(account.balance)) - sum(map(deal_net, month), Decimal(0))
+        month_capital = opening_balance + sum((deal_net(d) for d in month if int(d.type) == 2), Decimal(0))
         positions = mt5.positions_get()
         if positions is None:
             raise RuntimeError("broker_positions_read_unavailable")
@@ -129,9 +147,12 @@ def verified_snapshot():
             "equity": str(round(account.equity, 2)),
             "floating_pnl": str(round(account.profit, 2)),
             "credit": str(round(account.credit, 2)),
-            "realised_net": str(round(sum(map(net, trade_deals)), 2)),
-            "cash_movements": str(round(sum(map(net, cash_deals)), 2)),
-            "closed_deal_fills": sum(1 for d in trade_deals if d.entry in (1, 2)),
+            "realised_net": str(round(sum(map(deal_net, trade_deals), Decimal(0)), 2)),
+            "month_realised_net": str(round(month_net, 2)),
+            "month_capital": str(round(month_capital, 2)),
+            "all_time_realised_net": str(round(all_time_net, 2)),
+            "cash_movements": str(round(sum(map(deal_net, cash_deals), Decimal(0)), 2)),
+            "closed_deal_fills": sum(1 for d in trade_deals if d.type in (0, 1) and d.entry in (1, 2, 3)),
             "open_positions": len(positions),
             "reporting_start_utc": start.isoformat(),
             "captured_at": captured.isoformat(),
