@@ -8,7 +8,7 @@ import pytest
 from fastapi import HTTPException
 
 from app.local_bridge_queue import LocalBridgeQueue
-from app.metaapi_gateway import MetaApiGatewayError
+from app.retired_remote_broker_contracts import MetaApiGatewayError
 from app.routes.local_bridge import WorkerIdentity, _authorize, _scope
 
 
