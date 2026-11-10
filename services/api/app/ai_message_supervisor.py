@@ -220,7 +220,7 @@ def _decimal(value: Any) -> Decimal | None:
 
 
 _COMPACT_GOLD_ZONE = re.compile(
-    r"(?<![A-Za-z0-9_.])([1-9]\\d{3})\\s*[-–]\\s*(\\d{2})(?![A-Za-z0-9_.])"
+    r"(?<![A-Za-z0-9_.])([1-9]\d{3})\s*[-–]\s*(\d{2})(?![A-Za-z0-9_.])"
 )
 
 
