@@ -20,6 +20,7 @@ from uuid import UUID
 
 from sqlalchemy import text
 
+from app.broker_gateway_factory import broker_transport
 from app.benchmarking_shadow_lifecycle_bridge import BenchmarkingShadowAwareAiLifecycleBridge
 from app.provider_aware_ai_pipeline import ProviderAwareProductionAiPipeline
 from app.provider_research import ProviderResearchManager, build_provider_research_manager
@@ -492,7 +493,11 @@ def build_production_listener_manager(**kwargs: Any) -> CanonicalProductionTeleg
     if not isinstance(manager, CanonicalProductionTelegramListenerManager):
         raise RuntimeError("production_listener_generation_mismatch")
     if getattr(manager, "_canonical_router", None) is None:
-        raise RuntimeError("production_execution_router_missing")
+        # Contabo is the sole broker executor. Render must keep receiving and
+        # interpreting provider messages even without the old broker router.
+        if broker_transport() != "local_bridge":
+            raise RuntimeError("production_execution_router_missing")
+        logger.warning("Telegram ingress active in Contabo-only mode: no Render broker execution")
 
     existing_pipeline = getattr(manager, "_ai_pipeline", None)
     if existing_pipeline is not None:
