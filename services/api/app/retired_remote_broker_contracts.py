@@ -121,7 +121,36 @@ class _RetiredRemoteBroker:
 
 
 class MetaApiReadGateway(_RetiredRemoteBroker):
-    pass
+    # Explicit read-only facade for historical imports. All methods fail closed.
+    async def resolve_account_region(self, **kwargs: object) -> object:
+        raise MetaApiGatewayError("retired_broker_api_disabled")
+
+    async def read_account_information(self, **kwargs: object) -> object:
+        raise MetaApiGatewayError("retired_broker_api_disabled")
+
+    async def read_positions(self, **kwargs: object) -> object:
+        raise MetaApiGatewayError("retired_broker_api_disabled")
+
+    async def read_orders(self, **kwargs: object) -> object:
+        raise MetaApiGatewayError("retired_broker_api_disabled")
+
+    async def read_history_orders_by_ticket(self, **kwargs: object) -> object:
+        raise MetaApiGatewayError("retired_broker_api_disabled")
+
+    async def read_history_orders_by_time_range(self, **kwargs: object) -> object:
+        raise MetaApiGatewayError("retired_broker_api_disabled")
+
+    async def read_deals_by_position(self, **kwargs: object) -> object:
+        raise MetaApiGatewayError("retired_broker_api_disabled")
+
+    async def read_deals_by_time_range(self, **kwargs: object) -> object:
+        raise MetaApiGatewayError("retired_broker_api_disabled")
+
+    async def read_symbol_price(self, **kwargs: object) -> object:
+        raise MetaApiGatewayError("retired_broker_api_disabled")
+
+    async def read_symbol_specification(self, **kwargs: object) -> object:
+        raise MetaApiGatewayError("retired_broker_api_disabled")
 
 
 class MetaApiTradeGateway(_RetiredRemoteBroker):
@@ -365,10 +394,23 @@ class MetaApiTradeGateway(_RetiredRemoteBroker):
 
 
 class MetaApiMarginGateway(_RetiredRemoteBroker):
-    pass
+    async def calculate_margin(self, **kwargs: object) -> object:
+        raise MetaApiGatewayError("retired_broker_api_disabled")
 
 
 class MetaApiProvisioningGateway(_RetiredRemoteBroker):
+    async def find_account(self, **kwargs: object) -> object:
+        raise MetaApiGatewayError("retired_broker_api_disabled")
+
+    async def create_account(self, **kwargs: object) -> object:
+        raise MetaApiGatewayError("retired_broker_api_disabled")
+
+    async def read_account(self, **kwargs: object) -> object:
+        raise MetaApiGatewayError("retired_broker_api_disabled")
+
+    async def deploy_account(self, **kwargs: object) -> object:
+        raise MetaApiGatewayError("retired_broker_api_disabled")
+
     @staticmethod
     def new_transaction_id() -> str:
         return str(uuid4())
