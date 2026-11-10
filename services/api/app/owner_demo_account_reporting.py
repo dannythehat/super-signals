@@ -25,6 +25,9 @@ class OwnerDemoAccountReport(BaseModel):
     floating_pnl: Decimal
     credit: Decimal
     realised_net: Decimal
+    month_realised_net: Decimal | None = None
+    month_capital: Decimal | None = None
+    all_time_realised_net: Decimal | None = None
     cash_movements: Decimal
     closed_deal_fills: int = Field(ge=0, le=1000000)
     open_positions: int = Field(ge=0, le=100000)
@@ -56,8 +59,9 @@ def _validate(report: OwnerDemoAccountReport, now: datetime) -> datetime:
     if abs((start - report.reporting_start_utc.astimezone(timezone.utc)).total_seconds()) > 2:
         raise HTTPException(status_code=409, detail="wrong_21h_sofia_reporting_window")
     amounts = (report.balance, report.equity, report.floating_pnl, report.credit,
-               report.realised_net, report.cash_movements)
-    if not all(x.is_finite() for x in amounts) or report.balance < 0 or report.equity < 0:
+               report.realised_net, report.cash_movements, report.month_realised_net,
+               report.month_capital, report.all_time_realised_net)
+    if not all(x.is_finite() for x in amounts if x is not None) or report.balance < 0 or report.equity < 0:
         raise HTTPException(status_code=422, detail="invalid_broker_account_values")
     if abs(report.equity - report.balance - report.floating_pnl - report.credit) > Decimal("0.25"):
         raise HTTPException(status_code=409, detail="broker_equity_mismatch")
@@ -65,25 +69,21 @@ def _validate(report: OwnerDemoAccountReport, now: datetime) -> datetime:
 
 
 def _body(report: OwnerDemoAccountReport, start: datetime) -> str:
+    def pnl(value: Decimal | None) -> str:
+        return _money(value, signed=True) if value is not None else "unavailable"
+
+    monthly = pnl(report.month_realised_net)
+    if report.month_realised_net is not None and report.month_capital is not None and report.month_capital > 0:
+        monthly += f" ({report.month_realised_net / report.month_capital:.2%})"
     start_local = start.astimezone(SOFIA)
     end_local = start_local + timedelta(days=1)
-    seen_local = report.captured_at.astimezone(SOFIA)
-    lines = [
-        "PU Prime DEMO | Master 700207861",
-        f"Balance: {_money(report.balance)}",
-        f"Today's realised P&L: {_money(report.realised_net, signed=True)}",
-        f"Equity: {_money(report.equity)}",
-        f"Open positions: {report.open_positions} | Floating P&L: {_money(report.floating_pnl, signed=True)}",
-        f"Closed deal fills today: {report.closed_deal_fills}",
-    ]
-    if abs(report.cash_movements) >= Decimal("0.005"):
-        lines.append(f"Non-trading cash movements: {_money(report.cash_movements, signed=True)}")
-    lines += [
-        f"Trading session: {start_local:%d %b %H:%M} to {end_local:%d %b %H:%M} Sofia",
-        f"Broker snapshot: {seen_local:%d %b %Y %H:%M:%S} Sofia",
-        "Read-only MT5 data | realised P&L includes commissions, swaps and fees.",
-    ]
-    return "\n".join(lines)
+    return "\n".join([
+        f"Daily profit / loss = {pnl(report.realised_net)}",
+        f"Month to date - {monthly}",
+        f"All-time profit / loss - {pnl(report.all_time_realised_net)}",
+        f"Total balance - {_money(report.balance)}",
+        f"Daily window {start_local:%d %b %H:%M} to {end_local:%d %b %H:%M} Sofia",
+    ])
 
 
 def queue_owner_demo_report(report: OwnerDemoAccountReport) -> dict[str, str | int]:
@@ -93,6 +93,9 @@ def queue_owner_demo_report(report: OwnerDemoAccountReport) -> dict[str, str | i
         "master_login": ACCOUNT, "source": "mt5_read_only", "demo": True,
         "currency": "USD", "balance": str(report.balance), "equity": str(report.equity),
         "realised_net": str(report.realised_net), "floating_pnl": str(report.floating_pnl),
+        "month_realised_net": str(report.month_realised_net),
+        "month_capital": str(report.month_capital),
+        "all_time_realised_net": str(report.all_time_realised_net),
         "cash_movements": str(report.cash_movements), "credit": str(report.credit),
         "open_positions": report.open_positions, "closed_deal_fills": report.closed_deal_fills,
         "reporting_start_utc": start.isoformat(), "captured_at": report.captured_at.isoformat(),
@@ -116,11 +119,9 @@ def queue_owner_demo_report(report: OwnerDemoAccountReport) -> dict[str, str | i
             if last["status"] == "failed" and elapsed < timedelta(minutes=12):
                 return {"status": "delivery_failed", "account": ACCOUNT}
             if last["status"] == "sent":
-                same = (str(prior.get("balance")) == payload["balance"]
-                        and str(prior.get("realised_net")) == payload["realised_net"]
-                        and prior.get("open_positions") == payload["open_positions"]
-                        and prior.get("reporting_start_utc") == payload["reporting_start_utc"])
-                if same and elapsed < timedelta(hours=1):
+                fields = ("balance", "realised_net", "month_realised_net", "month_capital",
+                          "all_time_realised_net", "reporting_start_utc")
+                if all(prior.get(field) == payload[field] for field in fields):
                     return {"status": "unchanged", "account": ACCOUNT}
                 if elapsed < timedelta(minutes=1):
                     return {"status": "rate_limited", "account": ACCOUNT}
@@ -133,7 +134,7 @@ def queue_owner_demo_report(report: OwnerDemoAccountReport) -> dict[str, str | i
                     :title,:body,CAST(:payload AS jsonb))
             ON CONFLICT (event_key) DO NOTHING RETURNING id
         """), {
-            "key": key, "title": "📊 SUPER SIGNALS | MASTER ACCOUNT",
+            "key": key, "title": "Super Signals | Account",
             "body": _body(report, start), "payload": json.dumps(payload),
         }).scalar_one_or_none()
         if new_id is None:

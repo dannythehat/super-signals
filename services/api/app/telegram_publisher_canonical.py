@@ -2581,11 +2581,17 @@ class CanonicalTelegramPublisherManager(Day34CutoverTelegramPublisherManager):
             row = session.execute(
                 text(
                     """
-                    SELECT d.id AS delivery_id,d.notification_id,n.title,n.body
+                    SELECT d.id AS delivery_id,d.notification_id,n.title,n.body,n.kind,n.payload
                     FROM telegram_notification_deliveries AS d
                     JOIN notification_events AS n ON n.id=d.notification_id
                     WHERE d.status='pending'
                       AND n.audience!='suppressed'
+                      AND (n.kind<>'owner_demo_account_status' OR NOT EXISTS (
+                          SELECT 1 FROM telegram_notification_deliveries AS busy
+                          JOIN notification_events AS status_event ON status_event.id=busy.notification_id
+                          WHERE status_event.kind='owner_demo_account_status'
+                            AND busy.status='sending' AND busy.attempted_at>now()-interval '2 minutes'
+                      ))
                     ORDER BY d.created_at,d.id
                     FOR UPDATE OF d SKIP LOCKED
                     LIMIT 1
@@ -2595,6 +2601,26 @@ class CanonicalTelegramPublisherManager(Day34CutoverTelegramPublisherManager):
             if row is None:
                 session.rollback()
                 return None
+            edit_id = None
+            reply_id = None
+            if row["kind"] == "owner_demo_account_status":
+                edit_id = session.execute(text("""
+                    SELECT sent.telegram_message_id
+                    FROM telegram_notification_deliveries sent
+                    JOIN notification_events report ON report.id=sent.notification_id
+                    WHERE report.kind='owner_demo_account_status' AND sent.status='sent'
+                      AND sent.destination_chat_id=:chat AND sent.telegram_message_id IS NOT NULL
+                    ORDER BY sent.sent_at DESC LIMIT 1
+                """), {"chat": self._destination_chat_id}).scalar_one_or_none()
+            elif row["kind"] == "owner_demo_broker_event" and row["payload"].get("event") in ("trade_exit", "trade_protection"):
+                reply_id = session.execute(text("""
+                    SELECT d.telegram_message_id FROM notification_events n
+                    JOIN telegram_notification_deliveries d ON d.notification_id=n.id
+                    WHERE n.event_key=:key AND d.destination_chat_id=:chat AND d.status='sent'
+                """), {
+                    "key": "owner-demo-trade-entry:700207861:" + str(row["payload"]["position_id"]),
+                    "chat": self._destination_chat_id,
+                }).scalar_one_or_none()
             rendered = f"{str(row['title'])}\n{str(row['body'])}"
             session.execute(
                 text(
@@ -2618,6 +2644,11 @@ class CanonicalTelegramPublisherManager(Day34CutoverTelegramPublisherManager):
                 delivery_id=row["delivery_id"],
                 notification_id=row["notification_id"],
                 text=rendered,
+                edit_message_id=edit_id,
+                reply_to_message_id=reply_id,
+                provider_identity_exposed=bool(row["kind"] == "owner_demo_broker_event"
+                                               and row["payload"].get("provider_name")),
+                owner_demo_balance_exposed=row["kind"] == "owner_demo_account_status",
             )
 
     def _live_board_rows(self) -> list[Any]:

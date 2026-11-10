@@ -11,7 +11,8 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
-from dataclasses import dataclass
+import json
+from dataclasses import dataclass, replace
 from typing import Any
 from uuid import UUID
 
@@ -30,6 +31,10 @@ class SummaryPublicationAttempt:
     delivery_id: UUID
     notification_id: UUID
     text: str
+    edit_message_id: int | None = None
+    reply_to_message_id: int | None = None
+    provider_identity_exposed: bool = False
+    owner_demo_balance_exposed: bool = False
 
 
 class Day34TelegramPublisherManager(Day20TelegramPublisherManager):
@@ -324,19 +329,37 @@ class Day34TelegramPublisherManager(Day20TelegramPublisherManager):
 
         assert self._bot_token is not None
         assert self._destination_chat_id is not None
+        payload = {
+            "chat_id": self._destination_chat_id,
+            "text": attempt.text,
+            "disable_web_page_preview": "true",
+        }
+        method = "sendMessage"
+        if attempt.edit_message_id is not None:
+            method = "editMessageText"
+            payload["message_id"] = attempt.edit_message_id
+        elif attempt.reply_to_message_id is not None:
+            payload["reply_parameters"] = json.dumps({
+                "message_id": attempt.reply_to_message_id,
+                "allow_sending_without_reply": True,
+            })
         try:
-            result = await asyncio.to_thread(
-                _bot_api_call,
-                self._bot_token,
-                "sendMessage",
-                {
-                    "chat_id": self._destination_chat_id,
-                    "text": attempt.text,
-                    "disable_web_page_preview": "true",
-                },
-            )
+            try:
+                result = await asyncio.to_thread(_bot_api_call, self._bot_token, method, payload)
+            except TelegramPublishError as exc:
+                if (attempt.edit_message_id is None or exc.code != "telegram_http_400"
+                        or "message to edit not found" not in exc.reason.lower()):
+                    raise
+                # Telegram has definitively confirmed the old board was removed.
+                payload.pop("message_id")
+                attempt = replace(attempt, edit_message_id=None)
+                result = await asyncio.to_thread(_bot_api_call, self._bot_token, "sendMessage", payload)
             message_id = int(result["message_id"])
         except (TelegramPublishError, KeyError, TypeError, ValueError) as exc:
+            if (isinstance(exc, TelegramPublishError) and attempt.edit_message_id is not None
+                    and exc.code == "telegram_http_400" and "message is not modified" in exc.reason.lower()):
+                await asyncio.to_thread(self._record_summary_success, attempt, attempt.edit_message_id)
+                return
             if isinstance(exc, TelegramPublishError):
                 code, reason = exc.code, exc.reason
             else:
@@ -375,8 +398,10 @@ class Day34TelegramPublisherManager(Day20TelegramPublisherManager):
                             "publisher_version": DAY34_PUBLISHER_VERSION,
                             "delivery_id": str(attempt.delivery_id),
                             "telegram_message_id": message_id,
-                            "provider_identity_exposed": False,
+                            "provider_identity_exposed": attempt.provider_identity_exposed,
                             "private_balance_exposed": False,
+                            "owner_demo_balance_exposed": attempt.owner_demo_balance_exposed,
+                            "edited_existing_message": attempt.edit_message_id is not None,
                             "trade_action_created": False,
                         },
                     )
