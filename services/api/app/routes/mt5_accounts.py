@@ -13,7 +13,7 @@ from sqlalchemy import text
 
 from app.access_control import require_permission
 from app.broker_gateway_factory import build_broker_gateways
-from app.metaapi_token_scope import inspect_metaapi_token_scope
+from app.retired_remote_broker_contracts import inspect_metaapi_token_scope
 from app.models import AuditEvent
 from app.mt5_connection_service import Mt5ConnectionError, Mt5ConnectionView
 from app.mt5_read_service_day23 import Day23Mt5ReadService, Day23ReadError
