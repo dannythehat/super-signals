@@ -5,8 +5,8 @@ from uuid import uuid4
 
 import pytest
 
-from app.metaapi_read_gateway import MetaApiReadGateway
-from app.metaapi_token_scope import inspect_metaapi_token_scope
+from app.retired_remote_broker_contracts import MetaApiReadGateway
+from app.retired_remote_broker_contracts import inspect_metaapi_token_scope
 from app.mt5_read_service_day23 import (
     Day23AccountState,
     Day23LiveState,
