@@ -19,7 +19,7 @@ from app.day26_live_acceptance import _credential_keys
 from app.day27_live_acceptance import _insert_management_event, _load_account_token
 from app.day27_live_acceptance_retry import _RetryingMetaApiReadGateway
 from app.db import get_session_factory
-from app.metaapi_trade_gateway import MetaApiTradeGateway
+from app.retired_remote_broker_contracts import MetaApiTradeGateway
 from app.mt5_crypto import MetaApiTokenCipher
 from app.mt5_management_day27 import Day27ManagementError, Day27Mt5ManagementService
 
