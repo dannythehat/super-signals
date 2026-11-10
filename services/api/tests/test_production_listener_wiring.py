@@ -30,18 +30,18 @@ def test_canonical_listener_generation_and_router_are_mandatory(monkeypatch) -> 
         production.build_production_listener_manager()
 
 
-def test_canonical_manager_without_router_is_rejected(monkeypatch) -> None:
+def test_contabo_only_listener_continues_ingestion_without_old_broker_router(monkeypatch) -> None:
     import app.production_listener as production
 
     manager = object.__new__(production.CanonicalProductionTelegramListenerManager)
     manager._canonical_router = None
+    manager._ai_pipeline = None
     monkeypatch.setattr(
         production,
         "build_canonical_production_listener_manager",
         lambda **_: manager,
     )
-    with pytest.raises(RuntimeError, match="production_execution_router_missing"):
-        production.build_production_listener_manager()
+    assert production.build_production_listener_manager() is manager
 
 
 def test_main_source_has_no_day_numbered_listener_import() -> None:
