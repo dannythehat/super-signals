@@ -4,8 +4,8 @@ from types import SimpleNamespace
 
 import pytest
 
-from app.metaapi_gateway import MetaApiGatewayError
-from app.metaapi_read_gateway import MetaApiReadGateway
+from app.retired_remote_broker_contracts import MetaApiGatewayError
+from app.retired_remote_broker_contracts import MetaApiReadGateway
 from app.mt5_execution_day26 import Day26ExecutionError
 from app.paper_execution_priority import PaperExecutionPriorityService
 from app import paper_resilient_read_gateway as resilient
