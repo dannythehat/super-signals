@@ -11,6 +11,9 @@ import re
 from dataclasses import dataclass
 from uuid import uuid4
 
+# Intentionally not a URL: the former provider provisioning endpoint is retired.
+DEFAULT_METAAPI_PROVISIONING_URL = ""
+
 
 class MetaApiGatewayError(RuntimeError):
     def __init__(self, code: str = "retired_broker_api_disabled", *, retryable: bool = False) -> None:
