@@ -93,3 +93,11 @@ def test_compact_gold_sniper_zone_has_strict_deterministic_path() -> None:
     assert decision.extracted["entry_low"] == "4117"
     assert decision.extracted["entry_high"] == "4119"
     assert _fallback(text.replace("4119-17", "4102-99")) is None
+
+
+def test_gold_sniper_owner_demo_scope_allows_complete_shadow_setup_only() -> None:
+    text = "XAUUSD BUY 4119-17\nTP1: 4124\nTP2: 4129\nSL: 4107"
+    parse = ProductionAiMessagePipeline._deterministic_complete_gold_trade
+    assert parse(text, source_status="shadow") is None
+    assert parse(text, source_status="shadow", owner_demo_shadow=True) is not None
+    assert parse("GOLD BUY NOW 4119", source_status="shadow", owner_demo_shadow=True) is None
