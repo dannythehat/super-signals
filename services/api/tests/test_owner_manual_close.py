@@ -5,7 +5,7 @@ import pytest
 from fastapi import HTTPException
 
 import app.owner_manual_close as manual_close
-from app.metaapi_gateway import MetaApiGatewayError
+from app.retired_remote_broker_contracts import MetaApiGatewayError
 from app.owner_manual_close import OwnerManualCloseService
 from app.routes.manual_reconciliation_day36 import ManualActionResponse
 from app.routes.owner_manual_close import _owner
