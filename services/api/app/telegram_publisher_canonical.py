@@ -300,7 +300,7 @@ class CanonicalTelegramPublisherManager(Day34CutoverTelegramPublisherManager):
                 session.execute(text("""
                     UPDATE notification_events
                     SET audience='suppressed',
-                        payload=payload || '{"duplicate_cleanup_done":true}'::jsonb
+                        payload=payload || jsonb_build_object('duplicate_cleanup_done',true)
                     WHERE id=:id
                 """), {"id": row["id"]})
                 session.add(AuditEvent(
