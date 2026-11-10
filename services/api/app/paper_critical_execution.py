@@ -28,8 +28,8 @@ from sqlalchemy import text
 
 from app.critical_entry_policy import CriticalEntry, parse_critical_entries
 from app.layer_allocation import allocate_entry_targets
-from app.metaapi_gateway import MetaApiGatewayError
-from app.metaapi_pending_gateway import MetaApiPendingOrderGateway, MetaApiPendingOrderRequest
+from app.retired_remote_broker_contracts import MetaApiGatewayError
+from app.retired_remote_broker_contracts import MetaApiPendingOrderGateway, MetaApiPendingOrderRequest
 from app.mt5_execution_day26 import (
     Day26ExecutionError,
     Day26Mt5ExecutionService,
