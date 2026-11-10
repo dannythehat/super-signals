@@ -39,6 +39,7 @@ from app.bare_gold_now_policy import PROFILE, bare_now_side
 _PRECURSOR_CHAT_IDS = frozenset({-1001640332422, -1002068685216, -1001651583302, -1001649736978})
 _LOCKED_RISK_CHAT_IDS = frozenset({-1001640332422, -1002068685216, -1001651583302})
 _PRECURSOR_REASON = "provider_precursor_wait_for_structured_signal"
+_OWNER_DEMO_GOLD_SNIPER = -1001313672961
 _OPEN_GOLD_SIDE = re.compile(r"\b(BUY|BUYS|SELL|SELLS)\b", re.IGNORECASE)
 
 # A complete new setup must never be swallowed by the management parser merely because
@@ -318,18 +319,15 @@ class ProductionAiMessagePipeline(CanonicalAiMessagePipeline):
         raw_text: str,
         *,
         source_status: str,
+        owner_demo_shadow: bool = False,
     ) -> AiMessageDecision | None:
-        """Interpret only literal complete Gold trades when semantic AI is unavailable.
-
-        Shadow messages are evidence-only and never enter this execution fallback. No
-        value is inferred from provider history: every entry/SL/TP comes from this exact
-        message and is subsequently re-verified by ``apply_v1_message_policy``.
-        """
-        if str(source_status or "").strip().lower() not in {"testing", "live"}:
+        """Interpret only complete literal setups, then apply the canonical policy."""
+        status = str(source_status or "").strip().lower()
+        if status not in {"testing", "live"} and not (status == "shadow" and owner_demo_shadow):
             return None
 
         priced_now = _BARE_NOW_WITH_PRICE.fullmatch(raw_text or "")
-        if priced_now is not None:
+        if priced_now is not None and status != "shadow":
             side = (priced_now.group(1) or priced_now.group(2) or "").upper()
             return ProductionAiMessagePipeline._bare_trade_decision(raw_text, side)
 
@@ -482,9 +480,13 @@ class ProductionAiMessagePipeline(CanonicalAiMessagePipeline):
         if side is not None:
             return self._bare_trade_decision(raw_text, side)
 
+        owner_demo_shadow = (
+            source_status == "shadow" and self._source_chat_id(source_id) == _OWNER_DEMO_GOLD_SNIPER
+        )
         deterministic_trade = self._deterministic_complete_gold_trade(
             raw_text,
             source_status=source_status,
+            owner_demo_shadow=owner_demo_shadow,
         )
         if deterministic_trade is not None:
             profile = self._source_profile(source_id)
@@ -546,6 +548,7 @@ class ProductionAiMessagePipeline(CanonicalAiMessagePipeline):
             deterministic_trade = self._deterministic_complete_gold_trade(
                 raw_text,
                 source_status=source_status,
+                owner_demo_shadow=owner_demo_shadow,
             )
             if deterministic_trade is not None:
                 deterministic_trade = self._apply_profile(deterministic_trade, profile)
