@@ -230,7 +230,10 @@ async def _lifespan(application: FastAPI) -> AsyncIterator[None]:
     shadow_trade_manager: ShadowTradeManager | None = None
     stale_position_watchdog: StalePositionWatchdog | None = None
     day34_live_acceptance_task: asyncio.Task[None] | None = None
-    if broker_keys:
+    # Retire the legacy broker monitor/settlement/watchdog. The VPS owns all MT5
+    # positions, trade execution and follower reconciliation; Render only ingests
+    # Telegram, serves the bounded provider feed, and publishes confirmations.
+    if broker_keys and broker_transport() != "local_bridge":
         broker_cipher = MetaApiTokenCipher(broker_keys)
         selected_transport = broker_transport()
         broker = build_broker_gateways(
@@ -455,10 +458,9 @@ async def _lifespan(application: FastAPI) -> AsyncIterator[None]:
         _seed_telegram_at_startup_safely(),
         name="super-signals-telegram-startup-reconciliation",
     )
-    pu_preflight_task = asyncio.create_task(
-        check_pu_master_once(session_factory),
-        name="pu-master-read-only-preflight",
-    )
+    # The old PU Prime LIVE preflight targets a retired MT5 account. Never send
+    # commands to that worker; local Contabo reports cover the DEMO master.
+    pu_preflight_task: asyncio.Task[None] | None = None
     if stale_position_watchdog is not None:
         await stale_position_watchdog.start()
 
@@ -487,12 +489,13 @@ async def _lifespan(application: FastAPI) -> AsyncIterator[None]:
     try:
         yield
     finally:
-        if not pu_preflight_task.done():
-            pu_preflight_task.cancel()
-        try:
-            await pu_preflight_task
-        except asyncio.CancelledError:
-            pass
+        if pu_preflight_task is not None:
+            if not pu_preflight_task.done():
+                pu_preflight_task.cancel()
+            try:
+                await pu_preflight_task
+            except asyncio.CancelledError:
+                pass
         if not startup_telegram_task.done():
             startup_telegram_task.cancel()
         try:
