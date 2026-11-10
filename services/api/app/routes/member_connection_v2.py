@@ -25,7 +25,7 @@ from sqlalchemy.orm import Session
 
 from app.access_control import require_permission
 from app.db import get_db_session, get_session_factory
-from app.metaapi_gateway import MetaApiAccountState, MetaApiGatewayError, SUPER_SIGNALS_MAGIC
+from app.retired_remote_broker_contracts import MetaApiAccountState, MetaApiGatewayError, SUPER_SIGNALS_MAGIC
 from app.models import AuditEvent, User
 from app.mt5_account_profiles import Mt5AccountProfileService
 from app.mt5_connection_service import Mt5ConnectionError
