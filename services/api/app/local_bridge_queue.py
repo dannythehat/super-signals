@@ -11,7 +11,7 @@ from sqlalchemy import or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, sessionmaker
 
-from app.metaapi_gateway import MetaApiGatewayError
+from app.retired_remote_broker_contracts import MetaApiGatewayError
 from app.models import LocalBridgeCommand, LocalBridgeWorker
 
 TERMINAL_STATUSES = {"succeeded", "failed", "ambiguous"}
