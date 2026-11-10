@@ -4,7 +4,7 @@ from types import SimpleNamespace
 import pytest
 
 from app.critical_entry_policy import CriticalEntry
-from app.metaapi_trade_gateway import MetaApiTradeGateway
+from app.retired_remote_broker_contracts import MetaApiTradeGateway
 from app.paper_pending_gateway import PaperPendingOrderGateway, PaperPendingOrderRequest
 from app.trading_execution_canonical import CanonicalTradingExecutionService
 
