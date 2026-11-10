@@ -34,16 +34,12 @@ _PU_MASTER_FIRST_ACTIVATION = datetime.fromisoformat("2026-10-26T08:37:54.662+00
 
 
 def pu_mirror_effective_mode() -> str:
-    requested = os.getenv("SUPER_SIGNALS_PU_MIRROR_MODE", "off").strip().lower()
-    if os.getenv("RENDER_SERVICE_ID", "").strip() != _PU_MASTER_RENDER_SERVICE_ID:
-        return requested
-    # Explicit operational kill switch remains available without code changes.
-    if os.getenv("SUPER_SIGNALS_PU_MIRROR_EMERGENCY_STOP", "").strip() == "stop":
-        logger.error("PU MIRROR explicit emergency stop engaged")
-        return "off"
-    if requested != "execute":
-        logger.error("PU MIRROR environment drift: %r; enforcing pinned production execution", requested)
-    return "execute"
+    """Permanently retire the old Vantage -> PU Prime LIVE mirror.
+
+    This must never be reactivated by stale Render environment variables or
+    historical activation pins. The new 700207861 DEMO master is on Contabo.
+    """
+    return "off"
 
 
 def pu_mirror_effective_since() -> datetime | None:
