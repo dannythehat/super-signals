@@ -27,6 +27,7 @@ from zoneinfo import ZoneInfo
 
 from sqlalchemy import text
 
+from app.models import AuditEvent
 from app.running_daily_balance import account_value_days
 from app.telegram_publisher import PublicationAttempt, TelegramPublishError, _bot_api_call
 from app.telegram_publisher_day20 import LifecyclePublicationAttempt
@@ -247,6 +248,7 @@ class CanonicalTelegramPublisherManager(Day34CutoverTelegramPublisherManager):
     def _run_member_maintenance_safely(self) -> None:
         """Low-priority Telegram reconciliation that must never block fresh trades."""
         try:
+            self._cleanup_owner_demo_duplicate_events_safely()
             self._annotate_oct22_historical_settlements_safely()
             self._cleanup_accidental_historical_settlement_replay_safely()
             self._reconcile_financial_state_safely()
@@ -258,6 +260,56 @@ class CanonicalTelegramPublisherManager(Day34CutoverTelegramPublisherManager):
             self._sync_live_board_safely()
         except Exception:
             logger.exception("Telegram member maintenance failed safely; fresh publishing continues")
+
+    def _cleanup_owner_demo_duplicate_events_safely(self) -> None:
+        if self._bot_token is None or self._destination_chat_id is None:
+            return
+        with self._session_factory() as session:
+            rows = session.execute(text("""
+                SELECT n.id,d.telegram_message_id,d.destination_chat_id
+                FROM notification_events n
+                JOIN telegram_notification_deliveries d ON d.notification_id=n.id
+                WHERE n.kind='owner_demo_broker_event'
+                  AND n.payload->>'event' IN ('trade_entry','trade_exit')
+                  AND NOT (n.payload ? 'duplicate_cleanup_done')
+                  AND d.status='sent' AND d.destination_chat_id=:chat
+                  AND d.sent_at > now()-interval '47 hours'
+                  AND jsonb_array_length(n.payload->'fills') > 0
+                  AND NOT EXISTS (
+                      SELECT 1 FROM jsonb_array_elements(n.payload->'fills') AS fill
+                      WHERE NOT EXISTS (
+                          SELECT 1 FROM notification_events original
+                          JOIN telegram_notification_deliveries old ON old.notification_id=original.id
+                          WHERE original.event_key='owner-demo-deal:700207861:' || (fill->>'deal_id')
+                            AND old.status='sent' AND old.destination_chat_id=d.destination_chat_id
+                            AND old.telegram_message_id<>d.telegram_message_id
+                      )
+                  )
+                ORDER BY d.sent_at LIMIT 5
+            """), {"chat": self._destination_chat_id}).mappings().all()
+            for row in rows:
+                try:
+                    _bot_api_call(self._bot_token, "deleteMessage", {
+                        "chat_id": row["destination_chat_id"], "message_id": row["telegram_message_id"],
+                    })
+                except TelegramPublishError as exc:
+                    if "message to delete not found" not in exc.reason.lower():
+                        logger.warning("Owner duplicate cleanup failed message_id=%s code=%s",
+                                       row["telegram_message_id"], exc.code)
+                        continue
+                session.execute(text("""
+                    UPDATE notification_events
+                    SET audience='suppressed',
+                        payload=payload || '{"duplicate_cleanup_done":true}'::jsonb
+                    WHERE id=:id
+                """), {"id": row["id"]})
+                session.add(AuditEvent(
+                    actor_user_id=None, event_type="telegram.owner_demo_duplicate_removed",
+                    entity_type="notification_event", entity_id=row["id"],
+                    payload={"telegram_message_id": row["telegram_message_id"],
+                             "reason": "all_broker_deals_already_published"},
+                ))
+                session.commit()
 
     async def _run(self) -> None:
         """Publish fresh roots/updates before any slow Telegram reconciliation work."""

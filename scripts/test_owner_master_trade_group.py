@@ -55,5 +55,37 @@ class GroupedTelegramTests(unittest.TestCase):
         self.assertEqual(result["trade-exit:202"]["source"], "provider")
 
 
+
+
+class BrokerClockRegressionTests(unittest.TestCase):
+    def test_old_quote_cannot_change_a_confirmed_two_hour_broker_offset(self):
+        scope = relay["broker_offset"].__globals__
+        stale_tick = N(time_msc=int((NOW.timestamp()+7200-3600)*1000))
+        with patch.dict(scope, {"confirmed_broker_offset": lambda day: 7200, "mt5": N(symbol_info_tick=lambda _: stale_tick)}):
+            with self.assertRaisesRegex(RuntimeError, "master_broker_clock_stale"):
+                relay["broker_offset"](NOW)
+
+    def test_fresh_quote_uses_the_confirmed_broker_offset(self):
+        scope = relay["broker_offset"].__globals__
+        tick = N(time_msc=int((NOW.timestamp()+7200)*1000))
+        with patch.dict(scope, {"confirmed_broker_offset": lambda day: 7200, "mt5": N(symbol_info_tick=lambda _: tick)}):
+            self.assertEqual(relay["broker_offset"](NOW), 7200)
+
+    def test_legacy_published_fills_and_pre_cutover_captures_are_not_republished(self):
+        entries = [deal(100+i, i) for i in (1,2,3)]
+        exits = [deal(200+i, i, entry=1, seconds=-5, reason=4) for i in (1,2,3)]
+        known = {f"deal:{d.ticket}" for d in entries+exits}
+        self.assertEqual(dict(relay["group_events"](entries+exits, (), 7200, CUTOFF, NOW,
+                              lambda *_: ("4038.19","4052"), known)), {})
+        old = [deal(300+i, i, seconds=-600) for i in (1,2,3)]
+        self.assertEqual(dict(relay["group_events"](old, (), 7200, CUTOFF, NOW,
+                              lambda *_: ("4038.19","4052"))), {})
+
+    def test_unpublished_fill_after_cutover_survives_a_publisher_outage(self):
+        old = [deal(300+i, i, seconds=-600) for i in (1,2,3)]
+        events = dict(relay["group_events"](old, (), 7200, NOW-timedelta(hours=5), NOW,
+                              lambda *_: ("4038.19","4052")))
+        self.assertEqual(list(events), ["trade-entry:701"])
+
 if __name__ == "__main__":
     unittest.main()

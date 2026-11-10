@@ -11,6 +11,7 @@ import urllib.error
 import urllib.request
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
+from functools import lru_cache
 from pathlib import Path
 from urllib.parse import urlsplit
 
@@ -60,13 +61,24 @@ def connect():
         raise RuntimeError("master_broker_identity_mismatch")
 
 
+@lru_cache(maxsize=2)
+def confirmed_broker_offset(day):
+    import owner_demo_account_reporter as reporter
+    now = datetime.fromisoformat(day).replace(tzinfo=UTC) + timedelta(hours=12)
+    deals = mt5.history_deals_get(now - timedelta(days=14), now + timedelta(days=1))
+    if deals is None:
+        raise RuntimeError("broker_clock_confirmation_unavailable")
+    hours = reporter.offset_from_execution_journal(list(deals), now=now)
+    return hours * 3600
+
+
 def broker_offset(now):
     tick = mt5.symbol_info_tick("XAUUSD.s")
     if tick is None or not tick.time_msc:
         raise RuntimeError("master_broker_clock_unavailable")
-    broker = int(tick.time_msc) / 1000
-    offset = round((broker - now.timestamp()) / 3600) * 3600
-    if abs(offset) > 14 * 3600 or abs(broker - offset - now.timestamp()) > 30:
+    offset = confirmed_broker_offset(now.date().isoformat())
+    age = now.timestamp() - (int(tick.time_msc) / 1000 - offset)
+    if not -5 <= age <= 30:
         raise RuntimeError("master_broker_clock_stale")
     return offset
 
@@ -158,7 +170,8 @@ def group_events(history, positions, offset, cutoff, now, protection, known_keys
         entries = group["entries"]
         entry_key = f"trade-entry:{root}"
         complete = len({leg for _, leg in entries}) == group["expected"]
-        if entry_key not in known_keys and eligible(first) and (complete or now - stamp(first) >= timedelta(seconds=4)):
+        old_entry = all(f"deal:{d.ticket}" in known_keys for d, _ in entries)
+        if not old_entry and entry_key not in known_keys and eligible(first) and (complete or now - stamp(first) >= timedelta(seconds=4)):
             yield entry_key, base | dict(
                 event="trade_entry", occurred_at=stamp(first).isoformat(),
                 fills=[fill_payload(d, leg, protection(d, live.get(d.position_id))) for d, leg in entries if eligible(d)],
@@ -176,7 +189,8 @@ def group_events(history, positions, offset, cutoff, now, protection, known_keys
         for batch in batches:
             last = batch[-1][0]
             exit_key = f"trade-exit:{min(d.ticket for d, _ in batch)}"
-            if exit_key in known_keys or now - stamp(last) < timedelta(seconds=2):
+            if (exit_key in known_keys or all(f"deal:{d.ticket}" in known_keys for d, _ in batch)
+                    or now - stamp(last) < timedelta(seconds=2)):
                 continue
             relevant = [d for d, _ in entries + group_exits if (d.time_msc, d.ticket) <= (last.time_msc, last.ticket)]
             volume = sum(Decimal(str(d.volume)) * (1 if d.entry == 0 else -1) for d in relevant)
@@ -204,7 +218,7 @@ def group_events(history, positions, offset, cutoff, now, protection, known_keys
 
 def record(db, cutoff, now):
     known = frozenset(key for key, in db.execute(
-        "SELECT event_key FROM owner_master_broker_publication WHERE event_key LIKE 'trade-%'"
+        "SELECT event_key FROM owner_master_broker_publication"
     ))
     events = list(capture(cutoff, now, known))
     with db:
@@ -235,6 +249,8 @@ def deliver(db, url, token):
                 if not isinstance(message_id, int) or message_id <= 0:
                     raise RuntimeError("sent_receipt_missing_telegram_message_id")
                 emit("broker_event_telegram_delivered", key=key, telegram_message_id=message_id)
+            elif state == "duplicate":
+                emit("duplicate_broker_event_suppressed", key=key, original_message_id=message_id)
             elif state == "failed":
                 emit("broker_event_telegram_delivery_failed", key=key)
             elif state == "rate_limited":

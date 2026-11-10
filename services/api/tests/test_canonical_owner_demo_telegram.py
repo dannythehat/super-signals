@@ -24,3 +24,39 @@ def test_sql_helper_uses_explicit_placement_alias() -> None:
     assert "owner_placement.event_type=" in sql
     assert "owner_placement.payload->>'master_login'" in sql
     assert "placed.event_type=" not in sql
+
+
+def test_confirmed_duplicate_cleanup_deletes_only_the_proved_message_and_records_receipt(monkeypatch):
+    from unittest.mock import MagicMock
+    from app import telegram_publisher_canonical as publication
+    manager = object.__new__(publication.CanonicalTelegramPublisherManager)
+    manager._bot_token = 'test-only'
+    manager._destination_chat_id = '-100123'
+    session = MagicMock()
+    session.__enter__.return_value = session
+    session.execute.return_value.mappings.return_value.all.return_value = [
+        {'id': '54e69aec-e916-4cf7-ae4e-8ff1a6a411ca', 'telegram_message_id': 1203,
+         'destination_chat_id': '-100123'}]
+    manager._session_factory = lambda: session
+    api = MagicMock(return_value=True)
+    monkeypatch.setattr(publication, '_bot_api_call', api)
+    manager._cleanup_owner_demo_duplicate_events_safely()
+    api.assert_called_once_with('test-only', 'deleteMessage', {'chat_id': '-100123', 'message_id': 1203})
+    assert session.add.call_args.args[0].event_type == 'telegram.owner_demo_duplicate_removed'
+    session.commit.assert_called_once()
+
+
+def test_cleanup_keeps_unproven_posts(monkeypatch):
+    from unittest.mock import MagicMock
+    from app import telegram_publisher_canonical as publication
+    manager = object.__new__(publication.CanonicalTelegramPublisherManager)
+    manager._bot_token, manager._destination_chat_id = 'test-only', '-100123'
+    session = MagicMock()
+    session.__enter__.return_value = session
+    manager._session_factory = lambda: session
+    api = MagicMock()
+    monkeypatch.setattr(publication, '_bot_api_call', api)
+    session.execute.return_value.mappings.return_value.all.return_value = []
+    manager._cleanup_owner_demo_duplicate_events_safely()
+    api.assert_not_called()
+    session.commit.assert_not_called()

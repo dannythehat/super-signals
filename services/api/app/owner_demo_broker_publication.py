@@ -203,6 +203,16 @@ def queue_broker_notice(event: BrokerDealNotice | BrokerPositionUpdate | BrokerT
                 payload.update(matches[0])
                 if isinstance(event, (BrokerTradeNotice, BrokerTradeProtection)):
                     key, title, body = broker_notification(event, now, provider_name=matches[0]["provider_name"])
+        if isinstance(event, BrokerTradeNotice):
+            originals = session.execute(text("""
+                SELECT n.event_key,d.telegram_message_id
+                FROM notification_events n
+                JOIN telegram_notification_deliveries d ON d.notification_id=n.id
+                WHERE n.event_key=ANY(:keys) AND d.status='sent'
+                  AND d.telegram_message_id IS NOT NULL
+            """), {"keys": [f"owner-demo-deal:700207861:{f.deal_id}" for f in event.fills]}).mappings().all()
+            if len({row["event_key"] for row in originals}) == len(event.fills):
+                return {"status": "duplicate", "telegram_message_id": originals[-1]["telegram_message_id"]}
         new_id = session.execute(text("""
             INSERT INTO notification_events (
                 event_key,signal_id,lifecycle_event_id,user_id,audience,kind,title,body,payload
