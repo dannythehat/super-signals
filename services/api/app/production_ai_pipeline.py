@@ -32,11 +32,11 @@ from app.ai_message_pipeline_canonical import (
     CanonicalAiMessagePipeline,
     explicit_management_without_ai,
 )
-from app.ai_message_supervisor import AiMessageDecision, AiSupervisorError
+from app.ai_message_supervisor import AiMessageDecision, AiSupervisorError, expand_compact_gold_zone
 from app.bare_gold_now_policy import PROFILE, bare_now_side
 
-# Canonical GTMO, GTMO mirror (kept paused), and FXTradingVision.
-_PRECURSOR_CHAT_IDS = frozenset({-1001640332422, -1002068685216, -1001651583302})
+# Canonical GTMO, GTMO mirror (kept paused), FXTradingVision, and XAUUSD GOLD PIPS.
+_PRECURSOR_CHAT_IDS = frozenset({-1001640332422, -1002068685216, -1001651583302, -1001649736978})
 _LOCKED_RISK_CHAT_IDS = frozenset({-1001640332422, -1002068685216, -1001651583302})
 _PRECURSOR_REASON = "provider_precursor_wait_for_structured_signal"
 _OPEN_GOLD_SIDE = re.compile(r"\b(BUY|BUYS|SELL|SELLS)\b", re.IGNORECASE)
@@ -76,6 +76,14 @@ _BARE_NOW_WITH_PRICE = re.compile(
 _STRICT_GOLD_HEADER = re.compile(
     r"^\s*#?\s*(?:(?:XAUUSD|GOLD)\s+(BUY|SELL)|(BUY|SELL)\s+(?:XAUUSD|GOLD))"
     r"\s*(?:@|:)?\s*(\d+(?:\.\d+)?)(?:\s*[-–]\s*(\d+(?:\.\d+)?))?\s*$",
+    re.IGNORECASE,
+)
+_STRICT_GOLD_NOW_HEADER = re.compile(
+    r"^#?(?:(?:XAUUSD|GOLD)\s+(BUY|SELL)|(BUY|SELL)\s+(?:XAUUSD|GOLD))\s+NOW$",
+    re.IGNORECASE,
+)
+_STRICT_GOLD_ENTRY_ZONE = re.compile(
+    r"^ENTRY\s+ZONE\s*[:=]\s*(\d+(?:\.\d+)?)\s*[-–]\s*(\d+(?:\.\d+)?)$",
     re.IGNORECASE,
 )
 _STRICT_GOLD_SL = re.compile(
@@ -336,11 +344,23 @@ class ProductionAiMessagePipeline(CanonicalAiMessagePipeline):
             return None
 
         header = _STRICT_GOLD_HEADER.fullmatch(lines[0])
-        if header is None:
-            return None
+        if header is not None:
+            entry_a = header.group(3)
+            entry_b = header.group(4) or entry_a
+        else:
+            header = _STRICT_GOLD_NOW_HEADER.fullmatch(lines[0])
+            zone = _STRICT_GOLD_ENTRY_ZONE.fullmatch(lines[1])
+            if header is None or zone is None:
+                return None
+            entry_a, entry_b = zone.groups()
+            lines = [lines[0], *lines[2:]]
         side = (header.group(1) or header.group(2) or "").upper()
-        entry_a = header.group(3)
-        entry_b = header.group(4) or entry_a
+
+        if len(entry_b) == 2 and entry_b.isdigit() and len(entry_a) > 2:
+            expanded = expand_compact_gold_zone(entry_a, entry_b)
+            if expanded is None:
+                return None
+            entry_b = expanded
 
         stop_loss: str | None = None
         indexed_targets: dict[int, str] = {}

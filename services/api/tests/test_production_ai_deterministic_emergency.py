@@ -53,3 +53,43 @@ def test_incomplete_or_foreign_signal_stays_fail_closed() -> None:
     assert _fallback("XAUUSD BUY 4125") is None
     assert _fallback("BTCUSD BUY 4125\nSL 4115\nTP 4145") is None
     assert _fallback("XAUUSD BUY 4125\nSL 4115\nTP 4145", source_status="shadow") is None
+
+
+_GOLD_PIPS_59216 = """GOLD BUY NOW
+
+ENTRY ZONE: 4075 – 4070
+
+TP 1: 4077
+TP 2: 4087
+
+SL: 4065"""
+
+
+def test_gold_pips_multiline_entry_zone_uses_only_current_message() -> None:
+    decision = _fallback(_GOLD_PIPS_59216)
+
+    assert decision is not None
+    assert decision.action == "execute"
+    assert decision.extracted["side"] == "BUY"
+    assert decision.extracted["entry_low"] == "4070"
+    assert decision.extracted["entry_high"] == "4075"
+    assert decision.extracted["stop_loss"] == "4065"
+    assert decision.extracted["take_profits"] == ["4077", "4087"]
+
+
+def test_gold_pips_entry_zone_rejects_incomplete_or_wrong_side_geometry() -> None:
+    assert _fallback(_GOLD_PIPS_59216.replace("SL: 4065", "")) is None
+    assert _fallback(_GOLD_PIPS_59216.replace("ENTRY ZONE: 4075 – 4070", "4075 – 4070")) is None
+    decision = _fallback(_GOLD_PIPS_59216.replace("BUY", "SELL"))
+    assert decision is not None
+    assert decision.action != "execute"
+
+
+def test_compact_gold_sniper_zone_has_strict_deterministic_path() -> None:
+    text = "XAUUSD BUY 4119-17\nTP1: 4124\nTP2: 4129\nSL: 4107"
+    decision = _fallback(text)
+    assert decision is not None
+    assert decision.action == "execute"
+    assert decision.extracted["entry_low"] == "4117"
+    assert decision.extracted["entry_high"] == "4119"
+    assert _fallback(text.replace("4119-17", "4102-99")) is None
