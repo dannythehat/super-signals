@@ -2,6 +2,10 @@
 from __future__ import annotations
 from datetime import datetime, timezone, timedelta
 from decimal import Decimal
+from pathlib import Path
+import runpy
+import sys
+from types import SimpleNamespace
 
 import pytest
 from fastapi import HTTPException
@@ -53,3 +57,28 @@ def test_stale_or_incorrect_account_read_is_rejected():
     with pytest.raises(HTTPException) as exc:
         _validate(report, now=report.captured_at + timedelta(seconds=5))
     assert exc.value.detail == "broker_equity_mismatch"
+
+
+@pytest.mark.parametrize("relay_route", ("confirmed-execution", "broker-publication"))
+def test_broker_report_accepts_both_existing_relay_routes(monkeypatch, relay_route):
+    account = SimpleNamespace(
+        login=700207861, server="PUPrime-Demo", trade_mode=0, currency="USD",
+        balance=10090.26, equity=10090.26, profit=0, credit=0,
+    )
+    mt5 = SimpleNamespace(
+        ACCOUNT_TRADE_MODE_DEMO=0, initialize=lambda **_: True,
+        account_info=lambda: account, terminal_info=lambda: SimpleNamespace(connected=True),
+        history_deals_get=lambda *_: [], positions_get=lambda: [], shutdown=lambda: None,
+    )
+    base = "https://super-signals.example/internal/local-bridge/v1/owner-demo-700207861-"
+    relay = SimpleNamespace(credentials=lambda: (base + relay_route, "test-credential"))
+    monkeypatch.setitem(sys.modules, "MetaTrader5", mt5)
+    monkeypatch.setitem(sys.modules, "owner_master_telegram_relay", relay)
+    script = Path(__file__).resolve().parents[3] / "scripts" / "owner_demo_account_reporter.py"
+    verified_snapshot = runpy.run_path(str(script))["verified_snapshot"]
+    monkeypatch.setitem(verified_snapshot.__globals__, "offset_from_execution_journal", lambda *_, **__: 2)
+
+    url, _, payload, _ = verified_snapshot()
+    assert url == base + "account-report"
+    assert payload["master_login"] == 700207861
+    assert payload["balance"] == "10090.26"

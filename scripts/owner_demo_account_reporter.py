@@ -78,7 +78,7 @@ def verified_snapshot():
     import owner_master_telegram_relay as relay
 
     receipt_url, token = relay.credentials()
-    if not receipt_url.endswith("/owner-demo-700207861-confirmed-execution"):
+    if not receipt_url.endswith(("/owner-demo-700207861-confirmed-execution", "/owner-demo-700207861-broker-publication")):
         raise RuntimeError("existing_bridge_api_identity_mismatch")
     url = receipt_url.rsplit("/", 1)[0] + ENDPOINT.removeprefix("/internal/local-bridge/v1")
     now = datetime.now(timezone.utc)
