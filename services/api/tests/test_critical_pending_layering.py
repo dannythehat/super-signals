@@ -8,9 +8,9 @@ from app.critical_entry_policy import (
     augment_management_actions,
     parse_critical_entries,
 )
-from app.metaapi_gateway import MetaApiGatewayError
-from app.metaapi_pending_gateway import MetaApiPendingOrderGateway
-from app.metaapi_trade_gateway import MetaApiTradeGateway
+from app.retired_remote_broker_contracts import MetaApiGatewayError
+from app.retired_remote_broker_contracts import MetaApiPendingOrderGateway
+from app.retired_remote_broker_contracts import MetaApiTradeGateway
 from app.mt5_management_day27 import Day27ManagementError
 from app.paper_critical_execution import PaperCriticalExecutionService
 from app.paper_critical_management import PaperCriticalManagementService, _LayerPosition
