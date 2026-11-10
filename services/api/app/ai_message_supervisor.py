@@ -219,12 +219,31 @@ def _decimal(value: Any) -> Decimal | None:
     return parsed
 
 
+_COMPACT_GOLD_ZONE = re.compile(
+    r"(?<![A-Za-z0-9_.])([1-9]\d{3})\s*[-–]\s*(\d{2})(?![A-Za-z0-9_.])"
+)
+
+
 def _literal_numbers(raw_text: str) -> set[Decimal]:
+    """Literal prices plus bounded, unambiguous same-hundred shorthand.
+
+    A provider's 4119-17 explicitly denotes the 4117–4119 zone. This
+    normalisation proves that boundary ONLY when the short suffix is two
+    digits and within 30 price units of the fully printed four-digit price.
+    Cross-hundred shorthand (4102-99), decimal shorthand and unrelated
+    numbers remain unverified. No old messages are used.
+    """
     values: set[Decimal] = set()
     for token in _NUMBER_TOKEN.findall(raw_text):
         parsed = _decimal(token)
         if parsed is not None:
             values.add(parsed.normalize())
+    for match in _COMPACT_GOLD_ZONE.finditer(raw_text):
+        anchor = int(match.group(1))
+        suffix = int(match.group(2))
+        expanded = (anchor // 100) * 100 + suffix
+        if 0 < abs(anchor - expanded) <= 30:
+            values.add(Decimal(expanded))
     return values
 
 

@@ -24,13 +24,13 @@ from dataclasses import replace
 from decimal import Decimal, InvalidOperation
 from typing import Any
 
-from app.ai_message_supervisor import AiMessageDecision
+from app.ai_message_supervisor import AiMessageDecision, _literal_numbers
 from app.bare_gold_now_policy import PROFILE as BARE_NOW_PROFILE, bare_now_side
 from app.critical_entry_policy import augment_management_actions, envelope, parse_critical_entries
 from app.day27_management_policy import extract_day27_management_actions
 from app.provider_management_language_audit import is_management_language_candidate
 
-_NUMBER_TOKEN = re.compile(r"(?<![A-Za-z0-9_.])\d+(?:\.\d+)?(?![A-Za-z0-9_.])")
+
 # Providers commonly print the same instrument as XAUUSD, XAU/USD or XAU USD.
 # These are literal aliases of the one supported instrument, not context inference.
 _INSTRUMENT = re.compile(r"\b(?:XAU\s*(?:/\s*)?USD|GOLD)\b", re.IGNORECASE)
@@ -102,13 +102,7 @@ def _decimal(value: Any) -> Decimal | None:
     return parsed
 
 
-def _literal_numbers(raw_text: str) -> set[Decimal]:
-    values: set[Decimal] = set()
-    for token in _NUMBER_TOKEN.findall(raw_text):
-        parsed = _decimal(token)
-        if parsed is not None:
-            values.add(parsed.normalize())
-    return values
+
 
 
 def _profile_supplies_xauusd(source_profile: str | None) -> bool:
