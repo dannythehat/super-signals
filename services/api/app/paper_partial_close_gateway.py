@@ -7,8 +7,8 @@ outside the gateway so broker minimum/step rules can be validated before this ca
 
 from __future__ import annotations
 
-from app.metaapi_gateway import MetaApiGatewayError
-from app.metaapi_trade_gateway import MetaApiTradeGateway
+from app.retired_remote_broker_contracts import MetaApiGatewayError
+from app.retired_remote_broker_contracts import MetaApiTradeGateway
 
 
 class PaperPartialCloseGateway:
