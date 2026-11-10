@@ -1,4 +1,4 @@
-"""Select MetaAPI or the local MT5 bridge at one production wiring seam."""
+"""Broker gateway factory. Contabo-hosted MT5 local bridge is the only live transport."""
 
 from __future__ import annotations
 
@@ -14,24 +14,22 @@ from app.local_bridge_gateways import (
     LocalBridgeTradeGateway,
 )
 from app.local_bridge_queue import LocalBridgeQueue
-from app.metaapi_margin_gateway import MetaApiMarginGateway
-from app.metaapi_read_gateway import MetaApiReadGateway
-from app.metaapi_trade_gateway import MetaApiTradeGateway
-from app.paper_resilient_read_gateway import PaperResilientMetaApiReadGateway
 
 
 @dataclass(frozen=True, slots=True)
 class BrokerGateways:
-    read: MetaApiReadGateway
-    trade: MetaApiTradeGateway
-    margin: MetaApiMarginGateway
+    read: LocalBridgeReadGateway
+    trade: LocalBridgeTradeGateway
+    margin: LocalBridgeMarginGateway
 
 
 def broker_transport() -> str:
-    value = os.getenv("SUPER_SIGNALS_BROKER_TRANSPORT", "metaapi").strip().lower()
-    if value not in {"metaapi", "local_bridge"}:
-        raise ValueError("broker_transport_invalid")
-    return value
+    """Never instantiate the retired third-party MetaAPI broker transport.
+
+    Even an obsolete SUPER_SIGNALS_BROKER_TRANSPORT=metaapi variable cannot
+    reactivate remote execution. All broker I/O goes through the local MT5 bridge.
+    """
+    return "local_bridge"
 
 
 def build_broker_gateways(
@@ -40,22 +38,7 @@ def build_broker_gateways(
     resilient_reads: bool = True,
     timeout_seconds: float | None = None,
 ) -> BrokerGateways:
-    if broker_transport() == "metaapi":
-        read: MetaApiReadGateway
-        if resilient_reads:
-            read = PaperResilientMetaApiReadGateway(
-                **({"timeout_seconds": timeout_seconds} if timeout_seconds else {})
-            )
-        else:
-            read = MetaApiReadGateway(
-                **({"timeout_seconds": timeout_seconds} if timeout_seconds else {})
-            )
-        return BrokerGateways(
-            read=read,
-            trade=MetaApiTradeGateway(),
-            margin=MetaApiMarginGateway(),
-        )
-
+    # No MetaAPI fallback, including when a local bridge is unavailable.
     profile = os.getenv("SUPER_SIGNALS_LOCAL_BRIDGE_PROFILE", "super-signals").strip()
     command_timeout = float(os.getenv("SUPER_SIGNALS_LOCAL_BRIDGE_COMMAND_TIMEOUT_SECONDS", "30"))
     queue = LocalBridgeQueue(
