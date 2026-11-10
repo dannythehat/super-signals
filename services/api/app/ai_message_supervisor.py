@@ -224,6 +224,14 @@ _COMPACT_GOLD_ZONE = re.compile(
 )
 
 
+def expand_compact_gold_zone(anchor: str, suffix: str) -> str | None:
+    if not re.fullmatch(r"[1-9]\d{3}", anchor) or not re.fullmatch(r"\d{2}", suffix):
+        return None
+    first = int(anchor)
+    expanded = (first // 100) * 100 + int(suffix)
+    return str(expanded) if 0 < abs(first - expanded) <= 30 else None
+
+
 def _literal_numbers(raw_text: str) -> set[Decimal]:
     """Literal prices plus bounded, unambiguous same-hundred shorthand.
 
@@ -239,10 +247,8 @@ def _literal_numbers(raw_text: str) -> set[Decimal]:
         if parsed is not None:
             values.add(parsed.normalize())
     for match in _COMPACT_GOLD_ZONE.finditer(raw_text):
-        anchor = int(match.group(1))
-        suffix = int(match.group(2))
-        expanded = (anchor // 100) * 100 + suffix
-        if 0 < abs(anchor - expanded) <= 30:
+        expanded = expand_compact_gold_zone(*match.groups())
+        if expanded is not None:
             values.add(Decimal(expanded))
     return values
 
