@@ -23,8 +23,8 @@ from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from app.db import get_engine, get_session_factory
-from app.metaapi_read_gateway import MetaApiReadGateway
-from app.metaapi_trade_gateway import MetaApiTradeGateway
+from app.retired_remote_broker_contracts import MetaApiReadGateway
+from app.retired_remote_broker_contracts import MetaApiTradeGateway
 from app.mt5_crypto import MetaApiTokenCipher
 from app.performance_runtime import CanonicalPerformanceRuntimeService
 
