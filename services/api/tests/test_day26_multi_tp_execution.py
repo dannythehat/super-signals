@@ -7,7 +7,7 @@ import httpx
 import pytest
 
 import app.mt5_execution_day26 as day26_module
-from app.metaapi_trade_gateway import MetaApiMarketOrderResult, MetaApiTradeGateway
+from app.retired_remote_broker_contracts import MetaApiMarketOrderResult, MetaApiTradeGateway
 from app.mt5_execution_day26 import (
     Day26ExecutionError,
     Day26MappedPosition,
