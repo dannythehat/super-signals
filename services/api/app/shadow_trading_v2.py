@@ -26,8 +26,8 @@ from sqlalchemy import text
 from sqlalchemy.orm import Session, sessionmaker
 
 from app.critical_entry_policy import CriticalEntry, parse_critical_entries
-from app.metaapi_gateway import MetaApiGatewayError
-from app.metaapi_read_gateway import MetaApiReadGateway
+from app.retired_remote_broker_contracts import MetaApiGatewayError
+from app.retired_remote_broker_contracts import MetaApiReadGateway
 from app.mt5_crypto import BrokerCredentialDecryptionError, MetaApiTokenCipher
 from app.provider_fairness import (
     BENCHMARK_MODEL,
