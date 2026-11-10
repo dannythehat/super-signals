@@ -9,7 +9,7 @@ from uuid import UUID
 
 from sqlalchemy import text
 
-from app.metaapi_gateway import MetaApiGatewayError
+from app.retired_remote_broker_contracts import MetaApiGatewayError
 from app.models import AuditEvent
 from app.mt5_connection_service import Mt5ConnectionError, Mt5ConnectionView
 from app.mt5_connection_service_day22 import Day22Mt5DemoConnectionService
