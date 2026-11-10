@@ -16,7 +16,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from decimal import Decimal
 
-from app.metaapi_margin_gateway import MetaApiMarginGateway
+from app.retired_remote_broker_contracts import MetaApiMarginGateway
 from app.mt5_read_service_day23 import Day23LiveState, Day23Mt5ReadService, Day23ReadError
 from app.risk_sizing_day24 import Day24RiskSizingResult
 
