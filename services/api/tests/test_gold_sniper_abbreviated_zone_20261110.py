@@ -38,7 +38,10 @@ def test_gold_sniper_short_range_is_literal_evidence():
 def test_gold_sniper_zone_can_pass_both_execution_gates():
     raw = RAW.replace("\\n", "\n")
     ai_guard = _guard_execute_decision({**_decision().extracted, "decision": "new_trade", "action": "execute"}, raw)
-    assert ai_guard["action"] == "execute"
+    # The early supervisor still refuses ranges; the canonical policy handles
+    # supported complete zones after verifying all literal price evidence.
+    assert ai_guard["action"] == "skip"
+    assert ai_guard["reason"] == "unsupported_entry_range"
     policy = apply_v1_message_policy(_decision(), raw_text=raw)
     assert policy.action == "execute"
     assert policy.extracted["entry_low"] == "4117"
