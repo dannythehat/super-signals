@@ -13,7 +13,7 @@ from pydantic import BaseModel, Field
 
 from app.db import get_session_factory, get_owner_feed_session_factory
 from app.local_bridge_queue import LocalBridgeQueue
-from app.metaapi_gateway import MetaApiGatewayError
+from app.retired_remote_broker_contracts import MetaApiGatewayError
 from app.pu_broker_readiness import assess_broker_preflight
 from app.owner_demo_account_reporting import OwnerDemoAccountReport, queue_owner_demo_report
 
