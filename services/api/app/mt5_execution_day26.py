@@ -22,10 +22,10 @@ from uuid import UUID, uuid4
 from sqlalchemy import text
 from sqlalchemy.orm import Session, sessionmaker
 
-from app.metaapi_gateway import MetaApiGatewayError
-from app.metaapi_margin_gateway import MetaApiMarginGateway
-from app.metaapi_read_gateway import MetaApiReadGateway
-from app.metaapi_trade_gateway import MetaApiTradeGateway
+from app.retired_remote_broker_contracts import MetaApiGatewayError
+from app.retired_remote_broker_contracts import MetaApiMarginGateway
+from app.retired_remote_broker_contracts import MetaApiReadGateway
+from app.retired_remote_broker_contracts import MetaApiTradeGateway
 from app.models import AuditEvent
 from app.mt5_crypto import BrokerCredentialDecryptionError, MetaApiTokenCipher
 from app.mt5_read_service_day23 import (
