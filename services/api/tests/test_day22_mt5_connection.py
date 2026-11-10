@@ -1,6 +1,6 @@
 from cryptography.fernet import Fernet
 
-from app.metaapi_gateway import MetaApiAccountState, MetaApiProvisioningGateway
+from app.retired_remote_broker_contracts import MetaApiAccountState, MetaApiProvisioningGateway
 from app.mt5_connection_manager import (
     DEFAULT_REFRESH_SECONDS,
     MINIMUM_REFRESH_SECONDS,
