@@ -161,8 +161,9 @@ async def read_messages_with_entity_recovery(
                 raise
 
         missing_until[target] = time.monotonic() + _COOLDOWN_SECONDS
-        logger.info(
-            "Telegram source is no longer present in this reader; deferring history recovery for %.0fs",
+        logger.warning(
+            "Telegram source %s is absent from the assigned reader; deferring history recovery for %.0fs",
+            target,
             _COOLDOWN_SECONDS,
         )
         return []
