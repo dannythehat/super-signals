@@ -13,6 +13,8 @@ from uuid import uuid4
 
 # Intentionally not a URL: the former provider provisioning endpoint is retired.
 DEFAULT_METAAPI_PROVISIONING_URL = ""
+# Historical MT5 magic identifier, retained solely for backwards compatibility.
+SUPER_SIGNALS_MAGIC = 220022
 
 
 class MetaApiGatewayError(RuntimeError):
