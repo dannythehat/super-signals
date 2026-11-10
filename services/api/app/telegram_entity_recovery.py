@@ -13,13 +13,17 @@ from __future__ import annotations
 
 import logging
 import time
+from datetime import datetime, timezone
 from typing import Any
+
+from telethon.errors import RPCError
 
 logger = logging.getLogger(__name__)
 
 _COOLDOWN_SECONDS = 300.0
 _TRANSIENT_HISTORY_COOLDOWN_SECONDS = 30.0
 _TELETHON_CHANNEL_MARK = 1_000_000_000_000
+_PUBLIC_HISTORY_SOURCES = {-1001651583302: "fxtradingvision"}
 
 # A cold Telethon StringSession can legitimately know a numeric channel id without
 # knowing the access hash needed for a history read. Only those entity-resolution
@@ -95,6 +99,7 @@ async def read_messages_with_entity_recovery(
     client: Any,
     entity: Any,
     *args: Any,
+    allow_verified_public_history: bool = False,
     **kwargs: Any,
 ) -> Any:
     """Read Telegram history, resolving one cold numeric channel through dialogs.
@@ -111,6 +116,13 @@ async def read_messages_with_entity_recovery(
     """
     if _history_outage_active(client) or _known_missing_entity(client, entity):
         return []
+
+    public_name = None
+    if allow_verified_public_history and isinstance(entity, int):
+        public_name = _PUBLIC_HISTORY_SOURCES.get(entity)
+    public_history = getattr(client, "_super_signals_public_history", None)
+    if public_name and public_history is not None:
+        return await _read_forward_public_history(client, *public_history, args, kwargs)
 
     try:
         return await client.get_messages(entity, *args, **kwargs)
@@ -146,7 +158,7 @@ async def read_messages_with_entity_recovery(
                 break
 
             missing_until.pop(target, None)
-            logger.info("Recovered Telegram input entity for history reconciliation")
+            logger.info("Recovered Telegram input entity for history reconciliation chat_id=%d", target)
             try:
                 return await client.get_messages(input_entity, *args, **kwargs)
             except ValueError as retry_exc:
@@ -160,13 +172,42 @@ async def read_messages_with_entity_recovery(
                     return []
                 raise
 
+        if public_name:
+            try:
+                peer = await client.get_input_entity(public_name)
+            except (ValueError, RPCError) as exc:
+                logger.warning("Telegram public source lookup failed chat_id=%d error=%s", target, type(exc).__name__)
+            else:
+                if getattr(peer, "channel_id", None) == canonical_target:
+                    # A reader outside the channel has no push subscription. Use the
+                    # existing bounded history sweep only for posts after this cutover.
+                    public_history = (peer, datetime.now(timezone.utc))
+                    client._super_signals_public_history = public_history
+                    messages = await client.get_messages(peer, *args, **kwargs)
+                    logger.warning(
+                        "Telegram push reader lacks source dialog; verified public recovery chat_id=%d "
+                        "username=%s newest_message_id=%s", target, public_name,
+                        getattr(next(iter(messages), None), "id", None),
+                    )
+                    return _forward_messages(messages, public_history[1])
+                logger.warning("Telegram public source peer mismatch chat_id=%d username=%s", target, public_name)
+
         missing_until[target] = time.monotonic() + _COOLDOWN_SECONDS
-        logger.warning(
-            "Telegram source %s is absent from the assigned reader; deferring history recovery for %.0fs",
-            target,
-            _COOLDOWN_SECONDS,
-        )
+        logger.warning("Telegram source absent from reader dialogs chat_id=%d retry_in_seconds=%.0f",
+                       target, _COOLDOWN_SECONDS)
         return []
+
+
+async def _read_forward_public_history(client, peer, cutover, args, kwargs):
+    messages = await client.get_messages(peer, *args, **kwargs)
+    return _forward_messages(messages, cutover)
+
+
+def _forward_messages(messages, cutover):
+    return [
+        message for message in messages
+        if getattr(message, "date", None) is not None and message.date > cutover
+    ]
 
 
 __all__ = ["_canonical_channel_id", "read_messages_with_entity_recovery"]

@@ -1,3 +1,4 @@
+from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
 import pytest
@@ -96,3 +97,43 @@ async def test_telegram_internal_failure_pauses_history_without_dialog_hammering
     assert second == []
     assert len(client.calls) == 1
     assert client.dialog_calls == 0
+
+
+@pytest.mark.asyncio
+async def test_fxtradingvision_public_fallback_pins_peer_and_ignores_old_posts() -> None:
+    class PublicClient(_Client):
+        async def get_input_entity(self, entity):
+            assert entity == "fxtradingvision"
+            return SimpleNamespace(channel_id=1651583302)
+
+        async def get_messages(self, entity, *args, **kwargs):
+            if isinstance(entity, int):
+                return await super().get_messages(entity, *args, **kwargs)
+            self.calls.append((entity, kwargs))
+            return self.messages
+
+    client = PublicClient([], numeric_error="cold entity cache")
+    client.messages = [SimpleNamespace(id=1, date=datetime.now(timezone.utc) - timedelta(minutes=1))]
+    assert await read_messages_with_entity_recovery(
+        client, -1001651583302, limit=50, allow_verified_public_history=True,
+    ) == []
+    client.messages.append(SimpleNamespace(id=2, date=datetime.now(timezone.utc)))
+    result = await read_messages_with_entity_recovery(
+        client, -1001651583302, limit=50, allow_verified_public_history=True,
+    )
+    assert [message.id for message in result] == [2]
+    assert client.dialog_calls == 1
+
+
+@pytest.mark.asyncio
+async def test_public_fallback_rejects_a_renamed_or_reassigned_handle() -> None:
+    class WrongPeerClient(_Client):
+        async def get_input_entity(self, entity):
+            return SimpleNamespace(channel_id=1111111111)
+
+    client = WrongPeerClient([], numeric_error="cold entity cache")
+    result = await read_messages_with_entity_recovery(
+        client, -1001651583302, limit=50, allow_verified_public_history=True,
+    )
+    assert result == []
+    assert len(client.calls) == 1
