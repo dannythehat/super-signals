@@ -16,6 +16,10 @@ from uuid import uuid4
 DEFAULT_METAAPI_PROVISIONING_URL = ""
 # Historical MT5 magic identifier, retained solely for backwards compatibility.
 SUPER_SIGNALS_MAGIC = 220022
+# Generic MT5 command validation, used by the local bridge only.
+_REGION = re.compile(r"^[a-z0-9-]{2,64}$")
+_CLIENT_ID = re.compile(r"^[A-Za-z0-9]+_[A-Za-z0-9]+_[A-Za-z0-9]+$")
+_MAX_CLIENT_ID_LENGTH = 26
 
 
 class MetaApiGatewayError(RuntimeError):
