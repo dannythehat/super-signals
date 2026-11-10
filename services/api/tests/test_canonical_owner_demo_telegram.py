@@ -37,6 +37,10 @@ def test_confirmed_duplicate_cleanup_deletes_only_the_proved_message_and_records
     session.execute.return_value.mappings.return_value.all.return_value = [
         {'id': '54e69aec-e916-4cf7-ae4e-8ff1a6a411ca', 'telegram_message_id': 1203,
          'destination_chat_id': '-100123'}]
+    def validate_sql_parameters(statement, parameters=None):
+        statement.compile().construct_params(parameters or {})
+        return session.execute.return_value
+    session.execute.side_effect = validate_sql_parameters
     manager._session_factory = lambda: session
     api = MagicMock(return_value=True)
     monkeypatch.setattr(publication, '_bot_api_call', api)
