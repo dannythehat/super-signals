@@ -7,10 +7,10 @@ from decimal import Decimal, InvalidOperation
 from typing import Any
 
 from app.local_bridge_queue import LocalBridgeQueue
-from app.metaapi_gateway import MetaApiGatewayError
-from app.metaapi_margin_gateway import MetaApiMarginGateway
-from app.metaapi_read_gateway import MetaApiReadGateway
-from app.metaapi_trade_gateway import MetaApiTradeGateway
+from app.retired_remote_broker_contracts import MetaApiGatewayError
+from app.retired_remote_broker_contracts import MetaApiMarginGateway
+from app.retired_remote_broker_contracts import MetaApiReadGateway
+from app.retired_remote_broker_contracts import MetaApiTradeGateway
 
 
 def _iso(value: datetime) -> str:
