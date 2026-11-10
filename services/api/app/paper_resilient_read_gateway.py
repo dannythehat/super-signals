@@ -22,8 +22,8 @@ from urllib.parse import quote
 
 import httpx
 
-from app.metaapi_gateway import MetaApiGatewayError
-from app.metaapi_read_gateway import DEFAULT_METAAPI_PROVISIONING_URL, MetaApiReadGateway
+from app.retired_remote_broker_contracts import MetaApiGatewayError
+from app.retired_remote_broker_contracts import DEFAULT_METAAPI_PROVISIONING_URL, MetaApiReadGateway
 
 logger = logging.getLogger(__name__)
 
