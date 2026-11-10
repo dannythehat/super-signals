@@ -508,13 +508,25 @@ class CanonicalProductionTelegramListenerManager(Day21TelegramListenerManager):
                 client,
                 source.chat_id,
                 limit=_RECOVERY_HISTORY_LIMIT,
+                allow_verified_public_history=True,
             )
-        except Exception:
-            logger.exception(
-                "Telegram recovery skipped one unreadable source",
-                extra={"source_id": str(source.source_id), "chat_id": source.chat_id},
+        except Exception as exc:
+            logger.warning(
+                "Telegram recovery skipped unreadable source chat_id=%s error=%s",
+                source.chat_id, type(exc).__name__,
             )
             return
+
+        latest = next(iter(messages), None)
+        if str(getattr(latest, "raw_text", "")).casefold().startswith((
+            "this channel can’t be displayed", "this channel can't be displayed",
+        )):
+            notices = getattr(client, "_super_signals_restriction_notices", None)
+            if notices is None:
+                notices = client._super_signals_restriction_notices = {}
+            if notices.get(source.chat_id) != latest.id:
+                notices[source.chat_id] = latest.id
+                logger.warning("Telegram source restricted chat_id=%s message_id=%s", source.chat_id, latest.id)
 
         for message in reversed(list(messages)):
             message_id = getattr(message, "id", None)
