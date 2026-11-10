@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import pytest
 
-from app.metaapi_gateway import MetaApiGatewayError
-from app.metaapi_trade_gateway import MetaApiTradeGateway
+from app.retired_remote_broker_contracts import MetaApiGatewayError
+from app.retired_remote_broker_contracts import MetaApiTradeGateway
 
 
 @pytest.mark.asyncio
