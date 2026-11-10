@@ -15,6 +15,7 @@ from app.db import get_session_factory, get_owner_feed_session_factory
 from app.local_bridge_queue import LocalBridgeQueue
 from app.retired_remote_broker_contracts import MetaApiGatewayError
 from app.pu_broker_readiness import assess_broker_preflight
+from app.owner_demo_broker_publication import BrokerNotice, queue_broker_notice
 from app.owner_demo_account_reporting import OwnerDemoAccountReport, queue_owner_demo_report
 
 router = APIRouter(prefix="/internal/local-bridge/v1", tags=["local-mt5-bridge"])
@@ -458,5 +459,16 @@ def owner_demo_700207861_account_report(
     if authorization_scope not in {"legacy", "pu"}:
         raise HTTPException(status_code=403, detail="bridge_token_required")
     return queue_owner_demo_report(payload)
+
+@router.post("/owner-demo-700207861-broker-publication")
+def owner_demo_broker_publication(
+    payload: BrokerNotice,
+    authorization_scope: Annotated[str, Depends(_authorize)],
+) -> dict[str, str | int | None]:
+    """Queue a read-only MT5 master event for the existing Telegram publisher."""
+    if authorization_scope not in {"legacy", "pu"}:
+        raise HTTPException(status_code=403, detail="bridge_token_required")
+    return queue_broker_notice(payload)
+
 
 __all__ = ["router"]
