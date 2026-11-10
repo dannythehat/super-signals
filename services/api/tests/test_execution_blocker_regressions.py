@@ -30,56 +30,14 @@ OWNER = UUID("ea604df2-f8ee-47d1-bc51-f0078dbf160d")
 SIGNAL = UUID("11111111-1111-4111-8111-111111111111")
 
 
-class _TradeResponseGateway(MetaApiTradeGateway):
-    def __init__(self, payload: dict[str, object]) -> None:
-        super().__init__()
-        self.payload = payload
-
-    async def _request(self, *args, **kwargs):  # noqa: ANN002, ANN003
-        return httpx.Response(200, json=self.payload)
-
-
-@pytest.mark.parametrize(
-    ("numeric_code", "string_code"),
-    [
-        (0, "ERR_NO_ERROR"),
-        (10008, "TRADE_RETCODE_PLACED"),
-        (10009, "TRADE_RETCODE_DONE"),
-        (10010, "TRADE_RETCODE_DONE_PARTIAL"),
-        (10025, "TRADE_RETCODE_NO_CHANGES"),
-    ],
-)
-def test_documented_metaapi_success_codes_are_not_falsely_rejected(
-    numeric_code: int,
-    string_code: str,
-) -> None:
-    gateway = _TradeResponseGateway(
-        {"numericCode": numeric_code, "stringCode": string_code, "orderId": "123"}
-    )
-    result = asyncio.run(
-        gateway._trade_request(
-            token="test-token",
-            account_id="account",
-            region="london",
+def test_retired_remote_broker_gateway_has_no_trade_transport() -> None:
+    # Remote vendor requests fail closed even if legacy imports are exercised.
+    gateway = MetaApiTradeGateway()
+    with pytest.raises(MetaApiGatewayError, match="retired_broker_api_disabled"):
+        asyncio.run(gateway._trade_request(
+            token="unused", account_id="old", region="london",
             json_body={"actionType": "ORDER_TYPE_BUY"},
-        )
-    )
-    assert result["numericCode"] == numeric_code
-
-
-def test_actual_metaapi_rejection_still_fails() -> None:
-    gateway = _TradeResponseGateway(
-        {"numericCode": 10006, "stringCode": "TRADE_RETCODE_REJECT", "orderId": "123"}
-    )
-    with pytest.raises(MetaApiGatewayError, match="metaapi_trade_rejected"):
-        asyncio.run(
-            gateway._trade_request(
-                token="test-token",
-                account_id="account",
-                region="london",
-                json_body={"actionType": "ORDER_TYPE_BUY"},
-            )
-        )
+        ))
 
 
 def test_core_executor_default_cannot_chase_zone_for_five_minutes() -> None:
