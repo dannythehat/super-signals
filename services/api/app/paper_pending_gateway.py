@@ -11,8 +11,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
-from app.metaapi_gateway import MetaApiGatewayError
-from app.metaapi_trade_gateway import MetaApiMarketOrderResult, MetaApiTradeGateway
+from app.retired_remote_broker_contracts import MetaApiGatewayError
+from app.retired_remote_broker_contracts import MetaApiMarketOrderResult, MetaApiTradeGateway
 
 _ACTIONS = {
     "buy_limit": "ORDER_TYPE_BUY_LIMIT",

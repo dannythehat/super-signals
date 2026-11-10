@@ -29,7 +29,7 @@ from app.day27_code_acceptance import run_day27_code_acceptance_probe
 from app.day34_code_acceptance import run_day34_code_acceptance_probe
 from app.day34_live_acceptance import run_day34_live_acceptance_safely
 from app.db import get_research_session_factory, get_session_factory
-from app.metaapi_gateway import MetaApiProvisioningGateway
+from app.retired_remote_broker_contracts import MetaApiProvisioningGateway
 from app.mt5_connection_manager import Mt5ConnectionManager
 from app.mt5_connection_service import Mt5ConnectionError, Mt5DemoConnectionService
 from app.mt5_connection_service_day30 import Day30Mt5ConnectionService

@@ -42,8 +42,8 @@ from app.bare_gold_now_policy import (
 )
 from app.critical_entry_policy import CriticalEntry, parse_critical_entries
 from app.layer_allocation import allocate_entry_targets
-from app.metaapi_gateway import MetaApiGatewayError
-from app.metaapi_read_gateway import MetaApiReadGateway
+from app.retired_remote_broker_contracts import MetaApiGatewayError
+from app.retired_remote_broker_contracts import MetaApiReadGateway
 from app.mt5_crypto import BrokerCredentialDecryptionError
 from app.mt5_execution_day26 import (
     Day26ExecutionError,

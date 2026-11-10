@@ -5,7 +5,7 @@ from uuid import UUID
 
 import pytest
 
-from app.metaapi_gateway import MetaApiGatewayError
+from app.retired_remote_broker_contracts import MetaApiGatewayError
 from app.mt5_management_day27 import (
     Day27ManagementError,
     Day27Mt5ManagementService,

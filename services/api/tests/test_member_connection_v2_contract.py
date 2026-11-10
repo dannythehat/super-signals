@@ -6,7 +6,7 @@ import asyncio
 
 import pytest
 
-from app.metaapi_gateway import MetaApiGatewayError
+from app.retired_remote_broker_contracts import MetaApiGatewayError
 from app.routes import member_connection_v2
 from app.routes.member_connection_v2 import (
     OnboardConnectionV2Request,

@@ -19,7 +19,7 @@ from sqlalchemy import text
 
 from app import broker_settlement_canonical as _broker_module
 from app import member_routing_canonical as _member_module
-from app.metaapi_gateway import MetaApiGatewayError
+from app.retired_remote_broker_contracts import MetaApiGatewayError
 from app.models import AuditEvent
 from app.mt5_crypto import BrokerCredentialDecryptionError
 from app.performance_ledger_day33 import Day33LedgerError

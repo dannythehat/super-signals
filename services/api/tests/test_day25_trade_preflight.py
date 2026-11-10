@@ -1,12 +1,13 @@
 import asyncio
+import pytest
 from datetime import UTC, datetime
 from decimal import Decimal
 from uuid import uuid4
 
 import httpx
 
-from app.metaapi_gateway import MetaApiGatewayError
-from app.metaapi_margin_gateway import MetaApiMarginGateway
+from app.retired_remote_broker_contracts import MetaApiGatewayError
+from app.retired_remote_broker_contracts import MetaApiMarginGateway
 from app.mt5_read_service_day23 import Day23AccountState, Day23LiveState, Day23PriceState
 from app.risk_sizing_day24 import BrokerVolumeRules, Day24RiskSizer
 from app.trade_preflight_day25 import Day25TradePreflightService
@@ -270,54 +271,14 @@ def test_entry_path_does_not_call_or_retry_margin_calculator() -> None:
     assert gateway.calls == []
 
 
-class CaptureMarginGateway(MetaApiMarginGateway):
-    def __init__(self) -> None:
-        super().__init__()
-        self.captured: dict[str, object] | None = None
-
-    async def _request(
-        self,
-        method: str,
-        url: str,
-        *,
-        token: str,
-        json_body: dict[str, object],
-    ) -> httpx.Response:
-        self.captured = {
-            "method": method,
-            "url": url,
-            "token": token,
-            "json": json_body,
-        }
-        return httpx.Response(200, json={"margin": 321.5})
-
-
-def test_margin_gateway_still_available_for_non_veto_diagnostics() -> None:
-    gateway = CaptureMarginGateway()
-    margin = asyncio.run(
-        gateway.calculate_margin(
-            token="test-token",
-            account_id="account-1",
-            region="london",
-            symbol="XAUUSD",
-            side="BUY",
-            volume=0.03,
-            open_price=4000.0,
-        )
-    )
-
-    assert margin == 321.5
-    assert gateway.captured is not None
-    assert gateway.captured["method"] == "POST"
-    assert str(gateway.captured["url"]).endswith(
-        "/users/current/accounts/account-1/calculate-margin"
-    )
-    assert gateway.captured["json"] == {
-        "symbol": "XAUUSD",
-        "type": "ORDER_TYPE_BUY",
-        "volume": 0.03,
-        "openPrice": 4000.0,
-    }
+def test_retired_vendor_margin_endpoint_is_unavailable_even_for_diagnostics() -> None:
+    # The local MT5 bridge supplies any broker diagnostics; no remote fallback.
+    gateway = MetaApiMarginGateway()
+    with pytest.raises(MetaApiGatewayError, match="retired_broker_api_disabled"):
+        asyncio.run(gateway.calculate_margin(
+            token="never-used", account_id="old", region="london", symbol="XAUUSD",
+            side="BUY", volume=0.03, open_price=4000.0,
+        ))
 
 
 def test_margin_gateway_exposes_no_trade_or_order_placement_method() -> None:

@@ -18,9 +18,9 @@ from uuid import UUID
 from sqlalchemy import text
 from sqlalchemy.orm import Session, sessionmaker
 
-from app.metaapi_gateway import MetaApiGatewayError
-from app.metaapi_read_gateway import MetaApiReadGateway
-from app.metaapi_trade_gateway import MetaApiTradeGateway
+from app.retired_remote_broker_contracts import MetaApiGatewayError
+from app.retired_remote_broker_contracts import MetaApiReadGateway
+from app.retired_remote_broker_contracts import MetaApiTradeGateway
 from app.mt5_crypto import BrokerCredentialDecryptionError, MetaApiTokenCipher
 
 

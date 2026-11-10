@@ -10,9 +10,9 @@ from __future__ import annotations
 import asyncio
 
 import app.day27_live_acceptance as live_acceptance
-from app.metaapi_gateway import MetaApiGatewayError
-from app.metaapi_margin_gateway import MetaApiMarginGateway
-from app.metaapi_read_gateway import MetaApiReadGateway
+from app.retired_remote_broker_contracts import MetaApiGatewayError
+from app.retired_remote_broker_contracts import MetaApiMarginGateway
+from app.retired_remote_broker_contracts import MetaApiReadGateway
 
 
 async def _backoff(attempt: int) -> None:

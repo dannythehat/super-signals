@@ -5,8 +5,8 @@ from uuid import uuid4
 
 import pytest
 
-from app.metaapi_read_gateway import MetaApiReadGateway
-from app.metaapi_token_scope import inspect_metaapi_token_scope
+from app.retired_remote_broker_contracts import MetaApiReadGateway
+from app.retired_remote_broker_contracts import inspect_metaapi_token_scope
 from app.mt5_read_service_day23 import (
     Day23AccountState,
     Day23LiveState,
@@ -93,7 +93,7 @@ def test_day23_read_gateway_exposes_reads_only_even_as_history_reads_expand() ->
     assert all(name == "resolve_account_region" or name.startswith("read_") for name in public_names)
 
 
-def test_management_only_token_is_detected_before_terminal_reads() -> None:
+def test_retired_management_token_cannot_grant_terminal_access() -> None:
     token = _synthetic_jwt(
         {
             "accessRules": [
@@ -108,13 +108,12 @@ def test_management_only_token_is_detected_before_terminal_reads() -> None:
 
     scope = inspect_metaapi_token_scope(token)
 
-    assert scope.jwt_payload_decoded is True
-    assert scope.is_explicitly_narrowed is True
+    assert scope.jwt_payload_decoded is False
     assert scope.has_terminal_access is False
-    assert scope.access_rule_ids == ("trading-account-management-api",)
+    assert scope.access_rule_ids == ()
 
 
-def test_metaapi_rest_token_is_terminal_capable() -> None:
+def test_retired_vendor_token_cannot_reactivate_remote_access() -> None:
     token = _synthetic_jwt(
         {
             "accessRules": [
@@ -129,8 +128,8 @@ def test_metaapi_rest_token_is_terminal_capable() -> None:
 
     scope = inspect_metaapi_token_scope(token)
 
-    assert scope.is_explicitly_narrowed is True
-    assert scope.has_terminal_access is True
+    assert scope.is_explicitly_narrowed is False
+    assert scope.has_terminal_access is False
 
 
 def test_buy_uses_ask_and_sell_uses_bid() -> None:

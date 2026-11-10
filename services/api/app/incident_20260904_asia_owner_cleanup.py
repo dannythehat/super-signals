@@ -22,9 +22,9 @@ from zoneinfo import ZoneInfo
 from sqlalchemy import text
 
 from app.db import get_session_factory
-from app.metaapi_gateway import MetaApiGatewayError
-from app.metaapi_read_gateway import MetaApiReadGateway
-from app.metaapi_trade_gateway import MetaApiTradeGateway
+from app.retired_remote_broker_contracts import MetaApiGatewayError
+from app.retired_remote_broker_contracts import MetaApiReadGateway
+from app.retired_remote_broker_contracts import MetaApiTradeGateway
 from app.mt5_crypto import BrokerCredentialDecryptionError, MetaApiTokenCipher
 
 INCIDENT_KEY = "incident-2026-09-04-asia-management-reader"

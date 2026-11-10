@@ -9,7 +9,7 @@ from app.admin_portfolio_day35 import (
     Day35PortfolioView,
     _OpenRequirement,
 )
-from app.metaapi_gateway import MetaApiGatewayError
+from app.retired_remote_broker_contracts import MetaApiGatewayError
 
 
 SOURCE_A = UUID("11111111-1111-4111-8111-111111111111")

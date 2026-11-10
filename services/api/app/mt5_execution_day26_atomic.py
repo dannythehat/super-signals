@@ -16,7 +16,7 @@ from uuid import UUID
 
 from sqlalchemy import text
 
-from app.metaapi_gateway import MetaApiGatewayError
+from app.retired_remote_broker_contracts import MetaApiGatewayError
 from app.mt5_crypto import BrokerCredentialDecryptionError
 from app.mt5_execution_day26 import Day26ExecutionError, Day26Mt5ExecutionService
 from app.mt5_read_service_day23 import Day23Mt5ReadService, Day23ReadError

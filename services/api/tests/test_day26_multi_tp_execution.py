@@ -7,7 +7,7 @@ import httpx
 import pytest
 
 import app.mt5_execution_day26 as day26_module
-from app.metaapi_trade_gateway import MetaApiMarketOrderResult, MetaApiTradeGateway
+from app.retired_remote_broker_contracts import MetaApiMarketOrderResult, MetaApiTradeGateway
 from app.mt5_execution_day26 import (
     Day26ExecutionError,
     Day26MappedPosition,
@@ -204,8 +204,9 @@ def test_runner_adds_fourth_position_without_margin_veto(monkeypatch: pytest.Mon
 
 class _CaptureTradeGateway(MetaApiTradeGateway):
     def __init__(self)->None: super().__init__(); self.payload=None
-    async def _request(self, method:str, url:str, *, token:str, json_body:dict[str,object]):
-        self.payload=json_body; return httpx.Response(200,json={"numericCode":10009,"stringCode":"TRADE_RETCODE_DONE","orderId":"12345"})
+    async def _trade_request(self, *, token:str, account_id:str, region:str, json_body:dict[str,object]):
+        self.payload=json_body
+        return {"numericCode":10009,"stringCode":"TRADE_RETCODE_DONE","orderId":"12345"}
 
 
 def test_runner_gateway_omits_take_profit() -> None:

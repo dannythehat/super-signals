@@ -16,7 +16,7 @@ import secrets
 from sqlalchemy import text
 
 from app.db import get_session_factory
-from app.metaapi_gateway import MetaApiProvisioningGateway
+from app.retired_remote_broker_contracts import MetaApiProvisioningGateway
 from app.models import AuditEvent, User, UserRole
 from app.mt5_account_profiles import Mt5AccountProfileService
 from app.mt5_connection_service import Mt5ConnectionError

@@ -17,7 +17,7 @@ from app.member_routing_canonical import (
     MemberDistributionTarget,
     MemberManagementService,
 )
-from app.metaapi_trade_gateway import MetaApiMarketOrderResult
+from app.retired_remote_broker_contracts import MetaApiMarketOrderResult
 from app.mt5_execution_day26 import (
     Day26ExecutionError,
     Day26MappedPosition,

@@ -20,7 +20,7 @@ from uuid import UUID
 
 from sqlalchemy import text
 
-from app.metaapi_gateway import MetaApiGatewayError
+from app.retired_remote_broker_contracts import MetaApiGatewayError
 from app.mt5_crypto import BrokerCredentialDecryptionError
 from app.performance_ledger_day33 import _d, _pct, stable_color_index
 from app.performance_ledger_day33_v2 import Day33PerformanceLedgerServiceV2

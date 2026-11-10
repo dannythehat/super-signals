@@ -16,7 +16,7 @@ import time
 from sqlalchemy import text
 
 from app.db import get_session_factory
-from app.metaapi_gateway import MetaApiGatewayError, MetaApiProvisioningGateway
+from app.retired_remote_broker_contracts import MetaApiGatewayError, MetaApiProvisioningGateway
 from app.models import AuditEvent
 from app.mt5_account_profiles import Mt5AccountProfileService
 from app.mt5_connection_service_day30 import Day30Mt5ConnectionService
