@@ -10,7 +10,7 @@ def test_local_bridge_migration_is_the_single_head() -> None:
     api_root = Path(__file__).resolve().parents[1]
     script = ScriptDirectory.from_config(Config(str(api_root / "alembic.ini")))
 
-    assert script.get_current_head() == "0129_owner_feed"
+    assert script.get_current_head() == "0130_retire_vantage"
 
 
 def test_local_bridge_revision_fits_alembic_version_column() -> None:
