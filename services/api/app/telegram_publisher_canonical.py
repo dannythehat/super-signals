@@ -28,6 +28,7 @@ from zoneinfo import ZoneInfo
 from sqlalchemy import text
 
 from app.models import AuditEvent
+from app.owner_demo_account_reporting import completed_day_report
 from app.running_daily_balance import account_value_days
 from app.telegram_publisher import PublicationAttempt, TelegramPublishError, _bot_api_call
 from app.telegram_publisher_day20 import LifecyclePublicationAttempt
@@ -2633,11 +2634,27 @@ class CanonicalTelegramPublisherManager(Day34CutoverTelegramPublisherManager):
             row = session.execute(
                 text(
                     """
-                    SELECT d.id AS delivery_id,d.notification_id,n.title,n.body,n.kind,n.payload
+                    SELECT d.id AS delivery_id,d.notification_id,n.title,n.body,n.kind,n.payload,
+                           master_report.payload AS master_report
                     FROM telegram_notification_deliveries AS d
                     JOIN notification_events AS n ON n.id=d.notification_id
+                    LEFT JOIN LATERAL (
+                        SELECT report.payload FROM notification_events AS report
+                        WHERE n.kind='summary_daily'
+                          AND report.kind='owner_demo_account_status'
+                          AND report.payload->>'master_login'='700207861'
+                          AND report.payload->>'reporting_start_utc'=n.payload->>'period_end'
+                          AND report.payload->>'previous_session_realised_net' IS NOT NULL
+                          AND (n.payload->>'period_end')::timestamptz > now()-interval '18 hours'
+                        ORDER BY report.created_at, report.id LIMIT 1
+                    ) AS master_report ON TRUE
                     WHERE d.status='pending'
                       AND n.audience!='suppressed'
+                      AND (n.kind<>'summary_daily' OR master_report.payload IS NOT NULL OR NOT EXISTS (
+                          SELECT 1 FROM notification_events AS master
+                          WHERE master.kind='owner_demo_account_status'
+                            AND master.payload->>'master_login'='700207861'
+                      ))
                       AND (n.kind<>'owner_demo_account_status' OR NOT EXISTS (
                           SELECT 1 FROM telegram_notification_deliveries AS busy
                           JOIN notification_events AS status_event ON status_event.id=busy.notification_id
@@ -2674,7 +2691,16 @@ class CanonicalTelegramPublisherManager(Day34CutoverTelegramPublisherManager):
                     "key": "owner-demo-trade-entry:700207861:" + str(row["payload"]["position_id"]),
                     "chat": self._destination_chat_id,
                 }).scalar_one_or_none()
-            rendered = f"{str(row['title'])}\n{str(row['body'])}"
+            title, body = row["title"], row["body"]
+            master_report = row["master_report"]
+            if master_report is not None:
+                title, body, payload = completed_day_report(master_report, row["payload"])
+                session.execute(text("""
+                    UPDATE notification_events
+                    SET title=:title,body=:body,payload=CAST(:payload AS jsonb)
+                    WHERE id=:id
+                """), {"id": row["notification_id"], "title": title, "body": body, "payload": json.dumps(payload)})
+            rendered = f"{title}\n{body}"
             session.execute(
                 text(
                     """
@@ -2703,6 +2729,7 @@ class CanonicalTelegramPublisherManager(Day34CutoverTelegramPublisherManager):
                                                and row["payload"].get("provider_name")),
                 owner_demo_balance_exposed=(
                     row["kind"] == "owner_demo_account_status"
+                    or master_report is not None
                     or (row["kind"] == "owner_demo_broker_event" and bool(row["payload"].get("account_snapshot")))
                 ),
             )

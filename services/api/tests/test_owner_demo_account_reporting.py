@@ -11,7 +11,7 @@ import pytest
 from fastapi import HTTPException
 
 from app.owner_demo_account_reporting import (
-    OwnerDemoAccountReport, _body, validate_owner_demo_report, reporting_day_start,
+    OwnerDemoAccountReport, _body, completed_day_report, validate_owner_demo_report, reporting_day_start,
 )
 
 
@@ -42,6 +42,33 @@ def test_new_demo_balance_and_daily_net_do_not_use_legacy_vantage():
     assert "Total balance - $10,090.26" in text
     assert "08 Nov 21:00 to 09 Nov 21:00 Sofia" in text
     assert "Vantage" not in text
+
+
+def test_daily_recap_uses_completed_session_and_current_balance():
+    title, body, payload = completed_day_report(
+        {
+            "previous_session_realised_net": "134.52",
+            "realised_net": "-2.00",
+            "month_realised_net": "558.75",
+            "balance": "10558.75",
+            "captured_at": "2026-11-11T19:01:10+00:00",
+        },
+        {
+            "period_start": "2026-11-10T19:00:00+00:00",
+            "period_end": "2026-11-11T19:00:00+00:00",
+            "scheduled_at": "2026-11-11T19:00:00+00:00",
+        },
+    )
+    assert title == "Daily Super Signals P&L"
+    assert body.splitlines() == [
+        "Period 10 Nov 21:00 to 11 Nov 21:00 Sofia",
+        "Daily profit / loss = +$134.52",
+        "Month to date - +$558.75",
+        "Total balance - $10,558.75",
+        "Balance as of 11 Nov 21:01 Sofia",
+    ]
+    assert payload["truthful_net_format"]
+    assert payload["source"] == "mt5_read_only"
 
 
 def test_21h_sofia_day_boundary_across_dst():
@@ -84,3 +111,4 @@ def test_broker_report_accepts_both_existing_relay_routes(monkeypatch, relay_rou
     assert url == base + "account-report"
     assert payload["master_login"] == 700207861
     assert payload["balance"] == "10090.26"
+    assert Decimal(payload["previous_session_realised_net"]) == 0

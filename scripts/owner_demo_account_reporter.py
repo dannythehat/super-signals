@@ -129,6 +129,11 @@ def verified_snapshot(*, required_deals: set[int] | None = None):
         if required_deals and not required_deals.issubset(d.ticket for d in records):
             raise RuntimeError("broker_history_missing_trade_notice_deals")
         selected = [d for d in records if timestamp(d) >= start]
+        previous_start = reporting_start(start - timedelta(seconds=1))
+        previous_net = sum(
+            (deal_net(d) for d in records if previous_start <= timestamp(d) < start and trading_pnl_type(d)),
+            Decimal(0),
+        )
         month_start = month_reporting_start(start)
         month = [d for d in records if timestamp(d) >= month_start]
         trade_deals = [d for d in selected if trading_pnl_type(d)]
@@ -156,6 +161,7 @@ def verified_snapshot(*, required_deals: set[int] | None = None):
             "floating_pnl": str(round(account.profit, 2)),
             "credit": str(round(account.credit, 2)),
             "realised_net": str(round(sum(map(deal_net, trade_deals), Decimal(0)), 2)),
+            "previous_session_realised_net": str(round(previous_net, 2)),
             "month_realised_net": str(round(month_net, 2)),
             "month_capital": str(round(month_capital, 2)),
             "all_time_realised_net": str(round(all_time_net, 2)),

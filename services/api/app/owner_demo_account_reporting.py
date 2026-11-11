@@ -25,6 +25,7 @@ class OwnerDemoAccountReport(BaseModel):
     floating_pnl: Decimal
     credit: Decimal
     realised_net: Decimal
+    previous_session_realised_net: Decimal | None = None
     month_realised_net: Decimal | None = None
     month_capital: Decimal | None = None
     all_time_realised_net: Decimal | None = None
@@ -59,7 +60,7 @@ def validate_owner_demo_report(report: OwnerDemoAccountReport, now: datetime) ->
     if abs((start - report.reporting_start_utc.astimezone(timezone.utc)).total_seconds()) > 2:
         raise HTTPException(status_code=409, detail="wrong_21h_sofia_reporting_window")
     amounts = (report.balance, report.equity, report.floating_pnl, report.credit,
-               report.realised_net, report.cash_movements, report.month_realised_net,
+               report.realised_net, report.previous_session_realised_net, report.cash_movements, report.month_realised_net,
                report.month_capital, report.all_time_realised_net)
     if not all(x.is_finite() for x in amounts if x is not None) or report.balance < 0 or report.equity < 0:
         raise HTTPException(status_code=422, detail="invalid_broker_account_values")
@@ -96,6 +97,40 @@ def _body(report: OwnerDemoAccountReport, start: datetime) -> str:
     ])
 
 
+def completed_day_report(
+    snapshot: dict, scheduled_report: dict,
+) -> tuple[str, str, dict]:
+    start = datetime.fromisoformat(scheduled_report["period_start"]).astimezone(SOFIA)
+    end = datetime.fromisoformat(scheduled_report["period_end"]).astimezone(SOFIA)
+    captured = datetime.fromisoformat(snapshot["captured_at"]).astimezone(SOFIA)
+    realised = Decimal(snapshot["previous_session_realised_net"])
+    balance = Decimal(snapshot["balance"])
+    month_value = snapshot.get("month_realised_net")
+    monthly = "unavailable" if month_value in (None, "None") else _money(Decimal(month_value), signed=True)
+    body = "\n".join([
+        f"Period {start:%d %b %H:%M} to {end:%d %b %H:%M} Sofia",
+        f"Daily profit / loss = {_money(realised, signed=True)}",
+        f"Month to date - {monthly}",
+        f"Total balance - {_money(balance)}",
+        f"Balance as of {captured:%d %b %H:%M} Sofia",
+    ])
+    return "Daily Super Signals P&L", body, {
+        "scheduled_performance_report": True,
+        "period_type": "daily",
+        "period_start": scheduled_report["period_start"],
+        "period_end": scheduled_report["period_end"],
+        "scheduled_at": scheduled_report["scheduled_at"],
+        "truthful_net_format": True,
+        "period_net_pnl": str(realised),
+        "balance": str(balance),
+        "month_realised_net": month_value,
+        "captured_at": snapshot["captured_at"],
+        "currency": "USD",
+        "master_login": ACCOUNT,
+        "source": "mt5_read_only",
+    }
+
+
 def queue_owner_demo_report(report: OwnerDemoAccountReport) -> dict[str, str | int]:
     now = datetime.now(timezone.utc)
     start = validate_owner_demo_report(report, now)
@@ -103,6 +138,9 @@ def queue_owner_demo_report(report: OwnerDemoAccountReport) -> dict[str, str | i
         "master_login": ACCOUNT, "source": "mt5_read_only", "demo": True,
         "currency": "USD", "balance": str(report.balance), "equity": str(report.equity),
         "realised_net": str(report.realised_net), "floating_pnl": str(report.floating_pnl),
+        "previous_session_realised_net": (
+            str(report.previous_session_realised_net) if report.previous_session_realised_net is not None else None
+        ),
         "month_realised_net": str(report.month_realised_net),
         "month_capital": str(report.month_capital),
         "all_time_realised_net": str(report.all_time_realised_net),
@@ -129,7 +167,7 @@ def queue_owner_demo_report(report: OwnerDemoAccountReport) -> dict[str, str | i
             if last["status"] == "failed" and elapsed < timedelta(minutes=12):
                 return {"status": "delivery_failed", "account": ACCOUNT}
             if last["status"] == "sent":
-                fields = ("balance", "realised_net", "month_realised_net", "month_capital",
+                fields = ("balance", "realised_net", "previous_session_realised_net", "month_realised_net", "month_capital",
                           "all_time_realised_net", "reporting_start_utc")
                 if all(prior.get(field) == payload[field] for field in fields):
                     return {"status": "unchanged", "account": ACCOUNT}
