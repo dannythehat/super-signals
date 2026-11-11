@@ -13,9 +13,11 @@ from pydantic import BaseModel, Field
 from sqlalchemy import text
 
 from app.db import get_session_factory
+from app.owner_demo_account_reporting import OwnerDemoAccountReport, account_totals_lines, validate_owner_demo_report
 
 PositivePrice = Annotated[Decimal, Field(gt=0, allow_inf_nan=False)]
 OptionalPrice = Annotated[Decimal, Field(ge=0, allow_inf_nan=False)]
+TRADE_SOURCE_NAMES = {"provider": "Provider", "manual": "GoldThinker trade", "master": "Master"}
 
 
 class BrokerEventBase(BaseModel):
@@ -25,6 +27,7 @@ class BrokerEventBase(BaseModel):
     symbol: str = Field(pattern=r"^[A-Za-z0-9._#-]{1,32}$")
     side: Literal["BUY", "SELL"]
     occurred_at: datetime
+    account_snapshot: OwnerDemoAccountReport | None = None
 
 
 class BrokerDealNotice(BrokerEventBase):
@@ -106,7 +109,7 @@ def broker_notification(
         if any(p.stop_loss < p.entry - tolerance if event.side == "BUY"
                else p.stop_loss > p.entry + tolerance for p in event.stops):
             raise HTTPException(status_code=422, detail="broker_stop_not_at_entry")
-        source = provider_name or "Provider"
+        source = provider_name or TRADE_SOURCE_NAMES[event.source]
         moved = " · ".join(f"TP {p.leg} SL {_price(p.stop_loss)}" for p in event.stops)
         return (f"owner-demo-trade-protection:700207861:{event.position_id}:{event.tp2_deal_id}",
                 source, f"After TP 2: remaining stops at entry or better\n{moved}")
@@ -119,9 +122,8 @@ def broker_notification(
         title = "SUPER SIGNALS | MASTER ENTRY" if event.event == "entry" else "SUPER SIGNALS | MASTER EXIT"
         lines.append(f"Filled: {event.volume:f} lots at {event.price:f}")
         lines.append(f"Deal {event.deal_id} | Order {event.order_id} | Position {event.position_id}")
-        if event.event == "entry":
-            lines.append(f"Source: {event.source.title()}")
-        else:
+        lines.append(f"Source: {provider_name or TRADE_SOURCE_NAMES[event.source]}")
+        if event.event == "exit":
             lines.append(f"Reason: {event.reason.replace('_', ' ')} | Deal net P&L: ${event.realised_net:+,.2f}")
     else:
         key = f"owner-demo-protection:700207861:{event.position_id}:{event.observed_at_ms}"
@@ -148,7 +150,7 @@ def trade_notification(event: BrokerTradeNotice, provider_name: str | None) -> t
     fills = sorted(event.fills, key=lambda fill: (fill.leg, fill.deal_id))
     if len({f.deal_id for f in fills}) != len(fills):
         raise HTTPException(status_code=422, detail="duplicate_broker_deal")
-    source = provider_name or {"provider": "Provider", "manual": "Manual", "master": "Master"}[event.source]
+    source = provider_name or TRADE_SOURCE_NAMES[event.source]
     market = "gold" if event.symbol.upper().split(".")[0] == "XAUUSD" else event.symbol
     if event.event == "trade_entry":
         key = f"owner-demo-trade-entry:700207861:{event.position_id}"
@@ -213,6 +215,17 @@ def queue_broker_notice(event: BrokerDealNotice | BrokerPositionUpdate | BrokerT
             """), {"keys": [f"owner-demo-deal:700207861:{f.deal_id}" for f in event.fills]}).mappings().all()
             if len({row["event_key"] for row in originals}) == len(event.fills):
                 return {"status": "duplicate", "telegram_message_id": originals[-1]["telegram_message_id"]}
+        snapshot = event.account_snapshot
+        if snapshot is None or snapshot.captured_at.tzinfo is None or snapshot.captured_at < event.occurred_at:
+            # The relay retries with a new broker snapshot. Do not queue an incomplete post.
+            raise HTTPException(status_code=503, detail="broker_trade_account_snapshot_required")
+        try:
+            validate_owner_demo_report(snapshot, now)
+        except HTTPException as exc:
+            if exc.status_code == 409:
+                raise HTTPException(status_code=503, detail=exc.detail) from exc
+            raise
+        body = "\n".join([body, "", *account_totals_lines(snapshot)])
         new_id = session.execute(text("""
             INSERT INTO notification_events (
                 event_key,signal_id,lifecycle_event_id,user_id,audience,kind,title,body,payload

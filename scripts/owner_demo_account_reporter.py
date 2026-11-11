@@ -90,7 +90,7 @@ def offset_from_execution_journal(deals: list, *, now: datetime) -> int:
     return Counter(options).most_common(1)[0][0]
 
 
-def verified_snapshot():
+def verified_snapshot(*, required_deals: set[int] | None = None):
     import owner_master_telegram_relay as relay
 
     receipt_url, token = relay.credentials()
@@ -126,6 +126,8 @@ def verified_snapshot():
             int(deal.time), timezone.utc
         ) - timedelta(hours=broker_offset)
         records = [d for d in records if timestamp(d) <= now + timedelta(seconds=15)]
+        if required_deals and not required_deals.issubset(d.ticket for d in records):
+            raise RuntimeError("broker_history_missing_trade_notice_deals")
         selected = [d for d in records if timestamp(d) >= start]
         month_start = month_reporting_start(start)
         month = [d for d in records if timestamp(d) >= month_start]
@@ -140,6 +142,12 @@ def verified_snapshot():
         if positions is None:
             raise RuntimeError("broker_positions_read_unavailable")
         captured = datetime.now(timezone.utc)
+        if required_deals is not None:
+            final = mt5.account_info()
+            if (final is None or (final.login, final.server, final.trade_mode, final.currency, final.balance)
+                    != (account.login, account.server, account.trade_mode, account.currency, account.balance)
+                    or reporting_start(captured) != start):
+                raise RuntimeError("broker_account_changed_during_trade_snapshot")
         payload = {
             "master_login": ACCOUNT, "server": SERVER, "trade_mode": "demo",
             "currency": account.currency, "connected": bool(terminal.connected),

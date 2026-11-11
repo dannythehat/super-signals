@@ -49,7 +49,7 @@ def reporting_day_start(instant: datetime) -> datetime:
     return start.astimezone(timezone.utc)
 
 
-def _validate(report: OwnerDemoAccountReport, now: datetime) -> datetime:
+def validate_owner_demo_report(report: OwnerDemoAccountReport, now: datetime) -> datetime:
     if report.captured_at.tzinfo is None or report.reporting_start_utc.tzinfo is None:
         raise HTTPException(status_code=422, detail="timezone_required")
     captured = report.captured_at.astimezone(timezone.utc)
@@ -68,27 +68,37 @@ def _validate(report: OwnerDemoAccountReport, now: datetime) -> datetime:
     return start
 
 
-def _body(report: OwnerDemoAccountReport, start: datetime) -> str:
+def account_totals_lines(report: OwnerDemoAccountReport) -> tuple[str, str, str]:
     def pnl(value: Decimal | None) -> str:
         return _money(value, signed=True) if value is not None else "unavailable"
 
     monthly = pnl(report.month_realised_net)
     if report.month_realised_net is not None and report.month_capital is not None and report.month_capital > 0:
         monthly += f" ({report.month_realised_net / report.month_capital:.2%})"
+    return (
+        f"Daily profit / loss = {pnl(report.realised_net)}",
+        f"Month to date - {monthly}",
+        f"Total balance - {_money(report.balance)}",
+    )
+
+
+def _body(report: OwnerDemoAccountReport, start: datetime) -> str:
+    daily, monthly, balance = account_totals_lines(report)
+    all_time = _money(report.all_time_realised_net, signed=True) if report.all_time_realised_net is not None else "unavailable"
     start_local = start.astimezone(SOFIA)
     end_local = start_local + timedelta(days=1)
     return "\n".join([
-        f"Daily profit / loss = {pnl(report.realised_net)}",
-        f"Month to date - {monthly}",
-        f"All-time profit / loss - {pnl(report.all_time_realised_net)}",
-        f"Total balance - {_money(report.balance)}",
+        daily,
+        monthly,
+        f"All-time profit / loss - {all_time}",
+        balance,
         f"Daily window {start_local:%d %b %H:%M} to {end_local:%d %b %H:%M} Sofia",
     ])
 
 
 def queue_owner_demo_report(report: OwnerDemoAccountReport) -> dict[str, str | int]:
     now = datetime.now(timezone.utc)
-    start = _validate(report, now)
+    start = validate_owner_demo_report(report, now)
     payload = {
         "master_login": ACCOUNT, "source": "mt5_read_only", "demo": True,
         "currency": "USD", "balance": str(report.balance), "equity": str(report.equity),

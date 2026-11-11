@@ -5,6 +5,7 @@ import pytest
 from fastapi import HTTPException
 from pydantic import TypeAdapter, ValidationError
 
+from app.owner_demo_account_reporting import reporting_day_start
 from app.owner_demo_broker_publication import BrokerNotice, broker_notification
 
 NOW = datetime(2026, 11, 10, 12, 41, 5, tzinfo=UTC)
@@ -23,14 +24,14 @@ def parse(data):
 
 
 def test_manual_and_provider_entries_use_broker_deal_keys_and_actual_fill_values():
-    for source in ("manual", "provider"):
+    for source, source_name in (("manual", "GoldThinker trade"), ("provider", "Provider")):
         key, title, body = broker_notification(parse(DEAL | {"source": source}), NOW)
         assert key == "owner-demo-deal:700207861:316261420"
         assert title.endswith("MASTER ENTRY")
         assert "BUY XAUUSD.s" in body
         assert "0.01 lots at 4076.38" in body
         assert "14:41:04 Sofia" in body
-        assert f"Source: {source.title()}" in body
+        assert f"Source: {source_name}" in body
 
 
 def test_exit_and_protection_updates_have_independent_receipt_keys():
@@ -95,12 +96,24 @@ def test_tp2_protection_posts_broker_confirmed_remaining_stop():
     assert "After TP 2" in text and "TP 3 SL 4076.38" in text
 
 
+def account_snapshot(captured):
+    return {
+        "master_login": 700207861, "server": "PUPrime-Demo", "trade_mode": "demo",
+        "currency": "USD", "connected": True, "balance": "10560.75", "equity": "10560.75",
+        "floating_pnl": "0", "credit": "0", "realised_net": "134.52",
+        "month_realised_net": "560.75", "month_capital": "10000",
+        "cash_movements": "0", "closed_deal_fills": 28, "open_positions": 0,
+        "captured_at": captured, "reporting_start_utc": reporting_day_start(captured),
+    }
+
+
 @pytest.mark.parametrize('already_sent', [True, False])
 def test_grouped_notice_reuses_legacy_fill_receipts_without_a_second_post(monkeypatch, already_sent):
     from unittest.mock import MagicMock
     from app import owner_demo_broker_publication as publication
     now = datetime.now(UTC) - timedelta(seconds=1)
-    event = grouped(occurred_at=now, opened_at=now, source='manual')
+    event = grouped(occurred_at=now, opened_at=now, source='manual',
+                    account_snapshot=account_snapshot(now))
     session = MagicMock()
     session.__enter__.return_value = session
     originals = [dict(event_key=f'owner-demo-deal:700207861:{f.deal_id}', telegram_message_id=1199+i)
@@ -117,3 +130,44 @@ def test_grouped_notice_reuses_legacy_fill_receipts_without_a_second_post(monkey
         assert result['status'] == 'pending'
         assert session.execute.call_count == 3
         session.commit.assert_called_once()
+        queued = session.execute.call_args_list[1].args[1]
+        assert queued["title"] == "GoldThinker trade"
+        assert queued["body"].endswith(
+            "Daily profit / loss = +$134.52\nMonth to date - +$560.75 (5.61%)\nTotal balance - $10,560.75"
+        )
+
+
+@pytest.mark.parametrize("event_type", ["trade_entry", "trade_exit", "trade_protection"])
+def test_queued_trade_updates_require_a_current_broker_balance(monkeypatch, event_type):
+    from unittest.mock import MagicMock
+    from app import owner_demo_broker_publication as publication
+
+    now = datetime.now(UTC)
+    opened = now - timedelta(seconds=2)
+    occurred = now - timedelta(seconds=1)
+    if event_type == "trade_protection":
+        event = parse(DEAL | {
+            "event": event_type, "occurred_at": occurred, "opened_at": opened,
+            "tp2_deal_id": 777, "stops": [{"leg": 3, "stop_loss": "4076.38", "entry": "4076.38"}],
+        })
+    else:
+        event = grouped(event_type, occurred_at=occurred, opened_at=opened, source="manual")
+    session = MagicMock()
+    session.__enter__.return_value = session
+    session.execute.return_value.mappings.return_value.all.return_value = []
+    session.execute.return_value.scalar_one_or_none.return_value = 55
+    monkeypatch.setattr(publication, "get_session_factory", lambda: lambda: session)
+    with pytest.raises(HTTPException) as missing:
+        publication.queue_broker_notice(event)
+    assert missing.value.status_code == 503
+    old_snapshot = parse(event.model_dump() | {"account_snapshot": account_snapshot(opened)})
+    with pytest.raises(HTTPException) as stale:
+        publication.queue_broker_notice(old_snapshot)
+    assert stale.value.status_code == 503
+    session.commit.assert_not_called()
+    updated = parse(event.model_dump() | {"account_snapshot": account_snapshot(now)})
+    assert publication.queue_broker_notice(updated)["status"] == "pending"
+    queued = next(call.args[1] for call in session.execute.call_args_list if "INSERT INTO notification_events" in str(call.args[0]))
+    assert queued["title"] == "GoldThinker trade"
+    assert "Daily profit / loss = +$134.52" in queued["body"]
+    assert queued["body"].endswith("Total balance - $10,560.75")

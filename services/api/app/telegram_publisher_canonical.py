@@ -2669,6 +2669,7 @@ class CanonicalTelegramPublisherManager(Day34CutoverTelegramPublisherManager):
                     SELECT d.telegram_message_id FROM notification_events n
                     JOIN telegram_notification_deliveries d ON d.notification_id=n.id
                     WHERE n.event_key=:key AND d.destination_chat_id=:chat AND d.status='sent'
+                      AND n.title <> 'Manual'
                 """), {
                     "key": "owner-demo-trade-entry:700207861:" + str(row["payload"]["position_id"]),
                     "chat": self._destination_chat_id,
@@ -2700,7 +2701,10 @@ class CanonicalTelegramPublisherManager(Day34CutoverTelegramPublisherManager):
                 reply_to_message_id=reply_id,
                 provider_identity_exposed=bool(row["kind"] == "owner_demo_broker_event"
                                                and row["payload"].get("provider_name")),
-                owner_demo_balance_exposed=row["kind"] == "owner_demo_account_status",
+                owner_demo_balance_exposed=(
+                    row["kind"] == "owner_demo_account_status"
+                    or (row["kind"] == "owner_demo_broker_event" and bool(row["payload"].get("account_snapshot")))
+                ),
             )
 
     def _live_board_rows(self) -> list[Any]:

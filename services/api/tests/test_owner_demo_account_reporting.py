@@ -11,7 +11,7 @@ import pytest
 from fastapi import HTTPException
 
 from app.owner_demo_account_reporting import (
-    OwnerDemoAccountReport, _body, _validate, reporting_day_start,
+    OwnerDemoAccountReport, _body, validate_owner_demo_report, reporting_day_start,
 )
 
 
@@ -32,7 +32,7 @@ def sample(captured: datetime | None = None) -> OwnerDemoAccountReport:
 
 def test_new_demo_balance_and_daily_net_do_not_use_legacy_vantage():
     report = sample()
-    start = _validate(
+    start = validate_owner_demo_report(
         report, now=report.captured_at + timedelta(seconds=5)
     )
     text = _body(report, start)
@@ -53,11 +53,11 @@ def test_21h_sofia_day_boundary_across_dst():
 def test_stale_or_incorrect_account_read_is_rejected():
     report = sample()
     with pytest.raises(HTTPException) as exc:
-        _validate(report, now=report.captured_at + timedelta(minutes=5))
+        validate_owner_demo_report(report, now=report.captured_at + timedelta(minutes=5))
     assert exc.value.status_code == 409
     report = report.model_copy(update={"equity": Decimal("9800")})
     with pytest.raises(HTTPException) as exc:
-        _validate(report, now=report.captured_at + timedelta(seconds=5))
+        validate_owner_demo_report(report, now=report.captured_at + timedelta(seconds=5))
     assert exc.value.detail == "broker_equity_mismatch"
 
 

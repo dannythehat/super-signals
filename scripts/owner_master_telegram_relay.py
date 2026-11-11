@@ -228,12 +228,30 @@ def record(db, cutoff, now):
         )
 
 
+def verified_trade_snapshot(notices):
+    import owner_demo_account_reporter as reporter
+
+    deal_ids = {fill["deal_id"] for notice in notices for fill in notice.get("fills", ())}
+    deal_ids.update(notice[key] for notice in notices for key in ("deal_id", "tp2_deal_id") if key in notice)
+    _, _, snapshot, _ = reporter.verified_snapshot(required_deals=deal_ids)
+    return snapshot
+
+
 def deliver(db, url, token):
     rows = db.execute(
         """SELECT event_key,payload FROM owner_master_broker_publication
            WHERE status IN ('new','pending','sending') ORDER BY attempts,rowid LIMIT 20"""
     ).fetchall()
-    for key, body in rows:
+    if not rows:
+        return
+    notices = [(key, json.loads(body)) for key, body in rows]
+    try:
+        snapshot = verified_trade_snapshot([notice for _, notice in notices])
+    except (OSError, ValueError, RuntimeError, sqlite3.Error) as exc:
+        emit("broker_trade_account_snapshot_retry", reason=str(exc)[:100])
+        return
+    for key, notice in notices:
+        body = json.dumps(notice | {"account_snapshot": snapshot})
         with db:
             db.execute("UPDATE owner_master_broker_publication SET attempts=attempts+1 WHERE event_key=?", (key,))
         try:
@@ -275,7 +293,11 @@ def main():
     cutoff = read_cutoff()
     if "--check" in sys.argv:
         capture(cutoff, datetime.now(UTC))
+        snapshot = verified_trade_snapshot([])
         print("VERIFIED_MASTER_BROKER_PUBLICATION_READ_ONLY", flush=True)
+        print(json.dumps({key: snapshot[key] for key in (
+            "balance", "realised_net", "month_realised_net", "reporting_start_utc", "captured_at"
+        )}), flush=True)
         return
     with (ROOT / "owner-master-telegram-worker.lock").open("a+b") as lock:
         msvcrt.locking(lock.fileno(), msvcrt.LK_NBLCK, 1)
