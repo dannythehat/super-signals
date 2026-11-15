@@ -117,6 +117,7 @@ async def _main() -> int:
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args()
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+    logging.getLogger("httpx").setLevel(logging.WARNING)
 
     if not 1 <= args.limit <= 100 or not 1 <= args.concurrency <= 3:
         print("INVALID_BOUNDS: limit 1..100; concurrency 1..3", flush=True)
