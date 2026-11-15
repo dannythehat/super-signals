@@ -67,7 +67,7 @@ async def _score_loop() -> None:
             state["last_finished_utc"] = datetime.now(UTC).isoformat()
             state["running"] = False
         # Frequent enough to backfill, bounded to one research child.
-        await asyncio.sleep(600)
+        await asyncio.sleep(max(120, min(900, int(os.environ.get("PROVIDER_RESEARCH_LOOP_SECONDS", "180")))))
 
 
 @asynccontextmanager
