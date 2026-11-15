@@ -1,0 +1,10 @@
+# Separate research container; never starts the live trading/API stack.
+FROM python:3.13-slim
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PYTHONPATH=/app/services/api
+WORKDIR /app
+COPY services/api/requirements.txt /tmp/requirements.txt
+RUN python -m pip install --no-cache-dir -r /tmp/requirements.txt
+COPY services/api /app/services/api
+CMD ["python", "-m", "app.provider_scoring_isolated", "--limit", "24", "--concurrency", "2"]
