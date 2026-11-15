@@ -28,6 +28,8 @@ services:
           name: super-signals-day-8
           envVarKey: AIDY_PROVIDER_MARKET_TOKEN
       - key: PROVIDER_RESEARCH_BATCH_LIMIT
-        value: "24"
+        value: "60"
+      - key: PROVIDER_RESEARCH_LOOP_SECONDS
+        value: "180"
       - key: PROVIDER_RESEARCH_DRY_RUN
         value: "0"
