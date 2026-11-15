@@ -140,10 +140,11 @@ async def _main() -> int:
         timeout_seconds=25,
     )
     # Fail closed before writing a single result if retrospective M1 is unavailable.
-    probe_start = min(
-        datetime.now(UTC).replace(minute=0, second=0, microsecond=0) - timedelta(days=2),
-        datetime.now(UTC) - timedelta(hours=1),
-    )
+    # Choose a settled mid-session weekday window, not Sunday/weekend bars.
+    probe_day = datetime.now(UTC) - timedelta(days=2)
+    while probe_day.weekday() >= 5:
+        probe_day -= timedelta(days=1)
+    probe_start = probe_day.replace(hour=12, minute=0, second=0, microsecond=0)
     probe_end = probe_start + timedelta(minutes=10)
     try:
         market = await client.fetch_research_m1(start=probe_start, end=probe_end)
