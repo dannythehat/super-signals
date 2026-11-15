@@ -1,0 +1,33 @@
+# Reuse one dormant, obsolete AIDY Day-26 CI preview (zero requests in 26 days).
+# This plan must NOT create any database, modify the live super-signals-day-8
+# service, or modify the separate AIDY Cloudflare Worker.
+# Historical scores are always research-only, never provider-promotion evidence.
+services:
+  - type: web
+    name: aidy-day26-clean-code-pass
+    runtime: docker
+    plan: free
+    region: frankfurt
+    repo: https://github.com/dannythehat/super-signals
+    branch: repair/20261115-provider-scoring-isolated
+    dockerfilePath: ./Dockerfile.provider-scoring
+    dockerContext: .
+    dockerCommand: uvicorn app.provider_scoring_web:app --host 0.0.0.0 --port 10000
+    healthCheckPath: /health
+    autoDeployTrigger: off
+    envVars:
+      - key: DATABASE_URL
+        fromDatabase:
+          name: super-signals-day-8-db
+          property: connectionString
+      - key: AIDY_PROVIDER_MARKET_URL
+        value: https://aidy-signals-test.dannythehat2.workers.dev
+      - key: AIDY_PROVIDER_MARKET_TOKEN
+        fromService:
+          type: web
+          name: super-signals-day-8
+          envVarKey: AIDY_PROVIDER_MARKET_TOKEN
+      - key: PROVIDER_RESEARCH_BATCH_LIMIT
+        value: "24"
+      - key: PROVIDER_RESEARCH_DRY_RUN
+        value: "0"
