@@ -1,0 +1,30 @@
+# ADDITIVE and isolated. References the EXISTING Render Postgres and existing
+# AIDY market credentials without duplicating databases, secrets, or live workers.
+# This Blueprint must never adopt or modify the live Super Signals web service.
+services:
+  - type: cron
+    name: super-signals-provider-research-scoring
+    runtime: docker
+    region: frankfurt
+    plan: 0.5c-512mb
+    repo: https://github.com/dannythehat/super-signals
+    branch: repair/20261115-provider-scoring-isolated
+    dockerfilePath: ./Dockerfile.provider-scoring
+    dockerContext: .
+    dockerCommand: python -m app.provider_scoring_isolated --limit 24 --concurrency 2
+    schedule: "*/15 * * * *"
+    autoDeployTrigger: off
+    envVars:
+      - key: DATABASE_URL
+        fromDatabase:
+          name: super-signals-day-8-db
+          property: connectionString
+      - key: AIDY_PROVIDER_MARKET_URL
+        value: https://aidy-signals-test.dannythehat2.workers.dev
+      - key: AIDY_PROVIDER_MARKET_TOKEN
+        fromService:
+          type: web
+          name: super-signals-day-8
+          envVarKey: AIDY_PROVIDER_MARKET_TOKEN
+      - key: PROVIDER_RESEARCH_DRY_RUN
+        value: "0"
