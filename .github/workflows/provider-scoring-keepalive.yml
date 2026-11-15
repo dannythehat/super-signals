@@ -1,0 +1,33 @@
+name: Provider Scoring Research Wake (No Trading)
+
+on:
+  schedule:
+    - cron: "*/10 * * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  wake-scoring-only:
+    runs-on: ubuntu-latest
+    timeout-minutes: 4
+    steps:
+      - name: Wake research-only scorer and verify service identity
+        shell: bash
+        run: |
+          set -euo pipefail
+          URL="https://aidy-day26-clean-code-pass.onrender.com/health"
+          curl --fail --silent --show-error --retry 2 --retry-delay 8 \
+            --max-time 105 "$URL" > /tmp/provider-scoring-health.json
+          python3 - <<'PY'
+          import json
+          d = json.load(open("/tmp/provider-scoring-health.json", encoding="utf-8"))
+          assert d.get("service") == "provider-monthly-research-only", d
+          assert d.get("status") == "ok", d
+          print("RESEARCH_ONLY_SCORER_HEALTHY")
+          print("RUNS", d.get("runs"))
+          print("RUNNING", d.get("running"))
+          print("LAST_EXIT", d.get("last_exit_code"))
+          print("LAST_FINISHED_UTC", d.get("last_finished_utc"))
+          PY
