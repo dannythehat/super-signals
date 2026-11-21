@@ -1,0 +1,43 @@
+name: WP1 bridge reliability (offline)
+on:
+  pull_request:
+    paths: ['services/local_mt5_bridge/**', 'services/api/app/routes/health.py', 'services/api/app/routes/server_monitor.py', 'services/api/tests/test_server_monitor_freshness.py', '.github/workflows/wp1-bridge-reliability.yml']
+permissions:
+  contents: read
+jobs:
+  bridge:
+    runs-on: windows-latest
+    strategy:
+      matrix:
+        python: ['3.11', '3.13']
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '${{ matrix.python }}'
+      - run: python -m pip install httpx
+      - run: python -m unittest discover -s services/local_mt5_bridge/tests -v
+      - shell: pwsh
+        run: ./services/local_mt5_bridge/tests/test_watchdog_identity.ps1
+  api:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:18
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: super_signals_test
+        ports: ['5432:5432']
+        options: --health-cmd "pg_isready -U postgres -d super_signals_test" --health-interval 5s --health-timeout 5s --health-retries 12
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - run: python -m pip install -r services/api/requirements.txt pytest pytest-asyncio
+      - name: Offline API regression tests
+        env:
+          PYTHONPATH: services/api
+          DATABASE_URL: postgresql+psycopg://postgres:postgres@localhost:5432/super_signals_test
+        run: python -m pytest -q services/api/tests/test_health.py services/api/tests/test_server_monitor_freshness.py services/api/tests/test_local_mt5_bridge.py services/api/tests/test_pu_bridge_scope.py services/api/tests/test_wp1_release_postgres.py

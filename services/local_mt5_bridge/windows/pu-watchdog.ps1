@@ -12,6 +12,15 @@ $watchLog = Join-Path $logs 'pu-watchdog.log'
 function Record([string]$message) {
     Add-Content -Path $watchLog -Value ("{0} {1}" -f (Get-Date).ToUniversalTime().ToString('o'),$message)
 }
+function Get-ConfiguredWorkers($Health, $Processes, [string]$Profile, [string]$Account, [string]$WorkerId, [string]$TerminalPath) {
+    @($Processes | Where-Object {
+        $Health -and $_.ProcessId -eq $Health.pid -and
+        $_.Name -match '^pythonw?\.exe$' -and $_.CommandLine -match 'local_mt5_bridge.main' -and
+        $Health.profile -ceq $Profile -and $Health.account_ref -ceq $Account -and
+        $Health.worker_id -ceq $WorkerId -and $Health.terminal_path -ieq $TerminalPath
+    })
+}
+
 if (-not (Test-Path $run)) { throw "Missing safe bridge runner $run" }
 Record 'Interactive-session watchdog started'
 while ($true) {
@@ -48,14 +57,45 @@ while ($true) {
             Record "Configured PU Prime MT5 terminal launched PID=$($terminal.Id)"
             Start-Sleep -Seconds 5
         }
-        # Python venv on Windows normally reports TWO processes: python.exe
-        # wrapper and its child interpreter. Any presence means do NOT start
-        # another worker, because broker trade processing must be single-writer.
-        $workers = @(Get-CimInstance Win32_Process -ErrorAction Stop |
-            Where-Object {
-                $_.Name -match '^pythonw?\.exe$' -and
-                $_.CommandLine -match 'local_mt5_bridge.main'
-            })
+        # Match this installation/profile/account. A worker for another terminal
+        # must never suppress recovery, and a stalled worker is reported, not killed.
+        $settings = @{}
+        foreach ($line in [IO.File]::ReadAllLines($envPath)) {
+            $parts = $line.Split('=',2)
+            if ($parts.Count -eq 2) {$settings[$parts[0].Trim()] = $parts[1].Trim()}
+        }
+        $profile = $settings['SUPER_SIGNALS_LOCAL_BRIDGE_PROFILE']
+        if (-not $profile) {$profile = 'super-signals'}
+        $account = $settings['SUPER_SIGNALS_LOCAL_BRIDGE_ACCOUNT_ID']
+        $workerId = $settings['SUPER_SIGNALS_LOCAL_BRIDGE_WORKER_ID']
+        if (-not $workerId) {$workerId = 'super-signals-' + $env:COMPUTERNAME.ToLower()}
+        $journal = $settings['SUPER_SIGNALS_LOCAL_BRIDGE_JOURNAL']
+        if (-not $journal) {$journal = Join-Path $env:PROGRAMDATA 'SuperSignals\bridge\command-journal.sqlite3'}
+        $hash = [Security.Cryptography.SHA256]::Create()
+        try {$digest = ([BitConverter]::ToString($hash.ComputeHash([Text.Encoding]::UTF8.GetBytes("$profile|$account|$workerId")))).Replace('-','').ToLower().Substring(0,12)}
+        finally {$hash.Dispose()}
+        $healthFile = Join-Path (Split-Path -Parent $journal) "worker-$digest.health.json"
+        $health = $null
+        try {$health = Get-Content -Raw -LiteralPath $healthFile -ErrorAction Stop | ConvertFrom-Json} catch {}
+        $allWorkers = @(Get-CimInstance Win32_Process -ErrorAction Stop | Where-Object {
+            $_.Name -match '^pythonw?\.exe$' -and $_.CommandLine -match 'local_mt5_bridge.main'
+        })
+        $workers = @(Get-ConfiguredWorkers $health $allWorkers $profile $account $workerId $terminalPath)
+        if ($workers.Count -gt 0) {
+            $progressAge = $null
+            if ($health.last_progress_utc) {$progressAge = ([DateTime]::UtcNow - [DateTime]::Parse($health.last_progress_utc).ToUniversalTime()).TotalSeconds}
+            if ($null -eq $progressAge -or $progressAge -gt 90 -or $health.state -ne 'ready') {
+                Record ("Configured worker degraded state=" + $health.state + '; no process stopped')
+            }
+        }
+        # During a slow startup, telemetry might not exist yet. An interpreter
+        # launched by THIS venv is sufficient to suppress duplicate startup only.
+        $starting = @($allWorkers | Where-Object {$_.CommandLine -like "*$InstallRoot*"})
+        if ($workers.Count -eq 0 -and $starting.Count -gt 0) {
+            Record 'Configured installation has an unverified worker; recovery held, no duplicate started'
+            Start-Sleep -Seconds ([Math]::Max(10,$CheckSeconds))
+            continue
+        }
         if ($workers.Count -eq 0) {
             $startup = "-NoProfile -ExecutionPolicy Bypass -File `"$run`" -InstallRoot `"$InstallRoot`""
             $child = Start-Process -FilePath "$PSHOME\powershell.exe" `

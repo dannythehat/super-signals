@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 import logging
+import hashlib
+import json
+from datetime import UTC, datetime
 import os
 import socket
 import sys
@@ -120,8 +123,46 @@ class BridgeWorker:
             deviation=settings.deviation,
         )
 
+    def _health(self, state: str, *, error: str | None = None, progress: bool = False) -> None:
+        """Private local telemetry only. Never contains tokens or broker passwords."""
+        now = datetime.now(UTC).isoformat()
+        self._current_health = state
+        if progress:
+            self._last_progress = now
+        identity = "|".join((self.settings.profile, self.settings.expected_account_id,
+                             self.settings.worker_id))
+        suffix = hashlib.sha256(identity.encode()).hexdigest()[:12]
+        path = self.settings.journal_path.parent / f"worker-{suffix}.health.json"
+        record = dict(pid=os.getpid(), profile=self.settings.profile,
+                      account_ref=self.settings.expected_account_id, worker_id=self.settings.worker_id,
+                      terminal_path=self.settings.terminal_path, state=state,
+                      observed_utc=now, last_progress_utc=getattr(self, '_last_progress', None),
+                      error_code=error)
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            temporary = path.with_suffix('.tmp')
+            temporary.write_text(json.dumps(record), encoding='utf-8')
+            temporary.replace(path)
+        except OSError:
+            LOG.warning("Worker health file unavailable")
+
     def run(self) -> None:
-        self.mt5.connect()
+        # Connect before claiming work. Failed startup cannot consume an order or
+        # replay an interrupted mutation; the command journal is unchanged.
+        while True:
+            try:
+                self._health("connecting")
+                self.mt5.connect()
+                self._broker_health = "ready"
+                self._health("ready", progress=True)
+                break
+            except KeyboardInterrupt:
+                return
+            except LocalMt5Error as exc:
+                self._health("disconnected", error=exc.code)
+                LOG.warning("MT5 startup unavailable code=%s", exc.code)
+                self.mt5.close()
+                time.sleep(5.0)
         LOG.info(
             "Bridge online worker=%s profile=%s account_ref=%s",
             self.settings.worker_id,
@@ -130,17 +171,32 @@ class BridgeWorker:
         )
         while True:
             try:
+                # Probe this adapter only. Cached identity is not connectivity.
+                try:
+                    self.mt5._assert_expected_account()
+                except LocalMt5Error:
+                    self.mt5.close()
+                    self.mt5.connect()
+                self._broker_health = "ready"
                 command = self._claim()
+                state = getattr(self, "_broker_health", "ready")
+                self._health(state, progress=True)
                 if command is None:
                     time.sleep(self.settings.poll_seconds)
                     continue
                 self._process(command)
             except KeyboardInterrupt:
                 return
+            except LocalMt5Error as exc:
+                self._broker_health = "broker_unavailable"
+                self._health("disconnected", error=exc.code)
+                time.sleep(5.0)
             except httpx.HTTPError as exc:
+                self._health("api_unavailable", error=type(exc).__name__)
                 LOG.warning("Render connection unavailable: %s", type(exc).__name__)
                 time.sleep(min(max(self.settings.poll_seconds * 4, 2.0), 15.0))
             except Exception:
+                self._health("unavailable", error="bridge_loop_failed")
                 LOG.exception("Bridge loop failed safely")
                 time.sleep(2.0)
 
@@ -194,17 +250,23 @@ class BridgeWorker:
         try:
             result = self.mt5.execute(str(command["operation"]), dict(command.get("payload") or {}))
             completion = {"status": "succeeded", "result": result}
+            self._broker_health = "ready"
+            self._health("ready", progress=True)
         except LocalMt5Error as exc:
+            self._broker_health = "broker_unavailable"
+            self._health("broker_unavailable", error=exc.code, progress=True)
             LOG.warning("MT5 command failed id=%s code=%s", command_id, exc.code)
             completion = {
-                "status": "failed",
+                "status": "ambiguous" if exc.code in {
+                    "local_bridge_trade_result_missing", "local_bridge_trade_outcome_unknown"
+                } else "failed",
                 "error_code": exc.code,
                 "error_message": str(exc),
             }
         except Exception as exc:
             LOG.exception("MT5 command crashed id=%s", command_id)
             completion = {
-                "status": "failed",
+                "status": "ambiguous" if command["operation"] == "trade" else "failed",
                 "error_code": "local_bridge_command_failed",
                 "error_message": type(exc).__name__,
             }

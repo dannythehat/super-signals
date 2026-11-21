@@ -25,6 +25,7 @@ class FakeTerminal(types.ModuleType):
         self.server = "PUPrime-Live 6"
         self.sends: list[dict] = []
         self.checks = 0
+        self.connected = True
         self.closed = 0
         self.switch_during_check = False
         self.initialize_args: dict[str, object] | None = None
@@ -37,7 +38,7 @@ class FakeTerminal(types.ModuleType):
         return SimpleNamespace(login=self.login, server=self.server)
 
     def terminal_info(self) -> object:
-        return object()
+        return SimpleNamespace(connected=self.connected)
 
     def shutdown(self) -> None:
         self.closed += 1
@@ -71,6 +72,20 @@ class Mt5AccountGuardTests(unittest.TestCase):
             server="PUPrime-Live 6",
             magic=2601001,
         )
+
+    def test_cached_identity_does_not_prove_startup_connection(self) -> None:
+        self.fake.connected = False
+        with self.assertRaisesRegex(LocalMt5Error, "local_bridge_mt5_disconnected"):
+            self.adapter.connect()
+        self.assertEqual(self.fake.sends, [])
+        self.assertEqual(self.fake.closed, 1)
+
+    def test_disconnected_matching_account_cannot_reach_order_send(self) -> None:
+        self.fake.connected = False
+        with self.assertRaisesRegex(LocalMt5Error, "local_bridge_mt5_disconnected"):
+            self.adapter._send({"action": self.fake.TRADE_ACTION_DEAL})
+        self.assertEqual(self.fake.sends, [])
+        self.assertEqual(self.fake.checks, 0)
 
     def test_connect_accepts_exact_login_and_server(self) -> None:
         self.adapter.connect()
