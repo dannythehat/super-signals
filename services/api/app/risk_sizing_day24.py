@@ -1,4 +1,4 @@
-"""Day 24 deterministic per-atomic-leg risk sizing.
+"""Day 24 deterministic risk sizing with a strict locked one-percent signal budget.
 
 The parsed Telegram signal supplies the entry and stop loss. This module never
 invents, changes or optimizes either value. It calculates one broker-valid volume
@@ -28,14 +28,8 @@ _ALLOWED_PROFILE_RISK_PERCENTS = _ALLOWED_BASE_RISK_PERCENTS + (
 _DOUBLE_LOT_MULTIPLIER = Decimal("2")
 _ONE_HUNDRED = Decimal("100")
 _ZERO = Decimal("0")
-# Owner-approved provider profiles are allowed one tightly bounded broker-minimum
-# accommodation. Vantage cannot place less than 0.01 lots, so an exact 1% leg can
-# otherwise become permanently untradeable as soon as the stop is wider than the
-# account's 1% cash budget. The floor may round that leg up only while the resulting
-# stop risk stays at or below 2.5% of the account. Tiny accounts remain protected:
-# a 0.01-lot XAUUSD trade risking 10-30%+ is still refused.
-_PROVIDER_BROKER_MINIMUM_MAX_ACTUAL_RISK_PERCENT = Decimal("2.5")
-
+# GoldThinker owner-approved profiles NEVER round up to a broker's minimum lot
+# if that would exceed their risk budget. A trade that cannot fit is skipped.
 
 class ApprovedProviderRisk(Decimal):
     """Marker Decimal for an owner-approved provider-specific risk allocation.
@@ -190,16 +184,7 @@ class Day24RiskSizer:
         # 10-30%+ risk on a tiny account. Generic/user-selected sizing remains strict
         # unless its caller explicitly opts in to minimum-lot overshoot.
         if actual_risk > risk_budget:
-            if not broker_minimum_applied:
-                raise Day24RiskSizingError("risk_budget_exceeded")
-            bounded_provider_minimum = (
-                provider_profile_risk
-                and actual_risk
-                <= balance_value
-                * _PROVIDER_BROKER_MINIMUM_MAX_ACTUAL_RISK_PERCENT
-                / _ONE_HUNDRED
-            )
-            if not bounded_provider_minimum and not allow_broker_minimum_overshoot:
+            if provider_profile_risk or not broker_minimum_applied or not allow_broker_minimum_overshoot:
                 raise Day24RiskSizingError("broker_minimum_exceeds_risk_budget")
 
         positions = tuple(
@@ -252,6 +237,10 @@ class Day24RiskSizer:
         """Size atomic TP legs independently for an explicit approved profile."""
         if not risk_percents:
             raise Day24RiskSizingError("risk_profile_invalid")
+        locked = tuple(isinstance(risk, ApprovedProviderRisk) for risk in risk_percents)
+        if any(locked):
+            if not all(locked) or sum((Decimal(risk) for risk in risk_percents), _ZERO) > Decimal("1"):
+                raise Day24RiskSizingError("signal_risk_budget_exceeded")
         sized = tuple(
             cls.size(
                 balance=balance,
@@ -266,6 +255,10 @@ class Day24RiskSizer:
             )
             for risk in risk_percents
         )
+        if any(locked) and sum(
+            (item.actual_risk_per_position for item in sized), _ZERO
+        ) > _decimal(balance) / _ONE_HUNDRED:
+            raise Day24RiskSizingError("signal_risk_budget_exceeded")
         positions = tuple(
             Day24PositionSize(
                 take_profit_number=index,
@@ -337,13 +330,18 @@ class Day24RiskSizer:
     ) -> None:
         if balance <= _ZERO:
             raise Day24RiskSizingError("balance_invalid")
-        allowed = (
-            _ALLOWED_PROFILE_RISK_PERCENTS
-            if allow_profile_risk
-            else _ALLOWED_BASE_RISK_PERCENTS
-        )
-        if base_risk not in allowed:
-            raise Day24RiskSizingError("risk_percent_invalid")
+        if isinstance(base_risk, ApprovedProviderRisk):
+            # Only an explicit owner-approved risk slice may be fractional.
+            if not (_ZERO < base_risk <= Decimal("1")):
+                raise Day24RiskSizingError("risk_percent_invalid")
+        else:
+            allowed = (
+                _ALLOWED_PROFILE_RISK_PERCENTS
+                if allow_profile_risk
+                else _ALLOWED_BASE_RISK_PERCENTS
+            )
+            if base_risk not in allowed:
+                raise Day24RiskSizingError("risk_percent_invalid")
         if entry <= _ZERO or stop <= _ZERO or entry == stop:
             raise Day24RiskSizingError("signal_entry_stop_invalid")
         if tick_size <= _ZERO:

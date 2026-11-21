@@ -27,9 +27,9 @@ class _Cipher:
 class _Read:
     def __init__(self) -> None:
         self.positions = {
-            "p1": {"id": "p1", "openPrice": 4370.82, "stopLoss": 4360.0, "takeProfit": 4380.0},
-            "p2": {"id": "p2", "openPrice": 4370.81, "stopLoss": 4360.0, "takeProfit": 4390.0},
-            "p3": {"id": "p3", "openPrice": 4370.81, "stopLoss": 4360.0, "takeProfit": 4400.0},
+            "p1": {"id": "p1", "type": "POSITION_TYPE_BUY", "openPrice": 4370.82, "stopLoss": 4360.0, "takeProfit": 4380.0},
+            "p2": {"id": "p2", "type": "POSITION_TYPE_BUY", "openPrice": 4370.81, "stopLoss": 4360.0, "takeProfit": 4390.0},
+            "p3": {"id": "p3", "type": "POSITION_TYPE_BUY", "openPrice": 4370.81, "stopLoss": 4360.0, "takeProfit": 4400.0},
         }
         self.orders = {"o1", "o2", "manual-order"}
 
@@ -224,3 +224,18 @@ def test_partial_management_failure_never_reopens_closed_position() -> None:
     assert "p1" not in service.read.positions
     assert service.positions[0].status == "closed"
     assert service.failures == ["metaapi_trade_rejected"]
+
+
+def test_widening_stop_is_blocked_before_any_broker_call() -> None:
+    service = _Harness([{"type": "edit_stop_loss", "target": "TP1", "value": "4350"}])
+    with pytest.raises(Day27ManagementError, match="day27_stop_widening_refused"):
+        asyncio.run(_run(service))
+    assert service.trade.modified == []
+
+
+def test_missing_broker_direction_is_fail_closed_for_stop_change() -> None:
+    service = _Harness([{"type": "edit_stop_loss", "target": "TP1", "value": "4365"}])
+    service.read.positions["p1"].pop("type", None)
+    with pytest.raises(Day27ManagementError, match="day27_broker_position_side_unverified"):
+        asyncio.run(_run(service))
+    assert service.trade.modified == []

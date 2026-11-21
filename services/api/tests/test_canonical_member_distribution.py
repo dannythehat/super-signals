@@ -275,7 +275,7 @@ class _DistributionHarness(MemberDistributionService):
         return None
 
 
-def test_one_signal_sizes_each_user_independently_without_local_funds_veto(
+def test_one_percent_full_signal_budget_scales_independently_for_all_users(
     monkeypatch,
 ) -> None:
     monkeypatch.setenv("SUPER_SIGNALS_LIVE_EXECUTION_ENABLED", "1")
@@ -289,9 +289,9 @@ def test_one_signal_sizes_each_user_independently_without_local_funds_veto(
     assert result.target_count == 3
     assert result.executed_count == 3
     assert result.skipped_count == 0
-    assert by_user[U1].volume_per_position == (Decimal("0.10"),) * 3
-    assert by_user[U2].volume_per_position == (Decimal("0.20"),) * 3
-    assert by_user[U3].volume_per_position == (Decimal("0.10"),) * 3
+    assert by_user[U1].volume_per_position == (Decimal("0.03"),) * 3
+    assert by_user[U2].volume_per_position == (Decimal("0.06"),) * 3
+    assert by_user[U3].volume_per_position == (Decimal("0.03"),) * 3
     assert by_user[U3].error_code is None
     assert len(execution.trade.calls) == 9
     assert {call["account_id"] for call in execution.trade.calls} == {

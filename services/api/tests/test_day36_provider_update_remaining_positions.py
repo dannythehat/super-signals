@@ -37,8 +37,8 @@ class _Read:
     async def read_positions(self, *, token: str, account_id: str, region: str):
         # mapped-3 was closed manually in MT5 before the provider update arrived.
         return [
-            {"id": "mapped-1", "openPrice": 4410, "stopLoss": 4380, "takeProfit": 4440},
-            {"id": "mapped-2", "openPrice": 4410, "stopLoss": 4380, "takeProfit": 4450},
+            {"id": "mapped-1", "type": "POSITION_TYPE_BUY", "openPrice": 4410, "stopLoss": 4380, "takeProfit": 4440},
+            {"id": "mapped-2", "type": "POSITION_TYPE_BUY", "openPrice": 4410, "stopLoss": 4380, "takeProfit": 4450},
         ]
 
 
